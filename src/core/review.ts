@@ -111,6 +111,12 @@ export async function runReview(
     return output;
   }
 
+  // Prepare auth BEFORE the chdir below: it doesn't depend on the working directory,
+  // and doing it first means nothing that can throw sits between the chdir and the
+  // guarded blocks — so a prepareAuth failure can't leak the worktree or leave cwd
+  // pointing at it.
+  const auth = await prepareAuth(config);
+
   // Read the PR-head tree (not the current checkout) when the source can materialize
   // it, so the agents' surrounding-source reads and the verifier's re-reads see the
   // versions that match the diff. Config is already fully loaded in memory, so the
@@ -128,8 +134,6 @@ export async function runReview(
     progress('Reviewing the PR-head tree (so reads match the PR, not the checkout).');
     process.chdir(readRoot.dir);
   }
-
-  const auth = await prepareAuth(config);
 
   progress('Starting OpenCode server…');
   let handle: OpencodeHandle | null = null;
