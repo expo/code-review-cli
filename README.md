@@ -9,6 +9,8 @@ is the **engine** — each repo supplies its own agents and settings under
 > **Status: experimental.** Comment-only and non-blocking — it never blocks a merge
 > and never auto-approves. See [`ROADMAP.md`](./ROADMAP.md).
 
+Inspired in part by Cloudflare's [_How we built our AI code review bot_](https://blog.cloudflare.com/ai-code-review/).
+
 ```mermaid
 flowchart TD
   SRC["Source<br/>local git · GitHub PR (gh)"] --> FILTER["Noise filter<br/>drop lockfiles · generated · binary"]
