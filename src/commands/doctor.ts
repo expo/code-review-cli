@@ -1,4 +1,5 @@
 import { loadReviewConfig, hasConfig } from '../config/load.js';
+import { checkProviderAuth } from '../core/auth.js';
 import { onPath, repoRoot, run } from '../core/exec.js';
 import { errorMessage } from '../core/util.js';
 
@@ -74,21 +75,8 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
         'all agent prompt files resolved and non-empty'
       );
 
-      const { mode, provider, tokenEnv } = config.auth;
-      if (tokenEnv) {
-        const present = Boolean(process.env[tokenEnv]);
-        line(
-          present,
-          present
-            ? `auth: ${mode} for ${provider}; token env ${tokenEnv} is set`
-            : `auth: ${mode} for ${provider}; token env ${tokenEnv} is NOT set`
-        );
-      } else {
-        line(
-          true,
-          `auth: ${mode} for ${provider}; no tokenEnv configured — relying on OpenCode's own login or REVIEWER_MODEL`
-        );
-      }
+      const readiness = checkProviderAuth(config);
+      line(readiness.ok, `auth: ${readiness.detail}`);
     } catch (error) {
       line(false, `config invalid: ${errorMessage(error)}`);
     }
