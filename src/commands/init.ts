@@ -253,7 +253,7 @@ async function scaffoldScope(argv: string[], scopeDirRaw: string): Promise<void>
       `  1. Customize ${scopeDir}/${CONFIG_DIRNAME}/agents/*.md for this team.`,
       `  2. Add to CODEOWNERS so only the team edits its scope:`,
       `       /${scopeDir}/${CONFIG_DIRNAME}/ @your-team`,
-      "  3. Run `ecr doctor` to verify the config.",
+      "  3. Run `ecr doctor --list-scopes` to verify routing.",
       "",
     ].join("\n"),
   );
