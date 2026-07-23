@@ -1,7 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import type { CoordinatorOutput, ReviewMetadata } from "./schema.js";
+import type { CoordinatorOutput, Finding, ReviewMetadata } from "./schema.js";
 import type { FilteredFile } from "./noise.js";
 import type { TokenUsage } from "./opencode.js";
 
@@ -10,7 +10,9 @@ export interface RunLogRecord {
   mode: "ci" | "local";
   runId: string;
   // Refs only — PR title/body are deliberately excluded to avoid persisting
-  // secrets that might appear in author-controlled text.
+  // secrets that might appear in author-controlled text. Findings below may quote
+  // changed source lines, but only content the review already publishes verbatim
+  // in the PR comment — never the surrounding title/body text.
   metadata: Pick<ReviewMetadata, "baseRef" | "headRef">;
   reviewedFiles: string[];
   filteredFiles: FilteredFile[];
@@ -20,6 +22,17 @@ export interface RunLogRecord {
   // metrics (cache.read/write reveal how much prompt-cache reuse we're getting).
   // Reuses TokenUsage so the log schema can't silently diverge from what's collected.
   tokens?: TokenUsage;
+  // Per-bucket token usage (same keys as agentCosts: agent ids, "cross-cutting",
+  // "coordinator", "verifier") so cache effectiveness can be judged per pass, not
+  // just run-wide.
+  agentTokens?: Record<string, TokenUsage>;
+  // The reasoning trail behind the posted result: raw per-agent findings before
+  // coordination, the coverage gaps reported to the coordinator, and the findings
+  // the verifier rejected. Together these explain WHY the final finding set looks
+  // the way it does.
+  agentFindings?: Record<string, Finding[]>;
+  coverageNotes?: string[];
+  verifierDropped?: { finding: Finding; reason: string }[];
   durationMs: number;
   decision: CoordinatorOutput["decision"] | null;
   findingCount: number;
