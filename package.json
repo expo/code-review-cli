@@ -1,6 +1,6 @@
 {
   "name": "@expo/code-review-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Generic, config-driven AI code reviewer engine. Repos supply their agents via .expo-code-review/.",
   "license": "MIT",
   "repository": {
