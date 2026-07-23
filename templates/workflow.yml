@@ -2,12 +2,13 @@ name: AI code review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
-# Comment-only: needs to read the repo and write PR comments.
+# Comment-only: read the repo, write PR comments (issue comments API).
 permissions:
   contents: read
   pull-requests: write
+  issues: write
 
 concurrency:
   group: ai-code-review-${{ github.event.pull_request.number }}
@@ -16,28 +17,32 @@ concurrency:
 jobs:
   review:
     runs-on: ubuntu-latest
+    # Opt-in per PR: only run when the `ai-review` label is present. Remove this
+    # line to review every PR automatically.
+    if: contains(join(github.event.pull_request.labels.*.name, ','), 'ai-review')
+    # Backstop so a stalled review fails fast instead of hanging.
+    timeout-minutes: 60
     # A reviewer failure must never fail the PR's checks.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          # Shallow is enough — the reviewer gets the diff from the API (`gh`).
+          fetch-depth: 1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
 
       - name: Run AI review
-        # Requires the `expo-code-review` package to be published to npm. Until
-        # then, vendor the CLI or run it from a checkout instead of via npx.
-        # npx installs the CLI and its bundled `opencode` binary and puts them on
-        # PATH for this process.
-        run: npx --yes expo-code-review@latest ci
+        # npx installs @expo/code-review-cli and its bundled `opencode` binary and
+        # puts them on PATH for this process. Pin @latest to a version to freeze it.
+        run: npx --yes -p "@expo/code-review-cli@latest" ecr ci
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # OpenCode reads ANTHROPIC_API_KEY. Source it from a dedicated,
           # code-review-scoped secret. Swap for your provider's key/var.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_FOR_CODE_REVIEW }}
-          # Optional: override the model for every agent.
+          # Optional: override the model for every agent (uses your OpenCode login).
           REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}

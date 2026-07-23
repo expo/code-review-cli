@@ -12,12 +12,12 @@ const TEMPLATES_DIR = fileURLToPath(new URL('../../templates/', import.meta.url)
 const USAGE = `ecr init — scaffold .expo-code-review/ in the current repo
 
 Usage:
-  ecr init [--with-workflow] [--force]
+  ecr init [--no-workflow] [--force]
 
 Options:
-  --with-workflow   Also write .github/workflows/expo-code-review.yml
-  --force           Overwrite existing files
-  -h, --help        Show this help
+  --no-workflow   Skip writing the CI workflow (.github/workflows/expo-code-review.yml)
+  --force         Overwrite existing files
+  -h, --help      Show this help
 `;
 
 export async function initCommand(argv: string[]): Promise<void> {
@@ -36,7 +36,10 @@ export async function initCommand(argv: string[]): Promise<void> {
 /** Scaffold .expo-code-review/ (and optionally the CI workflow) into the repo. */
 async function scaffold(argv: string[]): Promise<void> {
   const force = argv.includes('--force');
-  const withWorkflow = argv.includes('--with-workflow');
+  // The CI workflow is scaffolded by default (most repos adopting this want it);
+  // `--no-workflow` opts out. `--with-workflow` is still accepted as a no-op for
+  // back-compat.
+  const withWorkflow = !argv.includes('--no-workflow');
 
   const root = (await repoRoot()) ?? process.cwd();
   const configDir = path.join(root, CONFIG_DIRNAME);
@@ -87,8 +90,8 @@ async function scaffold(argv: string[]): Promise<void> {
       '  2. Configure a model provider in OpenCode (or set REVIEWER_MODEL).',
       '  3. Run `ecr doctor`, then `ecr review`.',
       withWorkflow
-        ? '  4. Add the model-key secret referenced by the workflow.'
-        : '  4. Run `ecr init --with-workflow` to add the CI workflow.',
+        ? '  4. Add the model-key secret referenced by the workflow, then add an `ai-review` label to a PR.'
+        : '  4. (No CI workflow written — re-run without `--no-workflow` to add it.)',
       '',
     ].join('\n')
   );
