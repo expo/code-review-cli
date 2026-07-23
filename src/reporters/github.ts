@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { run } from '../core/exec.js';
-import { commentMarker, parseReviewState, renderMarkdown } from '../core/render.js';
+import { parseUnifiedDiff } from '../core/diff.js';
+import { buildDiffLineIndex, commentMarker, parseReviewState, renderMarkdown } from '../core/render.js';
+import type { LinkContext } from '../core/render.js';
 import { fingerprintFinding } from '../core/schema.js';
 import type { CoordinatorOutput, DismissalRecord } from '../core/schema.js';
 import type { Reporter } from './reporter.js';
@@ -65,12 +67,28 @@ export class GitHubReporter implements Reporter {
     const dismissed = existing
       ? (parseReviewState(existing.body, this.options.commentTag)?.dismissed ?? [])
       : [];
-    await this.upsertComment(renderMarkdown(review, this.options.commentTag, dismissed, this.linkContext()));
+    const link = await this.linkContextAsync();
+    await this.upsertComment(renderMarkdown(review, this.options.commentTag, dismissed, link));
   }
 
-  /** PR context for turning finding locations into diff-line links. */
-  private linkContext(): { repo: string; prNumber: number } {
-    return { repo: this.options.repo, prNumber: this.options.prNumber };
+  /**
+   * PR context for turning finding locations into diff-line links, including the
+   * set of lines actually in the PR diff so we only link locations that resolve
+   * (findings on unchanged code render as plain text). The diff fetch fails soft —
+   * on any error we still link-context without `diffLines`, which renders plain text.
+   */
+  private async linkContextAsync(): Promise<LinkContext> {
+    const base: LinkContext = { repo: this.options.repo, prNumber: this.options.prNumber };
+    try {
+      const { stdout } = await run(
+        'gh',
+        ['pr', 'diff', String(this.options.prNumber), '--repo', this.options.repo],
+        { cwd: this.options.cwd }
+      );
+      return { ...base, diffLines: buildDiffLineIndex(parseUnifiedDiff(stdout)) };
+    } catch {
+      return base;
+    }
   }
 
   /**
@@ -104,9 +122,10 @@ export class GitHubReporter implements Reporter {
       }
     }
 
+    const link = await this.linkContextAsync();
     await this.patchComment(
       existing.id,
-      renderMarkdown(state.review, this.options.commentTag, dismissed, this.linkContext())
+      renderMarkdown(state.review, this.options.commentTag, dismissed, link)
     );
     return { dismissedCount: dismissed.length, matched, unmatched };
   }

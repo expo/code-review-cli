@@ -1,6 +1,11 @@
 import { test, expect } from 'bun:test';
 
-import { renderMarkdown, parseEmbeddedFingerprints, parseReviewState } from '../core/render.js';
+import {
+  renderMarkdown,
+  parseEmbeddedFingerprints,
+  parseReviewState,
+  buildDiffLineIndex,
+} from '../core/render.js';
 import { fingerprintFinding } from '../core/schema.js';
 import type { CoordinatorOutput, Finding } from '../core/schema.js';
 
@@ -44,20 +49,57 @@ test('review state (review + dismissals) round-trips via parseReviewState', () =
   expect(state!.review.findings.length).toBe(1);
 });
 
-test('links a finding location to the PR diff line when link context is given', () => {
+test('links a finding location to the PR diff line when the line is in the diff', () => {
   const out = renderMarkdown({ ...base, findings: [finding({ file: 'src/a.ts', line: 12 })] }, 'tag', [], {
     repo: 'expo/eas-cli',
     prNumber: 42,
+    diffLines: new Map([['src/a.ts', new Set([12])]]),
   });
   // Markdown link wrapping the `file:line`, pointing at the Files-changed diff anchor.
   expect(out).toContain('[`src/a.ts:12`](https://github.com/expo/eas-cli/pull/42/files#diff-');
   expect(out).toMatch(/R12\)/); // right-hand line anchor for line 12
 });
 
+test('a finding NOT in the diff is plain text, not a dead link', () => {
+  // File is in the diff, but line 99 is not one of its changed lines → no link.
+  const out = renderMarkdown({ ...base, findings: [finding({ file: 'src/a.ts', line: 99 })] }, 'tag', [], {
+    repo: 'expo/eas-cli',
+    prNumber: 42,
+    diffLines: new Map([['src/a.ts', new Set([12])]]),
+  });
+  expect(out).toContain('`src/a.ts:99`');
+  expect(out).not.toContain('https://github.com');
+});
+
+test('a finding on a file absent from the diff is plain text', () => {
+  const out = renderMarkdown({ ...base, findings: [finding({ file: 'other.ts', line: 3 })] }, 'tag', [], {
+    repo: 'expo/eas-cli',
+    prNumber: 42,
+    diffLines: new Map([['src/a.ts', new Set([12])]]),
+  });
+  expect(out).toContain('`other.ts:3`');
+  expect(out).not.toContain('https://github.com');
+});
+
 test('location is plain (unlinked) code when no link context is given', () => {
   const out = renderMarkdown({ ...base, findings: [finding({ file: 'src/a.ts', line: 12 })] }, 'tag');
   expect(out).toContain('`src/a.ts:12`');
   expect(out).not.toContain('https://github.com');
+});
+
+test('buildDiffLineIndex: collects right-side added + context lines, skips deletions', () => {
+  const patch = [
+    '--- a/src/a.ts',
+    '+++ b/src/a.ts',
+    '@@ -10,3 +10,4 @@',
+    ' context10', // right line 10 (context)
+    '-removed', // left only, no right line
+    '+added11', // right line 11
+    '+added12', // right line 12
+    ' context13', // right line 13
+  ].join('\n');
+  const index = buildDiffLineIndex([{ path: 'src/a.ts', patch }]);
+  expect([...index.get('src/a.ts')!].sort((a, b) => a - b)).toEqual([10, 11, 12, 13]);
 });
 
 test('comment footer no longer says "Phase 1"', () => {

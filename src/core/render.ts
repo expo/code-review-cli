@@ -6,10 +6,56 @@ import type { CoordinatorOutput, Decision, DismissalRecord, Finding, Severity } 
 /**
  * Enough PR context to turn a finding's `file:line` into a link to that line in
  * the PR's "Files changed" diff. Omitted for terminal output (plain text).
+ *
+ * `diffLines` maps each changed file to the set of right-side (new-version) line
+ * numbers present in the PR's diff. A `#diff-…R<line>` anchor only exists for lines
+ * actually shown in the diff, so we link ONLY when the finding's file+line is in
+ * here — otherwise the finding points at unchanged code (a caller, a helper the PR
+ * merely uses) and a diff link would be dead, so we render plain text instead.
  */
 export interface LinkContext {
   repo: string; // owner/repo
   prNumber: number;
+  diffLines?: Map<string, Set<number>>;
+}
+
+/**
+ * Build the file → right-side-line-numbers index from changed files' patch text,
+ * by walking each unified-diff hunk (`@@ -a,b +c,d @@`) and collecting the new-tree
+ * line number of every added (`+`) and context (` `) line. Deleted (`-`) lines have
+ * no right-side line and are skipped.
+ */
+export function buildDiffLineIndex(
+  files: Array<{ path: string; patch: string }>
+): Map<string, Set<number>> {
+  const index = new Map<string, Set<number>>();
+  const hunkRe = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+  for (const file of files) {
+    const lines = new Set<number>();
+    let right = 0;
+    let inHunk = false;
+    for (const raw of file.patch.split('\n')) {
+      const hunk = hunkRe.exec(raw);
+      if (hunk) {
+        right = parseInt(hunk[1]!, 10);
+        inHunk = true;
+        continue;
+      }
+      if (!inHunk || raw.startsWith('+++') || raw.startsWith('---') || raw.startsWith('\\')) {
+        continue;
+      }
+      const marker = raw[0];
+      if (marker === '+' || marker === ' ') {
+        lines.add(right);
+        right++;
+      }
+      // '-' is left-side only (no new-tree line); anything else is ignored.
+    }
+    if (lines.size > 0) {
+      index.set(file.path, lines);
+    }
+  }
+  return index;
 }
 
 const DECISION_LABEL: Record<Decision, string> = {
@@ -50,12 +96,22 @@ function locationText(finding: Finding): string {
 
 /**
  * Render a finding's location as inline code, linked to the exact diff line in the
- * PR's "Files changed" tab when PR context is available. GitHub anchors each file's
- * diff as `diff-<sha256(path)>` and each right-hand (added/context) line as `…R<n>`.
+ * PR's "Files changed" tab — but ONLY when that file+line is actually in the diff
+ * (GitHub anchors each file's diff as `diff-<sha256(path)>` and each right-hand
+ * added/context line as `…R<n>`; those anchors don't exist for unchanged code). A
+ * finding on a file/line not in the diff renders as plain text, never a dead link.
  */
 function location(finding: Finding, link?: LinkContext): string {
   const text = locationText(finding);
   if (!link) {
+    return `\`${text}\``;
+  }
+  const fileLines = link.diffLines?.get(finding.file);
+  // Link only when the file is in the diff and (if the finding names a line) that
+  // line is one of the diff's right-side lines. A file-level finding (no line) links
+  // to the file's diff section as long as the file appears in the diff.
+  const inDiff = fileLines != null && (finding.line == null || fileLines.has(finding.line));
+  if (!inDiff) {
     return `\`${text}\``;
   }
   const fileHash = createHash('sha256').update(finding.file).digest('hex');
