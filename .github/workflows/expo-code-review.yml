@@ -1,0 +1,67 @@
+name: AI code review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+# Comment-only: read the repo, write PR comments (issue comments API).
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ai-code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Opt-in per PR: only run when the `ai-review` label is present. Remove this
+    # line to review every PR automatically.
+    if: contains(join(github.event.pull_request.labels.*.name, ','), 'ai-review')
+    # Backstop so a stalled review fails fast instead of hanging.
+    timeout-minutes: 60
+    # A reviewer failure must never fail the PR's checks.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Shallow is enough — the reviewer gets the diff from the API (`gh`).
+          fetch-depth: 1
+
+      # SECURITY: this workflow checks out the PR's code, including
+      # .expo-code-review/config.jsonc, whose auth.tokenEnv names the env var the CLI
+      # forwards as the model credential. Refuse to run unless it's the expected value
+      # (below / repo var ECR_EXPECTED_TOKEN_ENV) so a PR can't repoint it at another
+      # secret in the runner. Keep this in sync with auth.tokenEnv in config.jsonc.
+      - name: Guard config.jsonc tokenEnv
+        env:
+          EXPECTED: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'ANTHROPIC_OAUTH_API_KEY' }}
+        run: |
+          values=$(grep -oE '"tokenEnv"[[:space:]]*:[[:space:]]*"[A-Za-z0-9_]+"' .expo-code-review/config.jsonc | sed -E 's/.*"([A-Za-z0-9_]+)"$/\1/')
+          count=$(printf '%s\n' "$values" | grep -c .)
+          if [ "$count" != "1" ] || [ "$values" != "$EXPECTED" ]; then
+            echo "::error::.expo-code-review/config.jsonc auth.tokenEnv must be \"$EXPECTED\" (found: \"${values:-none}\"). Refusing to run so a PR can't redirect which secret is forwarded to the model provider."
+            exit 1
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run AI review
+        # True self-review: this repo IS the reviewer, so run the CLI from the PR's
+        # own source instead of the published npm package. `bun run` puts
+        # node_modules/.bin (which has the `opencode` binary) on PATH.
+        run: bun run src/cli.ts ci
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Claude Pro/Max OAuth token (from `claude setup-token`) — the env var
+          # named by auth.tokenEnv in config.jsonc. Store it as a repo secret.
+          # (For an API key instead, set auth.mode "api-key" and pass that key here.)
+          ANTHROPIC_OAUTH_API_KEY: ${{ secrets.ANTHROPIC_OAUTH_API_KEY }}
+          # Optional: override the model for every agent (uses your OpenCode login).
+          REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}
