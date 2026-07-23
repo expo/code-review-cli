@@ -28,19 +28,38 @@ flowchart TD
 Run via `npx @expo/code-review-cli <command>` (or the `ecr` / `expo-code-review`
 binary once installed).
 
-**Setting it up in a repo for the first time** — scaffold the config, fill it in,
-and verify:
+**Requirements:** Node 20+ and `git`; the GitHub CLI (`gh`, authenticated) for
+`--pr` and `ci`. The `opencode` runtime the reviewer drives is bundled with the
+package (the `opencode-ai` dependency) — **no separate install.** You supply model
+credentials (next).
+
+**Setting it up in a repo for the first time** — scaffold, add credentials, verify:
 
 ```bash
-npx @expo/code-review-cli init --with-workflow   # scaffold .expo-code-review/ (+ a CI workflow)
-# edit .expo-code-review/ — pick agents, models, and auth (see Configuration below)
+npx @expo/code-review-cli init        # scaffold .expo-code-review/ + a CI workflow (--no-workflow to skip)
+```
+
+Then give it model credentials. The scaffolded config defaults to **Anthropic**:
+
+- **Anthropic API key** (default): `export ANTHROPIC_API_KEY=sk-ant-...`
+- **Claude Pro/Max subscription:** set `auth.mode` to `"oauth"` in `config.jsonc`,
+  run `claude setup-token`, and export the printed `sk-ant-oat…` token under the env
+  var named by `auth.tokenEnv`.
+- **OpenAI / GPT (or another provider):** log in once with `opencode auth login`
+  (pick the provider), then run with `REVIEWER_MODEL` set — e.g.
+  `REVIEWER_MODEL=openai/gpt-5.4-mini-fast`. This overrides every agent's model and
+  uses your OpenCode login, so no `auth` block is needed. *(This env-override is the
+  current path for non-Anthropic providers; first-class per-provider config is on
+  the [roadmap](./ROADMAP.md).)*
+
+```bash
 npx @expo/code-review-cli doctor                 # check env, config, and credentials
 ```
 
 **In a repo that's already configured** — just review:
 
 ```bash
-ecr review                      # review your working-tree changes (advisory)
+ecr review                      # review working-tree changes; prints here, posts nothing
 ecr review --pr 4057            # review a GitHub PR by number (preview only)
 ecr review --pr 4057 --post     # …and post it as the PR comment
 ```

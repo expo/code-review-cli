@@ -453,6 +453,35 @@ Wanted instead:
   review output** ("primary X unavailable; this pass ran on fallback Y") — never
   silent. Would need to be tier-aware given the mixed-model setup (a single global
   fallback would flatten the specialist-vs-coordinator model distinction).
+- **First-class multi-provider support (Anthropic / OpenAI / others).** Today only
+  Anthropic has clean config-level auth (`api-key` / `oauth`); using GPT or another
+  provider works only through the `REVIEWER_MODEL` env override plus a manual
+  `opencode auth login`. Make provider + auth selection first-class in `config.jsonc`
+  (and per-agent frontmatter) so a repo can, from config alone, run entirely on
+  OpenAI, or mix — e.g. GPT for one agent and Claude for another, or a GPT
+  coordinator over Claude specialists. Both Anthropic and OpenAI should be equally
+  supported, with room for more (Google, OpenRouter, local). Pairs with the
+  fail-fast provider-auth check above.
+
+## Full-repository review (audit mode)
+
+Today the reviewer only reviews a *diff* (a PR or a working-tree range). Add a mode
+that reviews an **entire repository**, not just changed lines — for onboarding an
+existing codebase, a one-time security/quality audit, or establishing a baseline
+before turning on PR review. Design sketch:
+
+- New entry point (e.g. `ecr review --all` / `ecr audit`): enumerate the repo's
+  source files (respecting the noise filter + an explicit scope of paths/globs and a
+  size ceiling) instead of taking a diff.
+- Reuse the existing chunk → agents → cross-cutting → coordinate → verify pipeline,
+  but chunk the whole tree by directory/package proximity rather than by changed
+  lines. This is large, so it leans hard on the reliability machinery (subdivide,
+  budgets) and almost certainly wants incremental/resumable state (§ merge-boundary
+  #1) so an audit can run in bounded passes and resume.
+- Output is a standalone report grouped by severity/area (written file + terminal
+  summary, `--json` for tooling) — not a PR comment.
+- Cost/time will be large on a real repo: make scope explicit, cap it, and report
+  what was and wasn't covered (never silently partial).
 
 ## Review trustworthiness — false positives + finding stability
 
