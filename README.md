@@ -32,7 +32,9 @@ Reviewing a PR (`--pr`/`ci`) needs the GitHub CLI — `brew install gh && gh aut
 Everything else the reviewer needs (including the `opencode` runtime) ships with the
 package.
 
-**Setting it up in a repo for the first time** — scaffold, add credentials, verify:
+### First-time setup
+
+Scaffold, add credentials, verify.
 
 ```bash
 # Scaffold .expo-code-review/ + a CI workflow (--no-workflow to skip)
@@ -55,7 +57,7 @@ npx @expo/code-review-cli doctor
 Prefer an Anthropic **API key**, or **OpenAI/GPT** or another provider? See
 [Other providers & auth modes](#other-providers) at the bottom.
 
-**In a repo that's already configured** — just review:
+### Reviewing (already configured)
 
 ```bash
 # Review working-tree changes; prints here, posts nothing
@@ -76,7 +78,7 @@ is a ready example to adapt.
 
 | Command | What it does |
 | --- | --- |
-| `ecr init [--with-workflow] [--force]` | Scaffold `.expo-code-review/` (config, agents, prompts) into this repo. |
+| `ecr init [--no-workflow] [--force]` | Scaffold `.expo-code-review/` (config, agents, prompts) + a CI workflow. |
 | `ecr review [options]` | Review local changes and print an advisory review (default command). |
 | `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
 | `ecr doctor` | Check environment, config, and model credentials. |
