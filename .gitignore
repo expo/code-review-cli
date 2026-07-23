@@ -3,3 +3,6 @@ build/
 *.log
 .DS_Store
 .expo-code-review/.runs/
+
+# npm pack output
+*.tgz
