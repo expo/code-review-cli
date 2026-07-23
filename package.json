@@ -28,6 +28,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "bun run src/cli.ts",
     "test:unit": "bun test",
+    "release": "bash scripts/release.sh",
     "prepublishOnly": "rimraf build && tsc -p tsconfig.build.json"
   },
   "dependencies": {
