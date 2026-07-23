@@ -18,7 +18,8 @@ Source (pick one):
   (default)          diff the working tree against the merge-base
   --base <ref>       base ref to diff against
   --head <ref>       head ref to diff
-  --staged           review only staged changes
+  --staged           review only staged changes (index vs HEAD; not combinable
+                     with --base/--head)
   --pr <n>           review GitHub PR #n by number (diff fetched via \`gh\`, no
                      checkout needed); can't be combined with --base/--head/--staged
 
@@ -211,6 +212,11 @@ function validateArgs(args: ReviewArgs): void {
   }
   if (args.pr == null && (args.repo || args.post)) {
     throw new Error('--repo/--post only apply together with --pr.');
+  }
+  // --staged diffs the index against HEAD, so --base/--head have no effect. Reject
+  // the combination rather than silently ignoring the range the user asked for.
+  if (args.staged && (args.base || args.head)) {
+    throw new Error('--staged reviews the staged changes (index vs HEAD) and cannot be combined with --base/--head.');
   }
 }
 
