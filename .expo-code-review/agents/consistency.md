@@ -33,12 +33,23 @@ the same kind of thing, so the codebase stays uniform and predictable.
   bare `Error` when a specific type exists? Do they link to the relevant
   docs/resource when sibling errors point users somewhere to learn more?
 
-Example convention (replace with your repo's own) — for a CLI repo: a new command
-must support `--non-interactive` the way sibling commands do (a non-interactive
-path with no prompts, erroring clearly when a required value is missing), and it
-must expose flags to supply every prompted value so the command stays scriptable.
+## This repo's conventions
 
-<!-- TODO: replace the example above with this repo's most important conventions. -->
+- **New CLI commands** (`src/commands/*.ts`): a `USAGE` string, `-h`/`--help`
+  handled first, errors written to stderr via `errorMessage(error)` from
+  `core/util.ts`, and `process.exitCode = 2` on failure — never `process.exit()`.
+  Registered in `src/cli.ts`.
+- **New config options** land in three places together: the zod schema
+  (`src/config/schema.ts`), loading/defaults (`src/config/load.ts`), and the
+  commented example in `templates/config.jsonc`. An option missing from the
+  template is a real finding.
+- **Code/template sync**: `templates/` is the scaffolding source. Behavior changes
+  (workflow steps, auth defaults, comment tag) must keep `templates/` and `src/`
+  in agreement.
+- **New reporters/sources** implement the interfaces in
+  `src/reporters/reporter.ts` / `src/sources/source.ts` the way their siblings do.
+- **Tests**: new core logic gets a `bun test` file in `src/__tests__/`, following
+  the existing per-module naming.
 
 ## What NOT to flag
 

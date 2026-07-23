@@ -17,8 +17,21 @@ issues in the changed code.
 - Resource/async bugs: unhandled rejections, leaks, race conditions with a
   concrete trigger.
 
-<!-- TODO: customize for this repo — add project-specific correctness rules,
-     e.g. framework conventions, required flag handling, API compatibility. -->
+## This repo's footguns
+
+- **ESM specifiers**: TypeScript with NodeNext resolution — relative imports need
+  the `.js` suffix. A missing suffix can type-check yet break the built CLI at
+  runtime.
+- **Model output is untrusted and fallible**: findings JSON from agents must
+  survive schema validation (zod) and malformed output; `file`/`line`/`evidence`
+  claims are only trustworthy after evidence matching (`src/core/verify.ts`).
+  Flag code that trusts model output without validating it.
+- **Dual execution modes**: core paths run both locally (`local-git` source,
+  terminal reporter) and in CI (`github-pr` source, GitHub reporter). A change
+  that only handles one mode is a bug.
+- **CI must never fail the PR**: `ecr ci` degrades gracefully by design. Flag
+  error paths that could throw uncaught or turn a reviewer failure into a red
+  check on the PR.
 
 ## What NOT to flag
 

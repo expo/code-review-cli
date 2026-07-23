@@ -18,8 +18,34 @@ average severity.
 - Missing validation on untrusted input at a trust boundary.
 - Insecure file permissions, or writing secrets to world-readable paths.
 
-<!-- TODO: customize for this repo — name the sensitive surfaces specific to this
-     codebase (credential stores, tokens, arbitrary-command features, etc.). -->
+## This repo's sensitive surfaces
+
+This CLI's core job is forwarding a model-provider credential and executing
+PR-controlled config, so these areas are critical surface:
+
+- **Token forwarding (`src/core/auth.ts`).** `FORBIDDEN_TOKEN_ENVS` is a deny-list
+  that stops a repo config from pointing `auth.tokenEnv` at a non-provider secret
+  (e.g. `GITHUB_TOKEN`) and exfiltrating it to the model provider. Flag any change
+  that weakens how `tokenEnv` is resolved, validated, or forwarded, and any path
+  where the token could reach logs, error messages, or the `.runs/` artifacts
+  directory.
+- **Child processes (`src/core/exec.ts`).** Everything runs via `execFile` with
+  argument arrays, never a shell. Flag `shell: true`, string-built commands, or
+  untrusted values (branch names, PR titles, file paths) passed where `git`/`gh`
+  could parse them as flags.
+- **Prompt-injection boundary (`src/core/prompts.ts`).** PR diffs, paths, and
+  titles are attacker-controlled and get interpolated into agent prompts. The
+  design is deliberate: `sanitizeUntrusted` plus boundary markers, with patch text
+  intentionally unsanitized and fenced by UNTRUSTED labels. Flag changes that
+  bypass sanitization or let untrusted content forge a boundary line.
+- **Comment rendering (`src/core/render.ts`).** Model output is rendered into a
+  PR comment carrying hidden state markers (`commentTag` fingerprints/state).
+  Flag anything that lets model- or PR-controlled text forge those markers or
+  inject HTML that alters the comment's state handling.
+- **`templates/workflow.yml` is a supply-chain artifact** — it is scaffolded into
+  every adopting repo. Changes to its `permissions:`, triggers, or the tokenEnv
+  guard step affect all downstream users, and the guard must stay in sync with
+  `templates/config.jsonc`.
 
 ## CI / workflow supply-chain (changes under `.github/workflows/**`)
 
