@@ -13,7 +13,9 @@ verifies their findings, and posts one updating PR comment.
   finding verification, comment rendering, auth.
 - `src/sources/` — where the diff comes from (`local-git`, `github-pr`).
 - `src/reporters/` — where findings go (`terminal`, `github`).
-- `src/config/` — zod schema + loader for `.expo-code-review/config.jsonc`.
+- `src/config/` — zod schema + loader for `.expo-code-review/config.jsonc`;
+  `routing.ts` parses the monorepo `routing.jsonc` manifest and assigns changed
+  files to scopes (last-match-wins).
 - `templates/` — the files `ecr init` scaffolds into adopting repos. Keep them in
   sync with the code (config options, workflow steps, auth defaults).
 - `src/__tests__/` — `bun test` unit tests, one file per module.
@@ -32,6 +34,9 @@ verifies their findings, and posts one updating PR comment.
 - Core paths must work in both local mode (`local-git` + terminal reporter) and
   CI mode (`github-pr` + GitHub reporter).
 - `ecr ci` must never fail a PR's checks — reviewer errors degrade gracefully.
+- Scope configs never carry `auth`/`breakGlass` — those are root-only, enforced in
+  the schema (`ScopeReviewConfigSchema`), the loader (`loadAuthFromRoot`), and the CI
+  guard. With no `routing.jsonc`, behavior is byte-identical to single-config mode.
 
 ## Security invariants
 
