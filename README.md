@@ -74,7 +74,7 @@ Options (most to least common):
 | --- | --- |
 | `--pr <n>` | Review GitHub PR #n by number (diff fetched via `gh`, no checkout); not combinable with `--base`/`--head`/`--staged`. |
 | `--post` | With `--pr`, also post the result as the PR comment (needs `gh` auth). Omit to preview only; re-run with `--post` to publish. |
-| `--staged` | Review only staged changes. |
+| `--staged` | Review only staged changes (index vs HEAD; not combinable with `--base`/`--head`). |
 | `--base <ref>` | Base ref to diff against (default: merge-base with the default branch). |
 | `--head <ref>` | Head ref to diff (default: working tree, incl. uncommitted changes). |
 | `--agents <a,b>` | Run only these agents (comma-separated ids); default: all. |
@@ -176,6 +176,9 @@ per-repo `noise.additionalIgnores`.
   "policy": { "includeSuggestions": false },  // suppress suggestion-severity findings
   "chunk": { "maxChangedLines": 1000, "maxFiles": 20, "concurrency": 6 },
   "noise": { "additionalIgnores": ["packages/*/build/**"] },
+  "review": { "trigger": "all",               // which PRs `ecr ci` reviews: "all"
+              "label": "ai-review",            // (default, except ai-review:skip) or
+              "skipLabel": "ai-review:skip" }, // "label" (only labeled PRs)
   "breakGlass": { "marker": "/skip-review" }, // PR body marker that skips the review
   "commentTag": "expo-ai-code-reviewer",      // hidden tag used to find/update the comment
   "auth": { "mode": "oauth", "provider": "anthropic",
@@ -223,6 +226,14 @@ change which model reviewed your code. Use an explicit override instead.
   un-reducible pass reports a coverage gap — and it is always reported, never silent.
 - **Parse failures are retried** (same session, then once in a bounded fresh
   session) — separate from the timeout path.
+- **Transient API errors are retried** (bounded backoff on 429/5xx/network) —
+  distinct from both the timeout path (abandon) and the parse path; a one-off blip
+  no longer drops an entire pass.
+- **Auth failures surface once, and fail fast** — `ecr` checks the configured
+  provider's credential at startup and stops with one clear message if it's missing
+  (rather than failing every pass); a credential rejected mid-run (401/403)
+  collapses into a single actionable coverage note pointing at
+  `auth.tokenEnv`/`REVIEWER_MODEL`.
 - **A failed run never reads as "Approve"** — all passes fail → "could not
   complete"; some fail → never a clean approve, and coverage-reduced.
 - **The coordinator can't sink the run** — if consolidation fails, findings are
@@ -243,9 +254,12 @@ line: **comments = one-shot actions, labels = persistent configuration.**
 - **command workflow** — one-shot `/review` comments (maintainers): `/review`
   (router picks agents), `/review all`, `/review correctness security`. Never
   changes configuration.
-- **auto workflow** — continuous review, configured by **labels**: `ai-review`
-  (router), `ai-review:all`, `ai-review:<agent>` (e.g. `ai-review:security`;
-  combine to widen), `ai-review:skip` (opt-out).
+- **auto workflow** — continuous review. **Which PRs get reviewed is set in
+  `config.jsonc` → `review.trigger`**: `"all"` (default) reviews every PR except
+  those labeled `ai-review:skip`; `"label"` reviews only PRs labeled `ai-review`
+  (or `ai-review:<agent>` to scope agents). `ecr ci` self-gates on this policy;
+  the workflow's `if:` is an optional coarse gate layered on top. `ai-review:skip`
+  always wins and is write-gated, so a contributor can't opt their own PR out.
 - **dismiss workflow** — `/dismiss <id> [… -- reason]` / `/undismiss <id>`
   (maintainers). Each finding shows a short `` `id:…` ``. Dismissal is a **display
   filter only** — the reviewer still analyzes everything, and a `critical`/`secrets`
@@ -263,7 +277,9 @@ as the published package via `npx`, so no PR-controlled code is built.
 Each run appends a JSON line to `.expo-code-review/.runs/reviews.jsonl` with the
 inputs, decision, finding count, duration, per-agent cost, and aggregate token
 usage (incl. prompt-cache read/write counts) — for auditing and measuring
-cost/latency/cache reuse over time.
+cost/latency/cache reuse over time. The same totals are printed as a one-line
+summary to the terminal / CI job log at the end of each run, so cache reuse is
+visible even in CI (where the run log is ephemeral).
 
 </details>
 

@@ -17,10 +17,10 @@ PRs** (do these first, in this order):
    re-pushes; the last remaining lever for the monster-PR case. See §5.
 2. **Cross-cutting pass parallelization / bounding** — it's the serial long-pole on
    large PRs (one pass over every changed file). Chunk it by package/proximity.
-3. **Transient-error retry with backoff** — a non-timeout, non-parse API error
-   (one-off 429/5xx/network) currently drops that pass with no retry. It's distinct
-   from the timeout→subdivide and parse→retry paths and deserves its own bounded
-   retry. Real reliability hole, small fix.
+3. ✅ **Transient-error retry with backoff** *(shipped 2026-07-23, #3.)* A non-timeout,
+   non-parse API error (one-off 429/5xx/network) used to drop that pass with no retry.
+   Now retried with bounded backoff via `isTransientApiError` (excludes
+   `AgentTimeoutError`), distinct from the timeout→subdivide and parse→retry paths.
 4. **Close the config/code injection vector (security)** — the auto-workflow builds
    + loads config from the PR merge ref, so a same-repo PR can rewrite the reviewer's
    prompts/config/code and it runs with secrets. Fix: build + load config from the
@@ -31,6 +31,32 @@ PRs** (do these first, in this order):
 
 ## Recently shipped
 
+- **Follow-up batch (2026-07-23, PRs #2–#7)** — first round of post-extraction
+  low-hanging-fruit hardening:
+  - **Transient-error retry with backoff (#3)** — a one-off 429/5xx/network error on
+    a pass is now retried with bounded backoff (2s→8s) instead of dropping the whole
+    pass; classified by `isTransientApiError`, which excludes `AgentTimeoutError`
+    (timeouts still abandon). Closes reliability/merge-boundary follow-up #3 below.
+  - **Fail-fast provider-auth check (#4)** — `checkProviderAuth` (shared by
+    `prepareAuth` + `doctor`) fails fast with one clear message before the run when
+    the configured provider has no credential, instead of surfacing as N failed
+    passes mid-run. Closes the "fail-fast provider-auth check" item under Model
+    selection below.
+  - **Auth failures collapse to one note (#5)** — a rejected credential (401/403)
+    hitting every pass now reports a single actionable coverage note (`isAuthError`)
+    instead of N generic failures. Closes the UX "auth-shaped errors → one message" item.
+  - **`--staged` + `--base`/`--head` rejected (#2)** — was silently ignored; now a
+    clear error. Closes the UX-minor `--staged`/`--base` warning item.
+  - **Usage totals surfaced to CI/terminal (#6)** — token/cache/cost totals are
+    printed as a one-line summary via progress, so prompt-cache reuse is visible in
+    CI (where `.runs/reviews.jsonl` is ephemeral). Closes the §4.1 follow-up.
+  - **Config-driven trigger policy + skip fix (#7)** — new `review.trigger`
+    (`"all"` default | `"label"`) in `config.jsonc`; `ecr ci` self-gates via
+    `shouldReview()`, honoring the write-gated `ai-review:skip` label. Fixed the
+    workflow `if:` gate: the old `contains(join(labels), 'ai-review')` matched
+    `ai-review:skip` as a substring (skip didn't skip) — now an exact array-form
+    match, as an optional coarse opt-out on top of the config policy. Template +
+    workflow kept in sync.
 - **Never-drop-work on timeout (2026-07-22)** — a hard-timed-out chunk is now
   subdivided (halved recursively down to a single file) and re-reviewed instead of
   dropped; a single file that still won't converge gets a fast no-tools fallback
@@ -262,6 +288,9 @@ What's left is at our layer, in suggested order:
      in CI, so the Anthropic (default) cache numbers aren't visible after a run —
      surface the token/cache totals into the CI job log or the run summary so CI
      caching can be confirmed the same way (Anthropic reports write + read).
+     **✅ Shipped (2026-07-23, #6):** `formatUsageSummary` prints a one-line totals
+     summary (input/output/reasoning + cache read/write + cost) via progress, so it
+     lands in the CI job log and the local terminal.
 2. **Retry in the same session, not a fresh one.** `promptAndParse` retries a
    JSON-parse failure by replaying `text + CORRECTIVE` in a **new session**,
    discarding the first attempt's entire tool-call context (all the patch reads).
@@ -415,10 +444,12 @@ and §3. What remains, by tier:
   confirming the file exists on the base (one extra lookup per out-of-diff file),
   else plain text. Low priority — verified findings rarely cite bogus paths, and a
   404 is more visible than the dead diff anchor this replaced.*
-- **Auth-shaped (401/403) agent errors → one actionable message** — still open.
+- ✅ **Auth-shaped (401/403) agent errors → one actionable message** *(shipped
+  2026-07-23, #5)* via `isAuthError` — collapses to a single coverage note.
 - **Minor**: README uses `ecr` though unpublished (note once that real invocation
   is `yarn workspace expo-code-review dev …`); `init` next-steps vs scaffolded
-  `auth.mode`; warn when `--staged` is combined with `--base`/`--head`.
+  `auth.mode`; ~~warn when `--staged` is combined with `--base`/`--head`~~ ✅ shipped
+  (#2 — now rejected with a clear error).
 
 ## Extraction — done ✅ (remaining cleanup)
 
@@ -451,11 +482,11 @@ tool, a clear failure beats an invisible substitution. Explicit overrides
 (`REVIEWER_MODEL`, frontmatter `model:`) are the portability primitive.
 
 Wanted instead:
-- **Fail-fast provider-auth check** (in `doctor` and at run start): if the
-  configured model's provider isn't authenticated, say so up front ("configured
-  `anthropic/…` but only OpenAI is logged in — set `REVIEWER_MODEL` or
-  authenticate Anthropic") instead of surfacing as N failed passes mid-run. This
-  removes most of the perceived need for a fallback. Small, clearly good.
+- ✅ **Fail-fast provider-auth check** *(shipped 2026-07-23, #4.)* `checkProviderAuth`
+  (shared by `doctor` + `prepareAuth`) says up front when the configured provider has
+  no credential ("configured `anthropic/…` but token env X isn't set — set
+  `REVIEWER_MODEL` or authenticate") instead of surfacing as N failed passes mid-run.
+  Removes most of the perceived need for a fallback.
 - **Optional, opt-in `fallbackModel`** for availability only: fires ONLY on the
   primary being unavailable / rate-limited / errored, and is **surfaced in the
   review output** ("primary X unavailable; this pass ran on fallback Y") — never
