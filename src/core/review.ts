@@ -28,6 +28,7 @@ import {
 import { fingerprintFinding, parseReviewerOutput } from "./schema.js";
 import type { CoordinatorOutput, Finding } from "./schema.js";
 import { sortFindings } from "./render.js";
+import { appendStepSummary } from "./step-summary.js";
 import { errorMessage, sleep } from "./util.js";
 import { verifyFindings } from "./verify.js";
 import { applyInlineIgnores } from "./suppress.js";
@@ -560,6 +561,9 @@ export async function runReview(
     }
 
     progress(formatUsageSummary(tokenTotals, sum(agentCosts)));
+    await appendStepSummary(
+      renderUsageMarkdown(agentTokens, agentCosts, tokenTotals, sum(agentCosts)),
+    );
 
     await safeLog(logPath, {
       ...baseRecord,
@@ -832,6 +836,38 @@ export function formatUsageSummary(tokens: TokenUsage, totalCost: number): strin
   parts.push(`cache read ${tokens.cache?.read ?? 0}`, `cache write ${tokens.cache?.write ?? 0}`);
   const cost = totalCost > 0 ? ` (cost $${totalCost.toFixed(4)})` : "";
   return `Token usage — ${parts.join(", ")}${cost}`;
+}
+
+/**
+ * Markdown-table version of the usage summary for the Actions step summary: one
+ * row per pass plus a total, and the prompt-cache hit rate (the share of prompt
+ * tokens served from cache instead of being reprocessed at full price).
+ */
+export function renderUsageMarkdown(
+  agentTokens: Record<string, TokenUsage>,
+  agentCosts: Record<string, number>,
+  totals: TokenUsage,
+  totalCost: number,
+): string {
+  const row = (label: string, tokens: TokenUsage, cost: number): string =>
+    `| ${label} | ${tokens.input ?? 0} | ${tokens.output ?? 0} | ${tokens.cache?.read ?? 0} | ${tokens.cache?.write ?? 0} | $${cost.toFixed(4)} |`;
+  const lines = [
+    "### 🤖 AI review — token usage",
+    "",
+    "| pass | input | output | cache read | cache write | cost |",
+    "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ...Object.keys(agentCosts).map((bucket) =>
+      row(bucket, agentTokens[bucket] ?? {}, agentCosts[bucket] ?? 0),
+    ),
+    row("**total**", totals, totalCost),
+  ];
+  const read = totals.cache?.read ?? 0;
+  const uncached = totals.input ?? 0;
+  if (read + uncached > 0) {
+    const rate = Math.round((read / (read + uncached)) * 100);
+    lines.push("", `Prompt cache hit rate: **${rate}%** (cache read / (cache read + input)).`);
+  }
+  return lines.join("\n");
 }
 
 async function safeLog(logPath: string, record: RunLogRecord): Promise<void> {

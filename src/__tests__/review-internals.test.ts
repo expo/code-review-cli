@@ -8,6 +8,7 @@ import {
   reconcileSummary,
   isAuthError,
   formatUsageSummary,
+  renderUsageMarkdown,
 } from "../core/review.js";
 import type { PatchWorkspaceFile } from "../core/noise.js";
 import type { CoordinatorOutput, Finding } from "../core/schema.js";
@@ -171,4 +172,26 @@ test("formatUsageSummary omits cost when zero and reasoning when absent", () => 
   expect(s).toContain("cache read 0");
   expect(s).not.toContain("reasoning");
   expect(s).not.toContain("cost");
+});
+
+test("renderUsageMarkdown emits one row per pass, a total, and the cache hit rate", () => {
+  const s = renderUsageMarkdown(
+    {
+      correctness: { input: 1000, output: 200, cache: { read: 9000, write: 500 } },
+      coordinator: { input: 500, output: 100, cache: { read: 0, write: 400 } },
+    },
+    { correctness: 0.01, coordinator: 0.002 },
+    { input: 1500, output: 300, cache: { read: 9000, write: 900 } },
+    0.012,
+  );
+  expect(s).toContain("| correctness | 1000 | 200 | 9000 | 500 | $0.0100 |");
+  expect(s).toContain("| coordinator | 500 | 100 | 0 | 400 | $0.0020 |");
+  expect(s).toContain("| **total** | 1500 | 300 | 9000 | 900 | $0.0120 |");
+  // 9000 / (9000 + 1500) ≈ 86%
+  expect(s).toContain("**86%**");
+});
+
+test("renderUsageMarkdown omits the hit rate when no prompt tokens were used", () => {
+  const s = renderUsageMarkdown({}, {}, {}, 0);
+  expect(s).not.toContain("hit rate");
 });

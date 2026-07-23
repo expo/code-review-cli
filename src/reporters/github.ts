@@ -14,6 +14,7 @@ import {
 import type { LinkContext, ReviewState, ScopeReviewResult } from "../core/render.js";
 import { fingerprintFinding, scopedFingerprint } from "../core/schema.js";
 import type { CoordinatorOutput, DismissalRecord } from "../core/schema.js";
+import { appendStepSummary } from "../core/step-summary.js";
 import type { Reporter } from "./reporter.js";
 
 export interface DismissalResult {
@@ -281,15 +282,18 @@ export class GitHubReporter implements Reporter {
 
     if (marked.length === 0) {
       await this.createComment(body);
-      return;
+    } else {
+      const keep = marked[marked.length - 1]!;
+      const duplicates = marked.slice(0, -1);
+      await this.patchComment(keep.id, body);
+      for (const duplicate of duplicates) {
+        await this.deleteComment(duplicate.id);
+      }
     }
 
-    const keep = marked[marked.length - 1]!;
-    const duplicates = marked.slice(0, -1);
-    await this.patchComment(keep.id, body);
-    for (const duplicate of duplicates) {
-      await this.deleteComment(duplicate.id);
-    }
+    // Mirror the exact posted body into the Actions step summary: the PR comment
+    // is upserted in place, so this is the only per-run record of what was posted.
+    await appendStepSummary(`### 🤖 AI review — posted comment\n\n${body}`);
   }
 
   private async withBodyFile<T>(body: string, fn: (jsonPath: string) => Promise<T>): Promise<T> {
