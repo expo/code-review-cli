@@ -404,9 +404,17 @@ and §3. What remains, by tier:
 - ✅ **Progress heartbeat** during silent model "thinking" (poll loop emits
   "still working… Ns elapsed" after 45s idle).
 - ✅ **`doctor` checks `gh` + `gh auth status`**; **`ci --help`** added.
-- **Clickable `file:line`** — *(deferred, folded into §1 inline comments)*: robust
-  links need the PR head SHA threaded into the renderer (branch links 404 for
-  forks); the inline-comment work solves locations properly, so do it there.
+- ✅ **Clickable `file:line`** — shipped. Every finding location renders as a
+  markdown link: in-diff (file+line in a hunk) → the PR "Files changed" diff anchor
+  (`#diff-<sha256(path)>R<line>`); out-of-diff (unchanged code the PR references) →
+  the source blob on the PR base commit (`/blob/<baseSha>/<path>#L<line>`, a stable
+  permalink). The reporter fetches the diff-line index + base SHA (both fail soft to
+  plain text). *Remaining (minor): the out-of-diff base-blob link can 404 in two edge
+  cases — a finding citing a line beyond a PR-added file's length, or a
+  wrong/hallucinated path. To guarantee zero 404s, link out-of-diff only after
+  confirming the file exists on the base (one extra lookup per out-of-diff file),
+  else plain text. Low priority — verified findings rarely cite bogus paths, and a
+  404 is more visible than the dead diff anchor this replaced.*
 - **Auth-shaped (401/403) agent errors → one actionable message** — still open.
 - **Minor**: README uses `ecr` though unpublished (note once that real invocation
   is `yarn workspace expo-code-review dev …`); `init` next-steps vs scaffolded
