@@ -230,6 +230,16 @@ export async function verifyConfigCommand(argv: string[] = []): Promise<void> {
   const root = (await repoRoot()) ?? process.cwd();
   const result = await verifyConfig(root, { expected });
 
+  // The sweep is deliberately repo-wide (a security check, not a config loader), so
+  // it is unaffected by ECR_CONFIG_DIR. But when the override is set, the root the
+  // loaders actually honor may not be ./.expo-code-review — note that so the two
+  // don't look inconsistent in a job log. JSON output stays machine-clean.
+  if (!json && process.env.ECR_CONFIG_DIR) {
+    process.stderr.write(
+      `  ℹ ECR_CONFIG_DIR is set (${process.env.ECR_CONFIG_DIR}); the honored root config may differ from ./${CONFIG_DIRNAME}. This sweep still scans the ENTIRE repo (unchanged).\n`,
+    );
+  }
+
   if (json) {
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } else if (result.ok) {

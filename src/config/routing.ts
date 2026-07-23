@@ -4,14 +4,26 @@ import path from "node:path";
 
 import { RoutingManifestSchema } from "./schema.js";
 import type { RoutingManifest } from "./schema.js";
-import { CONFIG_DIRNAME, stripJsonComments, stripTrailingCommas } from "./load.js";
+import { resolveConfigDir, stripJsonComments, stripTrailingCommas } from "./load.js";
 import { matchesIgnore } from "../core/noise.js";
 
 export const ROUTING_FILENAME = "routing.jsonc";
 
-/** Parse <root>/.expo-code-review/routing.jsonc. Absent file => null (backcompat). */
-export async function loadRoutingManifest(root: string): Promise<RoutingManifest | null> {
-  const manifestPath = path.join(root, CONFIG_DIRNAME, ROUTING_FILENAME);
+/**
+ * Parse the routing manifest. It lives in the SAME resolved root config dir as
+ * config.jsonc (`resolveConfigDir` — the `--config-dir`/`ECR_CONFIG_DIR` escape
+ * hatch): the override designates an alternate ROOT config dir, so config.jsonc
+ * and routing.jsonc always travel together and never split across the override
+ * and the default tree. With no override the dir is `<root>/.expo-code-review`,
+ * byte-identical to the pre-escape-hatch path. Absent file => null (backcompat).
+ * Scope `config` paths stay repo-root-relative (see `loadScopeConfig`): an
+ * override relocates only the ROOT artifacts, never the scopes' own subtrees.
+ */
+export async function loadRoutingManifest(
+  root: string,
+  options: { configDir?: string } = {},
+): Promise<RoutingManifest | null> {
+  const manifestPath = path.join(resolveConfigDir(root, options.configDir), ROUTING_FILENAME);
   if (!existsSync(manifestPath)) {
     return null;
   }

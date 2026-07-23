@@ -1,4 +1,10 @@
-import { loadReviewConfig, loadScopeConfig, loadAuthFromRoot, hasConfig } from "../config/load.js";
+import {
+  loadReviewConfig,
+  loadScopeConfig,
+  loadAuthFromRoot,
+  hasConfig,
+  resolveConfigDir,
+} from "../config/load.js";
 import { loadRoutingManifest, resolveScopes, formatOwnerTable } from "../config/routing.js";
 import type { LoadedScopeConfig } from "../config/load.js";
 import type { RoutingManifest } from "../config/schema.js";
@@ -48,6 +54,15 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
   };
 
   process.stdout.write(`expo-code-review doctor (repo: ${root})\n`);
+
+  // When the ROOT config dir is overridden, config.jsonc AND routing.jsonc are
+  // read from the resolved dir (scope subtrees stay repo-root-relative). Surface
+  // it so a green doctor run can't hide that it checked a non-default root.
+  if (process.env.ECR_CONFIG_DIR) {
+    info(
+      `ECR_CONFIG_DIR override active: root config.jsonc and routing.jsonc read from ${resolveConfigDir(root)} (scope subtrees stay repo-root-relative)`,
+    );
+  }
 
   const opencodeInstalled = await onPath("opencode");
   line(
