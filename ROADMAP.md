@@ -31,6 +31,23 @@ PRs** (do these first, in this order):
 
 ## Recently shipped
 
+- **Canonical `ecr verify-config` CI guard (shipped 2026-07-23)** — the pre-review
+  tokenEnv guard, previously duplicated across adopter workflows as brittle bash/awk
+  JSONC text-scraping at different robustness tiers, is now ONE command shipped by the
+  CLI. It walks every `.expo-code-review/config.jsonc|config.json` + `routing.jsonc`
+  in the checkout (plain recursive walk skipping node_modules/.git, so a staged
+  unreferenced config can't hide from git's index), parses each with the engine's REAL
+  comment-aware JSONC parser (never regex), and refuses (exit 1, `::error::` on stderr)
+  when `auth.tokenEnv`/`defaults.auth.tokenEnv` appears more than once, in a non-root
+  file, or (with `--expected`/`ECR_EXPECTED_TOKEN_ENV`) differs from the expected name
+  or is absent; when a non-root config declares `auth`/`breakGlass`/`commentTag`
+  (root-locked, checked WITHOUT trusting the manifest references the file); or when any
+  file fails to parse (fail-closed). `--json` emits `{ok, findings:[{file, problem}]}`.
+  The workflow template replaces its entire awk guard block with
+  `npx ... ecr verify-config` (setup-node moved before it; running the PUBLISHED
+  package via npx is safe pre-review since no PR code is built), and this repo's own
+  self-review workflow runs `verify-config` from source. Layer 2 to the runtime
+  `ECR_EXPECTED_TOKEN_ENV` lock (layer 1), so guard/loader drift still fails safe.
 - **Manual `/review` bypasses the trigger gate (shipped 2026-07-23)** — an explicit
   maintainer invocation (`ecr ci --force`, or a `/review` comment command detected via
   `GITHUB_EVENT_NAME=issue_comment`) now reviews even when the trigger policy would skip
