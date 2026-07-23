@@ -26,20 +26,41 @@ flowchart TD
 ## Usage
 
 Run via `npx @expo/code-review-cli <command>` (or the `ecr` / `expo-code-review`
-binary once installed; `bun run src/cli.ts <command>` when developing this repo).
+binary once installed).
 
-| Command | What it does |
-| --- | --- |
-| `ecr review [options]` | Review local changes and print an advisory review (default). |
-| `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
-| `ecr init [--with-workflow] [--force]` | Scaffold `.expo-code-review/` into this repo. |
-| `ecr doctor` | Check environment, config, and model credentials. |
+**Setting it up in a repo for the first time** — scaffold the config, fill it in,
+and verify:
 
 ```bash
-ecr review                      # review your working-tree changes
+npx @expo/code-review-cli init --with-workflow   # scaffold .expo-code-review/ (+ a CI workflow)
+# edit .expo-code-review/ — pick agents, models, and auth (see Configuration below)
+npx @expo/code-review-cli doctor                 # check env, config, and credentials
+```
+
+**In a repo that's already configured** — just review:
+
+```bash
+ecr review                      # review your working-tree changes (advisory)
 ecr review --pr 4057            # review a GitHub PR by number (preview only)
 ecr review --pr 4057 --post     # …and post it as the PR comment
 ```
+
+In CI it runs automatically from the scaffolded workflows — by label or a `/review`
+comment (see **CI usage**). From Claude Code (or another agent), add a slash command
+that runs it; eas-cli's
+[`/expo-review`](https://github.com/expo/eas-cli/blob/main/.claude/commands/expo-review.md)
+is a ready example to adapt.
+
+### Command reference
+
+| Command | What it does |
+| --- | --- |
+| `ecr init [--with-workflow] [--force]` | Scaffold `.expo-code-review/` (config, agents, prompts) into this repo. |
+| `ecr review [options]` | Review local changes and print an advisory review (default command). |
+| `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
+| `ecr doctor` | Check environment, config, and model credentials. |
+
+(When developing this repo itself, use `bun run src/cli.ts <command>`.)
 
 ---
 
