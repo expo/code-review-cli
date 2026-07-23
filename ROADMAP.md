@@ -291,25 +291,16 @@ What's left is at our layer, in suggested order:
      **✅ Shipped (2026-07-23, #6):** `formatUsageSummary` prints a one-line totals
      summary (input/output/reasoning + cache read/write + cost) via progress, so it
      lands in the CI job log and the local terminal.
-2. **Retry in the same session, not a fresh one.** `promptAndParse` retries a
-   JSON-parse failure by replaying `text + CORRECTIVE` in a **new session**,
-   discarding the first attempt's entire tool-call context (all the patch reads).
-   Sending the corrective as a follow-up message in the same session makes the
-   prior conversation a cache read and the model already holds the file context —
-   cheaper, and better for recall: today's fresh-session retry re-investigates
-   from scratch and may do so less thoroughly, whereas the common failure
-   (truncated/malformed JSON after a sound investigation) just needs a clean
-   re-emit. Shape: same-session for the first corrective retry, fresh session as
-   the last resort (clean slate for a genuinely confused attempt). Timeouts stay
-   fresh-session (we abort the stalled one — and see reliability item: don't
-   retry timeouts at all).
-   - *Implementation trap:* `promptAgent`'s poll loop returns "the last assistant
-     message with a completed timestamp" — after a follow-up prompt, the first
-     attempt's message is already completed and would be returned instantly as
-     stale text. The retry path must snapshot existing message IDs and wait for a
-     *new* assistant message.
-   - *Verify:* whether re-sending the `system` param on a follow-up prompt
-     appends a duplicate system message (perturbing the cached prefix).
+2. ✅ **Retry in the same session, not a fresh one.** *(Already implemented.)*
+   `promptAndParse` sends the `CORRECTIVE` nudge as a follow-up in the first
+   attempt's session (the model still holds the file context — a cache read and a
+   cheap re-emit), and only falls back to a fresh session as a last resort. The
+   documented implementation trap is handled: it snapshots the message count
+   (`baseline = (await fetchMessages(...)).length`) and waits for a *new* assistant
+   message via `pollForCompletion(..., { fromIndex: baseline })`, so the
+   already-completed first message isn't returned as stale text. Timeouts still stay
+   fresh/abandon. *(Historical note: this section predates that implementation; kept
+   for the rationale.)*
 3. **Interleave tasks chunk-major, not agent-major (contingent on #1).** A cache
    entry is readable only after the first response starts streaming, so N
    parallel same-prefix requests all pay full write price. Tasks are currently
