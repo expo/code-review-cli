@@ -529,21 +529,21 @@ plausible-but-wrong claim ships as-is. Fixes, cheapest/highest-leverage first:
    evidence didn't ground (see #1). Parallel, 3-min cap, fails open (keeps the finding
    if verification itself errors). Decision is re-derived after drops (no criticals
    left → soften `request_changes`).
-3. **`--pr` verification fidelity — verifier must read the PR-HEAD version, not the
-   checked-out tree.** *(Open — found 2026-07-23 re-testing #4057.)* On a `--pr` run
-   the diff is authoritative from `gh`, but the agents' and the verifier's
-   surrounding-source reads come from whatever is checked out. Re-reviewing #4057
-   (the PR that *adds* `--account`) from a `main` checkout, the verifier read `main`'s
-   `init.ts` — which has no `--account` — and **false-refuted** the real "--account
-   ignored when already linked" finding ("the flag is rejected during parsing"). So
-   `--pr` verification silently depends on the local branch: it can refute real
-   findings by reading the wrong version — the mirror image of the quote-grounding
-   over-drop we just fixed (#1). Fix: for `--pr`, make the reviewed tree the PR head
-   — check out the head into a temp worktree, or fetch head blobs for the files the
-   agents/verifier open — so reads match the diff. (Also surfaced: the reviewer
-   *config* itself isn't on an older PR's branch, reinforcing the base-ref-config
-   work in the merge-boundary section — the review needs config-from-a-known-ref and
-   source-from-PR-head, resolved independently.)
+3. ✅ **`--pr` verification fidelity — read the PR-HEAD tree, not the checkout.**
+   *(Shipped 2026-07-23; found re-testing #4057.)* On a `--pr` run the diff is
+   authoritative from `gh`, but the agents' and the verifier's surrounding-source
+   reads came from whatever was checked out. Re-reviewing #4057 (the PR that *adds*
+   `--account`) from a `main` checkout, the verifier read `main`'s `init.ts` — no
+   `--account` — and **false-refuted** the real "--account ignored when already
+   linked" finding — the mirror image of the quote-grounding over-drop (#1). **Fix:**
+   a source can now `prepareReadRootAsync()`; `GitHubPRSource` checks the PR head
+   (`refs/pull/<n>/head`, fetched from the repo URL so forks work) out into a
+   throwaway git worktree, and `runReview` chdirs into it for the agents + verifier
+   (config is already in memory; run-log/patch paths are absolute; fails soft to the
+   current directory). This also fixes CI's `/review` **command** workflow, which
+   checks out the base ref — it was reviewing base, not the PR. (The config-not-on-an
+   -old-PR-branch problem is sidestepped: config loads from the checkout, source
+   reads from the head worktree — two trees, resolved independently.)
 4. **Oracle checks.** A finding that asserts "won't compile / type error" can be
    validated against `tsc`; "crashes"/"breaks tests" against the test suite. At
    minimum, never surface a compile-error claim when the package compiles.
