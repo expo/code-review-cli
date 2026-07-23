@@ -2,7 +2,7 @@ import { createOpencode } from '@opencode-ai/sdk';
 
 import type { LoadedConfig } from '../config/schema.js';
 import { toolMap } from './tools.js';
-import { sleep } from './util.js';
+import { errorMessage, sleep } from './util.js';
 
 export interface OpencodeHandle {
   client: any;
@@ -320,6 +320,71 @@ const CORRECTIVE =
 // it should return almost immediately.
 const CORRECTIVE_WAIT_MS = 2 * 60 * 1000;
 
+/** Backoff (ms) before the 2nd and 3rd attempt of a transient-failing model call. */
+const TRANSIENT_BACKOFF_MS = [2_000, 8_000];
+
+/**
+ * A transient, retryable API failure — a one-off rate-limit (429), server error
+ * (5xx), or network blip — as opposed to a timeout (which means "abandon", see
+ * AgentTimeoutError) or a JSON-parse failure (handled by the corrective re-emit in
+ * promptAndParse). We match on the error text because the OpenCode SDK surfaces
+ * these as plain Errors; an AgentTimeoutError is never transient.
+ */
+const TRANSIENT_PATTERNS: RegExp[] = [
+  /\b429\b/,
+  /\b50[0-9]\b/,
+  /rate.?limit/i,
+  /overloaded/i,
+  /too many requests/i,
+  /temporarily unavailable/i,
+  /ETIMEDOUT/i,
+  /ECONNRESET/i,
+  /ECONNREFUSED/i,
+  /ENOTFOUND/i,
+  /EAI_AGAIN/i,
+  /socket hang ?up/i,
+  /network error/i,
+  /fetch failed/i,
+];
+
+export function isTransientApiError(error: unknown): boolean {
+  if (error instanceof AgentTimeoutError) {
+    return false;
+  }
+  const message = errorMessage(error);
+  return TRANSIENT_PATTERNS.some(pattern => pattern.test(message));
+}
+
+/**
+ * Run a model call, retrying with bounded backoff on a transient API error. This
+ * is deliberately separate from the timeout path (abandon, never retry) and the
+ * parse-failure path (corrective re-emit): a one-off 429/5xx/network error used to
+ * drop the whole pass with no retry, reported as a coverage gap. Non-transient
+ * errors (incl. AgentTimeoutError) propagate immediately.
+ */
+async function withTransientRetry<T>(
+  label: string,
+  onActivity: ((line: string) => void) | undefined,
+  fn: () => Promise<T>
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      const waitMs = TRANSIENT_BACKOFF_MS[attempt];
+      if (waitMs === undefined || !isTransientApiError(error)) {
+        throw error;
+      }
+      onActivity?.(
+        `${label}: transient API error (${errorMessage(error)}); retry ${attempt + 1}/${
+          TRANSIENT_BACKOFF_MS.length
+        } in ${Math.round(waitMs / 1000)}s`
+      );
+      await sleep(waitMs);
+    }
+  }
+}
+
 /**
  * Prompt an agent and parse its reply. On a JSON-parse failure, first retry in
  * the SAME session: the model still holds all the file context it read, so the
@@ -353,7 +418,9 @@ export async function promptAndParse<T>(
     addTokenUsage(tokens, result.tokens);
   };
 
-  const first = await promptAgent(handle, args);
+  const first = await withTransientRetry(`Agent "${args.agent}"`, args.onActivity, () =>
+    promptAgent(handle, args)
+  );
   record(first);
   try {
     return { value: parse(first.text), cost, truncated, tokens };
