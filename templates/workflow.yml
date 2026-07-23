@@ -41,8 +41,9 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # OpenCode reads ANTHROPIC_API_KEY. Source it from a dedicated,
-          # code-review-scoped secret. Swap for your provider's key/var.
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_FOR_CODE_REVIEW }}
+          # Claude Pro/Max OAuth token (from `claude setup-token`) — the env var
+          # named by auth.tokenEnv in config.jsonc. Store it as a repo secret.
+          # (For an API key instead, set auth.mode "api-key" and pass that key here.)
+          ANTHROPIC_CODE_REVIEW_TOKEN: ${{ secrets.ANTHROPIC_CODE_REVIEW_TOKEN }}
           # Optional: override the model for every agent (uses your OpenCode login).
           REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}

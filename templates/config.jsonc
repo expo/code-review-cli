@@ -31,14 +31,16 @@
   // HTML marker used to find + update the single PR comment. Keep it stable.
   "commentTag": "expo-ai-code-reviewer",
 
-  // How model credentials are provided.
-  //   "api-key": tokenEnv holds a provider API key (sent as x-api-key). If you
-  //              omit `auth`, OpenCode's own login / ANTHROPIC_API_KEY is used.
+  // How model credentials are provided. Default: a Claude Pro/Max subscription.
   //   "oauth":   tokenEnv holds a Claude Pro/Max OAuth token (from
   //              `claude setup-token`); it's injected as a bearer credential.
+  //   "api-key": tokenEnv holds a provider API key (sent as x-api-key). If you
+  //              omit `auth`, OpenCode's own login / ANTHROPIC_API_KEY is used.
+  // For OpenAI/GPT or another provider, omit `auth` and set REVIEWER_MODEL after an
+  // `opencode auth login` for that provider.
   "auth": {
-    "mode": "api-key",
+    "mode": "oauth",
     "provider": "anthropic",
-    "tokenEnv": "ANTHROPIC_API_KEY"
+    "tokenEnv": "ANTHROPIC_CODE_REVIEW_TOKEN"
   }
 }

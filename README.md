@@ -28,10 +28,9 @@ flowchart TD
 Run via `npx @expo/code-review-cli <command>` (or the `ecr` / `expo-code-review`
 binary once installed).
 
-**Requirements:** Node 20+ and `git`; the GitHub CLI (`gh`, authenticated) for
-`--pr` and `ci`. The `opencode` runtime the reviewer drives is bundled with the
-package (the `opencode-ai` dependency) — **no separate install.** You supply model
-credentials (next).
+Reviewing a PR (`--pr`/`ci`) needs the GitHub CLI — `brew install gh && gh auth login`.
+Everything else the reviewer needs (including the `opencode` runtime) ships with the
+package.
 
 **Setting it up in a repo for the first time** — scaffold, add credentials, verify:
 
@@ -39,22 +38,18 @@ credentials (next).
 npx @expo/code-review-cli init        # scaffold .expo-code-review/ + a CI workflow (--no-workflow to skip)
 ```
 
-Then give it model credentials. The scaffolded config defaults to **Anthropic**:
-
-- **Anthropic API key** (default): `export ANTHROPIC_API_KEY=sk-ant-...`
-- **Claude Pro/Max subscription:** set `auth.mode` to `"oauth"` in `config.jsonc`,
-  run `claude setup-token`, and export the printed `sk-ant-oat…` token under the env
-  var named by `auth.tokenEnv`.
-- **OpenAI / GPT (or another provider):** log in once with `opencode auth login`
-  (pick the provider), then run with `REVIEWER_MODEL` set — e.g.
-  `REVIEWER_MODEL=openai/gpt-5.4-mini-fast`. This overrides every agent's model and
-  uses your OpenCode login, so no `auth` block is needed. *(This env-override is the
-  current path for non-Anthropic providers; first-class per-provider config is on
-  the [roadmap](./ROADMAP.md).)*
+Then give it model credentials. **Recommended: a Claude Pro/Max subscription** — the
+scaffolded config uses OAuth by default, so just mint a token and export it under the
+env var your `config.jsonc`'s `auth.tokenEnv` names:
 
 ```bash
-npx @expo/code-review-cli doctor                 # check env, config, and credentials
+claude setup-token                                   # prints an sk-ant-oat… token (Claude Pro/Max)
+export ANTHROPIC_CODE_REVIEW_TOKEN=sk-ant-oat...     # the tokenEnv from your config.jsonc
+npx @expo/code-review-cli doctor                     # check env, config, and credentials
 ```
+
+Prefer an Anthropic **API key**, or **OpenAI/GPT** or another provider? See
+[Other providers & auth modes](#other-providers) at the bottom.
 
 **In a repo that's already configured** — just review:
 
@@ -185,25 +180,6 @@ per-repo `noise.additionalIgnores`.
 </details>
 
 <details>
-<summary><b>Authentication</b></summary>
-
-Model credentials come from OpenCode. Two modes, set in `config.auth`:
-
-- **`api-key`** — the token in `tokenEnv` is copied into the provider's API-key
-  env var (e.g. `ANTHROPIC_API_KEY`).
-- **`oauth`** — a Claude Pro/Max token (from `claude setup-token`, an
-  `sk-ant-oat…` token, *not* an x-api-key) is written into an isolated OpenCode
-  `auth.json` as a bearer credential, so it uses the native subscription path.
-
-Set **`REVIEWER_MODEL`** to override the model for every agent and use your own
-OpenCode login instead of the repo's configured credentials — handy locally
-(e.g. `REVIEWER_MODEL=openai/gpt-5.4-mini-fast`). There is no shared fallback key;
-if a run fails for lack of credentials, authenticate a provider in OpenCode. Run
-`ecr doctor` to diagnose setup.
-
-</details>
-
-<details>
 <summary><b>Model selection</b></summary>
 
 Precedence: **`REVIEWER_MODEL` env** (global override) → per-file **frontmatter
@@ -282,5 +258,30 @@ Each run appends a JSON line to `.expo-code-review/.runs/reviews.jsonl` with the
 inputs, decision, finding count, duration, per-agent cost, and aggregate token
 usage (incl. prompt-cache read/write counts) — for auditing and measuring
 cost/latency/cache reuse over time.
+
+</details>
+
+<a id="other-providers"></a>
+<details>
+<summary><b>Other providers & auth modes</b></summary>
+
+The recommended setup is a Claude Pro/Max subscription (OAuth) — see Usage above.
+Alternatives, all set in `config.auth` (credentials come from OpenCode):
+
+- **Anthropic API key** — set `auth.mode` to `"api-key"` and point `tokenEnv` at the
+  env var holding the key (e.g. `ANTHROPIC_API_KEY`); it's sent as `x-api-key`. Omit
+  the `auth` block entirely to fall back to OpenCode's own login / `ANTHROPIC_API_KEY`.
+- **OAuth (Pro/Max)** — `tokenEnv` holds an `sk-ant-oat…` token from
+  `claude setup-token` (*not* an x-api-key); it's written to an isolated OpenCode
+  `auth.json` as a bearer credential, using the native subscription path.
+- **OpenAI / GPT, or another provider** — the current path is the `REVIEWER_MODEL`
+  env override: `opencode auth login` once (pick the provider), then run with
+  e.g. `REVIEWER_MODEL=openai/gpt-5.4-mini-fast`. It overrides every agent's model
+  and uses your OpenCode login, so no `auth` block is needed. *(First-class
+  per-provider config — Anthropic/OpenAI/others in `config.jsonc`, and mixing them
+  per agent — is on the [roadmap](./ROADMAP.md).)*
+
+There is no shared fallback key; if a run fails for lack of credentials, authenticate
+a provider in OpenCode. `ecr doctor` diagnoses setup.
 
 </details>
