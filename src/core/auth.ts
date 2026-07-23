@@ -42,6 +42,84 @@ const FORBIDDEN_TOKEN_ENVS = new Set([
 
 const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 
+export interface AuthReadiness {
+  /** True when the configured provider has (or plausibly has) a usable credential. */
+  ok: boolean;
+  /** Human-readable detail for `doctor` output and fail-fast error messages. */
+  detail: string;
+}
+
+/**
+ * Decide whether the configured model provider has a usable credential, WITHOUT
+ * mutating the environment. Shared by `prepareAuth` (fail fast before spinning up
+ * the server and every pass) and `doctor` (report), so the two never drift.
+ *
+ * We only report `ok: false` when we're confident there is no credential — a
+ * missing OAuth token, a forbidden tokenEnv, or an api-key run with neither the
+ * configured tokenEnv nor the provider's own key env set. When nothing is
+ * configured and no known key env is present, we assume OpenCode's own login may
+ * cover it and don't hard-fail. `REVIEWER_MODEL` bypasses provider auth entirely.
+ */
+export function checkProviderAuth(
+  config: LoadedConfig,
+  env: NodeJS.ProcessEnv = process.env
+): AuthReadiness {
+  const { mode, provider, tokenEnv } = config.auth;
+
+  if (env.REVIEWER_MODEL) {
+    return {
+      ok: true,
+      detail: `REVIEWER_MODEL override (${env.REVIEWER_MODEL}); using OpenCode's own login for that model`,
+    };
+  }
+
+  if (tokenEnv && FORBIDDEN_TOKEN_ENVS.has(tokenEnv)) {
+    return {
+      ok: false,
+      detail:
+        `auth.tokenEnv is "${tokenEnv}", a well-known non-provider secret; refusing to ` +
+        `forward it to the model provider (that would leak it). Point auth.tokenEnv at a ` +
+        `token minted for the provider instead.`,
+    };
+  }
+
+  if (mode === 'oauth') {
+    if (!tokenEnv) {
+      return {
+        ok: false,
+        detail: 'auth.mode "oauth" requires auth.tokenEnv to name the env var holding the OAuth token.',
+      };
+    }
+    if (!env[tokenEnv]) {
+      return { ok: false, detail: `auth is oauth for ${provider} but token env "${tokenEnv}" is not set.` };
+    }
+    return { ok: true, detail: `oauth for ${provider}; token env ${tokenEnv} is set` };
+  }
+
+  // api-key: usable if the configured tokenEnv is set, or the provider's own key
+  // env is already present in the environment.
+  const providerKeyEnv = PROVIDER_KEY_ENV[provider];
+  if (tokenEnv && env[tokenEnv]) {
+    return { ok: true, detail: `api-key for ${provider}; token env ${tokenEnv} is set` };
+  }
+  if (providerKeyEnv && env[providerKeyEnv]) {
+    return { ok: true, detail: `api-key for ${provider}; ${providerKeyEnv} is set` };
+  }
+  if (!tokenEnv && !providerKeyEnv) {
+    return {
+      ok: true,
+      detail: `api-key for ${provider}; no tokenEnv configured and no known key env — relying on OpenCode's own login`,
+    };
+  }
+  const names = [tokenEnv, providerKeyEnv].filter(Boolean).join(' or ');
+  return {
+    ok: false,
+    detail:
+      `configured api-key for ${provider} but no credential is set — set ${names}, or set ` +
+      `REVIEWER_MODEL to a model you're already logged into.`,
+  };
+}
+
 /**
  * Prepare model credentials for the OpenCode server based on the repo's auth mode.
  * Must run before the server starts (it mutates env). Returns a cleanup handle.
@@ -65,14 +143,13 @@ export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
     return noop;
   }
 
-  // Refuse to forward a well-known unrelated secret as the provider credential,
-  // even if the (repo/PR-controlled) config names one — that would leak it.
-  if (tokenEnv && FORBIDDEN_TOKEN_ENVS.has(tokenEnv)) {
-    throw new Error(
-      `auth.tokenEnv is set to "${tokenEnv}", a well-known non-provider secret. Refusing ` +
-        `to forward it to the model provider (that would leak the secret). Point auth.tokenEnv ` +
-        `at a token minted for the model provider instead.`
-    );
+  // Fail fast, before starting the server and every pass, if the configured
+  // provider has no usable credential — otherwise it surfaces as N failed passes
+  // mid-run. This is the same readiness check `doctor` reports, and it also covers
+  // the forbidden-secret guard (refusing to forward a well-known unrelated secret).
+  const readiness = checkProviderAuth(config);
+  if (!readiness.ok) {
+    throw new Error(readiness.detail);
   }
 
   if (mode === 'api-key') {
@@ -88,15 +165,11 @@ export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
     return noop;
   }
 
-  // oauth
-  if (!tokenEnv) {
-    throw new Error(
-      'auth.mode "oauth" requires auth.tokenEnv to name the env var holding the OAuth token.'
-    );
-  }
-  const token = process.env[tokenEnv];
+  // oauth — checkProviderAuth guarantees tokenEnv is set and present; read
+  // defensively so TypeScript narrows and this stays correct if called directly.
+  const token = tokenEnv ? process.env[tokenEnv] : undefined;
   if (!token) {
-    throw new Error(`OAuth token env "${tokenEnv}" is not set.`);
+    throw new Error('auth.mode "oauth" requires auth.tokenEnv to name a set OAuth token env.');
   }
 
   const dir = await mkdtemp(path.join(tmpdir(), 'ecr-auth-'));

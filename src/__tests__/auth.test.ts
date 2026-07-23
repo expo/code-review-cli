@@ -1,9 +1,60 @@
 import { test, expect } from 'bun:test';
 
-import { prepareAuth } from '../core/auth.js';
+import { prepareAuth, checkProviderAuth } from '../core/auth.js';
 import type { LoadedConfig } from '../config/schema.js';
 
 const cfg = (auth: unknown): LoadedConfig => ({ auth }) as unknown as LoadedConfig;
+
+test('checkProviderAuth: api-key is ready when the configured tokenEnv is set', () => {
+  const r = checkProviderAuth(cfg({ mode: 'api-key', provider: 'anthropic', tokenEnv: 'MY_KEY' }), {
+    MY_KEY: 'sk-xxx',
+  });
+  expect(r.ok).toBe(true);
+});
+
+test('checkProviderAuth: api-key is ready via the provider key env when no tokenEnv value', () => {
+  const r = checkProviderAuth(cfg({ mode: 'api-key', provider: 'openai', tokenEnv: 'MY_KEY' }), {
+    OPENAI_API_KEY: 'sk-xxx',
+  });
+  expect(r.ok).toBe(true);
+});
+
+test('checkProviderAuth: api-key fails fast when no credential is set anywhere', () => {
+  const r = checkProviderAuth(cfg({ mode: 'api-key', provider: 'anthropic', tokenEnv: 'MY_KEY' }), {});
+  expect(r.ok).toBe(false);
+  expect(r.detail).toMatch(/MY_KEY/);
+});
+
+test('checkProviderAuth: oauth requires the token env to be set', () => {
+  expect(
+    checkProviderAuth(cfg({ mode: 'oauth', provider: 'anthropic', tokenEnv: 'OAUTH' }), {}).ok
+  ).toBe(false);
+  expect(
+    checkProviderAuth(cfg({ mode: 'oauth', provider: 'anthropic', tokenEnv: 'OAUTH' }), {
+      OAUTH: 'tok',
+    }).ok
+  ).toBe(true);
+});
+
+test('checkProviderAuth: forbidden tokenEnv is refused', () => {
+  const r = checkProviderAuth(cfg({ mode: 'api-key', provider: 'anthropic', tokenEnv: 'GITHUB_TOKEN' }), {
+    GITHUB_TOKEN: 'ghp_xxx',
+  });
+  expect(r.ok).toBe(false);
+  expect(r.detail).toMatch(/non-provider secret/);
+});
+
+test('checkProviderAuth: REVIEWER_MODEL override is always ready (own login)', () => {
+  const r = checkProviderAuth(cfg({ mode: 'oauth', provider: 'anthropic' }), {
+    REVIEWER_MODEL: 'openai/some-model',
+  });
+  expect(r.ok).toBe(true);
+});
+
+test('checkProviderAuth: no tokenEnv and unknown provider defers to OpenCode login', () => {
+  const r = checkProviderAuth(cfg({ mode: 'api-key', provider: 'mystery' }), {});
+  expect(r.ok).toBe(true);
+});
 
 test('prepareAuth refuses to forward a well-known non-provider secret as tokenEnv', async () => {
   const prev = process.env.REVIEWER_MODEL;
