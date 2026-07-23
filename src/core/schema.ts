@@ -117,6 +117,21 @@ export function fingerprintFinding(finding: Finding): string {
 }
 
 /**
+ * Namespace a finding's fingerprint by scope so cross-scope dismissals never
+ * collide. The DEFAULT scope (config '.') passes `null` and keeps the plain
+ * fingerprintFinding value, so pre-routing dismissal state carries over unchanged
+ * (risk 9). Non-default scopes hash into the same hex alphabet the dismiss command
+ * sanitizes to (dismiss.ts strips /[^a-f0-9]/), at the same length.
+ */
+export function scopedFingerprint(scopeName: string | null, finding: Finding): string {
+  const fp = fingerprintFinding(finding);
+  if (!scopeName) {
+    return fp;
+  }
+  return createHash("sha1").update(`scope|${scopeName}|${fp}`).digest("hex").slice(0, fp.length);
+}
+
+/**
  * Extract the JSON payload from an LLM response. Prefers the last fenced
  * ```json block; falls back to the outermost {...} span. Throws if neither
  * parses.
