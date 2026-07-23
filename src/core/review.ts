@@ -1,13 +1,13 @@
-import path from 'node:path';
+import path from "node:path";
 
-import type { LoadedAgent, LoadedConfig } from '../config/schema.js';
-import type { ReviewSource } from '../sources/source.js';
-import { prepareAuth } from './auth.js';
-import { coordinate } from './coordinator.js';
-import { writeRunLog } from './log.js';
-import type { RunLogRecord } from './log.js';
-import { filterNoise, writePatchWorkspace } from './noise.js';
-import type { PatchWorkspaceFile } from './noise.js';
+import type { LoadedAgent, LoadedConfig } from "../config/schema.js";
+import type { ReviewSource } from "../sources/source.js";
+import { prepareAuth } from "./auth.js";
+import { coordinate } from "./coordinator.js";
+import { writeRunLog } from "./log.js";
+import type { RunLogRecord } from "./log.js";
+import { filterNoise, writePatchWorkspace } from "./noise.js";
+import type { PatchWorkspaceFile } from "./noise.js";
 import {
   addTokenUsage,
   AgentTimeoutError,
@@ -15,26 +15,26 @@ import {
   CROSS_CUTTING_AGENT,
   promptAndParse,
   startOpencode,
-} from './opencode.js';
-import type { OpencodeHandle, TokenUsage } from './opencode.js';
-import { routeAgents } from './router.js';
+} from "./opencode.js";
+import type { OpencodeHandle, TokenUsage } from "./opencode.js";
+import { routeAgents } from "./router.js";
 import {
   buildCrossCuttingSystem,
   buildCrossCuttingTask,
   buildReviewerSystem,
   buildReviewerTask,
   NO_TOOLS_INSTRUCTION,
-} from './prompts.js';
-import { fingerprintFinding, parseReviewerOutput } from './schema.js';
-import type { CoordinatorOutput, Finding } from './schema.js';
-import { sortFindings } from './render.js';
-import { errorMessage, sleep } from './util.js';
-import { verifyFindings } from './verify.js';
-import { applyInlineIgnores } from './suppress.js';
+} from "./prompts.js";
+import { fingerprintFinding, parseReviewerOutput } from "./schema.js";
+import type { CoordinatorOutput, Finding } from "./schema.js";
+import { sortFindings } from "./render.js";
+import { errorMessage, sleep } from "./util.js";
+import { verifyFindings } from "./verify.js";
+import { applyInlineIgnores } from "./suppress.js";
 
 export interface ReviewRunOptions {
   config: LoadedConfig;
-  mode: 'ci' | 'local';
+  mode: "ci" | "local";
   onProgress?: (message: string) => void;
   /** Run only these agent ids (by filename). Takes precedence over `route`. */
   agents?: string[];
@@ -42,9 +42,8 @@ export interface ReviewRunOptions {
   route?: boolean;
 }
 
-
 function makeRunId(): string {
-  return new Date().toISOString().replace(/[:.]/g, '-');
+  return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
 /**
@@ -54,15 +53,15 @@ function makeRunId(): string {
  */
 export async function runReview(
   source: ReviewSource,
-  options: ReviewRunOptions
+  options: ReviewRunOptions,
 ): Promise<CoordinatorOutput> {
   const { config } = options;
   const started = Date.now();
   const runId = makeRunId();
   const progress = options.onProgress ?? (() => {});
-  const runsRoot = path.join(config.configDir, '.runs');
+  const runsRoot = path.join(config.configDir, ".runs");
   const runDir = path.join(runsRoot, runId);
-  const logPath = path.join(runsRoot, 'reviews.jsonl');
+  const logPath = path.join(runsRoot, "reviews.jsonl");
 
   // Fail fast on an invalid explicit selection before doing any work. Routing
   // (if requested) is resolved later, once the server is up.
@@ -80,7 +79,7 @@ export async function runReview(
     additionalMarkers: config.noise.additionalMarkers,
   });
   progress(
-    `${changedFiles.length} changed file(s); ${kept.length} to review, ${filtered.length} filtered.`
+    `${changedFiles.length} changed file(s); ${kept.length} to review, ${filtered.length} filtered.`,
   );
 
   const baseRecord = {
@@ -88,15 +87,15 @@ export async function runReview(
     mode: options.mode,
     runId,
     metadata: { baseRef: metadata.baseRef, headRef: metadata.headRef },
-    reviewedFiles: kept.map(entry => entry.path),
+    reviewedFiles: kept.map((entry) => entry.path),
     filteredFiles: filtered,
   };
 
   if (kept.length === 0) {
     const output: CoordinatorOutput = {
-      decision: 'approve',
+      decision: "approve",
       findings: [],
-      summary: 'No reviewable changes after noise filtering.',
+      summary: "No reviewable changes after noise filtering.",
       incomplete: [],
     };
     await safeLog(logPath, {
@@ -131,11 +130,11 @@ export async function runReview(
     }
   };
   if (readRoot) {
-    progress('Reviewing the PR-head tree (so reads match the PR, not the checkout).');
+    progress("Reviewing the PR-head tree (so reads match the PR, not the checkout).");
     process.chdir(readRoot.dir);
   }
 
-  progress('Starting OpenCode server…');
+  progress("Starting OpenCode server…");
   let handle: OpencodeHandle | null = null;
   try {
     handle = await startOpencode(buildOpencodeConfig(config));
@@ -144,7 +143,7 @@ export async function runReview(
     await restoreCwd();
     throw new Error(
       `Failed to start the OpenCode server. Ensure the \`opencode\` CLI is installed and ` +
-        `model credentials are configured.\n${errorMessage(error)}`
+        `model credentials are configured.\n${errorMessage(error)}`,
     );
   }
 
@@ -158,13 +157,13 @@ export async function runReview(
     // relevant agents + always-run) when asked, else all.
     let selectedAgents = explicitAgents ?? config.agents;
     if (!explicitAgents && options.route) {
-      progress('Routing: selecting relevant agents…');
+      progress("Routing: selecting relevant agents…");
       const routed = await routeAgents(handle!, config, workspace.files);
       selectedAgents = routed.agents;
       progress(
         routed.routed
-          ? `Router selected: ${selectedAgents.map(a => a.id).join(', ')}`
-          : 'Router unavailable; running all agents.'
+          ? `Router selected: ${selectedAgents.map((a) => a.id).join(", ")}`
+          : "Router unavailable; running all agents.",
       );
     }
 
@@ -174,14 +173,14 @@ export async function runReview(
     const chunks = chunkByLines(
       workspace.files,
       config.chunk.maxChangedLines,
-      config.chunk.maxFiles
+      config.chunk.maxFiles,
     );
     // Only chunk (and add a cross-cutting pass) when the diff exceeds one chunk.
     const chunked = chunks.length > 1;
     progress(
-      `Running ${selectedAgents.length} reviewer(s) [${selectedAgents.map(a => a.id).join(', ')}] over ${chunks.length} chunk(s)` +
-        `${chunked ? ' + cross-cutting pass' : ''} ` +
-        `(${kept.length} files, concurrency ${config.chunk.concurrency})…`
+      `Running ${selectedAgents.length} reviewer(s) [${selectedAgents.map((a) => a.id).join(", ")}] over ${chunks.length} chunk(s)` +
+        `${chunked ? " + cross-cutting pass" : ""} ` +
+        `(${kept.length} files, concurrency ${config.chunk.concurrency})…`,
     );
 
     const agentFindings: Record<string, Finding[]> = {};
@@ -194,7 +193,7 @@ export async function runReview(
       // Bucket the findings land in (agent id, or "cross-cutting" for the one
       // combined multi-file pass).
       bucket: string;
-      kind: 'reviewer' | 'cross-cutting';
+      kind: "reviewer" | "cross-cutting";
       system: string;
       label: string;
       title: string;
@@ -242,12 +241,12 @@ export async function runReview(
       chunks.forEach((chunk, index) => {
         tasks.push({
           bucket: agent.id,
-          kind: 'reviewer',
+          kind: "reviewer",
           system,
           label: chunked ? `${agent.id} [${index + 1}/${chunks.length}]` : agent.id,
           title: `review-${agent.id}-c${index}`,
           files: chunk,
-          coverageLabel: `the ${agent.id} review${chunked ? ` (part ${index + 1} of ${chunks.length})` : ''}`,
+          coverageLabel: `the ${agent.id} review${chunked ? ` (part ${index + 1} of ${chunks.length})` : ""}`,
           maxWaitMs: CHUNK_TIMEOUT_MS,
           maxToolCalls: CHUNK_MAX_TOOL_CALLS,
           depth: 0,
@@ -260,12 +259,12 @@ export async function runReview(
     if (chunked) {
       tasks.push({
         bucket: CROSS_CUTTING_AGENT,
-        kind: 'cross-cutting',
+        kind: "cross-cutting",
         system: buildCrossCuttingSystem(config, selectedAgents),
-        label: 'cross-file',
-        title: 'review-xcut',
+        label: "cross-file",
+        title: "review-xcut",
         files: workspace.files,
-        coverageLabel: 'the cross-file review (issues spanning multiple changed files)',
+        coverageLabel: "the cross-file review (issues spanning multiple changed files)",
         maxWaitMs: CROSS_CUTTING_TIMEOUT_MS,
         maxToolCalls: CROSS_CUTTING_MAX_TOOL_CALLS,
         depth: 0,
@@ -281,7 +280,7 @@ export async function runReview(
     // smaller file set); a fallback task forbids tools and reviews the inlined diff.
     const buildTaskText = (task: ReviewTask): string => {
       const base =
-        task.kind === 'cross-cutting'
+        task.kind === "cross-cutting"
           ? buildCrossCuttingTask(task.files, filtered)
           : buildReviewerTask(task.files, workspace.files, filtered);
       return task.fallback ? `${base}\n\n${NO_TOOLS_INSTRUCTION}` : base;
@@ -291,12 +290,12 @@ export async function runReview(
         ? `\`${files[0]!.path}\``
         : `${files.length} files (e.g. \`${files[0]!.path}\`)`;
     const humanBucket = (bucket: string): string =>
-      bucket === CROSS_CUTTING_AGENT ? 'cross-file' : bucket;
+      bucket === CROSS_CUTTING_AGENT ? "cross-file" : bucket;
     const childTask = (
       parent: ReviewTask,
       files: PatchWorkspaceFile[],
       labelSuffix: string,
-      overrides: Partial<ReviewTask>
+      overrides: Partial<ReviewTask>,
     ): ReviewTask => ({
       ...parent,
       files,
@@ -325,12 +324,12 @@ export async function runReview(
             system: task.system,
             text: buildTaskText(task),
             title: task.title,
-            onActivity: line => progress(`  ${task.label}: ${line}`),
+            onActivity: (line) => progress(`  ${task.label}: ${line}`),
             maxWaitMs: task.maxWaitMs,
             maxToolCalls: task.maxToolCalls,
             finalizeOnTimeout: true,
           },
-          parseReviewerOutput
+          parseReviewerOutput,
         );
         agentCosts[task.bucket] = (agentCosts[task.bucket] ?? 0) + cost;
         addTokenUsage(tokenTotals, tokens);
@@ -339,7 +338,7 @@ export async function runReview(
         if (truncated) {
           progress(`  ${task.label}: hit its budget — returned partial findings`);
           incomplete.push(
-            `${capitalize(task.coverageLabel)} ran out of time; its findings may be incomplete.`
+            `${capitalize(task.coverageLabel)} ran out of time; its findings may be incomplete.`,
           );
         }
         return;
@@ -354,7 +353,7 @@ export async function runReview(
           incomplete.push(
             isAuthError(error)
               ? AUTH_FAILURE_NOTE
-              : `${capitalize(task.coverageLabel)} failed to run; those changes were not reviewed.`
+              : `${capitalize(task.coverageLabel)} failed to run; those changes were not reviewed.`,
           );
           return;
         }
@@ -365,14 +364,18 @@ export async function runReview(
         const remaining = passesDeadline - Date.now();
         // Cross-file analysis needs ≥2 files to be meaningful; a single-file
         // reviewer chunk can't be split further.
-        const minFiles = task.kind === 'cross-cutting' ? 2 : 1;
+        const minFiles = task.kind === "cross-cutting" ? 2 : 1;
         const childCap = Math.max(SUBDIVIDE_MIN_TIMEOUT_MS, Math.floor(task.maxWaitMs / 2));
-        if (task.files.length > minFiles && task.depth < MAX_SUBDIVIDE_DEPTH && remaining > childCap) {
+        if (
+          task.files.length > minFiles &&
+          task.depth < MAX_SUBDIVIDE_DEPTH &&
+          remaining > childCap
+        ) {
           const mid = Math.ceil(task.files.length / 2);
           const left = task.files.slice(0, mid);
           const right = task.files.slice(mid);
           progress(
-            `  ${task.label}: exceeded ${minutes}m — splitting into 2 smaller passes (${left.length} + ${right.length} files)`
+            `  ${task.label}: exceeded ${minutes}m — splitting into 2 smaller passes (${left.length} + ${right.length} files)`,
           );
           const over: Partial<ReviewTask> = { depth: task.depth + 1, maxWaitMs: childCap };
           enqueue(childTask(task, left, `↳${left.length}f`, over));
@@ -381,16 +384,16 @@ export async function runReview(
         }
         // Can't subdivide further: try a fast no-tools pass over the inlined diff
         // (reviewer only — cross-file analysis fundamentally needs to read files).
-        if (task.kind === 'reviewer' && !task.fallback && remaining > FALLBACK_TIMEOUT_MS) {
+        if (task.kind === "reviewer" && !task.fallback && remaining > FALLBACK_TIMEOUT_MS) {
           progress(
-            `  ${task.label}: exceeded ${minutes}m — retrying ${filesLabel(task.files)} with a fast no-tools pass`
+            `  ${task.label}: exceeded ${minutes}m — retrying ${filesLabel(task.files)} with a fast no-tools pass`,
           );
           enqueue(
-            childTask(task, task.files, '(no-tools fallback)', {
+            childTask(task, task.files, "(no-tools fallback)", {
               fallback: true,
               maxWaitMs: FALLBACK_TIMEOUT_MS,
               maxToolCalls: 0,
-            })
+            }),
           );
           return;
         }
@@ -401,20 +404,20 @@ export async function runReview(
         failedPasses++;
         const couldStillReduce =
           (task.files.length > minFiles && task.depth < MAX_SUBDIVIDE_DEPTH) ||
-          (task.kind === 'reviewer' && !task.fallback);
+          (task.kind === "reviewer" && !task.fallback);
         if (couldStillReduce) {
           progress(
-            `  ${task.label}: exceeded ${minutes}m and the run's time budget is spent — reporting a coverage gap`
+            `  ${task.label}: exceeded ${minutes}m and the run's time budget is spent — reporting a coverage gap`,
           );
           incomplete.push(
-            `${capitalize(task.coverageLabel)} timed out and the overall review budget was exhausted before it could be broken down further; those changes were not fully reviewed.`
+            `${capitalize(task.coverageLabel)} timed out and the overall review budget was exhausted before it could be broken down further; those changes were not fully reviewed.`,
           );
         } else {
           progress(
-            `  ${task.label}: exceeded ${minutes}m even at its smallest reviewable unit — reporting a coverage gap`
+            `  ${task.label}: exceeded ${minutes}m even at its smallest reviewable unit — reporting a coverage gap`,
           );
           incomplete.push(
-            `${capitalize(task.coverageLabel)} exceeded its time budget even after being reduced to its smallest reviewable unit; those changes were not fully reviewed.`
+            `${capitalize(task.coverageLabel)} exceeded its time budget even after being reduced to its smallest reviewable unit; those changes were not fully reviewed.`,
           );
         }
       }
@@ -428,17 +431,17 @@ export async function runReview(
     let output: CoordinatorOutput;
     if (completedPasses === 0) {
       // Nothing succeeded — do NOT let this render as a clean "approve".
-      progress('All review passes failed — reporting an incomplete review.');
+      progress("All review passes failed — reporting an incomplete review.");
       output = {
-        decision: 'approve_with_comments',
+        decision: "approve_with_comments",
         findings: [],
         summary:
-          '⚠️ The AI review could not complete: every review pass failed or timed out, ' +
+          "⚠️ The AI review could not complete: every review pass failed or timed out, " +
           'so these changes were effectively NOT reviewed. Treat this as "no review", not "looks good".',
         incomplete: coverageNotes,
       };
     } else {
-      progress('Coordinating findings…');
+      progress("Coordinating findings…");
       let consolidated: CoordinatorOutput;
       try {
         const {
@@ -447,14 +450,14 @@ export async function runReview(
           tokens: coordinatorTokens,
           truncated: coordinatorTruncated,
         } = await coordinate(handle, config, metadata, agentFindings, coverageNotes);
-        agentCosts['coordinator'] = cost;
+        agentCosts["coordinator"] = cost;
         addTokenUsage(tokenTotals, coordinatorTokens);
         consolidated = applyReviewPolicy(rawOutput, config.policy);
         if (coordinatorTruncated) {
           // The coordinator ran out of time and returned partial findings — flag it
           // like any other truncated pass so reduced coverage is never silent.
           coverageNotes.push(
-            'The consolidation step ran out of time and returned partial findings; some findings may have been dropped or not fully de-duplicated.'
+            "The consolidation step ran out of time and returned partial findings; some findings may have been dropped or not fully de-duplicated.",
           );
         }
       } catch (error) {
@@ -464,13 +467,13 @@ export async function runReview(
         progress(`Coordinator failed (${errorMessage(error)}); consolidating findings locally.`);
         consolidated = fallbackConsolidation(agentFindings, config.policy);
         coverageNotes.push(
-          'The consolidation step failed, so findings are shown merged but not de-duplicated or re-judged.'
+          "The consolidation step failed, so findings are shown merged but not de-duplicated or re-judged.",
         );
       }
       // A run with any failed/timed-out pass must never present as a clean approve.
       const decision =
-        failedPasses > 0 && consolidated.decision === 'approve'
-          ? 'approve_with_comments'
+        failedPasses > 0 && consolidated.decision === "approve"
+          ? "approve_with_comments"
           : consolidated.decision;
       output = { ...consolidated, decision, incomplete: [...new Set(coverageNotes)] };
     }
@@ -480,9 +483,9 @@ export async function runReview(
     // what stops a confident but wrong critical from shipping.
     const findingCountBeforeChecks = output.findings.length;
     if (output.findings.length > 0) {
-      progress('Verifying findings…');
+      progress("Verifying findings…");
       const verification = await verifyFindings(handle!, output.findings, process.cwd(), progress);
-      agentCosts['verifier'] = verification.cost;
+      agentCosts["verifier"] = verification.cost;
       addTokenUsage(tokenTotals, verification.tokens);
       if (verification.dropped.length > 0) {
         progress(`Verification dropped ${verification.dropped.length} unverified finding(s).`);
@@ -496,7 +499,11 @@ export async function runReview(
 
     // Inline `expo-code-review-ignore` directives suppress non-critical findings.
     if (output.findings.length > 0) {
-      const { kept, suppressed } = await applyInlineIgnores(output.findings, process.cwd(), progress);
+      const { kept, suppressed } = await applyInlineIgnores(
+        output.findings,
+        process.cwd(),
+        progress,
+      );
       if (suppressed.length > 0) {
         progress(`Suppressed ${suppressed.length} finding(s) via inline directives.`);
         output = {
@@ -555,18 +562,18 @@ export async function runReview(
  */
 export function applyReviewPolicy(
   output: CoordinatorOutput,
-  policy: LoadedConfig['policy']
+  policy: LoadedConfig["policy"],
 ): CoordinatorOutput {
   let findings = policy.includeSuggestions
     ? output.findings
-    : output.findings.filter(finding => finding.severity !== 'suggestion');
+    : output.findings.filter((finding) => finding.severity !== "suggestion");
   findings = sortFindings(findings);
   if (policy.maxFindings != null) {
     findings = findings.slice(0, policy.maxFindings);
   }
   const decision =
-    output.decision === 'approve_with_comments' && findings.length === 0
-      ? 'approve'
+    output.decision === "approve_with_comments" && findings.length === 0
+      ? "approve"
       : output.decision;
   return { ...output, findings, decision };
 }
@@ -579,7 +586,7 @@ export function applyReviewPolicy(
  */
 function fallbackConsolidation(
   agentFindings: Record<string, Finding[]>,
-  policy: LoadedConfig['policy']
+  policy: LoadedConfig["policy"],
 ): CoordinatorOutput {
   const seen = new Set<string>();
   const merged: Finding[] = [];
@@ -592,21 +599,21 @@ function fallbackConsolidation(
       }
     }
   }
-  const decision = merged.some(finding => finding.severity === 'critical')
-    ? 'request_changes'
+  const decision = merged.some((finding) => finding.severity === "critical")
+    ? "request_changes"
     : merged.length > 0
-      ? 'approve_with_comments'
-      : 'approve';
+      ? "approve_with_comments"
+      : "approve";
   return applyReviewPolicy(
     {
       decision,
       findings: merged,
       summary:
-        'Consolidation step failed; showing the specialist reviewers’ findings ' +
-        'merged and de-duplicated, but not re-judged.',
+        "Consolidation step failed; showing the specialist reviewers’ findings " +
+        "merged and de-duplicated, but not re-judged.",
       incomplete: [],
     },
-    policy
+    policy,
   );
 }
 
@@ -616,14 +623,14 @@ function fallbackConsolidation(
  * otherwise keep the coordinator's decision.
  */
 export function decisionAfterVerification(
-  previous: CoordinatorOutput['decision'],
-  kept: Finding[]
-): CoordinatorOutput['decision'] {
+  previous: CoordinatorOutput["decision"],
+  kept: Finding[],
+): CoordinatorOutput["decision"] {
   if (kept.length === 0) {
-    return 'approve';
+    return "approve";
   }
-  if (previous === 'request_changes' && !kept.some(finding => finding.severity === 'critical')) {
-    return 'approve_with_comments';
+  if (previous === "request_changes" && !kept.some((finding) => finding.severity === "critical")) {
+    return "approve_with_comments";
   }
   return previous;
 }
@@ -637,11 +644,11 @@ export function decisionAfterVerification(
  */
 export function reconcileSummary(summary: string, remaining: number): string {
   if (remaining === 0) {
-    return 'All candidate findings were removed by automated verification and suppression, so no issues remain to report.';
+    return "All candidate findings were removed by automated verification and suppression, so no issues remain to report.";
   }
   return (
-    '_Note: some findings were removed by automated verification/suppression after ' +
-    'this summary was written, so it may mention issues no longer listed below._\n\n' +
+    "_Note: some findings were removed by automated verification/suppression after " +
+    "this summary was written, so it may mention issues no longer listed below._\n\n" +
     summary
   );
 }
@@ -675,24 +682,23 @@ export function isAuthError(error: unknown): boolean {
 }
 
 const AUTH_FAILURE_NOTE =
-  'The model provider rejected the request (authentication or permission). Check the ' +
-  'configured credential (auth.tokenEnv, or REVIEWER_MODEL for a local run) and re-run — ' +
-  'those changes were not reviewed.';
+  "The model provider rejected the request (authentication or permission). Check the " +
+  "configured credential (auth.tokenEnv, or REVIEWER_MODEL for a local run) and re-run — " +
+  "those changes were not reviewed.";
 
 function selectAgents(all: LoadedAgent[], filter?: string[]): LoadedAgent[] {
   if (!filter?.length) {
     return all;
   }
-  const known = new Set(all.map(agent => agent.id));
-  const unknown = filter.filter(id => !known.has(id));
+  const known = new Set(all.map((agent) => agent.id));
+  const unknown = filter.filter((id) => !known.has(id));
   if (unknown.length > 0) {
     throw new Error(
-      `Unknown agent(s): ${unknown.join(', ')}. Available: ${all.map(a => a.id).join(', ')}`
+      `Unknown agent(s): ${unknown.join(", ")}. Available: ${all.map((a) => a.id).join(", ")}`,
     );
   }
-  return all.filter(agent => filter.includes(agent.id));
+  return all.filter((agent) => filter.includes(agent.id));
 }
-
 
 /**
  * Greedily pack files into chunks bounded by total changed lines (primary) and
@@ -702,7 +708,7 @@ function selectAgents(all: LoadedAgent[], filter?: string[]): LoadedAgent[] {
 export function chunkByLines(
   files: PatchWorkspaceFile[],
   maxChangedLines: number,
-  maxFiles: number
+  maxFiles: number,
 ): PatchWorkspaceFile[][] {
   const chunks: PatchWorkspaceFile[][] = [];
   let current: PatchWorkspaceFile[] = [];
@@ -735,7 +741,7 @@ const QUEUE_IDLE_POLL_MS = 100;
 export async function runGrowableQueue<T>(
   initial: T[],
   limit: number,
-  fn: (item: T, enqueue: (next: T) => void) => Promise<void>
+  fn: (item: T, enqueue: (next: T) => void) => Promise<void>,
 ): Promise<void> {
   const queue: T[] = [...initial];
   let active = 0;
@@ -781,10 +787,9 @@ export function formatUsageSummary(tokens: TokenUsage, totalCost: number): strin
     parts.push(`reasoning ${tokens.reasoning}`);
   }
   parts.push(`cache read ${tokens.cache?.read ?? 0}`, `cache write ${tokens.cache?.write ?? 0}`);
-  const cost = totalCost > 0 ? ` (cost $${totalCost.toFixed(4)})` : '';
-  return `Token usage — ${parts.join(', ')}${cost}`;
+  const cost = totalCost > 0 ? ` (cost $${totalCost.toFixed(4)})` : "";
+  return `Token usage — ${parts.join(", ")}${cost}`;
 }
-
 
 async function safeLog(logPath: string, record: RunLogRecord): Promise<void> {
   try {

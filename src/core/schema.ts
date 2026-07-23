@@ -1,20 +1,20 @@
-import { createHash } from 'node:crypto';
+import { createHash } from "node:crypto";
 
-import { z } from 'zod';
+import { z } from "zod";
 
-import { normalizeCode } from './util.js';
+import { normalizeCode } from "./util.js";
 
 /** Severity levels, ordered most→least severe for sorting/rendering. */
-export const SEVERITIES = ['critical', 'warning', 'suggestion'] as const;
+export const SEVERITIES = ["critical", "warning", "suggestion"] as const;
 export type Severity = (typeof SEVERITIES)[number];
 
 /** Sort rank for severities (0 = most severe). Single source of truth. */
 export const SEVERITY_RANK: Record<Severity, number> = { critical: 0, warning: 1, suggestion: 2 };
 
-export const CATEGORIES = ['correctness', 'quality', 'security', 'secrets'] as const;
+export const CATEGORIES = ["correctness", "quality", "security", "secrets"] as const;
 export type Category = (typeof CATEGORIES)[number];
 
-export const DECISIONS = ['approve', 'approve_with_comments', 'request_changes'] as const;
+export const DECISIONS = ["approve", "approve_with_comments", "request_changes"] as const;
 export type Decision = (typeof DECISIONS)[number];
 
 /** A single unit of changed code, produced by a ReviewSource. */
@@ -60,7 +60,7 @@ export type Finding = z.infer<typeof FindingSchema>;
 /** A verifier's verdict on whether a finding is real (adversarial refute pass). */
 export const VerdictSchema = z.object({
   verified: z.boolean(),
-  reason: z.string().default(''),
+  reason: z.string().default(""),
 });
 export type Verdict = z.infer<typeof VerdictSchema>;
 
@@ -110,10 +110,10 @@ const MIN_FP_EVIDENCE_LEN = 12;
  * there's too little evidence to key on.
  */
 export function fingerprintFinding(finding: Finding): string {
-  const evidence = normalizeCode(finding.evidence ?? '');
+  const evidence = normalizeCode(finding.evidence ?? "");
   const key = evidence.length >= MIN_FP_EVIDENCE_LEN ? evidence : normalizeCode(finding.title);
-  const normalized = ['v2', finding.file, finding.category, key].join('|');
-  return createHash('sha1').update(normalized).digest('hex').slice(0, 12);
+  const normalized = ["v2", finding.file, finding.category, key].join("|");
+  return createHash("sha1").update(normalized).digest("hex").slice(0, 12);
 }
 
 /**
@@ -127,8 +127,8 @@ export function extractJsonObject(text: string): unknown {
   if (fenceMatches.length > 0) {
     candidates.push(fenceMatches[fenceMatches.length - 1]![1]!.trim());
   }
-  const firstBrace = text.indexOf('{');
-  const lastBrace = text.lastIndexOf('}');
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
   if (firstBrace !== -1 && lastBrace > firstBrace) {
     candidates.push(text.slice(firstBrace, lastBrace + 1));
   }
@@ -144,7 +144,7 @@ export function extractJsonObject(text: string): unknown {
   throw new Error(
     `Could not extract JSON from model response: ${
       lastError instanceof Error ? lastError.message : String(lastError)
-    }`
+    }`,
   );
 }
 

@@ -26,6 +26,9 @@
     "build": "tsc -p tsconfig.build.json",
     "clean": "rimraf build",
     "typecheck": "tsc --noEmit",
+    "lint": "oxlint src",
+    "fmt": "oxfmt src",
+    "fmt:check": "oxfmt --check src",
     "dev": "bun run src/cli.ts",
     "test:unit": "bun test",
     "release": "bash scripts/release.sh",
@@ -38,6 +41,8 @@
   },
   "devDependencies": {
     "@types/node": "20.14.8",
+    "oxfmt": "^0.60.0",
+    "oxlint": "^1.75.0",
     "rimraf": "3.0.2",
     "typescript": "5.5.4"
   }

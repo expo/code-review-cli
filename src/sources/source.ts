@@ -1,4 +1,4 @@
-import type { DiffEntry, ReviewMetadata } from '../core/schema.js';
+import type { DiffEntry, ReviewMetadata } from "../core/schema.js";
 
 /**
  * A Source is where the diff comes from. CI and local mode differ only in which

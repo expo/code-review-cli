@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
-import type { LoadedConfig } from '../config/schema.js';
+import type { LoadedConfig } from "../config/schema.js";
 
 export interface PreparedAuth {
   cleanup: () => Promise<void>;
@@ -10,10 +10,10 @@ export interface PreparedAuth {
 
 /** Env var each provider's SDK reads for an API key (x-api-key style). */
 const PROVIDER_KEY_ENV: Record<string, string> = {
-  anthropic: 'ANTHROPIC_API_KEY',
-  openai: 'OPENAI_API_KEY',
-  google: 'GOOGLE_GENERATIVE_AI_API_KEY',
-  openrouter: 'OPENROUTER_API_KEY',
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  google: "GOOGLE_GENERATIVE_AI_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
 };
 
 /**
@@ -26,18 +26,18 @@ const PROVIDER_KEY_ENV: Record<string, string> = {
  * Defense-in-depth alongside loading config only from the trusted base ref.
  */
 const FORBIDDEN_TOKEN_ENVS = new Set([
-  'GITHUB_TOKEN',
-  'GH_TOKEN',
-  'ACTIONS_RUNTIME_TOKEN',
-  'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-  'GOOGLE_APPLICATION_CREDENTIALS',
-  'GCP_SERVICE_ACCOUNT_KEY',
-  'NPM_TOKEN',
-  'NODE_AUTH_TOKEN',
-  'SSH_PRIVATE_KEY',
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "ACTIONS_RUNTIME_TOKEN",
+  "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GCP_SERVICE_ACCOUNT_KEY",
+  "NPM_TOKEN",
+  "NODE_AUTH_TOKEN",
+  "SSH_PRIVATE_KEY",
 ]);
 
 const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
@@ -62,7 +62,7 @@ export interface AuthReadiness {
  */
 export function checkProviderAuth(
   config: LoadedConfig,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
 ): AuthReadiness {
   const { mode, provider, tokenEnv } = config.auth;
 
@@ -83,15 +83,19 @@ export function checkProviderAuth(
     };
   }
 
-  if (mode === 'oauth') {
+  if (mode === "oauth") {
     if (!tokenEnv) {
       return {
         ok: false,
-        detail: 'auth.mode "oauth" requires auth.tokenEnv to name the env var holding the OAuth token.',
+        detail:
+          'auth.mode "oauth" requires auth.tokenEnv to name the env var holding the OAuth token.',
       };
     }
     if (!env[tokenEnv]) {
-      return { ok: false, detail: `auth is oauth for ${provider} but token env "${tokenEnv}" is not set.` };
+      return {
+        ok: false,
+        detail: `auth is oauth for ${provider} but token env "${tokenEnv}" is not set.`,
+      };
     }
     return { ok: true, detail: `oauth for ${provider}; token env ${tokenEnv} is set` };
   }
@@ -111,7 +115,7 @@ export function checkProviderAuth(
       detail: `api-key for ${provider}; no tokenEnv configured and no known key env — relying on OpenCode's own login`,
     };
   }
-  const names = [tokenEnv, providerKeyEnv].filter(Boolean).join(' or ');
+  const names = [tokenEnv, providerKeyEnv].filter(Boolean).join(" or ");
   return {
     ok: false,
     detail:
@@ -152,10 +156,10 @@ export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
     throw new Error(readiness.detail);
   }
 
-  if (mode === 'api-key') {
+  if (mode === "api-key") {
     if (tokenEnv) {
       const value = process.env[tokenEnv];
-      const target = PROVIDER_KEY_ENV[provider] ?? 'ANTHROPIC_API_KEY';
+      const target = PROVIDER_KEY_ENV[provider] ?? "ANTHROPIC_API_KEY";
       // The explicitly-configured tokenEnv is authoritative — set it even if the
       // provider env is already present, so config wins over ambient env.
       if (value) {
@@ -172,19 +176,19 @@ export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
     throw new Error('auth.mode "oauth" requires auth.tokenEnv to name a set OAuth token env.');
   }
 
-  const dir = await mkdtemp(path.join(tmpdir(), 'ecr-auth-'));
-  await mkdir(path.join(dir, 'opencode'), { recursive: true });
+  const dir = await mkdtemp(path.join(tmpdir(), "ecr-auth-"));
+  await mkdir(path.join(dir, "opencode"), { recursive: true });
   const authJson = {
     [provider]: {
-      type: 'oauth',
+      type: "oauth",
       access: token,
-      refresh: '',
+      refresh: "",
       // Far-future expiry so OpenCode uses the token as-is and does not try to
       // refresh it (setup-token tokens are long-lived and carry no refresh).
       expires: Date.now() + YEAR_MS,
     },
   };
-  await writeFile(path.join(dir, 'opencode', 'auth.json'), JSON.stringify(authJson), 'utf8');
+  await writeFile(path.join(dir, "opencode", "auth.json"), JSON.stringify(authJson), "utf8");
   process.env.XDG_DATA_HOME = dir;
 
   return {

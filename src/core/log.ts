@@ -1,17 +1,17 @@
-import { appendFile, mkdir } from 'node:fs/promises';
-import path from 'node:path';
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 
-import type { CoordinatorOutput, ReviewMetadata } from './schema.js';
-import type { FilteredFile } from './noise.js';
-import type { TokenUsage } from './opencode.js';
+import type { CoordinatorOutput, ReviewMetadata } from "./schema.js";
+import type { FilteredFile } from "./noise.js";
+import type { TokenUsage } from "./opencode.js";
 
 export interface RunLogRecord {
   timestamp: string;
-  mode: 'ci' | 'local';
+  mode: "ci" | "local";
   runId: string;
   // Refs only — PR title/body are deliberately excluded to avoid persisting
   // secrets that might appear in author-controlled text.
-  metadata: Pick<ReviewMetadata, 'baseRef' | 'headRef'>;
+  metadata: Pick<ReviewMetadata, "baseRef" | "headRef">;
   reviewedFiles: string[];
   filteredFiles: FilteredFile[];
   agentCosts: Record<string, number>;
@@ -21,7 +21,7 @@ export interface RunLogRecord {
   // Reuses TokenUsage so the log schema can't silently diverge from what's collected.
   tokens?: TokenUsage;
   durationMs: number;
-  decision: CoordinatorOutput['decision'] | null;
+  decision: CoordinatorOutput["decision"] | null;
   findingCount: number;
   summary: string | null;
   error?: string;
@@ -33,5 +33,5 @@ export interface RunLogRecord {
  */
 export async function writeRunLog(logPath: string, record: RunLogRecord): Promise<void> {
   await mkdir(path.dirname(logPath), { recursive: true });
-  await appendFile(logPath, `${JSON.stringify(record)}\n`, 'utf8');
+  await appendFile(logPath, `${JSON.stringify(record)}\n`, "utf8");
 }
