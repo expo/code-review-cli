@@ -41,6 +41,6 @@
   "auth": {
     "mode": "oauth",
     "provider": "anthropic",
-    "tokenEnv": "ANTHROPIC_CODE_REVIEW_TOKEN"
+    "tokenEnv": "ANTHROPIC_OAUTH_API_KEY"
   }
 }

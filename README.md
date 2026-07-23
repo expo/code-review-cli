@@ -49,7 +49,7 @@ env var your `config.jsonc`'s `auth.tokenEnv` names:
 # Mint a Claude Pro/Max token (prints an sk-ant-oat… token)
 claude setup-token
 # Export it under the env var your config.jsonc's auth.tokenEnv names
-export ANTHROPIC_CODE_REVIEW_TOKEN=sk-ant-oat...
+export ANTHROPIC_OAUTH_API_KEY=sk-ant-oat...
 # Check env, config, and credentials
 npx @expo/code-review-cli doctor
 ```
@@ -182,7 +182,7 @@ per-repo `noise.additionalIgnores`.
   "breakGlass": { "marker": "/skip-review" }, // PR body marker that skips the review
   "commentTag": "expo-ai-code-reviewer",      // hidden tag used to find/update the comment
   "auth": { "mode": "oauth", "provider": "anthropic",
-            "tokenEnv": "DO_NOT_USE_EXPERIMENTAL_ANTHROPIC_API_KEY" }
+            "tokenEnv": "ANTHROPIC_OAUTH_API_KEY" }
 }
 ```
 
