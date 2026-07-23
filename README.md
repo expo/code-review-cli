@@ -68,23 +68,21 @@ ecr review --pr 4057
 ecr review --pr 4057 --post
 ```
 
-Options:
+Options (most to least common):
 
-```
---pr <n>           Review GitHub PR #n by number (diff fetched via gh, no checkout);
-                   not combinable with --base/--head/--staged
---post             With --pr: also post the result as the PR comment (needs gh auth).
-                   Omit to preview only; re-run with --post to publish.
---staged           Review only staged changes
---base <ref>       Base ref to diff against (default: merge-base with default branch)
---head <ref>       Head ref to diff (default: working tree, incl. uncommitted changes)
---agents <a,b>     Run only these agents (comma-separated ids); default: all
---route            Let an LLM router pick the relevant agents from the diff
---repo <owner/repo>  Repo for --pr (default: inferred from the current checkout)
---json             Emit machine-readable JSON on stdout
---no-fail          Always exit 0 (otherwise a request_changes decision exits non-zero)
--h, --help         Show help
-```
+| Flag | What it does |
+| --- | --- |
+| `--pr <n>` | Review GitHub PR #n by number (diff fetched via `gh`, no checkout); not combinable with `--base`/`--head`/`--staged`. |
+| `--post` | With `--pr`, also post the result as the PR comment (needs `gh` auth). Omit to preview only; re-run with `--post` to publish. |
+| `--staged` | Review only staged changes. |
+| `--base <ref>` | Base ref to diff against (default: merge-base with the default branch). |
+| `--head <ref>` | Head ref to diff (default: working tree, incl. uncommitted changes). |
+| `--agents <a,b>` | Run only these agents (comma-separated ids); default: all. |
+| `--route` | Let an LLM router pick the relevant agents from the diff. |
+| `--repo <owner/repo>` | Repo for `--pr` (default: inferred from the current checkout). |
+| `--json` | Emit machine-readable JSON on stdout. |
+| `--no-fail` | Always exit 0 (otherwise a `request_changes` decision exits non-zero). |
+| `-h`, `--help` | Show help. |
 
 `--pr` uses the PR's diff (authoritative) but reads your checked-out files for
 surrounding context; for full fidelity, `gh pr checkout <n>` first and run a plain
