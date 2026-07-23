@@ -105,6 +105,7 @@ export async function loadReviewConfig(repoRoot: string): Promise<LoadedConfig> 
       provider: parsed.auth.provider,
       tokenEnv: parsed.auth.tokenEnv,
     },
+    review: parsed.review,
   };
 }
 

@@ -63,6 +63,21 @@ export const ReviewConfigSchema = z.object({
       tokenEnv: z.string().optional(),
     })
     .default({ mode: 'api-key', provider: 'anthropic' }),
+  review: z
+    .object({
+      // Which PRs `ecr ci` acts on — the source of truth for trigger policy (a
+      // workflow `if:` gate, if any, is an optional coarse filter layered on top):
+      //   "all"   — review every PR, unless it carries the `skipLabel`.
+      //   "label" — review only PRs carrying `label` (e.g. `ai-review`) or a
+      //             `label:<agent>` variant. `skipLabel` still wins.
+      trigger: z.enum(['all', 'label']).default('all'),
+      // Opt-in label (and prefix for `label:<agent>`) used when trigger is "label".
+      label: z.string().default('ai-review'),
+      // Opt a single PR out of review. A label (not a config flag) because labels
+      // are write-gated to maintainers — a PR author can't add one to dodge review.
+      skipLabel: z.string().default('ai-review:skip'),
+    })
+    .default({ trigger: 'all', label: 'ai-review', skipLabel: 'ai-review:skip' }),
 });
 export type RawReviewConfig = z.infer<typeof ReviewConfigSchema>;
 
@@ -109,5 +124,10 @@ export interface LoadedConfig {
     mode: 'api-key' | 'oauth';
     provider: string;
     tokenEnv?: string;
+  };
+  review: {
+    trigger: 'all' | 'label';
+    label: string;
+    skipLabel: string;
   };
 }

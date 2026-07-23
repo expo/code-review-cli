@@ -25,6 +25,16 @@
   // full-context pass. Defaults shown; raise/lower per your model + PR sizes.
   // "chunk": { "maxChangedLines": 1000, "maxFiles": 20, "concurrency": 4 },
 
+  // Which PRs `ecr ci` reviews. This is the source of truth for trigger policy;
+  // the scaffolded workflow always calls `ecr ci` and lets this decide. (If you'd
+  // rather gate in the workflow instead, add an `if:` to the job — see the
+  // workflow template — and this still applies on top.)
+  //   "trigger": "all"   — review every PR, unless it has the `skipLabel`.
+  //   "trigger": "label" — review only PRs labeled `label` (or `label:<agent>`).
+  // The `skipLabel` is write-gated (only maintainers can add labels), so a PR
+  // author can't opt their own PR out.
+  "review": { "trigger": "all", "label": "ai-review", "skipLabel": "ai-review:skip" },
+
   // A maintainer comment containing this marker skips the CI review.
   "breakGlass": { "marker": "/skip-review" },
 
