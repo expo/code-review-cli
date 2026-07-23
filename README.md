@@ -35,7 +35,8 @@ package.
 **Setting it up in a repo for the first time** — scaffold, add credentials, verify:
 
 ```bash
-npx @expo/code-review-cli init        # scaffold .expo-code-review/ + a CI workflow (--no-workflow to skip)
+# Scaffold .expo-code-review/ + a CI workflow (--no-workflow to skip)
+npx @expo/code-review-cli init
 ```
 
 Then give it model credentials. **Recommended: a Claude Pro/Max subscription** — the
@@ -43,9 +44,12 @@ scaffolded config uses OAuth by default, so just mint a token and export it unde
 env var your `config.jsonc`'s `auth.tokenEnv` names:
 
 ```bash
-claude setup-token                                   # prints an sk-ant-oat… token (Claude Pro/Max)
-export ANTHROPIC_CODE_REVIEW_TOKEN=sk-ant-oat...     # the tokenEnv from your config.jsonc
-npx @expo/code-review-cli doctor                     # check env, config, and credentials
+# Mint a Claude Pro/Max token (prints an sk-ant-oat… token)
+claude setup-token
+# Export it under the env var your config.jsonc's auth.tokenEnv names
+export ANTHROPIC_CODE_REVIEW_TOKEN=sk-ant-oat...
+# Check env, config, and credentials
+npx @expo/code-review-cli doctor
 ```
 
 Prefer an Anthropic **API key**, or **OpenAI/GPT** or another provider? See
@@ -54,9 +58,12 @@ Prefer an Anthropic **API key**, or **OpenAI/GPT** or another provider? See
 **In a repo that's already configured** — just review:
 
 ```bash
-ecr review                      # review working-tree changes; prints here, posts nothing
-ecr review --pr 4057            # review a GitHub PR by number (preview only)
-ecr review --pr 4057 --post     # …and post it as the PR comment
+# Review working-tree changes; prints here, posts nothing
+ecr review
+# Review a GitHub PR by number (preview only)
+ecr review --pr 4057
+# …and post it as the PR comment
+ecr review --pr 4057 --post
 ```
 
 In CI it runs automatically from the scaffolded workflows — by label or a `/review`
