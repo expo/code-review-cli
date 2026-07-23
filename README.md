@@ -4,10 +4,11 @@ A config-driven, multi-agent AI code reviewer. Specialist agents review a diff i
 parallel; a coordinator consolidates their findings into one structured review.
 Runs the same engine locally (advisory) and in CI (posts a PR comment).
 
-> **Status: experimental.** Phase 1 is **comment-only and non-blocking** — it
-> never blocks a merge and never auto-approves. The package is incubated inside
-> `eas-cli` for fast iteration and is intended to graduate into its own repo; see
-> [`ROADMAP.md`](./ROADMAP.md).
+> **Status: experimental.** The reviewer is **comment-only and non-blocking** — it
+> never blocks a merge and never auto-approves. Published as
+> [`@expo/code-review-cli`](https://www.npmjs.com/package/@expo/code-review-cli);
+> consuming repos add their agents + settings under `.expo-code-review/` and run it
+> via `npx`. See [`ROADMAP.md`](./ROADMAP.md).
 
 The CLI is the **engine**. Each repo supplies its own agents and settings under
 `.expo-code-review/`, so behavior is configured per-repo, not baked in.
@@ -42,8 +43,9 @@ and applies Anthropic prompt caching automatically.
 
 ## Commands
 
-Run via the workspace during incubation (`yarn workspace expo-code-review dev …`),
-or as the `ecr` / `expo-code-review` binary once built/installed.
+Run via `npx @expo/code-review-cli <command>`, or as the `ecr` /
+`expo-code-review` binary once installed. When developing this repo itself, use the
+`dev` script (`bun run src/cli.ts <command>`).
 
 | Command | What it does |
 | --- | --- |

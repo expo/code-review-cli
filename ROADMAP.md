@@ -1,8 +1,9 @@
 # expo-code-review — roadmap / next steps
 
-Working notes for the experimental reviewer. This package is incubated in
-`eas-cli` for fast iteration and is intended to graduate into its own repo. Items
-are roughly ordered by priority.
+Working notes for the experimental reviewer, now published as
+`@expo/code-review-cli` and extracted into its own repo (it was incubated inside
+`expo/eas-cli`, which is why much of the history below references that repo and
+PR #4022). Items are roughly ordered by priority.
 
 ## Merge boundary — phase 1 vs follow-ups
 
@@ -411,25 +412,20 @@ and §3. What remains, by tier:
   is `yarn workspace expo-code-review dev …`); `init` next-steps vs scaffolded
   `auth.mode`; warn when `--staged` is combined with `--base`/`--head`.
 
-## On extraction to its own repo (deferred cleanup)
+## Extraction — done ✅ (remaining cleanup)
 
-The package is intentionally standalone ESM/NodeNext (with `.js` import specifiers)
-and is deliberately excluded from this monorepo's oxlint/oxfmt during incubation
-(see the rationale comment in `tsconfig.json`). That trades away lint/format
-coverage for the package right now — an accepted, temporary gap. Resolve it at
-extraction time rather than bending the monorepo around an experimental package:
+The package has been extracted from `expo/eas-cli` into this standalone repo and
+published as `@expo/code-review-cli`. eas-cli now carries only its
+`.expo-code-review/` config and the workflows, which run the reviewer via `npx`
+(the in-repo `yarn build`-from-source workflows are gone). The monorepo's oxlint/
+oxfmt/tsconfig exclusions for the package were removed on the way out.
 
-- **Give the extracted repo its own lint + format setup** (oxlint/oxfmt or ESLint
-  + Prettier) and wire it into that repo's CI. This closes the current "no lint
-  coverage" gap, and the ESM/NodeNext choice stops being a *divergence* (it's just
-  the new repo's standard).
-- **Remove the monorepo exclusions** once the code no longer lives here
-  (`.oxlintrc.json`, `.oxfmtrc.json`, `tsconfig.oxlint.json` all list it).
-- **Publish + run via `npx`** (see §3.8) and drop the in-repo `yarn build`-from-
-  source workflows.
-- Net: the reviewer's own "NodeNext vs commonjs / no oxlint coverage" warning on
-  its PR is an artifact of incubating an ESM package inside a commonjs monorepo,
-  and disappears on extraction — no CommonJS refactor needed.
+Still open:
+
+- **Give this repo its own lint + format setup** (oxlint/oxfmt or ESLint +
+  Prettier) and wire it into CI (`test.yml` currently runs typecheck + build +
+  `bun test`). The standalone ESM/NodeNext choice is now just this repo's standard,
+  not a divergence — no CommonJS refactor needed.
 
 ## Model selection & fallback
 
