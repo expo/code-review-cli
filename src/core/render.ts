@@ -17,6 +17,16 @@ export interface LinkContext {
   repo: string; // owner/repo
   prNumber: number;
   diffLines?: Map<string, Set<number>>;
+  /**
+   * The PR base commit SHA (the branch the PR targets, e.g. `main`). When a finding
+   * points at code NOT in the diff — a caller or helper the PR merely references,
+   * which is by definition unchanged and therefore identical on the base — we link
+   * to the source blob at this commit (`/blob/<sha>/<path>#L<line>`) instead of a
+   * diff anchor: still a working, line-accurate link, just to the file on the base
+   * branch rather than the diff. A commit SHA (not a branch name) so it's a stable
+   * permalink that won't drift as the base advances.
+   */
+  baseSha?: string;
 }
 
 /**
@@ -95,11 +105,13 @@ function locationText(finding: Finding): string {
 }
 
 /**
- * Render a finding's location as inline code, linked to the exact diff line in the
- * PR's "Files changed" tab — but ONLY when that file+line is actually in the diff
- * (GitHub anchors each file's diff as `diff-<sha256(path)>` and each right-hand
- * added/context line as `…R<n>`; those anchors don't exist for unchanged code). A
- * finding on a file/line not in the diff renders as plain text, never a dead link.
+ * Render a finding's location as inline code, linked to the code it points at:
+ *  - in the diff (file+line shown in a hunk) → the PR's "Files changed" tab at that
+ *    line (`#diff-<sha256(path)>R<n>`), so the reader lands in the review diff;
+ *  - not in the diff (unchanged code the PR references, e.g. a caller/helper) → the
+ *    source blob on the PR base at that line (`/blob/<baseSha>/<path>#L<n>`);
+ *  - if neither is possible (no link context / no base SHA) → plain inline code.
+ * Never emits a dead diff anchor for a line that isn't in the diff.
  */
 function location(finding: Finding, link?: LinkContext): string {
   const text = locationText(finding);
@@ -107,17 +119,22 @@ function location(finding: Finding, link?: LinkContext): string {
     return `\`${text}\``;
   }
   const fileLines = link.diffLines?.get(finding.file);
-  // Link only when the file is in the diff and (if the finding names a line) that
-  // line is one of the diff's right-side lines. A file-level finding (no line) links
-  // to the file's diff section as long as the file appears in the diff.
+  // In the diff when the file is present and (if the finding names a line) that line
+  // is one of the diff's right-side lines. A file-level finding (no line) counts as
+  // in-diff as long as the file appears in the diff.
   const inDiff = fileLines != null && (finding.line == null || fileLines.has(finding.line));
-  if (!inDiff) {
-    return `\`${text}\``;
+  if (inDiff) {
+    const fileHash = createHash('sha256').update(finding.file).digest('hex');
+    const anchor = finding.line != null ? `diff-${fileHash}R${finding.line}` : `diff-${fileHash}`;
+    const url = `https://github.com/${link.repo}/pull/${link.prNumber}/files#${anchor}`;
+    return `[\`${text}\`](${url})`;
   }
-  const fileHash = createHash('sha256').update(finding.file).digest('hex');
-  const anchor = finding.line != null ? `diff-${fileHash}R${finding.line}` : `diff-${fileHash}`;
-  const url = `https://github.com/${link.repo}/pull/${link.prNumber}/files#${anchor}`;
-  return `[\`${text}\`](${url})`;
+  if (link.baseSha) {
+    const lineAnchor = finding.line != null ? `#L${finding.line}` : '';
+    const url = `https://github.com/${link.repo}/blob/${link.baseSha}/${finding.file}${lineAnchor}`;
+    return `[\`${text}\`](${url})`;
+  }
+  return `\`${text}\``;
 }
 
 /**

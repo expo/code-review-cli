@@ -72,23 +72,37 @@ export class GitHubReporter implements Reporter {
   }
 
   /**
-   * PR context for turning finding locations into diff-line links, including the
-   * set of lines actually in the PR diff so we only link locations that resolve
-   * (findings on unchanged code render as plain text). The diff fetch fails soft —
-   * on any error we still link-context without `diffLines`, which renders plain text.
+   * PR context for turning finding locations into links: the set of lines actually
+   * in the diff (for in-diff findings → diff-anchor links) and the base commit SHA
+   * (for out-of-diff findings → source-blob links on the base). Both fetches fail
+   * soft — a missing piece just degrades to a plain-text location, never a dead link.
    */
   private async linkContextAsync(): Promise<LinkContext> {
-    const base: LinkContext = { repo: this.options.repo, prNumber: this.options.prNumber };
-    try {
-      const { stdout } = await run(
-        'gh',
-        ['pr', 'diff', String(this.options.prNumber), '--repo', this.options.repo],
-        { cwd: this.options.cwd }
-      );
-      return { ...base, diffLines: buildDiffLineIndex(parseUnifiedDiff(stdout)) };
-    } catch {
-      return base;
-    }
+    const link: LinkContext = { repo: this.options.repo, prNumber: this.options.prNumber };
+    const prArgs = [String(this.options.prNumber), '--repo', this.options.repo];
+    const cwd = this.options.cwd;
+    await Promise.all([
+      (async () => {
+        try {
+          const { stdout } = await run('gh', ['pr', 'diff', ...prArgs], { cwd });
+          link.diffLines = buildDiffLineIndex(parseUnifiedDiff(stdout));
+        } catch {
+          // leave diffLines unset → in-diff findings degrade to plain text
+        }
+      })(),
+      (async () => {
+        try {
+          const { stdout } = await run('gh', ['pr', 'view', ...prArgs, '--json', 'baseRefOid'], { cwd });
+          const oid = (JSON.parse(stdout) as { baseRefOid?: string }).baseRefOid;
+          if (oid) {
+            link.baseSha = oid;
+          }
+        } catch {
+          // leave baseSha unset → out-of-diff findings degrade to plain text
+        }
+      })(),
+    ]);
+    return link;
   }
 
   /**

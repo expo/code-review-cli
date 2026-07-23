@@ -60,18 +60,29 @@ test('links a finding location to the PR diff line when the line is in the diff'
   expect(out).toMatch(/R12\)/); // right-hand line anchor for line 12
 });
 
-test('a finding NOT in the diff is plain text, not a dead link', () => {
-  // File is in the diff, but line 99 is not one of its changed lines → no link.
+test('a finding NOT in the diff links to the source blob on the base (not a dead diff anchor)', () => {
+  // Line 99 is not a changed line → link to the base blob, not the diff anchor.
   const out = renderMarkdown({ ...base, findings: [finding({ file: 'src/a.ts', line: 99 })] }, 'tag', [], {
     repo: 'expo/eas-cli',
     prNumber: 42,
     diffLines: new Map([['src/a.ts', new Set([12])]]),
+    baseSha: 'abc123',
   });
-  expect(out).toContain('`src/a.ts:99`');
-  expect(out).not.toContain('https://github.com');
+  expect(out).toContain('[`src/a.ts:99`](https://github.com/expo/eas-cli/blob/abc123/src/a.ts#L99)');
+  expect(out).not.toContain('/pull/42/files#diff-'); // not the diff anchor
 });
 
-test('a finding on a file absent from the diff is plain text', () => {
+test('a finding on a file absent from the diff links to the base blob', () => {
+  const out = renderMarkdown({ ...base, findings: [finding({ file: 'other.ts', line: 3 })] }, 'tag', [], {
+    repo: 'expo/eas-cli',
+    prNumber: 42,
+    diffLines: new Map([['src/a.ts', new Set([12])]]),
+    baseSha: 'abc123',
+  });
+  expect(out).toContain('[`other.ts:3`](https://github.com/expo/eas-cli/blob/abc123/other.ts#L3)');
+});
+
+test('out-of-diff finding is plain text when no base SHA is available', () => {
   const out = renderMarkdown({ ...base, findings: [finding({ file: 'other.ts', line: 3 })] }, 'tag', [], {
     repo: 'expo/eas-cli',
     prNumber: 42,
