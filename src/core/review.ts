@@ -348,8 +348,13 @@ export async function runReview(
         if (!(error instanceof AgentTimeoutError)) {
           failedPasses++;
           progress(`  ${task.label}: FAILED (${errorMessage(error)})`);
+          // An auth/permission failure hits every pass identically; push one shared,
+          // actionable note (deduped into a single coverage line) instead of N generic
+          // per-pass failures that bury the real, fixable cause.
           incomplete.push(
-            `${capitalize(task.coverageLabel)} failed to run; those changes were not reviewed.`
+            isAuthError(error)
+              ? AUTH_FAILURE_NOTE
+              : `${capitalize(task.coverageLabel)} failed to run; those changes were not reviewed.`
           );
           return;
         }
@@ -643,6 +648,34 @@ export function reconcileSummary(summary: string, remaining: number): string {
 function capitalize(text: string): string {
   return text.length > 0 ? text[0]!.toUpperCase() + text.slice(1) : text;
 }
+
+/**
+ * An authentication/authorization failure from the model provider (401/403, a
+ * rejected/expired/missing credential) — distinct from a transient blip or a real
+ * code finding. Every pass hits the same wall, so the caller collapses it into one
+ * actionable coverage note instead of N generic "failed to run" lines.
+ */
+export function isAuthError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  const cred = /(api.?key|token|credential)/;
+  const problem = /(invalid|expired|revoked|missing|rejected|no)/;
+  return (
+    /\b401\b|\b403\b/.test(message) ||
+    /unauthor/.test(message) ||
+    /\bforbidden\b/.test(message) ||
+    /authentication/.test(message) ||
+    /permission denied/.test(message) ||
+    /invalid x-api-key/.test(message) ||
+    // a credential noun and a problem word near each other, in either order
+    new RegExp(`${problem.source}\\b[^.]{0,20}${cred.source}`).test(message) ||
+    new RegExp(`${cred.source}[^.]{0,20}${problem.source}`).test(message)
+  );
+}
+
+const AUTH_FAILURE_NOTE =
+  'The model provider rejected the request (authentication or permission). Check the ' +
+  'configured credential (auth.tokenEnv, or REVIEWER_MODEL for a local run) and re-run — ' +
+  'those changes were not reviewed.';
 
 function selectAgents(all: LoadedAgent[], filter?: string[]): LoadedAgent[] {
   if (!filter?.length) {
