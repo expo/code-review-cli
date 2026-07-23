@@ -6,6 +6,7 @@ import {
   runGrowableQueue,
   decisionAfterVerification,
   reconcileSummary,
+  isAuthError,
 } from '../core/review.js';
 import type { PatchWorkspaceFile } from '../core/noise.js';
 import type { CoordinatorOutput, Finding } from '../core/schema.js';
@@ -119,4 +120,30 @@ test('decisionAfterVerification: re-derives after drops', () => {
   expect(decisionAfterVerification('request_changes', [finding({ severity: 'critical' })])).toBe(
     'request_changes'
   );
+});
+
+test('isAuthError flags provider auth/permission failures', () => {
+  for (const message of [
+    'HTTP 401 Unauthorized',
+    'status 403 Forbidden',
+    'authentication_error: invalid x-api-key',
+    'permission denied for this model',
+    'Invalid API key provided',
+    'the OAuth token has expired',
+    'missing api key',
+  ]) {
+    expect(isAuthError(new Error(message))).toBe(true);
+  }
+});
+
+test('isAuthError does not flag non-auth failures', () => {
+  for (const message of [
+    'HTTP 429 Too Many Requests',
+    'server error 500',
+    'did not return parseable JSON after retries',
+    'ECONNRESET',
+    'request timed out',
+  ]) {
+    expect(isAuthError(new Error(message))).toBe(false);
+  }
 });
