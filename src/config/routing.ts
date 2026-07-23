@@ -112,6 +112,34 @@ export function scopedCommentTag(rootTag: string, scopeName: string): string {
   return `${rootTag}:${scopeName}`;
 }
 
+/** The per-scope passes budget derived from the manifest's total (see below). */
+export interface ScopeBudget {
+  /** Per-scope wall-clock ceiling for review passes, in ms. */
+  perScopeMs: number;
+  /** True when the `min` floor forced `activeCount * perScopeMs` past `totalMs`
+   * — i.e. the scopes will run longer than the total budget. */
+  overshoot: boolean;
+}
+
+/**
+ * Divide the total passes budget across N active scopes, which run SEQUENTIALLY
+ * in one `ecr ci` process. Even split = `floor(total / active)`, clamped up to
+ * `min` so a scope always gets a workable window. When that clamp wins (the even
+ * split fell below `min`), the floor is kept — a scope below `min` isn't worth
+ * starting — and `overshoot` flags that the run will exceed the total budget so
+ * the caller can warn. Pure so the math is unit-testable.
+ */
+export function scopePassesBudgetMs(
+  totalMs: number,
+  minMs: number,
+  activeCount: number,
+): ScopeBudget {
+  const count = Math.max(1, activeCount);
+  const evenSplit = Math.floor(totalMs / count);
+  const perScopeMs = Math.max(minMs, evenSplit);
+  return { perScopeMs, overshoot: count * perScopeMs > totalMs };
+}
+
 /**
  * Owner table for doctor/CI logs (graft 4): one row per file —
  * `file  →  winning scope (also matched: a, b)`. Returns printable lines,

@@ -184,6 +184,13 @@ your-monorepo/
   manifest always travel together. Scope `config` paths stay repo-root-relative —
   the override swaps the root config/manifest against the *real* scope tree, it
   does not relocate the scopes themselves.**
+- **Passes budget** — `defaults`-level `budget` bounds total review time:
+  `totalPassesMinutes` (default 32) is split across active scopes (which run
+  sequentially in one `ecr ci`), clamped up to `minScopeMinutes` (default 5) so a
+  single scope still gets a workable window. When enough scopes are active that the
+  floor would overshoot the total, `ecr ci` keeps the floor but warns, and `ecr
+  doctor` flags the worst case (`scopes × floor` vs total) — raise the workflow
+  `timeout-minutes` or trim scopes.
 - **Adoption is incremental** — with no `routing.jsonc`, behavior is exactly as
   before (single config). Add the manifest with just a default scope → still one
   comment, identical behavior. Land per-team scope dirs one at a time; everything

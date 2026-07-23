@@ -5,6 +5,7 @@ import {
   loadRoutingManifest,
   resolveScopes,
   scopedCommentTag,
+  scopePassesBudgetMs,
   formatOwnerTable,
 } from "../config/routing.js";
 import type { LoadedConfig, RoutingManifest } from "../config/schema.js";
@@ -394,8 +395,18 @@ async function runRoutedCi(
   }
 
   // Divide the passes budget across active scopes (risk 4), floored so a single
-  // scope still gets a workable window.
-  const budget = Math.max(10 * 60_000, Math.floor((32 * 60_000) / Math.max(1, active.length)));
+  // scope still gets a workable window (see budget.* in routing.jsonc). Active
+  // scopes run sequentially, so N × perScope is the real wall-clock; when the
+  // floor forces that past the total, keep the floor but warn loudly.
+  const totalMs = manifest.budget.totalPassesMinutes * 60_000;
+  const minMs = manifest.budget.minScopeMinutes * 60_000;
+  const { perScopeMs: budget, overshoot } = scopePassesBudgetMs(totalMs, minMs, active.length);
+  if (overshoot) {
+    const expectedMinutes = Math.round((active.length * budget) / 60_000);
+    process.stderr.write(
+      `CI reviewer: ⚠ ${active.length} scopes × floor = ${expectedMinutes}min exceeds budget.totalPassesMinutes (${manifest.budget.totalPassesMinutes}m); expect longer runs — raise the job timeout or trim scopes.\n`,
+    );
+  }
 
   const results: ScopeReviewResult[] = [];
   for (const scope of active) {
