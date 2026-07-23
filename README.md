@@ -122,6 +122,11 @@ temperature: 0.1
 # Agent instructions in Markdown…
 ```
 
+For a real-world example, see eas-cli's
+[`.expo-code-review/`](https://github.com/expo/eas-cli/tree/main/.expo-code-review)
+— correctness/security/consistency agents, Opus for security + the coordinator, and
+per-repo `noise.additionalIgnores`.
+
 `config.jsonc` (JSONC — comments + trailing commas supported):
 
 ```jsonc

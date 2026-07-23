@@ -592,3 +592,25 @@ Design constraints:
 - **Pairs with the base-ref checkout (§ merge-boundary #4):** once config loads from
   the trusted base ref, repo-level guidelines are unambiguously trusted, and the
   author gate is the only extra check the per-PR path needs.
+
+## Noise filter: derive from the repo's lint/format ignores (opt-in) — future
+
+Today noise filtering is content-based (generation markers) + a few path heuristics
+(lockfiles, `.min.js`/`.map`, snapshots, binary) + explicit `noise.additionalIgnores`.
+A repo's **lint/format ignore files** (`.eslintignore`, oxlint `ignorePatterns`,
+`.prettierignore`) already encode "not hand-maintained / not worth linting", which
+overlaps with review-noise — worth folding in. Constraints, because this is more
+aggressive than suppression (a filtered file is dropped before ANY agent sees it,
+with no critical/secrets carve-out):
+
+- **Opt-in**, not default. Lint-scope ≠ review-scope: a repo may not *lint* vendored/
+  legacy code that should still be *security-reviewed*. Blanket import could silently
+  drop security coverage.
+- **Lint/format ignores only — never `.gitignore`** (that's about what's *tracked*,
+  not noise; diff files are tracked, and its negation/nesting semantics are fiddly).
+  `tsconfig` `exclude` is a weak signal at best.
+- **Read from the trusted base ref, not the PR.** In the auto-workflow, ignore files
+  come from the PR merge ref — a PR could add its own file to `.eslintignore` to dodge
+  review. Same trust boundary as § merge-boundary #4.
+- **Stay transparent** — keep recording filtered files (already done), ideally noting
+  which ignore file matched.
