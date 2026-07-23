@@ -111,6 +111,24 @@ export async function runReview(
     return output;
   }
 
+  // Read the PR-head tree (not the current checkout) when the source can materialize
+  // it, so the agents' surrounding-source reads and the verifier's re-reads see the
+  // versions that match the diff. Config is already fully loaded in memory, so the
+  // chdir doesn't affect it; run-log/patch paths are absolute; gh/git calls already
+  // ran above. Fails soft to the current directory.
+  const originalCwd = process.cwd();
+  const readRoot = (await source.prepareReadRootAsync?.()) ?? null;
+  const restoreCwd = async (): Promise<void> => {
+    if (readRoot) {
+      process.chdir(originalCwd);
+      await readRoot.cleanup();
+    }
+  };
+  if (readRoot) {
+    progress('Reviewing the PR-head tree (so reads match the PR, not the checkout).');
+    process.chdir(readRoot.dir);
+  }
+
   const auth = await prepareAuth(config);
 
   progress('Starting OpenCode server…');
@@ -119,6 +137,7 @@ export async function runReview(
     handle = await startOpencode(buildOpencodeConfig(config));
   } catch (error) {
     await auth.cleanup();
+    await restoreCwd();
     throw new Error(
       `Failed to start the OpenCode server. Ensure the \`opencode\` CLI is installed and ` +
         `model credentials are configured.\n${errorMessage(error)}`
@@ -515,6 +534,7 @@ export async function runReview(
   } finally {
     handle?.close();
     await auth.cleanup();
+    await restoreCwd();
   }
 }
 
