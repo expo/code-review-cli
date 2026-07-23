@@ -68,6 +68,28 @@ ecr review --pr 4057
 ecr review --pr 4057 --post
 ```
 
+Options:
+
+```
+--base <ref>       Base ref to diff against (default: merge-base with default branch)
+--head <ref>       Head ref to diff (default: working tree, incl. uncommitted changes)
+--staged           Review only staged changes
+--pr <n>           Review GitHub PR #n by number (diff fetched via gh, no checkout);
+                   not combinable with --base/--head/--staged
+--repo <owner/repo>  Repo for --pr (default: inferred from the current checkout)
+--post             With --pr: also post the result as the PR comment (needs gh auth).
+                   Omit to preview only; re-run with --post to publish.
+--agents <a,b>     Run only these agents (comma-separated ids); default: all
+--route            Let an LLM router pick the relevant agents from the diff
+--json             Emit machine-readable JSON on stdout
+--no-fail          Always exit 0 (otherwise a request_changes decision exits non-zero)
+-h, --help         Show help
+```
+
+`--pr` uses the PR's diff (authoritative) but reads your checked-out files for
+surrounding context; for full fidelity, `gh pr checkout <n>` first and run a plain
+`ecr review`.
+
 In CI it runs automatically from the scaffolded workflows — by label or a `/review`
 comment (see **CI usage**). From Claude Code (or another agent), add a slash command
 that runs it; eas-cli's
@@ -110,31 +132,6 @@ is a ready example to adapt.
 
 Built on the [OpenCode](https://opencode.ai) SDK, which spawns the model provider
 and applies Anthropic prompt caching automatically.
-
-</details>
-
-<details>
-<summary><b><code>ecr review</code> options</b></summary>
-
-```
---base <ref>       Base ref to diff against (default: merge-base with default branch)
---head <ref>       Head ref to diff (default: working tree, incl. uncommitted changes)
---staged           Review only staged changes
---pr <n>           Review GitHub PR #n by number (diff fetched via gh, no checkout);
-                   not combinable with --base/--head/--staged
---repo <owner/repo>  Repo for --pr (default: inferred from the current checkout)
---post             With --pr: also post the result as the PR comment (needs gh auth).
-                   Omit to preview only; re-run with --post to publish.
---agents <a,b>     Run only these agents (comma-separated ids); default: all
---route            Let an LLM router pick the relevant agents from the diff
---json             Emit machine-readable JSON on stdout
---no-fail          Always exit 0 (otherwise a request_changes decision exits non-zero)
--h, --help         Show help
-```
-
-`--pr` uses the PR's diff (authoritative) but reads your checked-out files for
-surrounding context; for full fidelity, `gh pr checkout <n>` first and run a plain
-`ecr review`.
 
 </details>
 
