@@ -84,9 +84,11 @@ Options (most to least common):
 | `--no-fail` | Always exit 0 (otherwise a `request_changes` decision exits non-zero). |
 | `-h`, `--help` | Show help. |
 
-`--pr` uses the PR's diff (authoritative) but reads your checked-out files for
-surrounding context; for full fidelity, `gh pr checkout <n>` first and run a plain
-`ecr review`.
+`--pr` uses the PR's diff (authoritative) and checks the PR head out into a
+throwaway worktree so the agents' surrounding-source reads and the verifier see the
+PR's versions of files — no manual `gh pr checkout` needed, and your working tree is
+left untouched. (If that materialization can't run — e.g. not a git checkout — it
+falls back to reading the current working directory.)
 
 In CI it runs automatically from the scaffolded workflows — by label or a `/review`
 comment (see **CI usage**). From Claude Code (or another agent), add a slash command

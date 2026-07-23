@@ -1,7 +1,11 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { run } from '../core/exec.js';
 import { parseUnifiedDiff } from '../core/diff.js';
 import type { DiffEntry, ReviewMetadata } from '../core/schema.js';
-import type { ReviewSource } from './source.js';
+import type { PreparedReadRoot, ReviewSource } from './source.js';
 
 export interface GitHubPRSourceOptions {
   prNumber: number;
@@ -55,5 +59,47 @@ export class GitHubPRSource implements ReviewSource {
       { cwd: this.options.cwd }
     );
     return parseUnifiedDiff(stdout);
+  }
+
+  /**
+   * Check the PR HEAD out into a throwaway git worktree so the agents and verifier
+   * read the PR's versions of files (not whatever branch happens to be checked out).
+   * Fetches the head from the repo's own URL — `refs/pull/<n>/head`, which the base
+   * repo hosts even for fork PRs — so it's always the correct PR, independent of the
+   * local `origin`. Fails SOFT: any problem (not a git repo, fetch/worktree error)
+   * returns null, and the review falls back to reading the current checkout.
+   */
+  async prepareReadRootAsync(): Promise<PreparedReadRoot | null> {
+    const cwd = this.options.cwd;
+    if (!this.options.repo) {
+      // Without an explicit owner/repo we can't build the fetch URL safely.
+      return null;
+    }
+    const url = `https://github.com/${this.options.repo}.git`;
+    const ref = `refs/pull/${this.options.prNumber}/head`;
+    let parent: string | undefined;
+    try {
+      await run('git', ['fetch', '--no-tags', '--depth=1', url, ref], { cwd });
+      parent = await mkdtemp(path.join(tmpdir(), 'ecr-prhead-'));
+      const dir = path.join(parent, 'head'); // must not pre-exist for `worktree add`
+      await run('git', ['worktree', 'add', '--detach', dir, 'FETCH_HEAD'], { cwd });
+      const removeParent = parent;
+      return {
+        dir,
+        cleanup: async () => {
+          try {
+            await run('git', ['worktree', 'remove', '--force', dir], { cwd });
+          } catch {
+            // best effort — fall through to removing the temp dir
+          }
+          await rm(removeParent, { recursive: true, force: true });
+        },
+      };
+    } catch {
+      if (parent) {
+        await rm(parent, { recursive: true, force: true }).catch(() => {});
+      }
+      return null;
+    }
   }
 }
