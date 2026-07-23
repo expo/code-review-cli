@@ -515,6 +515,8 @@ export async function runReview(
       output = { ...output, summary: reconcileSummary(output.summary, output.findings.length) };
     }
 
+    progress(formatUsageSummary(tokenTotals, sum(agentCosts)));
+
     await safeLog(logPath, {
       ...baseRecord,
       agentCosts,
@@ -765,6 +767,22 @@ export async function runGrowableQueue<T>(
 
 function sum(costs: Record<string, number>): number {
   return Object.values(costs).reduce((total, value) => total + value, 0);
+}
+
+/**
+ * One-line usage summary for the run. Emitted via progress so it lands in the CI
+ * job log (and the local terminal) — `.runs/reviews.jsonl` is ephemeral in CI, so
+ * this is the only place the token/cache totals are visible after a CI run, which
+ * is how prompt-cache effectiveness gets confirmed there.
+ */
+export function formatUsageSummary(tokens: TokenUsage, totalCost: number): string {
+  const parts = [`input ${tokens.input ?? 0}`, `output ${tokens.output ?? 0}`];
+  if (tokens.reasoning) {
+    parts.push(`reasoning ${tokens.reasoning}`);
+  }
+  parts.push(`cache read ${tokens.cache?.read ?? 0}`, `cache write ${tokens.cache?.write ?? 0}`);
+  const cost = totalCost > 0 ? ` (cost $${totalCost.toFixed(4)})` : '';
+  return `Token usage — ${parts.join(', ')}${cost}`;
 }
 
 
