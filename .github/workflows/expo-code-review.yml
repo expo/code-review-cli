@@ -17,9 +17,15 @@ concurrency:
 jobs:
   review:
     runs-on: ubuntu-latest
-    # Opt-in per PR: only run when the `ai-review` label is present. Remove this
-    # line to review every PR automatically.
-    if: contains(join(github.event.pull_request.labels.*.name, ','), 'ai-review')
+    # Trigger policy lives in .expo-code-review/config.jsonc (review.trigger); `ecr ci`
+    # self-gates on it (and honors the ai-review:skip label). This coarse gate just
+    # avoids spinning up a runner for a PR that explicitly opted out. Uses the array
+    # form of contains() for an EXACT label match (the old join()+substring form
+    # matched "ai-review:skip" as containing "ai-review").
+    # Prefer to gate entirely here instead? Set config trigger to "label" (or "all")
+    # and replace the line below with, e.g.:
+    #   if: contains(github.event.pull_request.labels.*.name, 'ai-review')
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'ai-review:skip') }}
     # Backstop so a stalled review fails fast instead of hanging.
     timeout-minutes: 60
     # A reviewer failure must never fail the PR's checks.

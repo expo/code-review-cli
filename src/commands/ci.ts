@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises';
 
+import type { LoadedConfig } from '../config/schema.js';
 import { loadReviewConfig } from '../config/load.js';
-import { repoRoot } from '../core/exec.js';
+import { repoRoot, run } from '../core/exec.js';
 import { errorMessage } from '../core/util.js';
 import { runReview } from '../core/review.js';
 import { GitHubPRSource } from '../sources/github-pr.js';
@@ -75,6 +76,27 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
     return;
   }
 
+  // Config-driven trigger policy (.expo-code-review/config.jsonc → review): decide
+  // whether this PR should be reviewed at all. Fetch current labels via gh (more
+  // authoritative than the possibly-stale event payload); on failure, default to
+  // reviewing so a label-read hiccup never silently skips a PR.
+  let labels: string[] = [];
+  try {
+    const { stdout } = await run(
+      'gh',
+      ['pr', 'view', String(prNumber), '--repo', repo, '--json', 'labels', '--jq', '.labels[].name'],
+      { cwd: process.cwd() }
+    );
+    labels = stdout.split('\n').map(name => name.trim()).filter(Boolean);
+  } catch (error) {
+    process.stderr.write(`CI reviewer: could not read PR labels (continuing): ${errorMessage(error)}\n`);
+  }
+  const gate = shouldReview(labels, config.review);
+  if (!gate.review) {
+    process.stderr.write(`CI reviewer: skipping — ${gate.reason}.\n`);
+    return;
+  }
+
   const reporter = new GitHubReporter({
     prNumber,
     repo,
@@ -123,6 +145,31 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
   }
 }
 
+
+/**
+ * Decide whether a PR should be reviewed, given its labels and the repo's trigger
+ * policy. `skipLabel` always wins (write-gated opt-out). In "label" mode a PR must
+ * carry `label` or a `label:<agent>` variant; in "all" mode every non-skipped PR
+ * is reviewed. Pure so it's unit-testable and matches exact label names (no
+ * substring surprises like `ai-review:skip` satisfying an `ai-review` check).
+ */
+export function shouldReview(
+  labels: string[],
+  review: LoadedConfig['review']
+): { review: boolean; reason: string } {
+  if (labels.includes(review.skipLabel)) {
+    return { review: false, reason: `the ${review.skipLabel} label is set` };
+  }
+  if (review.trigger === 'label') {
+    const optedIn = labels.some(
+      name => name === review.label || name.startsWith(`${review.label}:`)
+    );
+    return optedIn
+      ? { review: true, reason: `the ${review.label} label is set` }
+      : { review: false, reason: `trigger is "label" and no ${review.label} label is set` };
+  }
+  return { review: true, reason: 'trigger is "all"' };
+}
 
 /** Parse `--agents a,b,c` from argv (undefined = all agents). */
 function parseAgents(argv: string[]): string[] | undefined {
