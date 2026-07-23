@@ -529,10 +529,25 @@ plausible-but-wrong claim ships as-is. Fixes, cheapest/highest-leverage first:
    evidence didn't ground (see #1). Parallel, 3-min cap, fails open (keeps the finding
    if verification itself errors). Decision is re-derived after drops (no criticals
    left → soften `request_changes`).
-3. **Oracle checks.** A finding that asserts "won't compile / type error" can be
+3. **`--pr` verification fidelity — verifier must read the PR-HEAD version, not the
+   checked-out tree.** *(Open — found 2026-07-23 re-testing #4057.)* On a `--pr` run
+   the diff is authoritative from `gh`, but the agents' and the verifier's
+   surrounding-source reads come from whatever is checked out. Re-reviewing #4057
+   (the PR that *adds* `--account`) from a `main` checkout, the verifier read `main`'s
+   `init.ts` — which has no `--account` — and **false-refuted** the real "--account
+   ignored when already linked" finding ("the flag is rejected during parsing"). So
+   `--pr` verification silently depends on the local branch: it can refute real
+   findings by reading the wrong version — the mirror image of the quote-grounding
+   over-drop we just fixed (#1). Fix: for `--pr`, make the reviewed tree the PR head
+   — check out the head into a temp worktree, or fetch head blobs for the files the
+   agents/verifier open — so reads match the diff. (Also surfaced: the reviewer
+   *config* itself isn't on an older PR's branch, reinforcing the base-ref-config
+   work in the merge-boundary section — the review needs config-from-a-known-ref and
+   source-from-PR-head, resolved independently.)
+4. **Oracle checks.** A finding that asserts "won't compile / type error" can be
    validated against `tsc`; "crashes"/"breaks tests" against the test suite. At
    minimum, never surface a compile-error claim when the package compiles.
-4. **Severity-gated effort:** criticals get the most scrutiny — they carry the most
+5. **Severity-gated effort:** criticals get the most scrutiny — they carry the most
    weight and are the most damaging when wrong.
 
 ### B. Finding stability (stop the hamster wheel)
