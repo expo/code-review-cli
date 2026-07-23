@@ -7,6 +7,7 @@ import {
   decisionAfterVerification,
   reconcileSummary,
   isAuthError,
+  formatUsageSummary,
 } from '../core/review.js';
 import type { PatchWorkspaceFile } from '../core/noise.js';
 import type { CoordinatorOutput, Finding } from '../core/schema.js';
@@ -146,4 +147,24 @@ test('isAuthError does not flag non-auth failures', () => {
   ]) {
     expect(isAuthError(new Error(message))).toBe(false);
   }
+});
+
+test('formatUsageSummary reports token + cache totals (and cost when present)', () => {
+  const s = formatUsageSummary(
+    { input: 1200, output: 340, reasoning: 50, cache: { read: 108_000, write: 900 } },
+    0.0123
+  );
+  expect(s).toContain('input 1200');
+  expect(s).toContain('output 340');
+  expect(s).toContain('reasoning 50');
+  expect(s).toContain('cache read 108000');
+  expect(s).toContain('cache write 900');
+  expect(s).toContain('$0.0123');
+});
+
+test('formatUsageSummary omits cost when zero and reasoning when absent', () => {
+  const s = formatUsageSummary({ input: 10, output: 5 }, 0);
+  expect(s).toContain('cache read 0');
+  expect(s).not.toContain('reasoning');
+  expect(s).not.toContain('cost');
 });
