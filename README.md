@@ -1,26 +1,48 @@
-# expo-code-review
+# @expo/code-review-cli
 
 A config-driven, multi-agent AI code reviewer. Specialist agents review a diff in
 parallel; a coordinator consolidates their findings into one structured review.
-Runs the same engine locally (advisory) and in CI (posts a PR comment).
-
-> **Status: experimental.** The reviewer is **comment-only and non-blocking** — it
-> never blocks a merge and never auto-approves. Published as
-> [`@expo/code-review-cli`](https://www.npmjs.com/package/@expo/code-review-cli);
-> consuming repos add their agents + settings under `.expo-code-review/` and run it
-> via `npx`. See [`ROADMAP.md`](./ROADMAP.md).
-
-The CLI is the **engine**. Each repo supplies its own agents and settings under
+The same engine runs locally (advisory) and in CI (posts one PR comment). The CLI
+is the **engine** — each repo supplies its own agents and settings under
 `.expo-code-review/`, so behavior is configured per-repo, not baked in.
 
-## How it works
+> **Status: experimental.** Comment-only and non-blocking — it never blocks a merge
+> and never auto-approves. See [`ROADMAP.md`](./ROADMAP.md).
 
+```mermaid
+flowchart TD
+  SRC["Source<br/>local git · GitHub PR (gh)"] --> FILTER["Noise filter<br/>drop lockfiles · generated · binary"]
+  FILTER --> CHUNK["Chunk<br/>by changed lines (large diffs only)"]
+  CHUNK --> AGENTS["Agents (parallel)<br/>each .md in agents/ · read·grep·glob·list"]
+  CHUNK --> XCUT["Cross-cutting pass<br/>multi-file issues (large diffs)"]
+  AGENTS --> COORD["Coordinator<br/>dedupe · re-judge · decide"]
+  XCUT --> COORD
+  COORD --> VERIFY["Verify<br/>quote-ground · adversarially verify criticals"]
+  VERIFY --> REPORT["Reporter<br/>one PR comment (CI) · terminal (local)"]
 ```
-diff source ─▶ noise filter ─▶ chunk ─▶ agents (parallel) ─▶ coordinator ─▶ reporter
-(git / gh)     drop lockfiles,  by       each agent reviews    dedupe,        one PR comment
-               generated,       changed  every chunk +         re-judge,      (CI) or terminal
-               binary files     lines    a cross-cutting pass   decide         output (local)
+
+## Usage
+
+Run via `npx @expo/code-review-cli <command>` (or the `ecr` / `expo-code-review`
+binary once installed; `bun run src/cli.ts <command>` when developing this repo).
+
+| Command | What it does |
+| --- | --- |
+| `ecr review [options]` | Review local changes and print an advisory review (default). |
+| `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
+| `ecr init [--with-workflow] [--force]` | Scaffold `.expo-code-review/` into this repo. |
+| `ecr doctor` | Check environment, config, and model credentials. |
+
+```bash
+ecr review                      # review your working-tree changes
+ecr review --pr 4057            # review a GitHub PR by number (preview only)
+ecr review --pr 4057 --post     # …and post it as the PR comment
 ```
+
+---
+
+<details>
+<summary><b>How it works</b></summary>
 
 - **Source** — local git (working tree, staged, or a ref range) or a GitHub PR
   (diff + metadata fetched over the `gh` API).
@@ -34,6 +56,8 @@ diff source ─▶ noise filter ─▶ chunk ─▶ agents (parallel) ─▶ coo
   run in parallel with read-only repo tools (`read`/`grep`/`glob`/`list`).
 - **Coordinator** — a single pass that dedupes, re-judges severity, and produces
   the final `{ decision, findings, summary }`.
+- **Verify** — quote-grounds every finding against the real file and adversarially
+  verifies criticals, so a confident-but-wrong finding doesn't ship.
 - **Reporter** — posts/updates a single fingerprinted PR comment (CI), or prints
   a grouped summary (local). Findings below the configured severity floor are
   suppressed.
@@ -41,20 +65,10 @@ diff source ─▶ noise filter ─▶ chunk ─▶ agents (parallel) ─▶ coo
 Built on the [OpenCode](https://opencode.ai) SDK, which spawns the model provider
 and applies Anthropic prompt caching automatically.
 
-## Commands
+</details>
 
-Run via `npx @expo/code-review-cli <command>`, or as the `ecr` /
-`expo-code-review` binary once installed. When developing this repo itself, use the
-`dev` script (`bun run src/cli.ts <command>`).
-
-| Command | What it does |
-| --- | --- |
-| `ecr review [options]` | Review local changes and print an advisory review (default command). |
-| `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
-| `ecr init [--with-workflow] [--force]` | Scaffold `.expo-code-review/` (config, agents, prompts) in this repo. |
-| `ecr doctor` | Check environment, config, and model credentials. |
-
-### `ecr review` options
+<details>
+<summary><b><code>ecr review</code> options</b></summary>
 
 ```
 --base <ref>       Base ref to diff against (default: merge-base with default branch)
@@ -72,18 +86,14 @@ Run via `npx @expo/code-review-cli <command>`, or as the `ecr` /
 -h, --help         Show help
 ```
 
-Reviewing a PR without checking it out — preview, then optionally post:
-
-```bash
-ecr review --pr 4057            # print the review here; posts nothing
-ecr review --pr 4057 --post     # re-run and post it as the PR comment
-```
-
 `--pr` uses the PR's diff (authoritative) but reads your checked-out files for
 surrounding context; for full fidelity, `gh pr checkout <n>` first and run a plain
 `ecr review`.
 
-## Configuration — `.expo-code-review/`
+</details>
+
+<details>
+<summary><b>Configuration — <code>.expo-code-review/</code></b></summary>
 
 ```
 .expo-code-review/
@@ -103,14 +113,14 @@ surrounding context; for full fidelity, `gh pr checkout <n>` first and run a pla
 ---
 description: One line the router uses to decide relevance.
 alwaysRun: true        # run even when the router would skip this agent
-model: anthropic/claude-sonnet-5     # override the default model (e.g. haiku for the coordinator)
+model: anthropic/claude-sonnet-5     # override the default model
 temperature: 0.1
 ---
 
 # Agent instructions in Markdown…
 ```
 
-### `config.jsonc`
+`config.jsonc` (JSONC — comments + trailing commas supported):
 
 ```jsonc
 {
@@ -125,9 +135,10 @@ temperature: 0.1
 }
 ```
 
-JSONC (comments + trailing commas) is supported.
+</details>
 
-## Authentication
+<details>
+<summary><b>Authentication</b></summary>
 
 Model credentials come from OpenCode. Two modes, set in `config.auth`:
 
@@ -140,123 +151,89 @@ Model credentials come from OpenCode. Two modes, set in `config.auth`:
 Set **`REVIEWER_MODEL`** to override the model for every agent and use your own
 OpenCode login instead of the repo's configured credentials — handy locally
 (e.g. `REVIEWER_MODEL=openai/gpt-5.4-mini-fast`). There is no shared fallback key;
-if a run fails for lack of credentials, authenticate a provider in OpenCode.
+if a run fails for lack of credentials, authenticate a provider in OpenCode. Run
+`ecr doctor` to diagnose setup.
 
-Run `ecr doctor` to diagnose setup.
+</details>
 
-## Model selection
+<details>
+<summary><b>Model selection</b></summary>
 
-Models are resolved with this precedence: **`REVIEWER_MODEL` env** (global override)
-→ per-file **frontmatter `model:`** → **`config.jsonc` `model`** (the default). So a
-repo can run a mixed setup, and a developer can override everything locally.
+Precedence: **`REVIEWER_MODEL` env** (global override) → per-file **frontmatter
+`model:`** → **`config.jsonc` `model`** (the default). So a repo can run a mixed
+setup, and a developer can override everything locally.
 
-Rules of thumb for the reviewer's workload:
-
-- **Specialist agents** (correctness/security/consistency) do the real bug-finding
-  and benefit from a reasoning-tier model — **Sonnet** is the quality/speed sweet
-  spot (the default for correctness/consistency). **Opus** finds more but is slower
-  and more rate-limited, which makes large-PR timeouts worse — so scope it to the
-  one agent where the extra threat-model reasoning pays off most: **security runs on
-  Opus** (set in `security.md` frontmatter), the rest on Sonnet. This keeps the
-  latency/rate-limit cost to a single agent, and the timeout handling (subdivide +
-  per-fetch deadline) keeps a slow Opus pass from hanging the run.
-- **The coordinator** only consolidates text (no repo tools), so a fast, cheap
-  model — **Haiku** — fits well and keeps the serial tail short. Set it in
-  `coordinator.md` frontmatter.
+- **Specialist agents** (correctness/security/consistency) benefit from a
+  reasoning-tier model — **Sonnet** is the quality/speed sweet spot (default for
+  correctness/consistency). **Opus** finds more but is slower and more
+  rate-limited, so scope it to the highest-stakes agent: **security runs on Opus**
+  (set in `security.md` frontmatter), the rest on Sonnet.
+- **The coordinator** makes the final call (dedupe / re-judge / decide) — worth a
+  strong model; set it in `coordinator.md` frontmatter.
 - If latency/timeouts dominate on big PRs, moving the specialists to a faster model
   is the most direct lever (a real recall tradeoff — measure it).
-
-Example mixed setup:
-
-```jsonc
-// config.jsonc
-"model": "anthropic/claude-sonnet-5"        // default: specialists + cross-file pass
-```
-```markdown
-<!-- security.md frontmatter -->  → Opus for the highest-stakes agent
----
-model: anthropic/claude-opus-4-8
----
-
-<!-- coordinator.md frontmatter --> → Haiku for the text-only consolidation
----
-model: anthropic/claude-haiku-4-5-20251001
----
-```
 
 There is no automatic cross-provider "equivalent" fallback — that would silently
 change which model reviewed your code. Use an explicit override instead.
 
-## Reliability
+</details>
 
-A review must never hang, silently produce nothing, or present an unreviewed
-change as "looks good":
+<details>
+<summary><b>Reliability</b> — never hangs, never silently drops work</summary>
 
-- **Per-task time caps** — focused chunk passes get 15 min; the cross-cutting pass
-  gets 25 min; the coordinator gets 10 min. A global passes budget (32 min) bounds
-  all passes incl. the subdivision waves below, so everything fits inside the CI
-  job's `timeout-minutes` (60), since the coordinator + verification run afterward.
+- **Per-task time caps** — chunk passes 15 min; cross-cutting 25 min; coordinator
+  10 min. A global passes budget (32 min) bounds all passes incl. the subdivision
+  waves, fitting inside the CI job's `timeout-minutes` (60).
 - **Tool-call cap** — a pass that makes too many `read`/`grep` calls without
-  finishing is *wandering*, not converging (the usual cause of a non-convergent
-  timeout). Hitting the cap trips the same soft landing as the time cap.
+  finishing is *wandering*, not converging; hitting the cap trips the soft landing.
 - **Soft landing on timeout** — at either cap, the run is interrupted and the agent
   is asked to return the findings it already has, rather than discarding its work.
-- **Subdivide-on-timeout — the reviewer never silently drops work.** If a pass
-  times out with nothing to show, its chunk is split in half and the halves are
-  re-reviewed (recursively, down to a single file). A chunk that won't converge at
-  13 files almost always converges at 6. If even a single file won't converge, a
-  fast **no-tools fallback** reviews just its inlined diff (a lighter review, but
-  never nothing). Only if *that* can't finish inside the budget is a coverage gap
-  reported — and it is always reported, never silent.
+- **Subdivide-on-timeout** — a pass that times out with nothing to show has its
+  chunk split in half and the halves re-reviewed (recursively, down to a single
+  file), then a fast **no-tools fallback** over the inlined diff. Only a genuinely
+  un-reducible pass reports a coverage gap — and it is always reported, never silent.
 - **Parse failures are retried** (same session, then once in a bounded fresh
-  session); that is separate from the timeout path above.
-- **A failed run never reads as "Approve"** — if every pass fails, the review says
-  it could not complete (treat as unreviewed); if some passes fail, the decision
-  is never a clean approve, and the coordinator is told coverage was reduced.
-- **The coordinator can't sink the run** — if the consolidation step fails, findings
-  are merged deterministically and still posted, rather than thrown away.
-- **Coverage notes** — passes that timed out or failed are listed so a real
-  coverage gap is never silent (routine noise filtering is *not* flagged — it's
-  expected and stays in the run log).
-- **CI always gets a terminal state** — on any failure the PR gets a comment saying
-  the reviewer didn't run, not a stuck reaction and silence.
+  session) — separate from the timeout path.
+- **A failed run never reads as "Approve"** — all passes fail → "could not
+  complete"; some fail → never a clean approve, and coverage-reduced.
+- **The coordinator can't sink the run** — if consolidation fails, findings are
+  merged deterministically and still posted.
+- **Coverage notes** — passes that timed out/failed are listed (routine noise
+  filtering is *not* flagged — it's expected and stays in the run log).
+- **CI always gets a terminal state** — on any failure the PR gets a "didn't run"
+  comment, not a stuck reaction and silence.
 
-## CI usage
+</details>
 
-`ecr init --with-workflow` scaffolds a `pull_request` workflow. In this repo the
-reviewer runs via two workflows, split along a clean line: **comments = one-shot
-actions, labels = persistent configuration.**
+<details>
+<summary><b>CI usage</b></summary>
 
-- **`expo-code-review-command.yml`** — one-shot `/review` comments (maintainers):
-  - `/review` — run once now; the router picks the agents
-  - `/review all` — run once with every agent
-  - `/review correctness security` — run once with just those agents
+`ecr init --with-workflow` scaffolds a `pull_request` workflow. Split along a clean
+line: **comments = one-shot actions, labels = persistent configuration.**
 
-  These never change configuration.
-- **`expo-code-review.yml`** — continuous review, configured by **labels**:
-  - `ai-review` — auto-review every push; the router picks the agents
-  - `ai-review:all` — auto-review with every agent
-  - `ai-review:<agent>` — auto-review with only those agents (e.g.
-    `ai-review:security`); combine several to widen the set
-  - `ai-review:skip` — never auto-review this PR (opt-out)
-- **`expo-code-review-dismiss.yml`** — dismiss/restore a finding on a PR (maintainers):
-  - `/dismiss <id> [<id> …] [-- reason]` — hide finding(s); they move to a collapsed
-    "Dismissed" section and stay dismissed across re-reviews
-  - `/undismiss <id> …` — restore them
+- **command workflow** — one-shot `/review` comments (maintainers): `/review`
+  (router picks agents), `/review all`, `/review correctness security`. Never
+  changes configuration.
+- **auto workflow** — continuous review, configured by **labels**: `ai-review`
+  (router), `ai-review:all`, `ai-review:<agent>` (e.g. `ai-review:security`;
+  combine to widen), `ai-review:skip` (opt-out).
+- **dismiss workflow** — `/dismiss <id> [… -- reason]` / `/undismiss <id>`
+  (maintainers). Each finding shows a short `` `id:…` ``. Dismissal is a **display
+  filter only** — the reviewer still analyzes everything, and a `critical`/`secrets`
+  finding can never be hidden. (An inline `expo-code-review-ignore` comment on/above
+  a line does the same, with the same critical/secrets carve-out.)
 
-  Each finding shows a short `` `id:…` `` in the comment. Dismissal is a **display
-  filter only** — the reviewer still analyzes the code every run, and a `critical`
-  or `secrets` finding can never be hidden this way. (Also: an inline
-  `expo-code-review-ignore` comment on/above a line suppresses that line's findings,
-  same critical/secrets carve-out.)
+These workflows are comment-only (they never fail the PR's checks). The engine runs
+as the published package via `npx`, so no PR-controlled code is built.
 
-These workflows are comment-only (they never fail the PR's checks). For security,
-they build/run only the trusted base ref (never the PR head) — see the comment at
-the top of each file.
+</details>
 
-## Run logs
+<details>
+<summary><b>Run logs</b></summary>
 
 Each run appends a JSON line to `.expo-code-review/.runs/reviews.jsonl` with the
 inputs, decision, finding count, duration, per-agent cost, and aggregate token
-usage (including prompt-cache read/write counts) — for auditing and measuring
+usage (incl. prompt-cache read/write counts) — for auditing and measuring
 cost/latency/cache reuse over time.
+
+</details>
