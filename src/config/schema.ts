@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { z } from "zod";
 
 export const ReviewConfigSchema = z.object({
@@ -80,6 +82,105 @@ export const ReviewConfigSchema = z.object({
     .default({ trigger: "all", label: "ai-review", skipLabel: "ai-review:skip" }),
 });
 export type RawReviewConfig = z.infer<typeof ReviewConfigSchema>;
+
+/** One routing scope: ordered globs → a directory containing .expo-code-review/. */
+export const RoutingScopeSchema = z.object({
+  /** Kebab-case id; used in comments, fingerprint namespacing, --scopes. */
+  name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "scope name must be kebab-case"),
+  /** Ordered globs (same dialect as noise.additionalIgnores: ** and *). */
+  paths: z.array(z.string().min(1)).min(1),
+  /** Repo-relative dir whose .expo-code-review/ holds the scope's config ('.' = root).
+   * routing.jsonc is read from the PR-head checkout, so this field is
+   * PR-controllable input: absolute paths and `..` traversal are rejected so a
+   * scope config can never resolve outside the repo. */
+  config: z
+    .string()
+    .min(1)
+    .refine(
+      (value) => !path.isAbsolute(value) && !path.normalize(value).split(/[/\\]/).includes(".."),
+      { message: 'scope config must be a repo-relative path without ".." segments' },
+    ),
+});
+
+export const RoutingManifestSchema = z
+  .object({
+    /** How N scopes render on one PR. */
+    comment: z.enum(["single", "per-scope"]).default("single"),
+    defaults: z
+      .object({
+        /** The ONLY manifest-level place auth is honored (locks the root value).
+         * Unwrap the inner `.default()` first: in zod v4 a `.default().optional()`
+         * chain still fires the default when the key is absent, which would make
+         * `defaults.auth` a phantom `{mode:'api-key',provider:'anthropic'}` for every
+         * manifest that omits auth and silently override the root config's real auth. */
+        auth: ReviewConfigSchema.shape.auth.unwrap().optional(),
+        /** Agent ids injected into every scope with alwaysRun, from the ROOT roster. */
+        enforceAgents: z.array(z.string()).default([]),
+        /** Root comment marker; per-scope tags derive from it. */
+        commentTag: z.string().default("expo-ai-code-reviewer"),
+      })
+      .default({ enforceAgents: [], commentTag: "expo-ai-code-reviewer" }),
+    /** Ordered; LAST matching scope wins per changed file (CODEOWNERS discipline). */
+    scopes: z.array(RoutingScopeSchema).min(1),
+  })
+  .superRefine((manifest, ctx) => {
+    // unique scope names; unique config dirs (after path.normalize).
+    const seenNames = new Set<string>();
+    for (const scope of manifest.scopes) {
+      if (seenNames.has(scope.name)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `duplicate scope name: ${scope.name}`,
+          path: ["scopes"],
+        });
+      }
+      seenNames.add(scope.name);
+    }
+    const seenDirs = new Map<string, string>();
+    for (const scope of manifest.scopes) {
+      const norm = path.normalize(scope.config).replace(/[/\\]+$/, "");
+      if (seenDirs.has(norm)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `duplicate scope config dir: ${scope.config} (already used by scope "${seenDirs.get(norm)}")`,
+          path: ["scopes"],
+        });
+      }
+      seenDirs.set(norm, scope.name);
+    }
+  });
+export type RoutingManifest = z.infer<typeof RoutingManifestSchema>;
+export type RoutingScope = z.infer<typeof RoutingScopeSchema>;
+export type RoutingDefaults = RoutingManifest["defaults"];
+
+/**
+ * Scope config = root config MINUS the centrally locked keys. Allowlist of
+ * scope-overridable keys (Turborepo-style, graft 6): model, policy, chunk,
+ * noise (+ the prompt files living beside it: shared.md, coordinator.md,
+ * agents/). NEVER auth or breakGlass — declaring either fails parsing at the
+ * Zod level so IDE/doctor catch it before CI. commentTag is also locked: a
+ * scope's comment marker is always DERIVED (`<rootTag>:<scope>`; the default
+ * scope keeps the root tag) so `ecr ci`'s post/clear/reconcile paths and a
+ * standalone `ecr review --scope --post` always target the same marker — an
+ * honored per-scope tag would let the two halves strand each other's comments.
+ */
+export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
+  auth: true,
+  breakGlass: true,
+  commentTag: true,
+}).extend({
+  auth: z
+    .never({ error: "auth is locked to the root config; remove it from this scope config" })
+    .optional(),
+  breakGlass: z.never({ error: "breakGlass is locked to the root config" }).optional(),
+  commentTag: z
+    .never({
+      error:
+        "commentTag is locked: per-scope comment markers are derived as <rootTag>:<scope>; remove it from this scope config",
+    })
+    .optional(),
+});
+export type RawScopeReviewConfig = z.infer<typeof ScopeReviewConfigSchema>;
 
 /** A single agent after prompt files are read and models are resolved. */
 export interface LoadedAgent {
