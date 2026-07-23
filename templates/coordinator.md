@@ -1,7 +1,9 @@
 ---
-# The coordinator only consolidates text (no repo tools), so a fast, cheap model
-# fits and keeps this serial step from adding latency. Override as you like.
-model: anthropic/claude-haiku-4-5-20251001
+# The coordinator makes the final call — de-duping, re-judging severity, and
+# deciding — so it runs on Opus: consolidation quality matters more here than the
+# small serial-tail latency it adds (no repo tools, so it's a single bounded pass).
+# Override with a cheaper model if you'd rather trade decision quality for latency.
+model: anthropic/claude-opus-4-8
 ---
 
 # Coordinator — consolidation & decision
