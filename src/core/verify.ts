@@ -22,36 +22,81 @@ export interface VerificationResult {
 }
 
 /**
- * Deterministic quote-grounding: does the finding's `evidence` snippet actually
- * appear in the file? Returns `unknown` (don't judge) when there's too little
- * evidence or the file can't be read (e.g. a base-ref checkout that lacks a
- * PR-added file), so we never drop a finding we couldn't actually check.
+ * Break `evidence` into normalized, substantive fragments for fuzzy matching:
+ * split on newlines AND ellipses (the model often elides with `…`/`...`), strip
+ * leading diff markers (`+`/`-`) and comment markers (`//`, `#`, `*`) it may have
+ * copied along, normalize, and keep only fragments long enough to be meaningful.
  */
+export function evidenceFragments(evidence: string): string[] {
+  return evidence
+    .split(/\r?\n|…|\.\.\./)
+    .map(line => line.replace(/^[+\-\s]*/, '').replace(/^(\/\/+|#+|\*+|\/\*)\s?/, ''))
+    .map(normalizeCode)
+    .filter(fragment => fragment.length >= MIN_EVIDENCE_LEN);
+}
+
+/**
+ * Does the finding's `evidence` correspond to code in the file?
+ *  - exact (whitespace-normalized) substring → 'present'
+ *  - else any substantive line/fragment present verbatim → 'present' (fuzzy: this
+ *    rescues cross-line quotes, ellipsis elisions, and copied comment/diff markers)
+ *  - a real quote that matches nothing → 'absent'
+ * Returns 'unknown' (don't judge) when evidence is too short to conclude anything
+ * or the file can't be read, so we never drop a finding we couldn't actually check.
+ * NOTE: 'absent' is NOT terminal — the caller escalates it to the LLM verifier
+ * rather than dropping, because an imperfect quote does not mean a false finding.
+ */
+export function matchEvidence(
+  evidence: string,
+  content: string
+): 'present' | 'absent' | 'unknown' {
+  const normEvidence = normalizeCode(evidence);
+  if (normEvidence.length < MIN_EVIDENCE_LEN) {
+    return 'unknown';
+  }
+  const normContent = normalizeCode(content);
+  if (normContent.includes(normEvidence)) {
+    return 'present';
+  }
+  const fragments = evidenceFragments(evidence);
+  if (fragments.length === 0) {
+    return 'unknown';
+  }
+  return fragments.some(fragment => normContent.includes(fragment)) ? 'present' : 'absent';
+}
+
+/** Read the cited file and grade the evidence against it (see matchEvidence). */
 async function evidencePresence(
   finding: Finding,
   cwd: string
 ): Promise<'present' | 'absent' | 'unknown'> {
-  const evidence = normalizeCode(finding.evidence ?? '');
-  if (evidence.length < MIN_EVIDENCE_LEN) {
-    return 'unknown';
-  }
   let content: string;
   try {
     content = await readFile(path.resolve(cwd, finding.file), 'utf8');
   } catch {
     return 'unknown';
   }
-  return normalizeCode(content).includes(evidence) ? 'present' : 'absent';
+  return matchEvidence(finding.evidence ?? '', content);
 }
 
 /**
- * Guard against hallucinated findings before they're surfaced:
- *  1. Quote-grounding (deterministic, all findings): drop any whose quoted
- *     `evidence` is definitively not in the file.
- *  2. Adversarial verify (LLM, criticals only): a skeptical pass re-reads the real
- *     file and must confirm the critical is genuine; refuted criticals are dropped.
- * Fails OPEN — if a verify call itself errors, the critical is kept (better a
- * possible false positive than hiding a real critical on an infra hiccup).
+ * Guard against hallucinated findings before they're surfaced, WITHOUT silently
+ * dropping real ones on an imperfect quote:
+ *  1. Quote-grounding (deterministic, all findings): grade each finding's `evidence`
+ *     against the file (exact + fuzzy — see matchEvidence).
+ *  2. LLM verify (adversarial, in parallel) runs for a finding when EITHER:
+ *       - its evidence is `absent` (any severity) — the quote isn't grounded, but
+ *         that alone doesn't make the finding false, so the verifier re-reads the
+ *         real file (and nearby files) and judges the underlying problem; or
+ *       - it's a `critical` (even if grounded) — a skeptical double-check.
+ *     A finding is dropped ONLY when the verifier refutes it. `present`/`unknown`
+ *     non-criticals are kept without an LLM call (the fast, cheap path).
+ * Fails OPEN — if a verify call itself errors, the finding is kept (better a
+ * possible false positive than hiding a real finding on an infra hiccup).
+ *
+ * This replaces the old "absent evidence → hard drop" rule, which was suppressing
+ * real findings whose natural evidence (a structural/absence bug, a cross-line
+ * quote, a slightly-wrong location) wasn't a verbatim substring.
  */
 export async function verifyFindings(
   handle: OpencodeHandle,
@@ -63,66 +108,60 @@ export async function verifyFindings(
   let cost = 0;
   const tokens: TokenUsage = {};
 
-  // Phase 1 — quote-grounding for every finding.
+  // Phase 1 — deterministic quote-grounding for every finding.
   const checked = await Promise.all(
     findings.map(async finding => ({ finding, presence: await evidencePresence(finding, cwd) }))
   );
-  const survivors: Finding[] = [];
+
+  // Decide which findings need an LLM check vs. can be kept directly.
+  const verdicts = new Map<Finding, 'keep' | 'drop'>();
+  const toVerify: Array<{ finding: Finding; presence: 'present' | 'absent' | 'unknown' }> = [];
   for (const { finding, presence } of checked) {
-    if (presence === 'absent') {
-      dropped.push({ finding, reason: 'quoted code not found in file (likely hallucinated)' });
-      onProgress?.(
-        `  verify: dropped ${finding.severity} "${finding.title}" — quoted code not in ${finding.file}`
-      );
+    if (presence === 'absent' || finding.severity === 'critical') {
+      toVerify.push({ finding, presence });
     } else {
-      survivors.push(finding);
+      verdicts.set(finding, 'keep'); // grounded (or uncheckable) non-critical
     }
   }
 
-  // Phase 2 — adversarial verify for surviving criticals, in parallel.
-  const refuted = new Set<Finding>();
+  // Phase 2 — LLM verify (parallel). Refuted → drop; verified or errored → keep.
   await Promise.all(
-    survivors
-      .filter(finding => finding.severity === 'critical')
-      .map(async (finding, index) => {
-        try {
-          const { value, cost: verifyCost, tokens: verifyTokens } = await promptAndParse(
-            handle,
-            {
-              agent: VERIFIER_AGENT,
-              system: buildVerifierSystem(),
-              text: buildVerifierTask(finding),
-              title: `verify-${index}`,
-              maxWaitMs: VERIFY_TIMEOUT_MS,
-              finalizeOnTimeout: true,
-            },
-            parseVerdict
-          );
-          cost += verifyCost;
-          addTokenUsage(tokens, verifyTokens);
-          if (!value.verified) {
-            refuted.add(finding);
-            onProgress?.(
-              `  verify: dropped critical "${finding.title}" — ${value.reason || 'refuted by verifier'}`
-            );
-          }
-        } catch (error) {
-          // Fail open: keep the critical if verification itself failed.
+    toVerify.map(async ({ finding, presence }, index) => {
+      try {
+        const { value, cost: verifyCost, tokens: verifyTokens } = await promptAndParse(
+          handle,
+          {
+            agent: VERIFIER_AGENT,
+            system: buildVerifierSystem(),
+            text: buildVerifierTask(finding, { evidenceUngrounded: presence === 'absent' }),
+            title: `verify-${index}`,
+            maxWaitMs: VERIFY_TIMEOUT_MS,
+            finalizeOnTimeout: true,
+          },
+          parseVerdict
+        );
+        cost += verifyCost;
+        addTokenUsage(tokens, verifyTokens);
+        if (value.verified) {
+          verdicts.set(finding, 'keep');
+        } else {
+          verdicts.set(finding, 'drop');
+          dropped.push({ finding, reason: value.reason || 'refuted by verifier' });
           onProgress?.(
-            `  verify: could not verify critical "${finding.title}" (${errorMessage(error)}); keeping it`
+            `  verify: dropped ${finding.severity} "${finding.title}" — ${value.reason || 'refuted by verifier'}`
           );
         }
-      })
+      } catch (error) {
+        // Fail open: keep the finding if verification itself failed.
+        verdicts.set(finding, 'keep');
+        onProgress?.(
+          `  verify: could not verify "${finding.title}" (${errorMessage(error)}); keeping it`
+        );
+      }
+    })
   );
 
-  const kept: Finding[] = [];
-  for (const finding of survivors) {
-    if (refuted.has(finding)) {
-      dropped.push({ finding, reason: 'refuted by verifier' });
-    } else {
-      kept.push(finding);
-    }
-  }
-
+  // Preserve original order.
+  const kept = findings.filter(finding => verdicts.get(finding) === 'keep');
   return { kept, dropped, cost, tokens };
 }

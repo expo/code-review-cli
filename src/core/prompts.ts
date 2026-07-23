@@ -207,26 +207,38 @@ export function buildCrossCuttingTask(
 export function buildVerifierSystem(): string {
   return [
     'You are a skeptical verifier of a single code-review finding. Your default is',
-    'DISTRUST. Using your read/grep tools, open the cited file, locate the code, and',
-    'confirm the finding against what the source ACTUALLY says.',
+    'DISTRUST. Using your read/grep tools, open the cited file (search nearby files',
+    'if the code is not exactly there), locate the relevant code, and judge whether',
+    'the described PROBLEM is actually present in the source.',
+    '',
+    'Judge the SUBSTANCE, not the wording. The finding\'s quoted "evidence" may be',
+    'paraphrased, abbreviated, quoted across non-adjacent lines, or slightly',
+    'misquoted, and its file/line may be approximate. None of that alone makes the',
+    'finding false — verify against what the code actually does. Do NOT reject merely',
+    'because the quoted snippet is not a verbatim match; reject only if the',
+    'underlying problem is not real.',
     '',
     'Mark verified=false (reject) if any of these hold:',
-    '- the code the finding describes or quotes is not actually present as claimed',
-    '  (it misread or invented the code),',
-    '- the described failure/exploit cannot actually occur,',
+    '- the described problem does not actually occur in the code (it misread or',
+    '  invented the behavior),',
+    '- the described failure/exploit cannot actually happen,',
     "- the claim is internally contradictory (e.g. asserts a type error in code that",
     '  compiles), or',
-    '- you cannot substantiate it after reading the file.',
+    '- you cannot substantiate the underlying issue after reading the file.',
     '',
-    'Only mark verified=true when you have CONFIRMED, from the real source, that the',
-    'flagged code exists as described and the problem is genuine. When unsure, reject.',
+    'Mark verified=true when you have CONFIRMED, from the real source, that the',
+    'described problem genuinely exists. When genuinely unsure whether it is real,',
+    'reject.',
     '',
     'Return ONLY this JSON object and nothing else:',
     '{"verified": true|false, "reason": "one concise sentence grounded in the file"}',
   ].join('\n');
 }
 
-export function buildVerifierTask(finding: Finding): string {
+export function buildVerifierTask(
+  finding: Finding,
+  opts: { evidenceUngrounded?: boolean } = {}
+): string {
   const lines = [
     'Verify this finding by reading the real source (do not trust its wording):',
     '',
@@ -243,6 +255,15 @@ export function buildVerifierTask(finding: Finding): string {
       '<<<EVIDENCE',
       finding.evidence,
       'EVIDENCE'
+    );
+  }
+  if (opts.evidenceUngrounded) {
+    lines.push(
+      '',
+      'NOTE: the quoted evidence could NOT be located verbatim in the file. It may be',
+      'a paraphrase, an elision, or a slightly wrong location — do not reject on that',
+      'basis alone. Read the file (and nearby files) and judge whether the described',
+      'problem is genuinely present.'
     );
   }
   lines.push(

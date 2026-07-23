@@ -496,17 +496,31 @@ is dependable.
 Root cause: the reviewer runs one pass per agent with no verification, so an LLM's
 plausible-but-wrong claim ships as-is. Fixes, cheapest/highest-leverage first:
 
-1. ✅ **Quote-grounding (deterministic) — shipped.** Findings now carry an
-   `evidence` field (the flagged code, copied verbatim); `verifyFindings` checks it
-   against the real file and drops any finding whose evidence isn't there. Verified:
-   a hallucinated critical quoting `const item = next++` is dropped because that
-   text isn't in the file. Fails safe — `unknown` (too little evidence / file not on
-   disk) never drops.
-2. ✅ **Adversarial verify pass for criticals — shipped.** A restricted `verifier`
-   agent (read+grep) re-reads the cited file and must confirm each surviving critical
-   is genuine (biased to reject; refuted criticals dropped). Runs in parallel, 3-min
-   cap, fails open (keeps a critical if verification itself errors). Decision is
-   re-derived after drops (no criticals left → soften `request_changes`).
+1. ✅ **Quote-grounding (deterministic) — shipped, then softened.** Findings carry an
+   `evidence` field (the flagged code, verbatim); `verifyFindings` grades it against
+   the real file. Originally, evidence absent from the file was a **hard drop**.
+   Measured on ~13 real PRs that proved too aggressive: it dropped 3 findings vs. 1
+   surfaced, and ≥1 dropped finding was a **confirmed real bug** (#4057's "--account
+   silently ignored"). Root cause: exact-substring is a good POSITIVE signal but a
+   poor NEGATIVE one — it misfires on structural/"missing" bugs (no single line *is*
+   the bug), cross-line quotes, ellipsis, copied comment/diff markers, and slightly
+   wrong locations. **Fix (shipped 2026-07-23):**
+   - **Fuzzy match** (`matchEvidence`/`evidenceFragments`): exact substring OR any
+     substantive line/fragment present verbatim, after stripping comment/diff markers
+     and splitting on newlines + ellipsis. Rescues the mechanical misquotes.
+   - **Escalate, don't drop:** absent evidence (any severity) now routes to the LLM
+     verifier (which re-reads the real file + nearby files) instead of being dropped;
+     a finding is dropped ONLY on refutation. `present`/`unknown` non-criticals keep
+     the cheap no-LLM fast path.
+   - **Verifier judges substance, not wording:** the verifier prompt now treats the
+     quote as an imperfect hint and rejects only if the underlying problem isn't real;
+     the reviewer prompt asks for one contiguous verbatim line (no ellipsis/paraphrase).
+2. ✅ **Adversarial verify pass — shipped (now all-severity on demand).** A restricted
+   `verifier` agent (read+grep) re-reads the cited file and must confirm the finding is
+   genuine (biased to reject). Runs for every critical, and for any finding whose
+   evidence didn't ground (see #1). Parallel, 3-min cap, fails open (keeps the finding
+   if verification itself errors). Decision is re-derived after drops (no criticals
+   left → soften `request_changes`).
 3. **Oracle checks.** A finding that asserts "won't compile / type error" can be
    validated against `tsc`; "crashes"/"breaks tests" against the test suite. At
    minimum, never surface a compile-error claim when the package compiles.
