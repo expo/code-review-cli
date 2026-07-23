@@ -1,9 +1,9 @@
-import type { LoadedConfig } from '../config/schema.js';
-import { promptAndParse } from './opencode.js';
-import type { OpencodeHandle, TokenUsage } from './opencode.js';
-import { buildCoordinatorSystem, buildCoordinatorTask } from './prompts.js';
-import { parseCoordinatorOutput } from './schema.js';
-import type { CoordinatorOutput, Finding, ReviewMetadata } from './schema.js';
+import type { LoadedConfig } from "../config/schema.js";
+import { promptAndParse } from "./opencode.js";
+import type { OpencodeHandle, TokenUsage } from "./opencode.js";
+import { buildCoordinatorSystem, buildCoordinatorTask } from "./prompts.js";
+import { parseCoordinatorOutput } from "./schema.js";
+import type { CoordinatorOutput, Finding, ReviewMetadata } from "./schema.js";
 
 export interface CoordinationResult {
   output: CoordinatorOutput;
@@ -29,21 +29,21 @@ export async function coordinate(
   config: LoadedConfig,
   metadata: ReviewMetadata,
   agentFindings: Record<string, Finding[]>,
-  coverageNotes: string[] = []
+  coverageNotes: string[] = [],
 ): Promise<CoordinationResult> {
   const system = buildCoordinatorSystem(config);
   const text = buildCoordinatorTask(metadata, agentFindings, coverageNotes);
   const { value, cost, tokens, truncated } = await promptAndParse(
     handle,
     {
-      agent: 'coordinator',
+      agent: "coordinator",
       system,
       text,
-      title: 'review-coordinator',
+      title: "review-coordinator",
       maxWaitMs: COORDINATOR_TIMEOUT_MS,
       finalizeOnTimeout: true,
     },
-    parseCoordinatorOutput
+    parseCoordinatorOutput,
   );
   return { output: value, cost, tokens, truncated };
 }

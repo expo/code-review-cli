@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash } from "node:crypto";
 
-import { fingerprintFinding, SEVERITIES, SEVERITY_RANK } from './schema.js';
-import type { CoordinatorOutput, Decision, DismissalRecord, Finding, Severity } from './schema.js';
+import { fingerprintFinding, SEVERITIES, SEVERITY_RANK } from "./schema.js";
+import type { CoordinatorOutput, Decision, DismissalRecord, Finding, Severity } from "./schema.js";
 
 /**
  * Enough PR context to turn a finding's `file:line` into a link to that line in
@@ -36,7 +36,7 @@ export interface LinkContext {
  * no right-side line and are skipped.
  */
 export function buildDiffLineIndex(
-  files: Array<{ path: string; patch: string }>
+  files: Array<{ path: string; patch: string }>,
 ): Map<string, Set<number>> {
   const index = new Map<string, Set<number>>();
   const hunkRe = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
@@ -44,18 +44,18 @@ export function buildDiffLineIndex(
     const lines = new Set<number>();
     let right = 0;
     let inHunk = false;
-    for (const raw of file.patch.split('\n')) {
+    for (const raw of file.patch.split("\n")) {
       const hunk = hunkRe.exec(raw);
       if (hunk) {
         right = parseInt(hunk[1]!, 10);
         inHunk = true;
         continue;
       }
-      if (!inHunk || raw.startsWith('+++') || raw.startsWith('---') || raw.startsWith('\\')) {
+      if (!inHunk || raw.startsWith("+++") || raw.startsWith("---") || raw.startsWith("\\")) {
         continue;
       }
       const marker = raw[0];
-      if (marker === '+' || marker === ' ') {
+      if (marker === "+" || marker === " ") {
         lines.add(right);
         right++;
       }
@@ -69,9 +69,9 @@ export function buildDiffLineIndex(
 }
 
 const DECISION_LABEL: Record<Decision, string> = {
-  approve: 'Approve',
-  approve_with_comments: 'Approve with comments',
-  request_changes: 'Request changes',
+  approve: "Approve",
+  approve_with_comments: "Approve with comments",
+  request_changes: "Request changes",
 };
 
 export function decisionLabel(decision: Decision): string {
@@ -80,7 +80,7 @@ export function decisionLabel(decision: Decision): string {
 
 /** Rubric exit code: 0 for approve / approve-with-comments, 1 for request-changes. */
 export function decisionExitCode(decision: Decision): number {
-  return decision === 'request_changes' ? 1 : 0;
+  return decision === "request_changes" ? 1 : 0;
 }
 
 export function sortFindings(findings: Finding[]): Finding[] {
@@ -124,13 +124,13 @@ function location(finding: Finding, link?: LinkContext): string {
   // in-diff as long as the file appears in the diff.
   const inDiff = fileLines != null && (finding.line == null || fileLines.has(finding.line));
   if (inDiff) {
-    const fileHash = createHash('sha256').update(finding.file).digest('hex');
+    const fileHash = createHash("sha256").update(finding.file).digest("hex");
     const anchor = finding.line != null ? `diff-${fileHash}R${finding.line}` : `diff-${fileHash}`;
     const url = `https://github.com/${link.repo}/pull/${link.prNumber}/files#${anchor}`;
     return `[\`${text}\`](${url})`;
   }
   if (link.baseSha) {
-    const lineAnchor = finding.line != null ? `#L${finding.line}` : '';
+    const lineAnchor = finding.line != null ? `#L${finding.line}` : "";
     const url = `https://github.com/${link.repo}/blob/${link.baseSha}/${finding.file}${lineAnchor}`;
     return `[\`${text}\`](${url})`;
   }
@@ -146,63 +146,60 @@ export function renderMarkdown(
   review: CoordinatorOutput,
   tag: string,
   dismissed: DismissalRecord[] = [],
-  link?: LinkContext
+  link?: LinkContext,
 ): string {
-  const dismissedByFp = new Map(dismissed.map(record => [record.fp, record]));
-  const withFp = review.findings.map(finding => ({ finding, fp: fingerprintFinding(finding) }));
+  const dismissedByFp = new Map(dismissed.map((record) => [record.fp, record]));
+  const withFp = review.findings.map((finding) => ({ finding, fp: fingerprintFinding(finding) }));
   const kept = withFp.filter(({ fp }) => !dismissedByFp.has(fp));
   const dropped = withFp.filter(({ fp }) => dismissedByFp.has(fp));
 
-  const lines: string[] = [commentMarker(tag), '## 🤖 AI code review', ''];
-  lines.push(`**Decision:** ${decisionLabel(review.decision)}`, '', review.summary, '');
+  const lines: string[] = [commentMarker(tag), "## 🤖 AI code review", ""];
+  lines.push(`**Decision:** ${decisionLabel(review.decision)}`, "", review.summary, "");
 
   if (review.incomplete.length > 0) {
     lines.push(
-      '> ⏱️ **Coverage note:** coverage is partial — some review passes did not',
-      '> finish (timed out or failed), so issues may exist in areas not fully reviewed:',
-      ...review.incomplete.map(note => `> - ${note}`),
-      ''
+      "> ⏱️ **Coverage note:** coverage is partial — some review passes did not",
+      "> finish (timed out or failed), so issues may exist in areas not fully reviewed:",
+      ...review.incomplete.map((note) => `> - ${note}`),
+      "",
     );
   }
 
   if (kept.length === 0) {
-    lines.push('No findings.', '');
+    lines.push("No findings.", "");
   } else {
-    const groups = groupBySeverity(sortFindings(kept.map(entry => entry.finding)));
+    const groups = groupBySeverity(sortFindings(kept.map((entry) => entry.finding)));
     for (const severity of SEVERITIES) {
       const group = groups[severity];
       if (group.length === 0) {
         continue;
       }
-      lines.push(`### ${severityHeading(severity)} (${group.length})`, '');
+      lines.push(`### ${severityHeading(severity)} (${group.length})`, "");
       for (const finding of group) {
         lines.push(...renderFindingLines(finding, link));
       }
-      lines.push('');
+      lines.push("");
     }
   }
 
   if (dropped.length > 0) {
-    lines.push('<details>', `<summary>🚫 Dismissed on this PR (${dropped.length})</summary>`, '');
+    lines.push("<details>", `<summary>🚫 Dismissed on this PR (${dropped.length})</summary>`, "");
     for (const { finding, fp } of dropped) {
       const record = dismissedByFp.get(fp)!;
-      const who = record.by ? ` by @${record.by}` : '';
-      const why = record.reason ? ` — ${record.reason}` : '';
+      const who = record.by ? ` by @${record.by}` : "";
+      const why = record.reason ? ` — ${record.reason}` : "";
       lines.push(`- **${finding.title}** — ${location(finding, link)} \`id:${fp}\`${who}${why}`);
     }
-    lines.push('', '_Re-add one with `/undismiss <id>`._', '</details>', '');
+    lines.push("", "_Re-add one with `/undismiss <id>`._", "</details>", "");
   }
 
-  lines.push(
-    '---',
-    '_This review is advisory — it never blocks a merge and never auto-approves._'
-  );
+  lines.push("---", "_This review is advisory — it never blocks a merge and never auto-approves._");
   // Embedded, machine-readable state: fingerprints (back-compat) + the full review
   // and dismissals, so `/dismiss` can re-render this comment without re-running.
   const fingerprints = review.findings.map(fingerprintFinding);
-  lines.push('', `<!-- ${tag}:fingerprints=${JSON.stringify(fingerprints)} -->`);
+  lines.push("", `<!-- ${tag}:fingerprints=${JSON.stringify(fingerprints)} -->`);
   lines.push(`<!-- ${tag}:state=${encodeState({ review, dismissed })} -->`);
-  return lines.join('\n');
+  return lines.join("\n");
 }
 
 function renderFindingLines(finding: Finding, link?: LinkContext): string[] {
@@ -219,7 +216,7 @@ function renderFindingLines(finding: Finding, link?: LinkContext): string[] {
 /** Parse the fingerprints embedded in a previously-posted comment body. */
 export function parseEmbeddedFingerprints(body: string, tag: string): string[] {
   // Escape the (config-controlled) tag so regex metacharacters can't break the match.
-  const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = body.match(new RegExp(`<!-- ${escapedTag}:fingerprints=(\\[.*?\\]) -->`));
   if (!match) {
     return [];
@@ -239,18 +236,18 @@ export interface ReviewState {
 }
 
 function encodeState(state: ReviewState): string {
-  return Buffer.from(JSON.stringify(state), 'utf8').toString('base64');
+  return Buffer.from(JSON.stringify(state), "utf8").toString("base64");
 }
 
 /** Recover the embedded `{ review, dismissed }` state from a posted comment body. */
 export function parseReviewState(body: string, tag: string): ReviewState | null {
-  const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = body.match(new RegExp(`<!-- ${escapedTag}:state=([A-Za-z0-9+/=]+) -->`));
   if (!match) {
     return null;
   }
   try {
-    const parsed = JSON.parse(Buffer.from(match[1]!, 'base64').toString('utf8')) as ReviewState;
+    const parsed = JSON.parse(Buffer.from(match[1]!, "base64").toString("utf8")) as ReviewState;
     if (parsed && Array.isArray(parsed.review?.findings) && Array.isArray(parsed.dismissed)) {
       return parsed;
     }
@@ -262,11 +259,11 @@ export function parseReviewState(body: string, tag: string): ReviewState | null 
 
 function severityHeading(severity: Severity): string {
   switch (severity) {
-    case 'critical':
-      return '🔴 Critical';
-    case 'warning':
-      return '🟡 Warning';
-    case 'suggestion':
-      return '🔵 Suggestion';
+    case "critical":
+      return "🔴 Critical";
+    case "warning":
+      return "🟡 Warning";
+    case "suggestion":
+      return "🔵 Suggestion";
   }
 }

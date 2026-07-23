@@ -1,11 +1,11 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
-import { run } from '../core/exec.js';
-import { parseUnifiedDiff } from '../core/diff.js';
-import type { DiffEntry, ReviewMetadata } from '../core/schema.js';
-import type { PreparedReadRoot, ReviewSource } from './source.js';
+import { run } from "../core/exec.js";
+import { parseUnifiedDiff } from "../core/diff.js";
+import type { DiffEntry, ReviewMetadata } from "../core/schema.js";
+import type { PreparedReadRoot, ReviewSource } from "./source.js";
 
 export interface GitHubPRSourceOptions {
   prNumber: number;
@@ -22,21 +22,21 @@ export class GitHubPRSource implements ReviewSource {
   constructor(private readonly options: GitHubPRSourceOptions) {}
 
   private repoArgs(): string[] {
-    return this.options.repo ? ['--repo', this.options.repo] : [];
+    return this.options.repo ? ["--repo", this.options.repo] : [];
   }
 
   async getMetadata(): Promise<ReviewMetadata> {
     const { stdout } = await run(
-      'gh',
+      "gh",
       [
-        'pr',
-        'view',
+        "pr",
+        "view",
         String(this.options.prNumber),
         ...this.repoArgs(),
-        '--json',
-        'title,body,baseRefName,headRefName',
+        "--json",
+        "title,body,baseRefName,headRefName",
       ],
-      { cwd: this.options.cwd }
+      { cwd: this.options.cwd },
     );
     const parsed = JSON.parse(stdout) as {
       title?: string;
@@ -45,18 +45,18 @@ export class GitHubPRSource implements ReviewSource {
       headRefName?: string;
     };
     return {
-      title: parsed.title ?? '',
-      body: parsed.body ?? '',
-      baseRef: parsed.baseRefName ?? '',
-      headRef: parsed.headRefName ?? '',
+      title: parsed.title ?? "",
+      body: parsed.body ?? "",
+      baseRef: parsed.baseRefName ?? "",
+      headRef: parsed.headRefName ?? "",
     };
   }
 
   async getChangedFiles(): Promise<DiffEntry[]> {
     const { stdout } = await run(
-      'gh',
-      ['pr', 'diff', String(this.options.prNumber), ...this.repoArgs()],
-      { cwd: this.options.cwd }
+      "gh",
+      ["pr", "diff", String(this.options.prNumber), ...this.repoArgs()],
+      { cwd: this.options.cwd },
     );
     return parseUnifiedDiff(stdout);
   }
@@ -79,16 +79,16 @@ export class GitHubPRSource implements ReviewSource {
     const ref = `refs/pull/${this.options.prNumber}/head`;
     let parent: string | undefined;
     try {
-      await run('git', ['fetch', '--no-tags', '--depth=1', url, ref], { cwd });
-      parent = await mkdtemp(path.join(tmpdir(), 'ecr-prhead-'));
-      const dir = path.join(parent, 'head'); // must not pre-exist for `worktree add`
-      await run('git', ['worktree', 'add', '--detach', dir, 'FETCH_HEAD'], { cwd });
+      await run("git", ["fetch", "--no-tags", "--depth=1", url, ref], { cwd });
+      parent = await mkdtemp(path.join(tmpdir(), "ecr-prhead-"));
+      const dir = path.join(parent, "head"); // must not pre-exist for `worktree add`
+      await run("git", ["worktree", "add", "--detach", dir, "FETCH_HEAD"], { cwd });
       const removeParent = parent;
       return {
         dir,
         cleanup: async () => {
           try {
-            await run('git', ['worktree', 'remove', '--force', dir], { cwd });
+            await run("git", ["worktree", "remove", "--force", dir], { cwd });
           } catch {
             // best effort — fall through to removing the temp dir
           }

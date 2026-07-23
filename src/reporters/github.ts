@@ -1,14 +1,19 @@
-import { writeFile, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
+import { writeFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
-import { run } from '../core/exec.js';
-import { parseUnifiedDiff } from '../core/diff.js';
-import { buildDiffLineIndex, commentMarker, parseReviewState, renderMarkdown } from '../core/render.js';
-import type { LinkContext } from '../core/render.js';
-import { fingerprintFinding } from '../core/schema.js';
-import type { CoordinatorOutput, DismissalRecord } from '../core/schema.js';
-import type { Reporter } from './reporter.js';
+import { run } from "../core/exec.js";
+import { parseUnifiedDiff } from "../core/diff.js";
+import {
+  buildDiffLineIndex,
+  commentMarker,
+  parseReviewState,
+  renderMarkdown,
+} from "../core/render.js";
+import type { LinkContext } from "../core/render.js";
+import { fingerprintFinding } from "../core/schema.js";
+import type { CoordinatorOutput, DismissalRecord } from "../core/schema.js";
+import type { Reporter } from "./reporter.js";
 
 export interface DismissalResult {
   dismissedCount: number;
@@ -24,7 +29,7 @@ export interface GitHubReporterOptions {
   cwd?: string;
 }
 
-const MAINTAINER_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+const MAINTAINER_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
 interface IssueComment {
   id: number;
@@ -47,16 +52,16 @@ export class GitHubReporter implements Reporter {
   async checkBreakGlass(): Promise<boolean> {
     const comments = await this.fetchAllComments();
     return comments.some(
-      comment =>
-        typeof comment.body === 'string' &&
+      (comment) =>
+        typeof comment.body === "string" &&
         comment.body.includes(this.options.breakGlassMarker) &&
-        MAINTAINER_ASSOCIATIONS.has(comment.author_association ?? '')
+        MAINTAINER_ASSOCIATIONS.has(comment.author_association ?? ""),
     );
   }
 
   async postSkipNote(): Promise<void> {
     await this.upsertComment(
-      `${this.marker}\n🤖 AI review skipped via \`${this.options.breakGlassMarker}\`.`
+      `${this.marker}\n🤖 AI review skipped via \`${this.options.breakGlassMarker}\`.`,
     );
   }
 
@@ -79,12 +84,12 @@ export class GitHubReporter implements Reporter {
    */
   private async linkContextAsync(): Promise<LinkContext> {
     const link: LinkContext = { repo: this.options.repo, prNumber: this.options.prNumber };
-    const prArgs = [String(this.options.prNumber), '--repo', this.options.repo];
+    const prArgs = [String(this.options.prNumber), "--repo", this.options.repo];
     const cwd = this.options.cwd;
     await Promise.all([
       (async () => {
         try {
-          const { stdout } = await run('gh', ['pr', 'diff', ...prArgs], { cwd });
+          const { stdout } = await run("gh", ["pr", "diff", ...prArgs], { cwd });
           link.diffLines = buildDiffLineIndex(parseUnifiedDiff(stdout));
         } catch {
           // leave diffLines unset → in-diff findings degrade to plain text
@@ -92,7 +97,9 @@ export class GitHubReporter implements Reporter {
       })(),
       (async () => {
         try {
-          const { stdout } = await run('gh', ['pr', 'view', ...prArgs, '--json', 'baseRefOid'], { cwd });
+          const { stdout } = await run("gh", ["pr", "view", ...prArgs, "--json", "baseRefOid"], {
+            cwd,
+          });
           const oid = (JSON.parse(stdout) as { baseRefOid?: string }).baseRefOid;
           if (oid) {
             link.baseSha = oid;
@@ -113,25 +120,27 @@ export class GitHubReporter implements Reporter {
     add: string[],
     remove: string[],
     by?: string,
-    reason?: string
+    reason?: string,
   ): Promise<DismissalResult> {
     const existing = await this.findExistingComment();
     if (!existing) {
-      throw new Error('No reviewer comment found on this PR yet — run a review first.');
+      throw new Error("No reviewer comment found on this PR yet — run a review first.");
     }
     const state = parseReviewState(existing.body, this.options.commentTag);
     if (!state) {
       throw new Error(
-        'The reviewer comment has no embedded state (posted before dismissals existed); re-run a review first.'
+        "The reviewer comment has no embedded state (posted before dismissals existed); re-run a review first.",
       );
     }
     const validFps = new Set(state.review.findings.map(fingerprintFinding));
-    const matched = add.filter(fp => validFps.has(fp));
-    const unmatched = add.filter(fp => !validFps.has(fp));
+    const matched = add.filter((fp) => validFps.has(fp));
+    const unmatched = add.filter((fp) => !validFps.has(fp));
 
-    let dismissed: DismissalRecord[] = state.dismissed.filter(record => !remove.includes(record.fp));
+    let dismissed: DismissalRecord[] = state.dismissed.filter(
+      (record) => !remove.includes(record.fp),
+    );
     for (const fp of matched) {
-      if (!dismissed.some(record => record.fp === fp)) {
+      if (!dismissed.some((record) => record.fp === fp)) {
         dismissed.push({ fp, by, reason });
       }
     }
@@ -139,16 +148,18 @@ export class GitHubReporter implements Reporter {
     const link = await this.linkContextAsync();
     await this.patchComment(
       existing.id,
-      renderMarkdown(state.review, this.options.commentTag, dismissed, link)
+      renderMarkdown(state.review, this.options.commentTag, dismissed, link),
     );
     return { dismissedCount: dismissed.length, matched, unmatched };
   }
 
   /** Newest reviewer-tagged comment (id + body), or null if none posted yet. */
   private async findExistingComment(): Promise<{ id: number; body: string } | null> {
-    const marked = (await this.fetchAllComments()).filter(comment => comment.body?.includes(this.marker));
+    const marked = (await this.fetchAllComments()).filter((comment) =>
+      comment.body?.includes(this.marker),
+    );
     const keep = marked[marked.length - 1];
-    return keep ? { id: keep.id, body: keep.body ?? '' } : null;
+    return keep ? { id: keep.id, body: keep.body ?? "" } : null;
   }
 
   // Safety cap on pagination (100/page): 30 pages = 3000 comments. Bounds a
@@ -167,18 +178,18 @@ export class GitHubReporter implements Reporter {
     const all: IssueComment[] = [];
     for (let page = 1; page <= GitHubReporter.MAX_COMMENT_PAGES; page++) {
       const { stdout } = await run(
-        'gh',
+        "gh",
         [
-          'api',
-          '-X',
-          'GET',
+          "api",
+          "-X",
+          "GET",
           `repos/${this.options.repo}/issues/${this.options.prNumber}/comments`,
-          '-f',
-          'per_page=100',
-          '-f',
+          "-f",
+          "per_page=100",
+          "-f",
           `page=${page}`,
         ],
-        { cwd: this.options.cwd }
+        { cwd: this.options.cwd },
       );
       let batch: IssueComment[];
       try {
@@ -203,8 +214,8 @@ export class GitHubReporter implements Reporter {
    * is the newest and is the keeper.
    */
   private async upsertComment(body: string): Promise<void> {
-    const marked = (await this.fetchAllComments()).filter(comment =>
-      comment.body?.includes(this.marker)
+    const marked = (await this.fetchAllComments()).filter((comment) =>
+      comment.body?.includes(this.marker),
     );
 
     if (marked.length === 0) {
@@ -221,10 +232,10 @@ export class GitHubReporter implements Reporter {
   }
 
   private async withBodyFile<T>(body: string, fn: (jsonPath: string) => Promise<T>): Promise<T> {
-    const dir = await mkdtemp(path.join(tmpdir(), 'ecr-'));
-    const jsonPath = path.join(dir, 'comment.json');
+    const dir = await mkdtemp(path.join(tmpdir(), "ecr-"));
+    const jsonPath = path.join(dir, "comment.json");
     try {
-      await writeFile(jsonPath, JSON.stringify({ body }), 'utf8');
+      await writeFile(jsonPath, JSON.stringify({ body }), "utf8");
       return await fn(jsonPath);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -232,44 +243,44 @@ export class GitHubReporter implements Reporter {
   }
 
   private async createComment(body: string): Promise<void> {
-    await this.withBodyFile(body, jsonPath =>
+    await this.withBodyFile(body, (jsonPath) =>
       run(
-        'gh',
+        "gh",
         [
-          'api',
-          '-X',
-          'POST',
+          "api",
+          "-X",
+          "POST",
           `repos/${this.options.repo}/issues/${this.options.prNumber}/comments`,
-          '--input',
+          "--input",
           jsonPath,
         ],
-        { cwd: this.options.cwd }
-      )
+        { cwd: this.options.cwd },
+      ),
     );
   }
 
   private async patchComment(commentId: number, body: string): Promise<void> {
-    await this.withBodyFile(body, jsonPath =>
+    await this.withBodyFile(body, (jsonPath) =>
       run(
-        'gh',
+        "gh",
         [
-          'api',
-          '-X',
-          'PATCH',
+          "api",
+          "-X",
+          "PATCH",
           `repos/${this.options.repo}/issues/comments/${commentId}`,
-          '--input',
+          "--input",
           jsonPath,
         ],
-        { cwd: this.options.cwd }
-      )
+        { cwd: this.options.cwd },
+      ),
     );
   }
 
   private async deleteComment(commentId: number): Promise<void> {
     await run(
-      'gh',
-      ['api', '-X', 'DELETE', `repos/${this.options.repo}/issues/comments/${commentId}`],
-      { cwd: this.options.cwd }
+      "gh",
+      ["api", "-X", "DELETE", `repos/${this.options.repo}/issues/comments/${commentId}`],
+      { cwd: this.options.cwd },
     );
   }
 }

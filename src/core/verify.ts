@@ -1,12 +1,12 @@
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
-import type { Finding } from './schema.js';
-import { parseVerdict } from './schema.js';
-import { addTokenUsage, promptAndParse, VERIFIER_AGENT } from './opencode.js';
-import type { OpencodeHandle, TokenUsage } from './opencode.js';
-import { buildVerifierSystem, buildVerifierTask } from './prompts.js';
-import { errorMessage, normalizeCode } from './util.js';
+import type { Finding } from "./schema.js";
+import { parseVerdict } from "./schema.js";
+import { addTokenUsage, promptAndParse, VERIFIER_AGENT } from "./opencode.js";
+import type { OpencodeHandle, TokenUsage } from "./opencode.js";
+import { buildVerifierSystem, buildVerifierTask } from "./prompts.js";
+import { errorMessage, normalizeCode } from "./util.js";
 
 // Verification runs after coordination (a serial tail step); keep it short. It
 // runs criticals in parallel, so this bounds the added latency regardless of count.
@@ -30,9 +30,9 @@ export interface VerificationResult {
 export function evidenceFragments(evidence: string): string[] {
   return evidence
     .split(/\r?\n|…|\.\.\./)
-    .map(line => line.replace(/^[+\-\s]*/, '').replace(/^(\/\/+|#+|\*+|\/\*)\s?/, ''))
+    .map((line) => line.replace(/^[+\-\s]*/, "").replace(/^(\/\/+|#+|\*+|\/\*)\s?/, ""))
     .map(normalizeCode)
-    .filter(fragment => fragment.length >= MIN_EVIDENCE_LEN);
+    .filter((fragment) => fragment.length >= MIN_EVIDENCE_LEN);
 }
 
 /**
@@ -46,37 +46,34 @@ export function evidenceFragments(evidence: string): string[] {
  * NOTE: 'absent' is NOT terminal — the caller escalates it to the LLM verifier
  * rather than dropping, because an imperfect quote does not mean a false finding.
  */
-export function matchEvidence(
-  evidence: string,
-  content: string
-): 'present' | 'absent' | 'unknown' {
+export function matchEvidence(evidence: string, content: string): "present" | "absent" | "unknown" {
   const normEvidence = normalizeCode(evidence);
   if (normEvidence.length < MIN_EVIDENCE_LEN) {
-    return 'unknown';
+    return "unknown";
   }
   const normContent = normalizeCode(content);
   if (normContent.includes(normEvidence)) {
-    return 'present';
+    return "present";
   }
   const fragments = evidenceFragments(evidence);
   if (fragments.length === 0) {
-    return 'unknown';
+    return "unknown";
   }
-  return fragments.some(fragment => normContent.includes(fragment)) ? 'present' : 'absent';
+  return fragments.some((fragment) => normContent.includes(fragment)) ? "present" : "absent";
 }
 
 /** Read the cited file and grade the evidence against it (see matchEvidence). */
 async function evidencePresence(
   finding: Finding,
-  cwd: string
-): Promise<'present' | 'absent' | 'unknown'> {
+  cwd: string,
+): Promise<"present" | "absent" | "unknown"> {
   let content: string;
   try {
-    content = await readFile(path.resolve(cwd, finding.file), 'utf8');
+    content = await readFile(path.resolve(cwd, finding.file), "utf8");
   } catch {
-    return 'unknown';
+    return "unknown";
   }
-  return matchEvidence(finding.evidence ?? '', content);
+  return matchEvidence(finding.evidence ?? "", content);
 }
 
 /**
@@ -102,7 +99,7 @@ export async function verifyFindings(
   handle: OpencodeHandle,
   findings: Finding[],
   cwd: string,
-  onProgress?: (message: string) => void
+  onProgress?: (message: string) => void,
 ): Promise<VerificationResult> {
   const dropped: Array<{ finding: Finding; reason: string }> = [];
   let cost = 0;
@@ -110,17 +107,17 @@ export async function verifyFindings(
 
   // Phase 1 — deterministic quote-grounding for every finding.
   const checked = await Promise.all(
-    findings.map(async finding => ({ finding, presence: await evidencePresence(finding, cwd) }))
+    findings.map(async (finding) => ({ finding, presence: await evidencePresence(finding, cwd) })),
   );
 
   // Decide which findings need an LLM check vs. can be kept directly.
-  const verdicts = new Map<Finding, 'keep' | 'drop'>();
-  const toVerify: Array<{ finding: Finding; presence: 'present' | 'absent' | 'unknown' }> = [];
+  const verdicts = new Map<Finding, "keep" | "drop">();
+  const toVerify: Array<{ finding: Finding; presence: "present" | "absent" | "unknown" }> = [];
   for (const { finding, presence } of checked) {
-    if (presence === 'absent' || finding.severity === 'critical') {
+    if (presence === "absent" || finding.severity === "critical") {
       toVerify.push({ finding, presence });
     } else {
-      verdicts.set(finding, 'keep'); // grounded (or uncheckable) non-critical
+      verdicts.set(finding, "keep"); // grounded (or uncheckable) non-critical
     }
   }
 
@@ -128,40 +125,44 @@ export async function verifyFindings(
   await Promise.all(
     toVerify.map(async ({ finding, presence }, index) => {
       try {
-        const { value, cost: verifyCost, tokens: verifyTokens } = await promptAndParse(
+        const {
+          value,
+          cost: verifyCost,
+          tokens: verifyTokens,
+        } = await promptAndParse(
           handle,
           {
             agent: VERIFIER_AGENT,
             system: buildVerifierSystem(),
-            text: buildVerifierTask(finding, { evidenceUngrounded: presence === 'absent' }),
+            text: buildVerifierTask(finding, { evidenceUngrounded: presence === "absent" }),
             title: `verify-${index}`,
             maxWaitMs: VERIFY_TIMEOUT_MS,
             finalizeOnTimeout: true,
           },
-          parseVerdict
+          parseVerdict,
         );
         cost += verifyCost;
         addTokenUsage(tokens, verifyTokens);
         if (value.verified) {
-          verdicts.set(finding, 'keep');
+          verdicts.set(finding, "keep");
         } else {
-          verdicts.set(finding, 'drop');
-          dropped.push({ finding, reason: value.reason || 'refuted by verifier' });
+          verdicts.set(finding, "drop");
+          dropped.push({ finding, reason: value.reason || "refuted by verifier" });
           onProgress?.(
-            `  verify: dropped ${finding.severity} "${finding.title}" — ${value.reason || 'refuted by verifier'}`
+            `  verify: dropped ${finding.severity} "${finding.title}" — ${value.reason || "refuted by verifier"}`,
           );
         }
       } catch (error) {
         // Fail open: keep the finding if verification itself failed.
-        verdicts.set(finding, 'keep');
+        verdicts.set(finding, "keep");
         onProgress?.(
-          `  verify: could not verify "${finding.title}" (${errorMessage(error)}); keeping it`
+          `  verify: could not verify "${finding.title}" (${errorMessage(error)}); keeping it`,
         );
       }
-    })
+    }),
   );
 
   // Preserve original order.
-  const kept = findings.filter(finding => verdicts.get(finding) === 'keep');
+  const kept = findings.filter((finding) => verdicts.get(finding) === "keep");
   return { kept, dropped, cost, tokens };
 }

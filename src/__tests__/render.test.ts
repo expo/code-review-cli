@@ -1,133 +1,167 @@
-import { test, expect } from 'bun:test';
+import { test, expect } from "bun:test";
 
 import {
   renderMarkdown,
   parseEmbeddedFingerprints,
   parseReviewState,
   buildDiffLineIndex,
-} from '../core/render.js';
-import { fingerprintFinding } from '../core/schema.js';
-import type { CoordinatorOutput, Finding } from '../core/schema.js';
+} from "../core/render.js";
+import { fingerprintFinding } from "../core/schema.js";
+import type { CoordinatorOutput, Finding } from "../core/schema.js";
 
-const base: CoordinatorOutput = { decision: 'approve', findings: [], summary: 'ok', incomplete: [] };
+const base: CoordinatorOutput = {
+  decision: "approve",
+  findings: [],
+  summary: "ok",
+  incomplete: [],
+};
 const finding = (over: Partial<Finding> = {}): Finding => ({
-  severity: 'warning',
-  category: 'quality',
-  file: 'a.ts',
+  severity: "warning",
+  category: "quality",
+  file: "a.ts",
   line: 1,
-  title: 'T',
-  rationale: 'r',
+  title: "T",
+  rationale: "r",
   ...over,
 });
 
-test('parseEmbeddedFingerprints round-trips even with a regex-metachar comment tag', () => {
-  const tag = 'expo.ai+review(x)'; // contains . + ( ) — must be escaped in the parser
+test("parseEmbeddedFingerprints round-trips even with a regex-metachar comment tag", () => {
+  const tag = "expo.ai+review(x)"; // contains . + ( ) — must be escaped in the parser
   const body = renderMarkdown({ ...base, findings: [finding()] }, tag);
   expect(parseEmbeddedFingerprints(body, tag).length).toBe(1);
 });
 
-test('coverage note only renders when incomplete is non-empty (no more wolf-crying)', () => {
-  expect(renderMarkdown(base, 'tag')).not.toContain('Coverage note');
-  expect(renderMarkdown({ ...base, incomplete: ['a pass timed out'] }, 'tag')).toContain('Coverage note');
+test("coverage note only renders when incomplete is non-empty (no more wolf-crying)", () => {
+  expect(renderMarkdown(base, "tag")).not.toContain("Coverage note");
+  expect(renderMarkdown({ ...base, incomplete: ["a pass timed out"] }, "tag")).toContain(
+    "Coverage note",
+  );
 });
 
-test('a dismissed finding moves to the collapsed section, not the main list', () => {
-  const f = finding({ title: 'W', evidence: 'const somethingLongEnough = 1;' });
+test("a dismissed finding moves to the collapsed section, not the main list", () => {
+  const f = finding({ title: "W", evidence: "const somethingLongEnough = 1;" });
   const fp = fingerprintFinding(f);
-  const out = renderMarkdown({ ...base, findings: [f] }, 'tag', [{ fp, by: 'x', reason: 'intentional' }]);
-  expect(out).toContain('Dismissed on this PR (1)');
+  const out = renderMarkdown({ ...base, findings: [f] }, "tag", [
+    { fp, by: "x", reason: "intentional" },
+  ]);
+  expect(out).toContain("Dismissed on this PR (1)");
   expect(out).toContain(`id:${fp}`);
   expect(out).not.toMatch(/###.*Warning/); // not shown as an active warning
 });
 
-test('review state (review + dismissals) round-trips via parseReviewState', () => {
-  const dismissed = [{ fp: 'abc123def456', by: 'x' }];
-  const body = renderMarkdown({ ...base, findings: [finding()] }, 'tag', dismissed);
-  const state = parseReviewState(body, 'tag');
+test("review state (review + dismissals) round-trips via parseReviewState", () => {
+  const dismissed = [{ fp: "abc123def456", by: "x" }];
+  const body = renderMarkdown({ ...base, findings: [finding()] }, "tag", dismissed);
+  const state = parseReviewState(body, "tag");
   expect(state).not.toBeNull();
   expect(state!.dismissed).toEqual(dismissed);
   expect(state!.review.findings.length).toBe(1);
 });
 
-test('links a finding location to the PR diff line when the line is in the diff', () => {
-  const out = renderMarkdown({ ...base, findings: [finding({ file: 'src/a.ts', line: 12 })] }, 'tag', [], {
-    repo: 'expo/eas-cli',
-    prNumber: 42,
-    diffLines: new Map([['src/a.ts', new Set([12])]]),
-  });
+test("links a finding location to the PR diff line when the line is in the diff", () => {
+  const out = renderMarkdown(
+    { ...base, findings: [finding({ file: "src/a.ts", line: 12 })] },
+    "tag",
+    [],
+    {
+      repo: "expo/eas-cli",
+      prNumber: 42,
+      diffLines: new Map([["src/a.ts", new Set([12])]]),
+    },
+  );
   // Markdown link wrapping the `file:line`, pointing at the Files-changed diff anchor.
-  expect(out).toContain('[`src/a.ts:12`](https://github.com/expo/eas-cli/pull/42/files#diff-');
+  expect(out).toContain("[`src/a.ts:12`](https://github.com/expo/eas-cli/pull/42/files#diff-");
   expect(out).toMatch(/R12\)/); // right-hand line anchor for line 12
 });
 
-test('a finding NOT in the diff links to the source blob on the base (not a dead diff anchor)', () => {
+test("a finding NOT in the diff links to the source blob on the base (not a dead diff anchor)", () => {
   // Line 99 is not a changed line → link to the base blob, not the diff anchor.
-  const out = renderMarkdown({ ...base, findings: [finding({ file: 'src/a.ts', line: 99 })] }, 'tag', [], {
-    repo: 'expo/eas-cli',
-    prNumber: 42,
-    diffLines: new Map([['src/a.ts', new Set([12])]]),
-    baseSha: 'abc123',
-  });
-  expect(out).toContain('[`src/a.ts:99`](https://github.com/expo/eas-cli/blob/abc123/src/a.ts#L99)');
-  expect(out).not.toContain('/pull/42/files#diff-'); // not the diff anchor
+  const out = renderMarkdown(
+    { ...base, findings: [finding({ file: "src/a.ts", line: 99 })] },
+    "tag",
+    [],
+    {
+      repo: "expo/eas-cli",
+      prNumber: 42,
+      diffLines: new Map([["src/a.ts", new Set([12])]]),
+      baseSha: "abc123",
+    },
+  );
+  expect(out).toContain(
+    "[`src/a.ts:99`](https://github.com/expo/eas-cli/blob/abc123/src/a.ts#L99)",
+  );
+  expect(out).not.toContain("/pull/42/files#diff-"); // not the diff anchor
 });
 
-test('a finding on a file absent from the diff links to the base blob', () => {
-  const out = renderMarkdown({ ...base, findings: [finding({ file: 'other.ts', line: 3 })] }, 'tag', [], {
-    repo: 'expo/eas-cli',
-    prNumber: 42,
-    diffLines: new Map([['src/a.ts', new Set([12])]]),
-    baseSha: 'abc123',
-  });
-  expect(out).toContain('[`other.ts:3`](https://github.com/expo/eas-cli/blob/abc123/other.ts#L3)');
+test("a finding on a file absent from the diff links to the base blob", () => {
+  const out = renderMarkdown(
+    { ...base, findings: [finding({ file: "other.ts", line: 3 })] },
+    "tag",
+    [],
+    {
+      repo: "expo/eas-cli",
+      prNumber: 42,
+      diffLines: new Map([["src/a.ts", new Set([12])]]),
+      baseSha: "abc123",
+    },
+  );
+  expect(out).toContain("[`other.ts:3`](https://github.com/expo/eas-cli/blob/abc123/other.ts#L3)");
 });
 
-test('out-of-diff finding is plain text when no base SHA is available', () => {
-  const out = renderMarkdown({ ...base, findings: [finding({ file: 'other.ts', line: 3 })] }, 'tag', [], {
-    repo: 'expo/eas-cli',
-    prNumber: 42,
-    diffLines: new Map([['src/a.ts', new Set([12])]]),
-  });
-  expect(out).toContain('`other.ts:3`');
-  expect(out).not.toContain('https://github.com');
+test("out-of-diff finding is plain text when no base SHA is available", () => {
+  const out = renderMarkdown(
+    { ...base, findings: [finding({ file: "other.ts", line: 3 })] },
+    "tag",
+    [],
+    {
+      repo: "expo/eas-cli",
+      prNumber: 42,
+      diffLines: new Map([["src/a.ts", new Set([12])]]),
+    },
+  );
+  expect(out).toContain("`other.ts:3`");
+  expect(out).not.toContain("https://github.com");
 });
 
-test('location is plain (unlinked) code when no link context is given', () => {
-  const out = renderMarkdown({ ...base, findings: [finding({ file: 'src/a.ts', line: 12 })] }, 'tag');
-  expect(out).toContain('`src/a.ts:12`');
-  expect(out).not.toContain('https://github.com');
+test("location is plain (unlinked) code when no link context is given", () => {
+  const out = renderMarkdown(
+    { ...base, findings: [finding({ file: "src/a.ts", line: 12 })] },
+    "tag",
+  );
+  expect(out).toContain("`src/a.ts:12`");
+  expect(out).not.toContain("https://github.com");
 });
 
-test('buildDiffLineIndex: collects right-side added + context lines, skips deletions', () => {
+test("buildDiffLineIndex: collects right-side added + context lines, skips deletions", () => {
   const patch = [
-    '--- a/src/a.ts',
-    '+++ b/src/a.ts',
-    '@@ -10,3 +10,4 @@',
-    ' context10', // right line 10 (context)
-    '-removed', // left only, no right line
-    '+added11', // right line 11
-    '+added12', // right line 12
-    ' context13', // right line 13
-  ].join('\n');
-  const index = buildDiffLineIndex([{ path: 'src/a.ts', patch }]);
-  expect([...index.get('src/a.ts')!].sort((a, b) => a - b)).toEqual([10, 11, 12, 13]);
+    "--- a/src/a.ts",
+    "+++ b/src/a.ts",
+    "@@ -10,3 +10,4 @@",
+    " context10", // right line 10 (context)
+    "-removed", // left only, no right line
+    "+added11", // right line 11
+    "+added12", // right line 12
+    " context13", // right line 13
+  ].join("\n");
+  const index = buildDiffLineIndex([{ path: "src/a.ts", patch }]);
+  expect([...index.get("src/a.ts")!].sort((a, b) => a - b)).toEqual([10, 11, 12, 13]);
 });
 
 test('comment footer no longer says "Phase 1"', () => {
-  expect(renderMarkdown(base, 'tag')).not.toContain('Phase 1');
+  expect(renderMarkdown(base, "tag")).not.toContain("Phase 1");
 });
 
-test('renders per-severity headers with counts', () => {
+test("renders per-severity headers with counts", () => {
   const out = renderMarkdown(
     {
       ...base,
-      decision: 'request_changes',
+      decision: "request_changes",
       findings: [
-        finding({ severity: 'critical', category: 'security', title: 'C' }),
-        finding({ severity: 'warning', title: 'W' }),
+        finding({ severity: "critical", category: "security", title: "C" }),
+        finding({ severity: "warning", title: "W" }),
       ],
     },
-    'tag'
+    "tag",
   );
   expect(out).toMatch(/Critical \(1\)/i);
   expect(out).toMatch(/Warning \(1\)/i);

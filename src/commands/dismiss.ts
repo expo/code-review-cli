@@ -1,7 +1,7 @@
-import { loadReviewConfig } from '../config/load.js';
-import { repoRoot, resolveRepo } from '../core/exec.js';
-import { errorMessage } from '../core/util.js';
-import { GitHubReporter } from '../reporters/github.js';
+import { loadReviewConfig } from "../config/load.js";
+import { repoRoot, resolveRepo } from "../core/exec.js";
+import { errorMessage } from "../core/util.js";
+import { GitHubReporter } from "../reporters/github.js";
 
 const USAGE = `ecr dismiss / undismiss — hide (or restore) a finding on a PR
 
@@ -27,32 +27,32 @@ function parseArgs(argv: string[]): DismissArgs {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     switch (arg) {
-      case '--pr':
+      case "--pr":
         args.pr = Number(argv[++i]);
         break;
-      case '--repo':
+      case "--repo":
         args.repo = argv[++i];
         break;
-      case '--reason':
+      case "--reason":
         args.reason = argv[++i];
         break;
-      case '--by':
+      case "--by":
         args.by = argv[++i];
         break;
       default:
-        if (arg.startsWith('--')) {
+        if (arg.startsWith("--")) {
           throw new Error(`Unknown argument: ${arg}`);
         }
         // Bare arg = a finding id. Sanitize to the fingerprint alphabet.
-        args.ids.push(arg.replace(/[^a-f0-9]/g, ''));
+        args.ids.push(arg.replace(/[^a-f0-9]/g, ""));
     }
   }
   args.ids = args.ids.filter(Boolean);
   return args;
 }
 
-export async function dismissCommand(argv: string[], mode: 'add' | 'remove'): Promise<void> {
-  if (argv.includes('-h') || argv.includes('--help')) {
+export async function dismissCommand(argv: string[], mode: "add" | "remove"): Promise<void> {
+  if (argv.includes("-h") || argv.includes("--help")) {
     process.stdout.write(USAGE);
     return;
   }
@@ -67,12 +67,12 @@ export async function dismissCommand(argv: string[], mode: 'add' | 'remove'): Pr
   }
 
   if (args.pr == null || !Number.isInteger(args.pr) || args.pr <= 0) {
-    process.stderr.write('dismiss: --pr <number> is required.\n');
+    process.stderr.write("dismiss: --pr <number> is required.\n");
     process.exitCode = 2;
     return;
   }
   if (args.ids.length === 0) {
-    process.stderr.write('dismiss: provide at least one finding id.\n');
+    process.stderr.write("dismiss: provide at least one finding id.\n");
     process.exitCode = 2;
     return;
   }
@@ -94,20 +94,20 @@ export async function dismissCommand(argv: string[], mode: 'add' | 'remove'): Pr
       cwd,
     });
     const result = await reporter.applyDismissal(
-      mode === 'add' ? args.ids : [],
-      mode === 'remove' ? args.ids : [],
+      mode === "add" ? args.ids : [],
+      mode === "remove" ? args.ids : [],
       args.by,
-      args.reason
+      args.reason,
     );
-    if (mode === 'add') {
+    if (mode === "add") {
       process.stderr.write(
-        `Dismissed ${result.matched.length} finding(s) on ${repo}#${args.pr}.\n`
+        `Dismissed ${result.matched.length} finding(s) on ${repo}#${args.pr}.\n`,
       );
     } else {
       process.stderr.write(`Restored finding(s) on ${repo}#${args.pr}.\n`);
     }
     if (result.unmatched.length > 0) {
-      process.stderr.write(`Unknown id(s) (no matching finding): ${result.unmatched.join(', ')}\n`);
+      process.stderr.write(`Unknown id(s) (no matching finding): ${result.unmatched.join(", ")}\n`);
     }
   } catch (error) {
     process.stderr.write(`dismiss failed: ${errorMessage(error)}\n`);

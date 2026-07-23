@@ -1,4 +1,4 @@
-import type { DiffEntry } from './schema.js';
+import type { DiffEntry } from "./schema.js";
 
 /**
  * Parse a unified `git diff` into one DiffEntry per file. Splits on `diff --git`
@@ -11,14 +11,14 @@ export function parseUnifiedDiff(diffText: string): DiffEntry[] {
   }
 
   const entries: DiffEntry[] = [];
-  const lines = diffText.split('\n');
+  const lines = diffText.split("\n");
   let current: string[] | null = null;
 
   const flush = (): void => {
     if (!current || current.length === 0) {
       return;
     }
-    const entry = patchToEntry(current.join('\n'));
+    const entry = patchToEntry(current.join("\n"));
     if (entry) {
       entries.push(entry);
     }
@@ -26,7 +26,7 @@ export function parseUnifiedDiff(diffText: string): DiffEntry[] {
   };
 
   for (const line of lines) {
-    if (line.startsWith('diff --git ')) {
+    if (line.startsWith("diff --git ")) {
       flush();
       current = [line];
     } else if (current) {
@@ -39,8 +39,8 @@ export function parseUnifiedDiff(diffText: string): DiffEntry[] {
 }
 
 function patchToEntry(patch: string): DiffEntry | null {
-  const lines = patch.split('\n');
-  const header = lines[0] ?? '';
+  const lines = patch.split("\n");
+  const header = lines[0] ?? "";
 
   let newPath: string | null = null;
   let oldPath: string | null = null;
@@ -48,39 +48,39 @@ function patchToEntry(patch: string): DiffEntry | null {
   let binary = false;
 
   for (const line of lines) {
-    if (line.startsWith('+++ ')) {
+    if (line.startsWith("+++ ")) {
       newPath = stripDiffPathPrefix(line.slice(4));
-    } else if (line.startsWith('--- ')) {
+    } else if (line.startsWith("--- ")) {
       oldPath = stripDiffPathPrefix(line.slice(4));
-    } else if (line.startsWith('new file mode')) {
-      status = 'A';
-    } else if (line.startsWith('deleted file mode')) {
-      status = 'D';
-    } else if (line.startsWith('rename ')) {
-      status = 'R';
-    } else if (line.startsWith('Binary files ') || line === 'GIT binary patch') {
+    } else if (line.startsWith("new file mode")) {
+      status = "A";
+    } else if (line.startsWith("deleted file mode")) {
+      status = "D";
+    } else if (line.startsWith("rename ")) {
+      status = "R";
+    } else if (line.startsWith("Binary files ") || line === "GIT binary patch") {
       // git emits one of these instead of +++/---/@@ hunks for a binary file.
       // There is no textual diff to review; flag it so noise filtering drops it.
       binary = true;
     }
   }
 
-  let path = newPath && newPath !== '/dev/null' ? newPath : oldPath;
-  if (!path || path === '/dev/null') {
+  let path = newPath && newPath !== "/dev/null" ? newPath : oldPath;
+  if (!path || path === "/dev/null") {
     path = pathFromHeader(header);
   }
   if (!path) {
     return null;
   }
-  return { path, patch, status: status ?? 'M', binary };
+  return { path, patch, status: status ?? "M", binary };
 }
 
 function stripDiffPathPrefix(raw: string): string {
   const value = raw.trim();
-  if (value === '/dev/null') {
+  if (value === "/dev/null") {
     return value;
   }
-  return value.replace(/^[ab]\//, '');
+  return value.replace(/^[ab]\//, "");
 }
 
 function pathFromHeader(header: string): string | null {

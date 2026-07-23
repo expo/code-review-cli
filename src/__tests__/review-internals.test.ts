@@ -1,4 +1,4 @@
-import { test, expect } from 'bun:test';
+import { test, expect } from "bun:test";
 
 import {
   chunkByLines,
@@ -8,33 +8,33 @@ import {
   reconcileSummary,
   isAuthError,
   formatUsageSummary,
-} from '../core/review.js';
-import type { PatchWorkspaceFile } from '../core/noise.js';
-import type { CoordinatorOutput, Finding } from '../core/schema.js';
+} from "../core/review.js";
+import type { PatchWorkspaceFile } from "../core/noise.js";
+import type { CoordinatorOutput, Finding } from "../core/schema.js";
 
 const wf = (p: string, changedLines: number): PatchWorkspaceFile => ({
   path: p,
-  patchPath: '/x',
-  status: 'M',
-  patch: '',
+  patchPath: "/x",
+  status: "M",
+  patch: "",
   changedLines,
 });
 const finding = (over: Partial<Finding> = {}): Finding => ({
-  severity: 'warning',
-  category: 'quality',
-  file: 'a.ts',
+  severity: "warning",
+  category: "quality",
+  file: "a.ts",
   line: 1,
-  title: 'T',
-  rationale: 'r',
+  title: "T",
+  rationale: "r",
   ...over,
 });
 
-test('chunkByLines: splits by maxChangedLines', () => {
-  const chunks = chunkByLines([wf('a', 600), wf('b', 600), wf('c', 600)], 1000, 20);
-  expect(chunks.map(c => c.map(f => f.path))).toEqual([['a'], ['b'], ['c']]);
+test("chunkByLines: splits by maxChangedLines", () => {
+  const chunks = chunkByLines([wf("a", 600), wf("b", 600), wf("c", 600)], 1000, 20);
+  expect(chunks.map((c) => c.map((f) => f.path))).toEqual([["a"], ["b"], ["c"]]);
 });
 
-test('chunkByLines: caps by maxFiles', () => {
+test("chunkByLines: caps by maxFiles", () => {
   const files = Array.from({ length: 25 }, (_, i) => wf(`f${i}`, 1));
   const chunks = chunkByLines(files, 10_000, 20);
   expect(chunks.length).toBe(2);
@@ -42,38 +42,42 @@ test('chunkByLines: caps by maxFiles', () => {
   expect(chunks[1]!.length).toBe(5);
 });
 
-test('chunkByLines: a single over-budget file is its own chunk', () => {
-  const chunks = chunkByLines([wf('big', 5000), wf('small', 10)], 1000, 20);
-  expect(chunks.map(c => c.map(f => f.path))).toEqual([['big'], ['small']]);
+test("chunkByLines: a single over-budget file is its own chunk", () => {
+  const chunks = chunkByLines([wf("big", 5000), wf("small", 10)], 1000, 20);
+  expect(chunks.map((c) => c.map((f) => f.path))).toEqual([["big"], ["small"]]);
 });
 
-test('applyReviewPolicy: drops suggestions, sorts by severity', () => {
+test("applyReviewPolicy: drops suggestions, sorts by severity", () => {
   const out: CoordinatorOutput = {
-    decision: 'request_changes',
-    findings: [finding({ severity: 'suggestion' }), finding({ severity: 'warning' }), finding({ severity: 'critical' })],
-    summary: 's',
+    decision: "request_changes",
+    findings: [
+      finding({ severity: "suggestion" }),
+      finding({ severity: "warning" }),
+      finding({ severity: "critical" }),
+    ],
+    summary: "s",
     incomplete: [],
   };
   const result = applyReviewPolicy(out, { includeSuggestions: false });
-  expect(result.findings.map(f => f.severity)).toEqual(['critical', 'warning']);
+  expect(result.findings.map((f) => f.severity)).toEqual(["critical", "warning"]);
 });
 
-test('applyReviewPolicy: approve_with_comments + no findings → approve', () => {
+test("applyReviewPolicy: approve_with_comments + no findings → approve", () => {
   const result = applyReviewPolicy(
-    { decision: 'approve_with_comments', findings: [], summary: '', incomplete: [] },
-    { includeSuggestions: false }
+    { decision: "approve_with_comments", findings: [], summary: "", incomplete: [] },
+    { includeSuggestions: false },
   );
-  expect(result.decision).toBe('approve');
+  expect(result.decision).toBe("approve");
 });
 
-test('runGrowableQueue: runs every ELEMENT once, bounded (guards the index-vs-element FP)', async () => {
+test("runGrowableQueue: runs every ELEMENT once, bounded (guards the index-vs-element FP)", async () => {
   const seen: number[] = [];
   let inFlight = 0;
   let maxInFlight = 0;
-  await runGrowableQueue([1, 2, 3, 4, 5], 2, async n => {
+  await runGrowableQueue([1, 2, 3, 4, 5], 2, async (n) => {
     inFlight++;
     maxInFlight = Math.max(maxInFlight, inFlight);
-    await new Promise(r => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 5));
     seen.push(n);
     inFlight--;
   });
@@ -81,14 +85,14 @@ test('runGrowableQueue: runs every ELEMENT once, bounded (guards the index-vs-el
   expect(maxInFlight).toBeLessThanOrEqual(2);
 });
 
-test('runGrowableQueue: processes items enqueued DURING the run (subdivision), still bounded', async () => {
+test("runGrowableQueue: processes items enqueued DURING the run (subdivision), still bounded", async () => {
   const seen: number[] = [];
   let inFlight = 0;
   let maxInFlight = 0;
   await runGrowableQueue([1, 2, 3], 2, async (n, enqueue) => {
     inFlight++;
     maxInFlight = Math.max(maxInFlight, inFlight);
-    await new Promise(r => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 5));
     seen.push(n);
     // Item 3 "times out" and subdivides into two smaller units mid-run.
     if (n === 3) {
@@ -101,70 +105,70 @@ test('runGrowableQueue: processes items enqueued DURING the run (subdivision), s
   expect(maxInFlight).toBeLessThanOrEqual(2);
 });
 
-test('reconcileSummary: replaces summary when everything was dropped', () => {
-  const out = reconcileSummary('Three critical issues: a, b, c.', 0);
-  expect(out).toContain('no issues remain');
-  expect(out).not.toContain('Three critical'); // stale text is gone
+test("reconcileSummary: replaces summary when everything was dropped", () => {
+  const out = reconcileSummary("Three critical issues: a, b, c.", 0);
+  expect(out).toContain("no issues remain");
+  expect(out).not.toContain("Three critical"); // stale text is gone
 });
 
-test('reconcileSummary: prepends a caveat when some findings remain', () => {
-  const out = reconcileSummary('Three critical issues: a, b, c.', 2);
-  expect(out).toContain('some findings were removed'); // honest caveat
-  expect(out).toContain('Three critical issues: a, b, c.'); // original prose kept below
+test("reconcileSummary: prepends a caveat when some findings remain", () => {
+  const out = reconcileSummary("Three critical issues: a, b, c.", 2);
+  expect(out).toContain("some findings were removed"); // honest caveat
+  expect(out).toContain("Three critical issues: a, b, c."); // original prose kept below
 });
 
-test('decisionAfterVerification: re-derives after drops', () => {
-  expect(decisionAfterVerification('request_changes', [])).toBe('approve');
-  expect(decisionAfterVerification('request_changes', [finding({ severity: 'warning' })])).toBe(
-    'approve_with_comments'
+test("decisionAfterVerification: re-derives after drops", () => {
+  expect(decisionAfterVerification("request_changes", [])).toBe("approve");
+  expect(decisionAfterVerification("request_changes", [finding({ severity: "warning" })])).toBe(
+    "approve_with_comments",
   );
-  expect(decisionAfterVerification('request_changes', [finding({ severity: 'critical' })])).toBe(
-    'request_changes'
+  expect(decisionAfterVerification("request_changes", [finding({ severity: "critical" })])).toBe(
+    "request_changes",
   );
 });
 
-test('isAuthError flags provider auth/permission failures', () => {
+test("isAuthError flags provider auth/permission failures", () => {
   for (const message of [
-    'HTTP 401 Unauthorized',
-    'status 403 Forbidden',
-    'authentication_error: invalid x-api-key',
-    'permission denied for this model',
-    'Invalid API key provided',
-    'the OAuth token has expired',
-    'missing api key',
+    "HTTP 401 Unauthorized",
+    "status 403 Forbidden",
+    "authentication_error: invalid x-api-key",
+    "permission denied for this model",
+    "Invalid API key provided",
+    "the OAuth token has expired",
+    "missing api key",
   ]) {
     expect(isAuthError(new Error(message))).toBe(true);
   }
 });
 
-test('isAuthError does not flag non-auth failures', () => {
+test("isAuthError does not flag non-auth failures", () => {
   for (const message of [
-    'HTTP 429 Too Many Requests',
-    'server error 500',
-    'did not return parseable JSON after retries',
-    'ECONNRESET',
-    'request timed out',
+    "HTTP 429 Too Many Requests",
+    "server error 500",
+    "did not return parseable JSON after retries",
+    "ECONNRESET",
+    "request timed out",
   ]) {
     expect(isAuthError(new Error(message))).toBe(false);
   }
 });
 
-test('formatUsageSummary reports token + cache totals (and cost when present)', () => {
+test("formatUsageSummary reports token + cache totals (and cost when present)", () => {
   const s = formatUsageSummary(
     { input: 1200, output: 340, reasoning: 50, cache: { read: 108_000, write: 900 } },
-    0.0123
+    0.0123,
   );
-  expect(s).toContain('input 1200');
-  expect(s).toContain('output 340');
-  expect(s).toContain('reasoning 50');
-  expect(s).toContain('cache read 108000');
-  expect(s).toContain('cache write 900');
-  expect(s).toContain('$0.0123');
+  expect(s).toContain("input 1200");
+  expect(s).toContain("output 340");
+  expect(s).toContain("reasoning 50");
+  expect(s).toContain("cache read 108000");
+  expect(s).toContain("cache write 900");
+  expect(s).toContain("$0.0123");
 });
 
-test('formatUsageSummary omits cost when zero and reasoning when absent', () => {
+test("formatUsageSummary omits cost when zero and reasoning when absent", () => {
   const s = formatUsageSummary({ input: 10, output: 5 }, 0);
-  expect(s).toContain('cache read 0');
-  expect(s).not.toContain('reasoning');
-  expect(s).not.toContain('cost');
+  expect(s).toContain("cache read 0");
+  expect(s).not.toContain("reasoning");
+  expect(s).not.toContain("cost");
 });

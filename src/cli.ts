@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { ciCommand } from './commands/ci.js';
-import { dismissCommand } from './commands/dismiss.js';
-import { doctorCommand } from './commands/doctor.js';
-import { initCommand } from './commands/init.js';
-import { reviewCommand } from './commands/review.js';
+import { ciCommand } from "./commands/ci.js";
+import { dismissCommand } from "./commands/dismiss.js";
+import { doctorCommand } from "./commands/doctor.js";
+import { initCommand } from "./commands/init.js";
+import { reviewCommand } from "./commands/review.js";
 
 const USAGE = `expo-code-review (ecr) — config-driven AI code reviewer
 
@@ -21,34 +21,34 @@ Agents live in each repo under .expo-code-review/. This CLI is the engine.
 async function main(): Promise<void> {
   const [, , sub, ...rest] = process.argv;
 
-  if (sub === '-h' || sub === '--help' || sub === 'help') {
+  if (sub === "-h" || sub === "--help" || sub === "help") {
     process.stdout.write(USAGE);
     return;
   }
 
   // No subcommand (or a leading flag) defaults to `review`.
-  if (!sub || sub.startsWith('-')) {
+  if (!sub || sub.startsWith("-")) {
     await reviewCommand(process.argv.slice(2));
     return;
   }
 
   switch (sub) {
-    case 'review':
+    case "review":
       await reviewCommand(rest);
       break;
-    case 'ci':
+    case "ci":
       await ciCommand(rest);
       break;
-    case 'dismiss':
-      await dismissCommand(rest, 'add');
+    case "dismiss":
+      await dismissCommand(rest, "add");
       break;
-    case 'undismiss':
-      await dismissCommand(rest, 'remove');
+    case "undismiss":
+      await dismissCommand(rest, "remove");
       break;
-    case 'init':
+    case "init":
       await initCommand(rest);
       break;
-    case 'doctor':
+    case "doctor":
       await doctorCommand(rest);
       break;
     default:

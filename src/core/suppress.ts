@@ -1,9 +1,9 @@
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
-import type { Finding } from './schema.js';
+import type { Finding } from "./schema.js";
 
-const DIRECTIVE = 'expo-code-review-ignore';
+const DIRECTIVE = "expo-code-review-ignore";
 
 export interface SuppressionResult {
   kept: Finding[];
@@ -23,7 +23,7 @@ export interface SuppressionResult {
 export async function applyInlineIgnores(
   findings: Finding[],
   cwd: string,
-  onProgress?: (message: string) => void
+  onProgress?: (message: string) => void,
 ): Promise<SuppressionResult> {
   const kept: Finding[] = [];
   const suppressed: Finding[] = [];
@@ -34,10 +34,10 @@ export async function applyInlineIgnores(
       kept.push(finding);
       continue;
     }
-    if (finding.severity === 'critical' || finding.category === 'secrets') {
+    if (finding.severity === "critical" || finding.category === "secrets") {
       kept.push(finding);
       onProgress?.(
-        `  inline-ignore present but NOT honored for ${finding.severity}/${finding.category} "${finding.title}"`
+        `  inline-ignore present but NOT honored for ${finding.severity}/${finding.category} "${finding.title}"`,
       );
     } else {
       suppressed.push(finding);
@@ -50,7 +50,7 @@ export async function applyInlineIgnores(
 async function hasDirectiveNear(
   finding: Finding,
   cwd: string,
-  cache: Map<string, string[] | null>
+  cache: Map<string, string[] | null>,
 ): Promise<boolean> {
   if (finding.line == null) {
     return false;
@@ -60,22 +60,22 @@ async function hasDirectiveNear(
     return false;
   }
   const idx = finding.line - 1; // 1-based → 0-based
-  const flagged = lines[idx] ?? '';
-  const above = idx > 0 ? (lines[idx - 1] ?? '') : '';
+  const flagged = lines[idx] ?? "";
+  const above = idx > 0 ? (lines[idx - 1] ?? "") : "";
   return flagged.includes(DIRECTIVE) || above.includes(DIRECTIVE);
 }
 
 async function readLines(
   file: string,
   cwd: string,
-  cache: Map<string, string[] | null>
+  cache: Map<string, string[] | null>,
 ): Promise<string[] | null> {
   if (cache.has(file)) {
     return cache.get(file)!;
   }
   let lines: string[] | null;
   try {
-    lines = (await readFile(path.resolve(cwd, file), 'utf8')).split('\n');
+    lines = (await readFile(path.resolve(cwd, file), "utf8")).split("\n");
   } catch {
     lines = null;
   }

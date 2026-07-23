@@ -1,12 +1,7 @@
-import {
-  decisionExitCode,
-  decisionLabel,
-  groupBySeverity,
-  sortFindings,
-} from '../core/render.js';
-import { SEVERITIES } from '../core/schema.js';
-import type { CoordinatorOutput, Finding, Severity } from '../core/schema.js';
-import type { Reporter } from './reporter.js';
+import { decisionExitCode, decisionLabel, groupBySeverity, sortFindings } from "../core/render.js";
+import { SEVERITIES } from "../core/schema.js";
+import type { CoordinatorOutput, Finding, Severity } from "../core/schema.js";
+import type { Reporter } from "./reporter.js";
 
 export interface TerminalReporterOptions {
   json?: boolean;
@@ -14,7 +9,7 @@ export interface TerminalReporterOptions {
   noFail?: boolean;
 }
 
-const ESC = '';
+const ESC = "";
 const RESET = `${ESC}[0m`;
 const BOLD = `${ESC}[1m`;
 const DIM = `${ESC}[2m`;
@@ -24,9 +19,9 @@ const COLORS: Record<Severity, string> = {
   suggestion: `${ESC}[36m`,
 };
 const SEVERITY_LABEL: Record<Severity, string> = {
-  critical: 'CRITICAL',
-  warning: 'WARNING',
-  suggestion: 'SUGGESTION',
+  critical: "CRITICAL",
+  warning: "WARNING",
+  suggestion: "SUGGESTION",
 };
 
 /**
@@ -53,21 +48,23 @@ export class TerminalReporter implements Reporter {
   }
 
   private renderPretty(review: CoordinatorOutput): string {
-    const out: string[] = [''];
+    const out: string[] = [""];
     out.push(this.paint(BOLD, `AI code review — ${decisionLabel(review.decision)}`));
-    out.push(this.tally(review.findings), '');
-    out.push(review.summary, '');
+    out.push(this.tally(review.findings), "");
+    out.push(review.summary, "");
 
     if (review.incomplete.length > 0) {
-      out.push(this.paint(BOLD, '⏱️  Coverage note: some passes did not finish (partial coverage):'));
+      out.push(
+        this.paint(BOLD, "⏱️  Coverage note: some passes did not finish (partial coverage):"),
+      );
       for (const note of review.incomplete) {
         out.push(this.paint(DIM, `  - ${note}`));
       }
-      out.push('');
+      out.push("");
     }
 
     if (review.findings.length === 0) {
-      out.push(this.paint(DIM, 'No findings.'), '');
+      out.push(this.paint(DIM, "No findings."), "");
     } else {
       const groups = groupBySeverity(sortFindings(review.findings));
       for (const severity of SEVERITIES) {
@@ -76,24 +73,27 @@ export class TerminalReporter implements Reporter {
           continue;
         }
         out.push(
-          this.paint(`${BOLD}${COLORS[severity]}`, `${SEVERITY_LABEL[severity]} (${findings.length})`),
-          ''
+          this.paint(
+            `${BOLD}${COLORS[severity]}`,
+            `${SEVERITY_LABEL[severity]} (${findings.length})`,
+          ),
+          "",
         );
         for (const finding of findings) {
           out.push(this.renderFinding(finding));
         }
       }
     }
-    return `${out.join('\n')}\n`;
+    return `${out.join("\n")}\n`;
   }
 
   /** One-line count headline, e.g. "2 critical · 5 warning". */
   private tally(findings: Finding[]): string {
-    const parts = SEVERITIES.map(severity => {
-      const n = findings.filter(finding => finding.severity === severity).length;
+    const parts = SEVERITIES.map((severity) => {
+      const n = findings.filter((finding) => finding.severity === severity).length;
       return n > 0 ? this.paint(COLORS[severity], `${n} ${severity}`) : null;
     }).filter((part): part is string => part !== null);
-    return parts.length > 0 ? parts.join(this.paint(DIM, ' · ')) : this.paint(DIM, 'no findings');
+    return parts.length > 0 ? parts.join(this.paint(DIM, " · ")) : this.paint(DIM, "no findings");
   }
 
   private renderFinding(finding: Finding): string {
@@ -104,9 +104,9 @@ export class TerminalReporter implements Reporter {
       `  ${finding.rationale}`,
     ];
     if (finding.suggestion) {
-      lines.push(`  ${this.paint(DIM, 'Suggestion:')} ${finding.suggestion}`);
+      lines.push(`  ${this.paint(DIM, "Suggestion:")} ${finding.suggestion}`);
     }
-    return `${lines.join('\n')}\n`;
+    return `${lines.join("\n")}\n`;
   }
 
   private paint(codes: string, text: string): string {

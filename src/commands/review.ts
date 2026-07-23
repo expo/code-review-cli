@@ -1,12 +1,12 @@
-import { loadReviewConfig } from '../config/load.js';
-import { repoRoot, resolveRepo } from '../core/exec.js';
-import { errorMessage } from '../core/util.js';
-import { runReview } from '../core/review.js';
-import { LocalGitSource } from '../sources/local-git.js';
-import { GitHubPRSource } from '../sources/github-pr.js';
-import type { ReviewSource } from '../sources/source.js';
-import { TerminalReporter } from '../reporters/terminal.js';
-import { GitHubReporter } from '../reporters/github.js';
+import { loadReviewConfig } from "../config/load.js";
+import { repoRoot, resolveRepo } from "../core/exec.js";
+import { errorMessage } from "../core/util.js";
+import { runReview } from "../core/review.js";
+import { LocalGitSource } from "../sources/local-git.js";
+import { GitHubPRSource } from "../sources/github-pr.js";
+import type { ReviewSource } from "../sources/source.js";
+import { TerminalReporter } from "../reporters/terminal.js";
+import { GitHubReporter } from "../reporters/github.js";
 
 const USAGE = `ecr review — AI code review, printed to your terminal
 
@@ -56,7 +56,7 @@ interface ReviewArgs {
 }
 
 function requireValue(flag: string, value: string | undefined): string {
-  if (value === undefined || value.startsWith('--')) {
+  if (value === undefined || value.startsWith("--")) {
     throw new Error(`${flag} requires a value`);
   }
   return value;
@@ -74,16 +74,16 @@ function parseArgs(argv: string[]): ReviewArgs {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     switch (arg) {
-      case '--base':
+      case "--base":
         args.base = requireValue(arg, argv[++i]);
         break;
-      case '--head':
+      case "--head":
         args.head = requireValue(arg, argv[++i]);
         break;
-      case '--staged':
+      case "--staged":
         args.staged = true;
         break;
-      case '--pr': {
+      case "--pr": {
         const value = requireValue(arg, argv[++i]);
         const number = Number(value);
         if (!Number.isInteger(number) || number <= 0) {
@@ -92,29 +92,29 @@ function parseArgs(argv: string[]): ReviewArgs {
         args.pr = number;
         break;
       }
-      case '--repo':
+      case "--repo":
         args.repo = requireValue(arg, argv[++i]);
         break;
-      case '--post':
+      case "--post":
         args.post = true;
         break;
-      case '--agents':
+      case "--agents":
         args.agents = requireValue(arg, argv[++i])
-          .split(',')
-          .map(id => id.trim())
+          .split(",")
+          .map((id) => id.trim())
           .filter(Boolean);
         break;
-      case '--route':
+      case "--route":
         args.route = true;
         break;
-      case '--json':
+      case "--json":
         args.json = true;
         break;
-      case '--no-fail':
+      case "--no-fail":
         args.noFail = true;
         break;
-      case '-h':
-      case '--help':
+      case "-h":
+      case "--help":
         args.help = true;
         break;
       default:
@@ -164,10 +164,10 @@ export async function reviewCommand(argv: string[]): Promise<void> {
 
     const review = await runReview(source, {
       config,
-      mode: 'local',
+      mode: "local",
       agents: args.agents,
       route: args.route,
-      onProgress: message => process.stderr.write(`${message}\n`),
+      onProgress: (message) => process.stderr.write(`${message}\n`),
     });
 
     // Always print the result here first.
@@ -192,7 +192,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
       }
       if (breakGlass) {
         process.stderr.write(
-          `\nNot posting: ${config.breakGlassMarker} is set on ${repo}#${args.pr} (break-glass).\n`
+          `\nNot posting: ${config.breakGlassMarker} is set on ${repo}#${args.pr} (break-glass).\n`,
         );
       } else {
         await reporter.report(review);
@@ -208,17 +208,20 @@ export async function reviewCommand(argv: string[]): Promise<void> {
 /** Reject flag combinations that don't make sense together. */
 function validateArgs(args: ReviewArgs): void {
   if (args.pr != null && (args.base || args.head || args.staged)) {
-    throw new Error('--pr reviews a PR by its diff and cannot be combined with --base/--head/--staged.');
+    throw new Error(
+      "--pr reviews a PR by its diff and cannot be combined with --base/--head/--staged.",
+    );
   }
   if (args.pr == null && (args.repo || args.post)) {
-    throw new Error('--repo/--post only apply together with --pr.');
+    throw new Error("--repo/--post only apply together with --pr.");
   }
   // --staged diffs the index against HEAD, so --base/--head have no effect. Reject
   // the combination rather than silently ignoring the range the user asked for.
   if (args.staged && (args.base || args.head)) {
-    throw new Error('--staged reviews the staged changes (index vs HEAD) and cannot be combined with --base/--head.');
+    throw new Error(
+      "--staged reviews the staged changes (index vs HEAD) and cannot be combined with --base/--head.",
+    );
   }
 }
 
 /** Resolve owner/repo from the current checkout via gh (for --post). */
-

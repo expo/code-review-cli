@@ -1,4 +1,4 @@
-import type { CoordinatorOutput } from '../core/schema.js';
+import type { CoordinatorOutput } from "../core/schema.js";
 
 /** A Reporter is where results go. The core produces a mode-agnostic result; the
  * Reporter decides how to render it. */

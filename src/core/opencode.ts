@@ -1,8 +1,8 @@
-import { createOpencode } from '@opencode-ai/sdk';
+import { createOpencode } from "@opencode-ai/sdk";
 
-import type { LoadedConfig } from '../config/schema.js';
-import { toolMap } from './tools.js';
-import { errorMessage, sleep } from './util.js';
+import type { LoadedConfig } from "../config/schema.js";
+import { toolMap } from "./tools.js";
+import { errorMessage, sleep } from "./util.js";
 
 export interface OpencodeHandle {
   client: any;
@@ -50,17 +50,17 @@ const COORDINATOR_TOOLS = toolMap([]);
 // defined here so OpenCode uses this restricted tool set — otherwise the model
 // falls back to a default agent with full tools and crawls the whole repo, which
 // is why the cross-file pass used to wander for its entire time budget.
-export const CROSS_CUTTING_AGENT = 'cross-cutting';
+export const CROSS_CUTTING_AGENT = "cross-cutting";
 // Deliberately NO `glob`/`list`: the cross-file pass is given the changed files'
 // patch paths already, and directory crawling is exactly what made it wander into
 // unrelated packages. `read` (open a known file) + `grep` (find a cross-reference
 // among the changed files) are enough to trace interactions.
-const CROSS_CUTTING_TOOLS = toolMap(['read', 'grep']);
+const CROSS_CUTTING_TOOLS = toolMap(["read", "grep"]);
 
 // Verifies a finding by re-reading the actual file (adversarial refute pass). Same
 // restricted tool set — it opens the cited file and checks the claim.
-export const VERIFIER_AGENT = 'verifier';
-const VERIFIER_TOOLS = toolMap(['read', 'grep']);
+export const VERIFIER_AGENT = "verifier";
+const VERIFIER_TOOLS = toolMap(["read", "grep"]);
 
 /** Build the inline OpenCode config (agents + coordinator) from a repo config. */
 export function buildOpencodeConfig(config: LoadedConfig): Record<string, unknown> {
@@ -68,7 +68,7 @@ export function buildOpencodeConfig(config: LoadedConfig): Record<string, unknow
   for (const reviewer of config.agents) {
     agent[reviewer.id] = {
       description: `${reviewer.id} reviewer`,
-      mode: 'all',
+      mode: "all",
       model: reviewer.model,
       temperature: reviewer.temperature,
       prompt: `You are the ${reviewer.id} code reviewer. Follow the user message exactly and return only the requested JSON.`,
@@ -76,41 +76,41 @@ export function buildOpencodeConfig(config: LoadedConfig): Record<string, unknow
     };
   }
   agent[CROSS_CUTTING_AGENT] = {
-    description: 'Cross-file reviewer: issues spanning multiple changed files.',
-    mode: 'all',
+    description: "Cross-file reviewer: issues spanning multiple changed files.",
+    mode: "all",
     // Use the default reviewing model (agents share it unless overridden).
     model: config.agents[0]?.model ?? config.coordinator.model,
     temperature: config.agents[0]?.temperature ?? 0.1,
     prompt:
-      'You are the cross-file code reviewer. Follow the user message exactly and return only the requested JSON.',
+      "You are the cross-file code reviewer. Follow the user message exactly and return only the requested JSON.",
     tools: CROSS_CUTTING_TOOLS,
   };
   agent[VERIFIER_AGENT] = {
-    description: 'Verifies a finding against the real file (adversarial refute pass).',
-    mode: 'all',
+    description: "Verifies a finding against the real file (adversarial refute pass).",
+    mode: "all",
     model: config.agents[0]?.model ?? config.coordinator.model,
     temperature: config.agents[0]?.temperature ?? 0.1,
     prompt:
-      'You verify code-review findings against the actual source. Follow the user message exactly and return only the requested JSON.',
+      "You verify code-review findings against the actual source. Follow the user message exactly and return only the requested JSON.",
     tools: VERIFIER_TOOLS,
   };
-  agent['coordinator'] = {
-    description: 'Consolidates specialist findings into one decision.',
-    mode: 'all',
+  agent["coordinator"] = {
+    description: "Consolidates specialist findings into one decision.",
+    mode: "all",
     model: config.coordinator.model,
     temperature: config.coordinator.temperature,
     prompt:
-      'You are the review coordinator. Follow the user message exactly and return only the requested JSON.',
+      "You are the review coordinator. Follow the user message exactly and return only the requested JSON.",
     tools: COORDINATOR_TOOLS,
   };
-  return { $schema: 'https://opencode.ai/config.json', agent };
+  return { $schema: "https://opencode.ai/config.json", agent };
 }
 
 /** hey-api style responses come back as { data, error }; unwrap or throw. */
 function unwrap<T>(res: any): T {
-  if (res && typeof res === 'object' && ('data' in res || 'error' in res)) {
+  if (res && typeof res === "object" && ("data" in res || "error" in res)) {
     if (res.error) {
-      throw new Error(typeof res.error === 'string' ? res.error : JSON.stringify(res.error));
+      throw new Error(typeof res.error === "string" ? res.error : JSON.stringify(res.error));
     }
     return res.data as T;
   }
@@ -120,7 +120,7 @@ function unwrap<T>(res: any): T {
 /** Start an in-process OpenCode server with the given inline config. */
 export async function startOpencode(config: unknown): Promise<OpencodeHandle> {
   const { client, server } = await createOpencode({
-    hostname: '127.0.0.1',
+    hostname: "127.0.0.1",
     config: config as any,
   });
   return { client, url: server.url, close: () => server.close() };
@@ -140,11 +140,11 @@ const DEFAULT_MAX_WAIT_MS = 8 * 60 * 1000;
 const FINALIZE_WAIT_MS = 90 * 1000;
 
 const FINALIZE_PROMPT =
-  'You have reached your time budget. STOP investigating now — do NOT read, grep, ' +
-  'glob, list, or open any more files, and do not call any tools. Based ONLY on ' +
-  'what you have already examined, reply with the single JSON object exactly as ' +
-  'specified in your instructions, containing whatever findings you are already ' +
-  'confident about. If you have nothing solid, return an empty findings array.';
+  "You have reached your time budget. STOP investigating now — do NOT read, grep, " +
+  "glob, list, or open any more files, and do not call any tools. Based ONLY on " +
+  "what you have already examined, reply with the single JSON object exactly as " +
+  "specified in your instructions, containing whatever findings you are already " +
+  "confident about. If you have nothing solid, return an empty findings array.";
 
 /**
  * Internal signal that a poll loop passed its deadline. Carries the best-effort
@@ -154,13 +154,13 @@ const FINALIZE_PROMPT =
 class DeadlineReached extends Error {
   constructor(
     readonly cost: number = 0,
-    readonly tokens?: TokenUsage
+    readonly tokens?: TokenUsage,
   ) {
-    super('deadline reached');
+    super("deadline reached");
   }
 }
 
-const DEADLINE_SENTINEL = Symbol('deadline');
+const DEADLINE_SENTINEL = Symbol("deadline");
 
 /**
  * Race a promise against the poll deadline. Without this, a stalled message fetch
@@ -171,14 +171,14 @@ const DEADLINE_SENTINEL = Symbol('deadline');
  */
 async function raceDeadline<T>(
   work: Promise<T>,
-  deadline: number
+  deadline: number,
 ): Promise<T | typeof DEADLINE_SENTINEL> {
   const remaining = deadline - Date.now();
   if (remaining <= 0) {
     return DEADLINE_SENTINEL;
   }
   let timer: ReturnType<typeof setTimeout>;
-  const timeout = new Promise<typeof DEADLINE_SENTINEL>(resolve => {
+  const timeout = new Promise<typeof DEADLINE_SENTINEL>((resolve) => {
     timer = setTimeout(() => resolve(DEADLINE_SENTINEL), remaining);
   });
   try {
@@ -199,7 +199,7 @@ export class AgentTimeoutError extends Error {
   readonly tokens?: TokenUsage;
   constructor(agent: string, minutes: number, cost = 0, tokens?: TokenUsage) {
     super(`Agent "${agent}" timed out after ${minutes} minutes (including finalize)`);
-    this.name = 'AgentTimeoutError';
+    this.name = "AgentTimeoutError";
     this.cost = cost;
     this.tokens = tokens;
   }
@@ -239,10 +239,10 @@ export async function promptAgent(
      * findings it has so far (a soft landing) instead of throwing immediately.
      */
     finalizeOnTimeout?: boolean;
-  }
+  },
 ): Promise<PromptResult> {
   const session = unwrap<{ id: string }>(
-    await handle.client.session.create({ body: { title: args.title } })
+    await handle.client.session.create({ body: { title: args.title } }),
   );
   const reportedTools = new Set<string>();
   await sendSessionPrompt(handle, session.id, {
@@ -272,12 +272,17 @@ export async function promptAgent(
     // Time budget hit. Interrupt the wandering run first.
     await abortQuietly(handle, session.id);
     if (!args.finalizeOnTimeout) {
-      throw new AgentTimeoutError(args.agent, Math.round(maxWaitMs / 60000), spentCost, spentTokens);
+      throw new AgentTimeoutError(
+        args.agent,
+        Math.round(maxWaitMs / 60000),
+        spentCost,
+        spentTokens,
+      );
     }
     // Soft landing: ask the (same, context-carrying) session to return whatever
     // it has now. Only messages after this point count as the answer.
     const baseline = (await fetchMessages(handle, session.id)).length;
-    args.onActivity?.('time budget reached — asking for findings so far');
+    args.onActivity?.("time budget reached — asking for findings so far");
     await sendSessionPrompt(handle, session.id, {
       agent: args.agent,
       system: args.system,
@@ -304,7 +309,7 @@ export async function promptAgent(
           args.agent,
           Math.round((maxWaitMs + FINALIZE_WAIT_MS) / 60000),
           spentCost + finalizeError.cost,
-          addTokenUsage(addTokenUsage({}, spentTokens), finalizeError.tokens)
+          addTokenUsage(addTokenUsage({}, spentTokens), finalizeError.tokens),
         );
       }
       throw finalizeError;
@@ -313,8 +318,8 @@ export async function promptAgent(
 }
 
 const CORRECTIVE =
-  '\n\nIMPORTANT: your previous reply could not be parsed. Reply with ONLY the single ' +
-  'JSON object described above — no prose, no code fences, no partial output.';
+  "\n\nIMPORTANT: your previous reply could not be parsed. Reply with ONLY the single " +
+  "JSON object described above — no prose, no code fences, no partial output.";
 
 // Budget for a corrective "re-emit the JSON" reply — no fresh investigation, so
 // it should return almost immediately.
@@ -352,7 +357,7 @@ export function isTransientApiError(error: unknown): boolean {
     return false;
   }
   const message = errorMessage(error);
-  return TRANSIENT_PATTERNS.some(pattern => pattern.test(message));
+  return TRANSIENT_PATTERNS.some((pattern) => pattern.test(message));
 }
 
 /**
@@ -365,7 +370,7 @@ export function isTransientApiError(error: unknown): boolean {
 async function withTransientRetry<T>(
   label: string,
   onActivity: ((line: string) => void) | undefined,
-  fn: () => Promise<T>
+  fn: () => Promise<T>,
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -378,7 +383,7 @@ async function withTransientRetry<T>(
       onActivity?.(
         `${label}: transient API error (${errorMessage(error)}); retry ${attempt + 1}/${
           TRANSIENT_BACKOFF_MS.length
-        } in ${Math.round(waitMs / 1000)}s`
+        } in ${Math.round(waitMs / 1000)}s`,
       );
       await sleep(waitMs);
     }
@@ -407,7 +412,7 @@ export async function promptAndParse<T>(
     maxToolCalls?: number;
     finalizeOnTimeout?: boolean;
   },
-  parse: (text: string) => T
+  parse: (text: string) => T,
 ): Promise<{ value: T; cost: number; truncated: boolean; tokens: TokenUsage }> {
   let cost = 0;
   let truncated = false;
@@ -419,7 +424,7 @@ export async function promptAndParse<T>(
   };
 
   const first = await withTransientRetry(`Agent "${args.agent}"`, args.onActivity, () =>
-    promptAgent(handle, args)
+    promptAgent(handle, args),
   );
   record(first);
   try {
@@ -457,7 +462,7 @@ export async function promptAndParse<T>(
         throw new Error(
           `Agent "${args.agent}" did not return parseable JSON after retries: ${
             finalError instanceof Error ? finalError.message : String(finalError)
-          }`
+          }`,
         );
       }
     }
@@ -491,7 +496,7 @@ async function fetchMessages(handle: OpencodeHandle, sessionID: string): Promise
 async function sendSessionPrompt(
   handle: OpencodeHandle,
   sessionID: string,
-  args: { agent: string; system: string; text: string }
+  args: { agent: string; system: string; text: string },
 ): Promise<void> {
   unwrap(
     await handle.client.session.promptAsync({
@@ -499,9 +504,9 @@ async function sendSessionPrompt(
       body: {
         agent: args.agent,
         system: args.system,
-        parts: [{ type: 'text', text: args.text }],
+        parts: [{ type: "text", text: args.text }],
       },
-    })
+    }),
   );
 }
 
@@ -529,7 +534,7 @@ async function pollForCompletion(
     onActivity?: (line: string) => void;
     reportedTools: Set<string>;
     maxToolCalls?: number;
-  }
+  },
 ): Promise<PromptResult> {
   // Best-effort usage of the in-progress assistant message, so a task that times
   // out before completing still contributes its spend to the run's metrics.
@@ -560,11 +565,11 @@ async function pollForCompletion(
       throw new DeadlineReached(lastCost, lastTokens);
     }
     const recent = messages.slice(opts.fromIndex);
-    const assistant = [...recent].reverse().find(message => message.info?.role === 'assistant');
+    const assistant = [...recent].reverse().find((message) => message.info?.role === "assistant");
     if (!assistant) {
       continue;
     }
-    if (typeof assistant.info?.cost === 'number') {
+    if (typeof assistant.info?.cost === "number") {
       lastCost = assistant.info.cost;
     }
     if (assistant.info?.tokens) {
@@ -574,15 +579,15 @@ async function pollForCompletion(
     // Track each distinct tool call once (for the tool-call cap) and, the first
     // time it starts, emit a live line so a long run shows what the agent is doing.
     for (const part of assistant.parts ?? []) {
-      if (part?.type !== 'tool') {
+      if (part?.type !== "tool") {
         continue;
       }
       const key = part.callID ?? part.id;
       const status = part.state?.status;
-      if (key && status && status !== 'pending' && !opts.reportedTools.has(key)) {
+      if (key && status && status !== "pending" && !opts.reportedTools.has(key)) {
         opts.reportedTools.add(key);
         if (opts.onActivity) {
-          const tool = part.tool ?? 'tool';
+          const tool = part.tool ?? "tool";
           const title = part.state?.title;
           emit(title ? `${tool}: ${title}` : tool);
         }
@@ -590,7 +595,7 @@ async function pollForCompletion(
     }
     if (assistant.info?.error) {
       throw new Error(
-        `Agent "${opts.agent}" returned an error: ${JSON.stringify(assistant.info.error)}`
+        `Agent "${opts.agent}" returned an error: ${JSON.stringify(assistant.info.error)}`,
       );
     }
 
@@ -598,9 +603,9 @@ async function pollForCompletion(
     // work is done, so there's nothing to finalize.
     if (assistant.info?.time?.completed != null) {
       const text = (assistant.parts ?? [])
-        .filter(part => part?.type === 'text' && typeof part.text === 'string')
-        .map(part => part.text as string)
-        .join('\n')
+        .filter((part) => part?.type === "text" && typeof part.text === "string")
+        .map((part) => part.text as string)
+        .join("\n")
         .trim();
       return {
         text,

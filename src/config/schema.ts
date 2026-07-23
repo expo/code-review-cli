@@ -1,9 +1,9 @@
-import { z } from 'zod';
+import { z } from "zod";
 
 export const ReviewConfigSchema = z.object({
   /** Default model for every agent + the coordinator. Override per-agent via
    * frontmatter in the agent's markdown, or globally via REVIEWER_MODEL. */
-  model: z.string().default('anthropic/claude-sonnet-5'),
+  model: z.string().default("anthropic/claude-sonnet-5"),
   policy: z
     .object({
       includeSuggestions: z.boolean().default(false),
@@ -49,20 +49,20 @@ export const ReviewConfigSchema = z.object({
     })
     .default({ additionalIgnores: [], additionalMarkers: [] }),
   breakGlass: z
-    .object({ marker: z.string().default('/skip-review') })
-    .default({ marker: '/skip-review' }),
-  commentTag: z.string().default('expo-ai-code-reviewer'),
+    .object({ marker: z.string().default("/skip-review") })
+    .default({ marker: "/skip-review" }),
+  commentTag: z.string().default("expo-ai-code-reviewer"),
   auth: z
     .object({
       // "api-key": the token env is sent as the provider's API key (x-api-key).
       // "oauth": the token env is a Claude Pro/Max style OAuth token, injected
       // into an isolated OpenCode auth.json so it's sent as a Bearer token.
-      mode: z.enum(['api-key', 'oauth']).default('api-key'),
-      provider: z.string().default('anthropic'),
+      mode: z.enum(["api-key", "oauth"]).default("api-key"),
+      provider: z.string().default("anthropic"),
       /** Env var holding the key/token. */
       tokenEnv: z.string().optional(),
     })
-    .default({ mode: 'api-key', provider: 'anthropic' }),
+    .default({ mode: "api-key", provider: "anthropic" }),
   review: z
     .object({
       // Which PRs `ecr ci` acts on — the source of truth for trigger policy (a
@@ -70,14 +70,14 @@ export const ReviewConfigSchema = z.object({
       //   "all"   — review every PR, unless it carries the `skipLabel`.
       //   "label" — review only PRs carrying `label` (e.g. `ai-review`) or a
       //             `label:<agent>` variant. `skipLabel` still wins.
-      trigger: z.enum(['all', 'label']).default('all'),
+      trigger: z.enum(["all", "label"]).default("all"),
       // Opt-in label (and prefix for `label:<agent>`) used when trigger is "label".
-      label: z.string().default('ai-review'),
+      label: z.string().default("ai-review"),
       // Opt a single PR out of review. A label (not a config flag) because labels
       // are write-gated to maintainers — a PR author can't add one to dodge review.
-      skipLabel: z.string().default('ai-review:skip'),
+      skipLabel: z.string().default("ai-review:skip"),
     })
-    .default({ trigger: 'all', label: 'ai-review', skipLabel: 'ai-review:skip' }),
+    .default({ trigger: "all", label: "ai-review", skipLabel: "ai-review:skip" }),
 });
 export type RawReviewConfig = z.infer<typeof ReviewConfigSchema>;
 
@@ -121,12 +121,12 @@ export interface LoadedConfig {
   breakGlassMarker: string;
   commentTag: string;
   auth: {
-    mode: 'api-key' | 'oauth';
+    mode: "api-key" | "oauth";
     provider: string;
     tokenEnv?: string;
   };
   review: {
-    trigger: 'all' | 'label';
+    trigger: "all" | "label";
     label: string;
     skipLabel: string;
   };
