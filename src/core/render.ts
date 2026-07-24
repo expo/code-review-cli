@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { fingerprintFinding, SEVERITIES, SEVERITY_RANK } from "./schema.js";
+import { fingerprintFinding, scopedFingerprint, SEVERITIES, SEVERITY_RANK } from "./schema.js";
 import type { CoordinatorOutput, Decision, DismissalRecord, Finding, Severity } from "./schema.js";
 
 /**
@@ -168,18 +168,12 @@ export function renderMarkdown(
   if (kept.length === 0) {
     lines.push("No findings.", "");
   } else {
-    const groups = groupBySeverity(sortFindings(kept.map((entry) => entry.finding)));
-    for (const severity of SEVERITIES) {
-      const group = groups[severity];
-      if (group.length === 0) {
-        continue;
-      }
-      lines.push(`### ${severityHeading(severity)} (${group.length})`, "");
-      for (const finding of group) {
-        lines.push(...renderFindingLines(finding, link));
-      }
-      lines.push("");
-    }
+    lines.push(
+      ...renderSeveritySections(
+        kept.map((entry) => entry.finding),
+        link,
+      ),
+    );
   }
 
   if (dropped.length > 0) {
@@ -202,9 +196,39 @@ export function renderMarkdown(
   return lines.join("\n");
 }
 
-function renderFindingLines(finding: Finding, link?: LinkContext): string[] {
+/**
+ * Render sorted, severity-grouped findings. Shared by the single-comment and
+ * aggregate renderers. `idFor` supplies each finding's id (default:
+ * fingerprintFinding); the aggregate renderer passes a scope-namespaced id.
+ */
+function renderSeveritySections(
+  findings: Finding[],
+  link?: LinkContext,
+  idFor: (finding: Finding) => string = fingerprintFinding,
+): string[] {
+  const out: string[] = [];
+  const groups = groupBySeverity(sortFindings(findings));
+  for (const severity of SEVERITIES) {
+    const group = groups[severity];
+    if (group.length === 0) {
+      continue;
+    }
+    out.push(`### ${severityHeading(severity)} (${group.length})`, "");
+    for (const finding of group) {
+      out.push(...renderFindingLines(finding, link, idFor(finding)));
+    }
+    out.push("");
+  }
+  return out;
+}
+
+function renderFindingLines(
+  finding: Finding,
+  link?: LinkContext,
+  id: string = fingerprintFinding(finding),
+): string[] {
   const out = [
-    `- **${finding.title}** — ${location(finding, link)} _(${finding.category})_ · \`id:${fingerprintFinding(finding)}\``,
+    `- **${finding.title}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\``,
     `  ${finding.rationale}`,
   ];
   if (finding.suggestion) {
@@ -229,10 +253,210 @@ export function parseEmbeddedFingerprints(body: string, tag: string): string[] {
   }
 }
 
+/** One scope's review result, for aggregate (comment:'single') rendering. */
+export interface ScopeReviewResult {
+  /** Scope name. */
+  scope: string;
+  /** config '.' → un-namespaced fingerprints (dismissal carry-over). */
+  isDefault: boolean;
+  review: CoordinatorOutput;
+}
+
 /** The machine-readable state embedded in the reviewer's comment. */
 export interface ReviewState {
+  /** v1 field, kept: the aggregate stores the MERGED output here. */
   review: CoordinatorOutput;
   dismissed: DismissalRecord[];
+  /** v2: present only on aggregate comments (routing, comment:'single'). */
+  scopes?: ScopeReviewResult[];
+}
+
+const DECISION_RANK: Record<Decision, number> = {
+  approve: 0,
+  approve_with_comments: 1,
+  request_changes: 2,
+};
+
+/** Worst (most severe) decision across scopes. */
+export function worstDecision(decisions: Decision[]): Decision {
+  return decisions.reduce<Decision>(
+    (worst, decision) => (DECISION_RANK[decision] > DECISION_RANK[worst] ? decision : worst),
+    "approve",
+  );
+}
+
+/** GitHub's comment body limit is ~65k chars; keep a margin. */
+const MAX_COMMENT_CHARS = 60_000;
+
+/**
+ * One aggregated comment under the single existing marker: a scope summary table,
+ * an optional coverage block, one <details> per scope (findings rendered with
+ * scope-namespaced ids), and the dismissed section. The embedded v1 `review` field
+ * is a synthesized merge so v1 state consumers still see a valid shape; `scopes`
+ * carries the real per-scope data. Oversized bodies trim each scope's findings to
+ * the most severe N (halving until it fits, floor 3) with a per-scope note.
+ */
+export function renderAggregateMarkdown(
+  results: ScopeReviewResult[],
+  tag: string,
+  dismissed: DismissalRecord[],
+  link?: LinkContext,
+  opts?: { unmatchedFiles?: string[] },
+): string {
+  const dismissedByFp = new Map(dismissed.map((record) => [record.fp, record]));
+  const idOf = (result: ScopeReviewResult, finding: Finding): string =>
+    scopedFingerprint(result.isDefault ? null : result.scope, finding);
+
+  // Split each scope's findings into kept/dropped once (dismissal is limit-independent).
+  const perScope = results.map((result) => {
+    const withId = result.review.findings.map((finding) => ({
+      finding,
+      id: idOf(result, finding),
+    }));
+    return {
+      result,
+      kept: withId.filter((entry) => !dismissedByFp.has(entry.id)),
+      dropped: withId.filter((entry) => dismissedByFp.has(entry.id)),
+    };
+  });
+
+  const worst = worstDecision(results.map((result) => result.review.decision));
+  const unmatched = opts?.unmatchedFiles ?? [];
+
+  const buildBody = (limitPerScope: number): string => {
+    const lines: string[] = [
+      commentMarker(tag),
+      "## 🤖 AI code review",
+      "",
+      `**Decision:** ${decisionLabel(worst)}`,
+      "",
+      "| Scope | Decision | Findings |",
+      "| --- | --- | --- |",
+    ];
+    for (const { result, kept } of perScope) {
+      lines.push(`| ${result.scope} | ${decisionLabel(result.review.decision)} | ${kept.length} |`);
+    }
+    lines.push("");
+
+    const anyIncomplete = results.some((result) => result.review.incomplete.length > 0);
+    if (unmatched.length > 0 || anyIncomplete) {
+      lines.push("> ⏱️ **Coverage note:** parts of this PR may not be fully reviewed:");
+      if (unmatched.length > 0) {
+        const shown = unmatched
+          .slice(0, 10)
+          .map((file) => `\`${file}\``)
+          .join(", ");
+        const more = unmatched.length > 10 ? `, …(+${unmatched.length - 10} more)` : "";
+        lines.push(`> - ${unmatched.length} changed file(s) matched no scope: ${shown}${more}`);
+      }
+      for (const result of results) {
+        for (const note of result.review.incomplete) {
+          lines.push(`> - [${result.scope}] ${note}`);
+        }
+      }
+      lines.push("");
+    }
+
+    // Shown = the most-severe N kept findings per scope (N = limitPerScope). The
+    // embedded state trims KEPT findings to the same set so a truncated comment
+    // still fits GitHub's body limit (the hidden findings are noted, not silently
+    // carried) — but dismissed findings are always kept in state (see below).
+    const rendered = perScope.map(({ result, kept, dropped }) => ({
+      result,
+      shown: sortFindings(kept.map((entry) => entry.finding)).slice(0, limitPerScope),
+      hidden: Math.max(0, kept.length - limitPerScope),
+      dropped,
+    }));
+
+    for (const { result, shown, hidden } of rendered) {
+      const open = shown.length > 0 ? " open" : "";
+      const keptCount = shown.length + hidden;
+      lines.push(
+        `<details${open}>`,
+        `<summary>${result.scope} — ${decisionLabel(result.review.decision)} (${keptCount})</summary>`,
+        "",
+      );
+      if (result.review.summary) {
+        lines.push(result.review.summary, "");
+      }
+      if (shown.length === 0) {
+        lines.push("No findings.", "");
+      } else {
+        lines.push(...renderSeveritySections(shown, link, (finding) => idOf(result, finding)));
+      }
+      if (hidden > 0) {
+        lines.push(`_…and ${hidden} more finding(s) — see the workflow log._`, "");
+      }
+      lines.push("</details>", "");
+    }
+
+    const allDropped = perScope.flatMap(({ result, dropped }) =>
+      dropped.map((entry) => ({ ...entry, scope: result.scope })),
+    );
+    if (allDropped.length > 0) {
+      lines.push(
+        "<details>",
+        `<summary>🚫 Dismissed on this PR (${allDropped.length})</summary>`,
+        "",
+      );
+      for (const { finding, id, scope } of allDropped) {
+        const record = dismissedByFp.get(id)!;
+        const who = record.by ? ` by @${record.by}` : "";
+        const why = record.reason ? ` — ${record.reason}` : "";
+        lines.push(
+          `- **${finding.title}** — ${location(finding, link)} \`id:${id}\` _(${scope})_${who}${why}`,
+        );
+      }
+      lines.push("", "_Re-add one with `/undismiss <id>`._", "</details>", "");
+    }
+
+    lines.push(
+      "---",
+      "_This review is advisory — it never blocks a merge and never auto-approves._",
+    );
+
+    // Embedded state carries the shown (kept) findings PLUS every dismissed one —
+    // truncation may trim kept findings so the comment fits, but dismissed findings
+    // must survive in state (mirroring renderMarkdown, which embeds the full
+    // review) so /undismiss can restore them and the Dismissed section persists
+    // across re-renders. The per-scope data (`scopes`) plus a merged v1 `review`
+    // keep both v2 and v1 consumers working.
+    const stateScopes: ScopeReviewResult[] = rendered.map(({ result, shown, dropped }) => ({
+      scope: result.scope,
+      isDefault: result.isDefault,
+      review: { ...result.review, findings: [...shown, ...dropped.map((entry) => entry.finding)] },
+    }));
+    const merged: CoordinatorOutput = {
+      decision: worst,
+      findings: stateScopes.flatMap((scope) => scope.review.findings),
+      summary: results
+        .map((result) => `**${result.scope}:** ${result.review.summary}`)
+        .join("\n\n"),
+      incomplete: [...new Set(results.flatMap((result) => result.review.incomplete))],
+    };
+    const fingerprints = stateScopes.flatMap((scope) =>
+      scope.review.findings.map((finding) =>
+        scopedFingerprint(scope.isDefault ? null : scope.scope, finding),
+      ),
+    );
+    lines.push("", `<!-- ${tag}:fingerprints=${JSON.stringify(fingerprints)} -->`);
+    lines.push(
+      `<!-- ${tag}:state=${encodeState({ review: merged, dismissed, scopes: stateScopes })} -->`,
+    );
+    return lines.join("\n");
+  };
+
+  let limit = Number.POSITIVE_INFINITY;
+  let body = buildBody(limit);
+  const largestScope = Math.max(0, ...perScope.map((entry) => entry.kept.length));
+  while (body.length > MAX_COMMENT_CHARS && limit > 3) {
+    limit =
+      limit === Number.POSITIVE_INFINITY
+        ? Math.max(3, Math.floor(largestScope / 2))
+        : Math.max(3, Math.floor(limit / 2));
+    body = buildBody(limit);
+  }
+  return body;
 }
 
 function encodeState(state: ReviewState): string {

@@ -40,6 +40,26 @@ export interface ReviewRunOptions {
   agents?: string[];
   /** Let the router pick relevant agents from the diff (ignored if `agents` set). */
   route?: boolean;
+  /** Restrict the review to these repo-relative changed-file paths (scope isolation). */
+  includePaths?: string[];
+  /** Wall-clock ceiling for all review passes. Default: today's PASSES_BUDGET_MS. */
+  passesBudgetMs?: number;
+}
+
+/**
+ * Filter changed files down to an explicit include set (exact-path membership, not
+ * globs — scope assignment already happened in resolveScopes). With no include set,
+ * returns the input unchanged so the non-routed path is byte-identical.
+ */
+export function filterByIncludePaths<T extends { path: string }>(
+  files: T[],
+  includePaths?: string[],
+): T[] {
+  if (!includePaths) {
+    return files;
+  }
+  const included = new Set(includePaths);
+  return files.filter((file) => included.has(file.path));
 }
 
 function makeRunId(): string {
@@ -74,12 +94,16 @@ export async function runReview(
     source.getChangedFiles(),
   ]);
 
-  const { kept, filtered } = await filterNoise(changedFiles, {
+  // Scope isolation: when includePaths is set, this run only ever sees its own
+  // scope's files — no scope reviews another team's diff.
+  const scopedFiles = filterByIncludePaths(changedFiles, options.includePaths);
+
+  const { kept, filtered } = await filterNoise(scopedFiles, {
     additionalIgnores: config.noise.additionalIgnores,
     additionalMarkers: config.noise.additionalMarkers,
   });
   progress(
-    `${changedFiles.length} changed file(s); ${kept.length} to review, ${filtered.length} filtered.`,
+    `${scopedFiles.length} changed file(s); ${kept.length} to review, ${filtered.length} filtered.`,
   );
 
   const baseRecord = {
@@ -233,7 +257,8 @@ export async function runReview(
     // job timeout. Past this, a timed-out pass is reported as a gap rather than
     // broken down further, so total wall-clock stays bounded.
     const PASSES_BUDGET_MS = 32 * 60 * 1000;
-    const passesDeadline = started + PASSES_BUDGET_MS;
+    const passesBudgetMs = options.passesBudgetMs ?? PASSES_BUDGET_MS;
+    const passesDeadline = started + passesBudgetMs;
 
     const tasks: ReviewTask[] = [];
     for (const agent of selectedAgents) {

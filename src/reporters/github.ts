@@ -8,10 +8,11 @@ import {
   buildDiffLineIndex,
   commentMarker,
   parseReviewState,
+  renderAggregateMarkdown,
   renderMarkdown,
 } from "../core/render.js";
-import type { LinkContext } from "../core/render.js";
-import { fingerprintFinding } from "../core/schema.js";
+import type { LinkContext, ReviewState, ScopeReviewResult } from "../core/render.js";
+import { fingerprintFinding, scopedFingerprint } from "../core/schema.js";
 import type { CoordinatorOutput, DismissalRecord } from "../core/schema.js";
 import type { Reporter } from "./reporter.js";
 
@@ -27,6 +28,11 @@ export interface GitHubReporterOptions {
   commentTag: string;
   breakGlassMarker: string;
   cwd?: string;
+  /**
+   * Prebuilt link context. When set, linkContextAsync() returns it directly and
+   * skips the two `gh` calls — the ci fan-out builds ONE context for all scopes.
+   */
+  linkContext?: LinkContext;
 }
 
 const MAINTAINER_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
@@ -76,6 +82,45 @@ export class GitHubReporter implements Reporter {
     await this.upsertComment(renderMarkdown(review, this.options.commentTag, dismissed, link));
   }
 
+  /** Post/update the aggregate multi-scope comment (comment:'single' mode). */
+  async reportAggregate(results: ScopeReviewResult[], unmatchedFiles: string[]): Promise<void> {
+    const existing = await this.findExistingComment();
+    const dismissed = existing
+      ? (parseReviewState(existing.body, this.options.commentTag)?.dismissed ?? [])
+      : [];
+    const link = await this.linkContextAsync();
+    await this.upsertComment(
+      renderAggregateMarkdown(results, this.options.commentTag, dismissed, link, {
+        unmatchedFiles,
+      }),
+    );
+  }
+
+  /**
+   * The embedded review state of the existing reviewer comment, or null when no
+   * comment (or no parseable state) exists. A partial ci run (--scopes) uses this
+   * to carry the non-rerun scopes' previous results into the new aggregate.
+   */
+  async readState(): Promise<ReviewState | null> {
+    const existing = await this.findExistingComment();
+    return existing ? parseReviewState(existing.body, this.options.commentTag) : null;
+  }
+
+  /**
+   * Delete every comment carrying THIS reporter's full marker (stale-scope cleanup /
+   * mode switch). Only ever touches its own marker — `<!-- tag -->` is not a substring
+   * of `<!-- tag:scope -->`, so root vs scoped markers can't cross-match (the
+   * reviewdog #1911 lesson).
+   */
+  async clear(): Promise<void> {
+    const marked = (await this.fetchAllComments()).filter((comment) =>
+      comment.body?.includes(this.marker),
+    );
+    for (const comment of marked) {
+      await this.deleteComment(comment.id);
+    }
+  }
+
   /**
    * PR context for turning finding locations into links: the set of lines actually
    * in the diff (for in-diff findings → diff-anchor links) and the base commit SHA
@@ -83,6 +128,11 @@ export class GitHubReporter implements Reporter {
    * soft — a missing piece just degrades to a plain-text location, never a dead link.
    */
   private async linkContextAsync(): Promise<LinkContext> {
+    // A prebuilt context (ci fan-out, one fetch shared across scopes) wins — skip
+    // the two `gh` calls entirely.
+    if (this.options.linkContext) {
+      return this.options.linkContext;
+    }
     const link: LinkContext = { repo: this.options.repo, prNumber: this.options.prNumber };
     const prArgs = [String(this.options.prNumber), "--repo", this.options.repo];
     const cwd = this.options.cwd;
@@ -132,11 +182,22 @@ export class GitHubReporter implements Reporter {
         "The reviewer comment has no embedded state (posted before dismissals existed); re-run a review first.",
       );
     }
-    const validFps = new Set(state.review.findings.map(fingerprintFinding));
+    // Scope-aware validity: on an aggregate comment the ids are scope-namespaced, so
+    // validate against every scope's scoped fingerprints; otherwise the plain ones.
+    const isAggregate = Array.isArray(state.scopes) && state.scopes.length > 0;
+    const validFps = isAggregate
+      ? new Set(
+          state.scopes!.flatMap((scope) =>
+            scope.review.findings.map((finding) =>
+              scopedFingerprint(scope.isDefault ? null : scope.scope, finding),
+            ),
+          ),
+        )
+      : new Set(state.review.findings.map(fingerprintFinding));
     const matched = add.filter((fp) => validFps.has(fp));
     const unmatched = add.filter((fp) => !validFps.has(fp));
 
-    let dismissed: DismissalRecord[] = state.dismissed.filter(
+    const dismissed: DismissalRecord[] = state.dismissed.filter(
       (record) => !remove.includes(record.fp),
     );
     for (const fp of matched) {
@@ -146,10 +207,10 @@ export class GitHubReporter implements Reporter {
     }
 
     const link = await this.linkContextAsync();
-    await this.patchComment(
-      existing.id,
-      renderMarkdown(state.review, this.options.commentTag, dismissed, link),
-    );
+    const body = isAggregate
+      ? renderAggregateMarkdown(state.scopes!, this.options.commentTag, dismissed, link)
+      : renderMarkdown(state.review, this.options.commentTag, dismissed, link);
+    await this.patchComment(existing.id, body);
     return { dismissedCount: dismissed.length, matched, unmatched };
   }
 
