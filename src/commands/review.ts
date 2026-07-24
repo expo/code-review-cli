@@ -1,10 +1,12 @@
-import { loadReviewConfig } from "../config/load.js";
+import { loadReviewConfig, loadScopeConfig } from "../config/load.js";
+import { loadRoutingManifest, resolveScopes, scopedCommentTag } from "../config/routing.js";
 import { repoRoot, resolveRepo } from "../core/exec.js";
 import { errorMessage } from "../core/util.js";
 import { runReview } from "../core/review.js";
 import { LocalGitSource } from "../sources/local-git.js";
 import { GitHubPRSource } from "../sources/github-pr.js";
 import type { ReviewSource } from "../sources/source.js";
+import { memoizeSource } from "../sources/source.js";
 import { TerminalReporter } from "../reporters/terminal.js";
 import { GitHubReporter } from "../reporters/github.js";
 
@@ -30,6 +32,10 @@ Options:
                        to publish.
   --agents <a,b>       run only these agents (comma-separated ids); default: all
   --route              let the router pick relevant agents from the diff
+  --scope <name>       review only this routing scope (needs a routing.jsonc);
+                       runs its config over just that scope's changed files
+  --config-dir <dir>   load config from <dir> instead of .expo-code-review/
+                       (also ECR_CONFIG_DIR); can't combine with --scope
   --json               emit machine-readable JSON on stdout
   --no-fail            always exit 0, even on request-changes
   -h, --help           show this help
@@ -50,6 +56,8 @@ interface ReviewArgs {
   post: boolean;
   agents?: string[];
   route: boolean;
+  scope?: string;
+  configDir?: string;
   json: boolean;
   noFail: boolean;
   help: boolean;
@@ -107,6 +115,12 @@ function parseArgs(argv: string[]): ReviewArgs {
       case "--route":
         args.route = true;
         break;
+      case "--scope":
+        args.scope = requireValue(arg, argv[++i]);
+        break;
+      case "--config-dir":
+        args.configDir = requireValue(arg, argv[++i]);
+        break;
       case "--json":
         args.json = true;
         break;
@@ -155,12 +169,89 @@ export async function reviewCommand(argv: string[]): Promise<void> {
   }
 
   try {
-    const config = await loadReviewConfig(process.cwd());
     const cwd = process.cwd();
-    const source: ReviewSource =
+    const makeSource = (): ReviewSource =>
       args.pr != null
         ? new GitHubPRSource({ prNumber: args.pr, repo: args.repo, cwd })
         : new LocalGitSource({ base: args.base, head: args.head, staged: args.staged, cwd });
+
+    // --scope: load the named scope's config and review only that scope's files.
+    if (args.scope) {
+      const manifest = await loadRoutingManifest(cwd);
+      if (!manifest) {
+        throw new Error("no .expo-code-review/routing.jsonc — --scope requires a routing manifest");
+      }
+      const scopeDef = manifest.scopes.find((scope) => scope.name === args.scope);
+      if (!scopeDef) {
+        throw new Error(
+          `unknown scope "${args.scope}". Known scopes: ${manifest.scopes.map((s) => s.name).join(", ")}`,
+        );
+      }
+      const rootConfig = await loadReviewConfig(cwd);
+      const config = await loadScopeConfig(cwd, scopeDef, manifest, rootConfig);
+      const source = memoizeSource(makeSource());
+      try {
+        const changed = await source.getChangedFiles();
+        const resolution = resolveScopes(
+          manifest,
+          changed.map((file) => file.path),
+        );
+        const files = resolution.active.find((scope) => scope.name === args.scope)?.files ?? [];
+        if (files.length === 0) {
+          process.stdout.write(`No changed files in scope ${args.scope}.\n`);
+          return;
+        }
+        const review = await runReview(source, {
+          config,
+          mode: "local",
+          agents: args.agents,
+          route: args.route,
+          includePaths: files,
+          onProgress: (message) => process.stderr.write(`${message}\n`),
+        });
+        await new TerminalReporter({ json: args.json, noFail: args.noFail }).report(review);
+
+        if (args.post && args.pr != null) {
+          const repo = args.repo ?? (await resolveRepo(cwd));
+          // A scope always posts under the DERIVED marker `<rootTag>:<scope>` —
+          // from the ROOT config's tag exactly like `ecr ci` does (runRoutedCi
+          // prefers rootConfig.commentTag over manifest defaults when they
+          // diverge) — so a standalone scope post and CI's per-scope post/clear/
+          // reconcile paths always target the same marker, and the bare aggregate
+          // marker is never used here. (Per-scope commentTag overrides are
+          // rejected by the scope schema for exactly this reason.)
+          const tag = scopedCommentTag(rootConfig.commentTag, args.scope);
+          const reporter = new GitHubReporter({
+            prNumber: args.pr,
+            repo,
+            commentTag: tag,
+            breakGlassMarker: config.breakGlassMarker,
+            cwd,
+          });
+          // Respect the author's break-glass opt-out, same as the non-scope path.
+          let breakGlass = false;
+          try {
+            breakGlass = await reporter.checkBreakGlass();
+          } catch {
+            breakGlass = false;
+          }
+          if (breakGlass) {
+            process.stderr.write(
+              `\nNot posting: ${config.breakGlassMarker} is set on ${repo}#${args.pr} (break-glass).\n`,
+            );
+          } else {
+            await reporter.report(review);
+            process.stderr.write(`\nPosted scope "${args.scope}" review to ${repo}#${args.pr}.\n`);
+          }
+        }
+      } finally {
+        await source.dispose();
+      }
+      return;
+    }
+
+    const config = await loadReviewConfig(cwd, { configDir: args.configDir });
+    const source = makeSource();
 
     const review = await runReview(source, {
       config,
@@ -221,6 +312,9 @@ function validateArgs(args: ReviewArgs): void {
     throw new Error(
       "--staged reviews the staged changes (index vs HEAD) and cannot be combined with --base/--head.",
     );
+  }
+  if (args.scope && args.configDir) {
+    throw new Error("--scope and --config-dir are mutually exclusive.");
   }
 }
 

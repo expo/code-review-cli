@@ -12,10 +12,12 @@ Usage:
   ecr ci                 Review the current PR and post a comment (GitHub Actions).
   ecr dismiss --pr <n> <id...>     Hide a finding on a PR (see \`ecr dismiss --help\`).
   ecr undismiss --pr <n> <id...>   Restore a dismissed finding.
-  ecr init [--with-workflow] [--force]   Scaffold .expo-code-review/ in this repo.
-  ecr doctor             Check environment, config, and credentials.
+  ecr init [--monorepo] [--scope <dir>]   Scaffold .expo-code-review/ in this repo.
+  ecr doctor [--list-scopes]   Check environment, config, credentials, and scopes.
 
 Agents live in each repo under .expo-code-review/. This CLI is the engine.
+
+Monorepos: .expo-code-review/routing.jsonc routes paths to per-team scopes (see README).
 `;
 
 async function main(): Promise<void> {
