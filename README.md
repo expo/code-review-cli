@@ -101,11 +101,117 @@ is a ready example to adapt.
 | Command | What it does |
 | --- | --- |
 | `ecr init [--no-workflow] [--force]` | Scaffold `.expo-code-review/` (config, agents, prompts) + a CI workflow. |
+| `ecr init --monorepo` | …and add a `routing.jsonc` routing manifest (one default scope). |
+| `ecr init --scope <dir>` | Scaffold a per-team scope under `<dir>` and register it in the manifest. |
 | `ecr review [options]` | Review local changes and print an advisory review (default command). |
+| `ecr review --scope <name>` | Review only one routing scope over just that scope's changed files. |
 | `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
-| `ecr doctor` | Check environment, config, and model credentials. |
+| `ecr doctor [--list-scopes]` | Check environment, config, credentials, and (with a manifest) scopes. |
+
+Extra flags for monorepos: `review --config-dir <dir>` (load config from an
+alternate dir; also `ECR_CONFIG_DIR`), `ci --scopes a,b` (limit the fan-out to
+named scopes), `ci --comment single|per-scope` (override the manifest).
 
 (When developing this repo itself, use `bun run src/cli.ts <command>`.)
+
+---
+
+## Monorepos (routing manifest)
+
+A monorepo can route different subtrees to different reviewer rosters from a single
+infra-owned manifest. There is still **one workflow, one `ecr ci` process** per PR:
+it reads the changed files once, assigns each to exactly one scope, reviews each
+active scope over only its files, and renders one comment. Because it is a single
+writer in a single process there is no comment/check race and no locking.
+
+```
+your-monorepo/
+  .expo-code-review/
+    routing.jsonc          # the manifest — infra-owned, ordered scope list + locked defaults
+    config.jsonc           # the default/root scope; the ONLY place auth/tokenEnv lives
+    shared.md coordinator.md agents/
+  server/
+    www/.expo-code-review/{config.jsonc(NO auth),coordinator.md,agents/}       # www team
+    website/.expo-code-review/{config.jsonc(NO auth),coordinator.md,agents/}   # website team
+  .github/workflows/expo-code-review.yml   # unchanged shape: one workflow, one `ecr ci`
+```
+
+```jsonc
+// .expo-code-review/routing.jsonc
+{
+  // Central guardrails every scope inherits and CANNOT override.
+  "defaults": {
+    // The ONLY place auth/tokenEnv is honored (besides the root config.jsonc).
+    "auth": { "mode": "oauth", "provider": "anthropic", "tokenEnv": "ANTHROPIC_OAUTH_API_KEY" },
+    "enforceAgents": ["security"],            // always runs on every scope, roster or not
+    "commentTag": "expo-ai-code-reviewer"     // per-scope markers derive from this
+  },
+  "comment": "single",   // "single" = one aggregated comment (default) | "per-scope"
+  // Ordered; the LAST matching scope wins per changed file (CODEOWNERS discipline).
+  "scopes": [
+    { "name": "default",        "paths": ["**/*"],              "config": "." },
+    { "name": "server-www",     "paths": ["server/www/**"],     "config": "server/www" },
+    { "name": "server-website", "paths": ["server/website/**"], "config": "server/website" }
+  ]
+}
+```
+
+```jsonc
+// server/www/.expo-code-review/config.jsonc  (the www team owns this)
+{
+  // NO "auth" block — locked centrally; a tokenEnv here is rejected by loader + CI guard.
+  "model": "anthropic/claude-sonnet-5",
+  "policy": { "includeSuggestions": false },
+  "noise":  { "additionalIgnores": ["server/www/**/__generated__/**"] }
+  // shared.md, coordinator.md, agents/*.md live beside this file — the www team's roster.
+}
+```
+
+- **Path glob dialect** — `**` crosses `/`, `*` matches within a segment. Keep a
+  `**/*` catch-all scope so no changed file goes unreviewed (`ecr doctor` flags a
+  coverage gap otherwise). Scopes are ordered and the **last** match wins, so put
+  broad scopes first and specific ones after (CODEOWNERS/Renovate discipline).
+- **Comment modes** — `single` posts one aggregated comment (a scope summary table
+  + a collapsed `<details>` per scope) under the existing marker; `per-scope` posts
+  one cleanly-namespaced comment per scope. A scope with zero matched files gets its
+  stale comment deleted.
+- **Scoped flags** — `ecr ci --scopes a,b` limits the fan-out; `ecr ci --comment
+  single|per-scope` overrides the manifest; `ecr review --scope <name>` runs one
+  scope locally; `ecr review --config-dir <dir>` / `ECR_CONFIG_DIR` load config from
+  an alternate directory; `ecr doctor --list-scopes` prints the scope table.
+- **Adoption is incremental** — with no `routing.jsonc`, behavior is exactly as
+  before (single config). Add the manifest with just a default scope → still one
+  comment, identical behavior. Land per-team scope dirs one at a time; everything
+  else keeps hitting the default scope.
+
+### Security
+
+- **auth is locked to the root.** `tokenEnv` (which env var becomes the model
+  credential) is honored in exactly one place: the root `config.jsonc` or
+  `routing.jsonc` `defaults.auth`. A scope config declaring `auth`/`breakGlass`
+  **fails to parse** (Zod-level rejection), and the CI guard step independently
+  sweeps every `.expo-code-review/config.jsonc`/`routing.jsonc` repo-wide and refuses
+  to run unless `tokenEnv` appears exactly once, in a root-owned file, equal to
+  `ECR_EXPECTED_TOKEN_ENV`. A routing manifest can never widen exposure — globs only
+  choose *which roster* reviews a file, never *which secret* is sent.
+- **enforceAgents can't be weakened.** Agents listed in `defaults.enforceAgents`
+  (e.g. `security`) are injected into every scope with `alwaysRun`, taken from the
+  root roster — a scope defining a same-id agent gets the root one, so a team can't
+  shadow the enforced reviewer with a weaker version on its own subtree.
+- **Config comes from the checked-out ref (documented tradeoff).** The scaffolded
+  auto workflow checks out the PR **merge ref**, so a PR *can* edit rosters, prompts,
+  and routing globs for its own advisory review — that only steers what the
+  comment-only reviewer says about that PR. What a PR can **never** do is touch
+  credentials: `auth` is locked by the scope-schema rejection, the CLI's runtime
+  `ECR_EXPECTED_TOKEN_ENV` check, and the guard step above, all three of which run
+  against whatever ref is checked out. A `/review`-command workflow that checks out
+  only the trusted base ref (see eas-cli's) closes the prompt-tampering vector too;
+  resolving config from the base ref on the auto path as well is on the
+  [roadmap](./ROADMAP.md).
+
+Ownership is enforced with CODEOWNERS: `/.expo-code-review/routing.jsonc @your-infra`
+(the single authoritative router) and `/server/www/.expo-code-review/ @your-www-team`
+(each team owns only its own scope dir). Rerouting globs is gated behind infra review.
 
 ---
 

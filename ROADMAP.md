@@ -31,6 +31,26 @@ PRs** (do these first, in this order):
 
 ## Recently shipped
 
+- **Monorepo routing manifest (shipped 2026-07-23)** — an optional infra-owned
+  `.expo-code-review/routing.jsonc` maps ordered path globs to scopes, each pointing
+  at its own `.expo-code-review/` config dir. One `ecr ci` process fans out
+  INTERNALLY: it reads the PR's changed files once, assigns each to exactly one scope
+  (last-match-wins), reviews each active scope over only its files, then renders ONE
+  comment (aggregated `single` by default, or `per-scope`). Single-writer/single-
+  process, so there's no comment/check race and one shared `gh` diff + link-context
+  across scopes (rate-limit hygiene). Security: `auth`/`tokenEnv` is locked to the
+  root (rejected at the Zod level in scope configs + the widened repo-wide CI guard
+  that also asserts `commentTag` uniqueness); `defaults.enforceAgents` inject a
+  non-overridable roster (e.g. `security`) into every scope; scope-namespaced
+  fingerprints keep cross-scope dismissals from colliding, and the default scope
+  keeps the root marker so existing dismissal state carries over. Backcompat is
+  free: no `routing.jsonc` ⇒ today's exact single-config behavior. New surface:
+  `ecr init --monorepo`/`--scope <dir>`, `ecr review --scope`/`--config-dir`
+  (+`ECR_CONFIG_DIR`), `ecr ci --scopes`/`--comment`, `ecr doctor --list-scopes`.
+  *Deferred:* per-scope GitHub check runs; auto-spilling an oversized aggregate
+  comment into per-scope comments (we truncate with a "+N more" note instead);
+  CLI-side `ai-review:scope:<name>` label parsing (the adopting repo's workflow maps
+  labels → `--scopes`, as it already does for `--agents`).
 - **Follow-up batch (2026-07-23, PRs #2–#7)** — first round of post-extraction
   low-hanging-fruit hardening:
   - **Transient-error retry with backoff (#3)** — a one-off 429/5xx/network error on
