@@ -1,0 +1,58 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+# npm Trusted Publishing: id-token lets the workflow authenticate to npm via its
+# OIDC identity (with provenance) — no long-lived NPM_TOKEN secret to leak.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      # npm (not bun) performs the publish: setup-node points it at the registry
+      # where the OIDC token exchange happens. Node 24 ships an npm recent enough
+      # for trusted publishing.
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # The tag is the single source of truth for the version: package.json holds
+      # a 0.0.0-dev placeholder in git, and the real version is stamped into the
+      # workspace copy here (never committed). Provenance then binds the published
+      # tarball to this exact commit, so no version bump commit is needed.
+      - name: Stamp the version from the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Tag $GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH — delete it and retag (e.g. v0.4.0)."
+            exit 1
+          fi
+          npm version --no-git-tag-version "$version"
+
+      - name: Lint, typecheck, tests
+        run: bun run lint && bun run fmt:check && bun run typecheck && bun test
+
+      # prepublishOnly (clean + tsc build) runs inside `npm publish`. Publishing a
+      # version that already exists on the registry fails here, which is the guard
+      # against re-tagging an existing version.
+      - name: Publish to npm
+        run: npm publish
