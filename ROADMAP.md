@@ -31,6 +31,15 @@ PRs** (do these first, in this order):
 
 ## Recently shipped
 
+- **Manual `/review` bypasses the trigger gate (shipped 2026-07-23)** — an explicit
+  maintainer invocation (`ecr ci --force`, or a `/review` comment command detected via
+  `GITHUB_EVENT_NAME=issue_comment`) now reviews even when the trigger policy would skip
+  (label trigger unmet, or the `ai-review:skip` label set), so the manual escape hatch
+  is no longer silently defeated (eyes reaction then nothing). It still calls
+  `shouldReview` and logs a stderr notice naming what it overrode. The bypass affects
+  ONLY the trigger gate (`shouldBypassTriggerGate`/`passesTriggerGate` in `ci.ts`,
+  applied identically in the legacy and routed paths) — break-glass and the auth lock
+  still apply.
 - **Monorepo routing manifest (shipped 2026-07-23)** — an optional infra-owned
   `.expo-code-review/routing.jsonc` maps ordered path globs to scopes, each pointing
   at its own `.expo-code-review/` config dir. One `ecr ci` process fans out

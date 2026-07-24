@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 
-import { shouldReview } from "../commands/ci.js";
+import { shouldBypassTriggerGate, shouldReview } from "../commands/ci.js";
 
 const policy = { trigger: "all" as const, label: "ai-review", skipLabel: "ai-review:skip" };
 const labelMode = { ...policy, trigger: "label" as const };
@@ -32,4 +32,20 @@ test("custom label names are honored", () => {
   const custom = { trigger: "label" as const, label: "please-review", skipLabel: "no-review" };
   expect(shouldReview(["please-review"], custom).review).toBe(true);
   expect(shouldReview(["no-review"], custom).review).toBe(false);
+});
+
+test("--force bypasses the trigger gate", () => {
+  expect(shouldBypassTriggerGate(["--force"], {})).toBe(true);
+});
+
+test("an issue_comment event (a /review command) bypasses the trigger gate", () => {
+  expect(shouldBypassTriggerGate([], { GITHUB_EVENT_NAME: "issue_comment" })).toBe(true);
+});
+
+test("a pull_request event without --force does NOT bypass the trigger gate", () => {
+  expect(shouldBypassTriggerGate([], { GITHUB_EVENT_NAME: "pull_request" })).toBe(false);
+  // no event name at all (e.g. local) also does not bypass
+  expect(shouldBypassTriggerGate([], {})).toBe(false);
+  // an unrelated flag does not bypass
+  expect(shouldBypassTriggerGate(["--route"], { GITHUB_EVENT_NAME: "pull_request" })).toBe(false);
 });

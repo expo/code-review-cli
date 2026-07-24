@@ -57,10 +57,14 @@ Options:
   --route              Let the router pick relevant agents from the diff
   --scopes <a,b>       Limit the fan-out to these named scopes (routing only)
   --comment <mode>     Override manifest comment mode: single | per-scope
+  --force              Manual override: review even if the trigger policy (label
+                       trigger / ai-review:skip) would skip. Break-glass and the
+                       auth lock still apply. A /review comment command implies this.
   -h, --help           Show this help
 
 Env: GITHUB_REPOSITORY, GITHUB_EVENT_PATH/GITHUB_REF (PR number), GH_TOKEN,
 and model credentials per .expo-code-review/config.jsonc (or REVIEWER_MODEL).
+GITHUB_EVENT_NAME=issue_comment implies --force (a /review comment command).
 `;
 
 export async function ciCommand(argv: string[] = []): Promise<void> {
@@ -72,6 +76,9 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
   const route = argv.includes("--route");
   const scopesFilter = parseListFlag(argv, "--scopes");
   const commentOverride = parseCommentMode(argv);
+  // A maintainer's explicit `/review` (comment command or --force) is a manual
+  // escape hatch that bypasses the trigger-policy gate only (see passesTriggerGate).
+  const bypassTriggerGate = shouldBypassTriggerGate(argv);
   const root = await repoRoot();
   if (root && root !== process.cwd()) {
     process.chdir(root);
@@ -98,12 +105,22 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
   }
 
   if (manifest == null) {
-    await runLegacyCi(repo, prNumber, cwd, agents, route);
+    await runLegacyCi(repo, prNumber, cwd, agents, route, bypassTriggerGate);
     return;
   }
 
   try {
-    await runRoutedCi(manifest, repo, prNumber, cwd, agents, route, scopesFilter, commentOverride);
+    await runRoutedCi(
+      manifest,
+      repo,
+      prNumber,
+      cwd,
+      agents,
+      route,
+      scopesFilter,
+      commentOverride,
+      bypassTriggerGate,
+    );
   } catch (error) {
     // Fan-out failures stay non-blocking (single-writer property is the point).
     process.stderr.write(`CI reviewer: routed run failed (non-blocking): ${errorMessage(error)}\n`);
@@ -120,6 +137,7 @@ async function runLegacyCi(
   cwd: string,
   agents: string[] | undefined,
   route: boolean,
+  bypassTriggerGate: boolean,
 ): Promise<void> {
   let config;
   try {
@@ -142,10 +160,10 @@ async function runLegacyCi(
   }
 
   // Config-driven trigger policy (.expo-code-review/config.jsonc → review): decide
-  // whether this PR should be reviewed at all.
-  const gate = shouldReview(await fetchPrLabels(repo, prNumber, cwd), config.review);
-  if (!gate.review) {
-    process.stderr.write(`CI reviewer: skipping — ${gate.reason}.\n`);
+  // whether this PR should be reviewed at all (bypassed by a manual /review).
+  if (
+    !passesTriggerGate(await fetchPrLabels(repo, prNumber, cwd), config.review, bypassTriggerGate)
+  ) {
     return;
   }
 
@@ -221,6 +239,7 @@ async function runRoutedCi(
   route: boolean,
   scopesFilter: string[] | undefined,
   commentOverride: "single" | "per-scope" | undefined,
+  bypassTriggerGate: boolean,
 ): Promise<void> {
   const rootConfig = await loadReviewConfig(cwd);
   // The root/aggregate marker is the ACTUAL root-owned comment tag so the
@@ -267,9 +286,14 @@ async function runRoutedCi(
 
   // Trigger policy is central (infra-owned): the ROOT config's `review` block
   // gates the whole routed run — scope configs never widen or narrow the trigger.
-  const gate = shouldReview(await fetchPrLabels(repo, prNumber, cwd), rootConfig.review);
-  if (!gate.review) {
-    process.stderr.write(`CI reviewer: skipping — ${gate.reason}.\n`);
+  // A manual /review bypasses this gate (break-glass + auth lock still apply).
+  if (
+    !passesTriggerGate(
+      await fetchPrLabels(repo, prNumber, cwd),
+      rootConfig.review,
+      bypassTriggerGate,
+    )
+  ) {
     return;
   }
 
@@ -504,6 +528,47 @@ export function shouldReview(
       : { review: false, reason: `trigger is "label" and no ${review.label} label is set` };
   }
   return { review: true, reason: 'trigger is "all"' };
+}
+
+/**
+ * Whether an explicit manual invocation should bypass the trigger/skip gate. A
+ * maintainer's `/review` is a manual escape hatch, so it must run even when the PR
+ * carries the skipLabel or the trigger policy would otherwise skip it. Detected via
+ * the `--force` flag OR the GitHub event being a comment command — `issue_comment`
+ * only reaches `ecr ci` through a /review command workflow, never the auto
+ * `pull_request` workflow. Pure (env injected) so it's unit-testable.
+ */
+export function shouldBypassTriggerGate(
+  argv: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return argv.includes("--force") || env.GITHUB_EVENT_NAME === "issue_comment";
+}
+
+/**
+ * Apply the trigger policy, honoring a manual-override bypass. Returns whether to
+ * proceed. When a bypass overrides a gate that would have skipped, emits a stderr
+ * notice so the override is visible in the job log; a normal (non-bypassed) skip
+ * emits the usual skip line. The bypass affects ONLY this trigger gate —
+ * break-glass and the auth lock are separate and still apply.
+ */
+function passesTriggerGate(
+  labels: string[],
+  review: LoadedConfig["review"],
+  bypass: boolean,
+): boolean {
+  const gate = shouldReview(labels, review);
+  if (gate.review) {
+    return true;
+  }
+  if (bypass) {
+    process.stderr.write(
+      `CI reviewer: manual /review — bypassing trigger policy (${gate.reason}).\n`,
+    );
+    return true;
+  }
+  process.stderr.write(`CI reviewer: skipping — ${gate.reason}.\n`);
+  return false;
 }
 
 /** Parse `--agents a,b,c` from argv (undefined = all agents). */
