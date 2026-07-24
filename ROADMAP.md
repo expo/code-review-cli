@@ -31,6 +31,18 @@ PRs** (do these first, in this order):
 
 ## Recently shipped
 
+- **Bounded per-scope passes budget (shipped 2026-07-23)** — active scopes review
+  SEQUENTIALLY in one `ecr ci`, so the old per-scope budget
+  (`max(10m, floor(32m / N))`) let 4+ scopes spend 40m+ of pass time alone,
+  unbounded as scopes grow, blowing past the 32m the CI job timeout was sized
+  around. The total is now bounded: a new `budget` key in `routing.jsonc`
+  (`totalPassesMinutes` default 32, `minScopeMinutes` default 5; zod defaults, so
+  absent = today's totals) is divided across active scopes by a pure
+  `scopePassesBudgetMs(total, min, active)` (even split, clamped up to the floor).
+  When the floor would make `active × perScope` overshoot the total, the floor is
+  kept but `ecr ci` warns loudly (naming the overshoot + expected wall-clock) and
+  `ecr doctor` flags the worst case (`scopes.length × floor` vs total). Template +
+  README document the knob.
 - **`--config-dir`/`ECR_CONFIG_DIR` fully composes with routing (shipped
   2026-07-23)** — the escape hatch previously half-composed: `loadReviewConfig`/
   `hasConfig` honored the override but `loadRoutingManifest` and scope loading did

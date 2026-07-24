@@ -5,7 +5,12 @@ import {
   hasConfig,
   resolveConfigDir,
 } from "../config/load.js";
-import { loadRoutingManifest, resolveScopes, formatOwnerTable } from "../config/routing.js";
+import {
+  loadRoutingManifest,
+  resolveScopes,
+  scopePassesBudgetMs,
+  formatOwnerTable,
+} from "../config/routing.js";
 import type { LoadedScopeConfig } from "../config/load.js";
 import type { RoutingManifest } from "../config/schema.js";
 import { checkProviderAuth } from "../core/auth.js";
@@ -153,6 +158,24 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
       line(
         true,
         `scope ${scope.name}: ${scopeConfig.agents.length} agent(s) [${scopeConfig.agents.map((a) => a.id).join(", ")}], config ${scope.config}`,
+      );
+    }
+
+    // Passes-budget headroom: active scopes run sequentially, so the worst case
+    // is every scope active at the per-scope floor. If scopes.length × the floor
+    // exceeds the total, runs can outlast the total budget (a ⚠, not a failure —
+    // tune budget.* or the job timeout).
+    const totalMs = manifest.budget.totalPassesMinutes * 60_000;
+    const minMs = manifest.budget.minScopeMinutes * 60_000;
+    const { overshoot } = scopePassesBudgetMs(totalMs, minMs, manifest.scopes.length);
+    if (overshoot) {
+      warn(
+        `passes budget: ${manifest.scopes.length} scopes × ${manifest.budget.minScopeMinutes}m floor = ${manifest.scopes.length * manifest.budget.minScopeMinutes}m worst case exceeds budget.totalPassesMinutes (${manifest.budget.totalPassesMinutes}m) — raise the job timeout or trim scopes`,
+      );
+    } else {
+      line(
+        true,
+        `passes budget: worst case ${manifest.scopes.length} scopes × ${manifest.budget.minScopeMinutes}m floor fits budget.totalPassesMinutes (${manifest.budget.totalPassesMinutes}m)`,
       );
     }
 

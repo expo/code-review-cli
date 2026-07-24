@@ -106,6 +106,21 @@ export const RoutingManifestSchema = z
   .object({
     /** How N scopes render on one PR. */
     comment: z.enum(["single", "per-scope"]).default("single"),
+    /** Wall-clock budget for the per-scope review passes. Active scopes run
+     * SEQUENTIALLY in one `ecr ci` process, so the total is divided across them
+     * (not spent per scope). Absent = today's totals (zod defaults). */
+    budget: z
+      .object({
+        /** Total passes budget (minutes) split across active scopes. Sized to fit
+         * the scaffolded workflow's `timeout-minutes` (60) with margin for the
+         * coordinator, verification, and git/gh overhead. */
+        totalPassesMinutes: z.number().int().positive().default(32),
+        /** Per-scope floor (minutes): below this a scope review isn't worth
+         * starting, so the even split clamps up to it — even when that makes the
+         * scopes overshoot the total (ecr ci warns; doctor flags the worst case). */
+        minScopeMinutes: z.number().int().positive().default(5),
+      })
+      .default({ totalPassesMinutes: 32, minScopeMinutes: 5 }),
     defaults: z
       .object({
         /** The ONLY manifest-level place auth is honored (locks the root value).

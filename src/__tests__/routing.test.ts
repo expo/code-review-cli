@@ -8,6 +8,7 @@ import {
   loadRoutingManifest,
   resolveScopes,
   scopedCommentTag,
+  scopePassesBudgetMs,
   formatOwnerTable,
 } from "../config/routing.js";
 import { appendScopeEntry } from "../commands/init.js";
@@ -308,4 +309,75 @@ test("scopedFingerprint: scoped ids are hex-only, same length, and differ per sc
   expect(a.length).toBe(plain.length);
   expect(a).not.toBe(plain);
   expect(a).not.toBe(b);
+});
+
+const MIN = 60_000;
+
+test("scopePassesBudgetMs: even split when it clears the floor", () => {
+  // 32m / 4 = 8m each, above the 5m floor → no clamp, no overshoot.
+  const { perScopeMs, overshoot } = scopePassesBudgetMs(32 * MIN, 5 * MIN, 4);
+  expect(perScopeMs).toBe(8 * MIN);
+  expect(overshoot).toBe(false);
+});
+
+test("scopePassesBudgetMs: single scope gets the whole total", () => {
+  const { perScopeMs, overshoot } = scopePassesBudgetMs(32 * MIN, 5 * MIN, 1);
+  expect(perScopeMs).toBe(32 * MIN);
+  expect(overshoot).toBe(false);
+});
+
+test("scopePassesBudgetMs: floor clamps a thin split up to the minimum", () => {
+  // 32m / 10 = 3.2m, below the 5m floor → clamp to 5m.
+  const { perScopeMs } = scopePassesBudgetMs(32 * MIN, 5 * MIN, 10);
+  expect(perScopeMs).toBe(5 * MIN);
+});
+
+test("scopePassesBudgetMs: overshoot flags when floor × active exceeds total", () => {
+  // 8 × 5m floor = 40m > 32m total → keep the floor, flag the overshoot.
+  const { perScopeMs, overshoot } = scopePassesBudgetMs(32 * MIN, 5 * MIN, 8);
+  expect(perScopeMs).toBe(5 * MIN);
+  expect(overshoot).toBe(true);
+  expect(8 * perScopeMs).toBeGreaterThan(32 * MIN);
+});
+
+test("scopePassesBudgetMs: exact fit at the floor is not an overshoot", () => {
+  // 6 × 5m = 30m ≤ 32m → floor holds without overshooting.
+  const { overshoot } = scopePassesBudgetMs(32 * MIN, 5 * MIN, 6);
+  expect(overshoot).toBe(false);
+});
+
+test("scopePassesBudgetMs: zero/negative active count is treated as one", () => {
+  expect(scopePassesBudgetMs(32 * MIN, 5 * MIN, 0).perScopeMs).toBe(32 * MIN);
+});
+
+test("RoutingManifestSchema: budget defaults to today's totals when absent", () => {
+  const manifest = RoutingManifestSchema.parse({
+    scopes: [{ name: "default", paths: ["**/*"], config: "." }],
+  });
+  expect(manifest.budget).toEqual({ totalPassesMinutes: 32, minScopeMinutes: 5 });
+});
+
+test("RoutingManifestSchema: budget honors custom values", () => {
+  const manifest = RoutingManifestSchema.parse({
+    budget: { totalPassesMinutes: 48, minScopeMinutes: 8 },
+    scopes: [{ name: "default", paths: ["**/*"], config: "." }],
+  });
+  expect(manifest.budget).toEqual({ totalPassesMinutes: 48, minScopeMinutes: 8 });
+});
+
+test("RoutingManifestSchema: a partial budget fills the missing key from defaults", () => {
+  const manifest = RoutingManifestSchema.parse({
+    budget: { totalPassesMinutes: 20 },
+    scopes: [{ name: "default", paths: ["**/*"], config: "." }],
+  });
+  expect(manifest.budget).toEqual({ totalPassesMinutes: 20, minScopeMinutes: 5 });
+});
+
+test("RoutingManifestSchema: rejects a non-positive budget", () => {
+  expect(() =>
+    RoutingManifestSchema.parse({
+      budget: { totalPassesMinutes: 0 },
+      scopes: [{ name: "default", paths: ["**/*"], config: "." }],
+    }),
+  ).toThrow();
 });
