@@ -22,7 +22,8 @@ Usage:
 Options:
   --monorepo      Also write .expo-code-review/routing.jsonc (routing manifest)
   --scope <dir>   Scaffold <dir>/.expo-code-review/ (no auth) + add a scope entry
-  --no-workflow   Skip writing the CI workflow (.github/workflows/expo-code-review.yml)
+  --no-workflow   Skip writing the CI workflows (review, command, and dismiss
+                  under .github/workflows/)
   --force         Overwrite existing files
   -h, --help      Show this help
 `;
@@ -118,9 +119,27 @@ async function scaffold(argv: string[]): Promise<void> {
   if (withWorkflow) {
     const workflowDir = path.join(root, ".github", "workflows");
     await mkdir(workflowDir, { recursive: true });
+    // The auto (pull_request) workflow, plus the two issue_comment command
+    // workflows: `/review` (on-demand one-shot) and `/dismiss` (hide a finding).
     await copyInto(
       path.join(TEMPLATES_DIR, "workflow.yml"),
       path.join(workflowDir, "expo-code-review.yml"),
+      force,
+      created,
+      skipped,
+      root,
+    );
+    await copyInto(
+      path.join(TEMPLATES_DIR, "command.yml"),
+      path.join(workflowDir, "expo-code-review-command.yml"),
+      force,
+      created,
+      skipped,
+      root,
+    );
+    await copyInto(
+      path.join(TEMPLATES_DIR, "dismiss.yml"),
+      path.join(workflowDir, "expo-code-review-dismiss.yml"),
       force,
       created,
       skipped,

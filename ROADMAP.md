@@ -31,6 +31,20 @@ PRs** (do these first, in this order):
 
 ## Recently shipped
 
+- **Full workflow template set + Opus rosters + SHA-pinned actions (shipped
+  2026-07-23)** — `templates/` shipped only the auto (`pull_request`) `workflow.yml`,
+  so both production adopters (eas-cli, universe) hand-wrote the `/review` command
+  workflow, the `/dismiss` workflow, and the always-run run-log upload. Those are now
+  templates: `command.yml` (maintainer-gated `issue_comment` `/review`, base-ref-only
+  checkout, `ecr verify-config` guard, bash-array `--agents`/`--route`) and
+  `dismiss.yml` (`/dismiss`//`/undismiss`, sanitized id/reason parse, no model secret),
+  both scaffolded by `ecr init` as `expo-code-review-command.yml` /
+  `expo-code-review-dismiss.yml`. `workflow.yml` gained the `always()` "Upload review
+  run log" artifact step so the otherwise-ephemeral `.runs/reviews.jsonl` survives a CI
+  run. Every `uses:` across the three templates is now pinned by full commit SHA with a
+  version comment (checkout v7.0.1, setup-node v7.0.0, upload-artifact v7.0.1). And the
+  templates match the production rosters' model provisioning: `coordinator.md` and
+  `agents/security.md` now pin `anthropic/claude-opus-4-8` (were haiku / unpinned).
 - **Canonical `ecr verify-config` CI guard (shipped 2026-07-23)** — the pre-review
   tokenEnv guard, previously duplicated across adopter workflows as brittle bash/awk
   JSONC text-scraping at different robustness tiers, is now ONE command shipped by the

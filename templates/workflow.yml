@@ -19,9 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Version of the published engine used for BOTH the guard and the review, so
-      # the guard that clears a config is the same engine that then reads it. Pin to
-      # a specific version to freeze it.
-      ECR_VERSION: latest
+      # the guard that clears a config is the same engine that then reads it. Override
+      # with repo variable ECR_VERSION; pin to a specific version to freeze it.
+      ECR_VERSION: ${{ vars.ECR_VERSION || 'latest' }}
     # Trigger policy lives in .expo-code-review/config.jsonc (review.trigger); `ecr ci`
     # self-gates on it (and honors the ai-review:skip label). This coarse gate just
     # avoids spinning up a runner for a PR that explicitly opted out. Uses the array
@@ -35,12 +35,12 @@ jobs:
     # A reviewer failure must never fail the PR's checks.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Shallow is enough — the reviewer gets the diff from the API (`gh`).
           fetch-depth: 1
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           # The reviewer runs via npx and never installs with a package manager, so
@@ -86,3 +86,19 @@ jobs:
           ANTHROPIC_OAUTH_API_KEY: ${{ secrets.ANTHROPIC_OAUTH_API_KEY }}
           # Optional: override the model for every agent (uses your OpenCode login).
           REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}
+
+      # Observability: the per-run log (token/cache/cost totals + per-pass timing +
+      # coverage notes) is written under .expo-code-review/.runs/ but git-ignored, so
+      # in CI it is otherwise ephemeral — gone when the runner is torn down. Upload it
+      # as an artifact so a reviewer run can be inspected after the fact (why a finding
+      # did/didn't surface, cache-reuse, spend). always() so it is captured even when
+      # the review step timed out or errored; if-no-files-found: ignore because a run
+      # that failed before writing the log (or a no-op skip) legitimately has no file.
+      - name: Upload review run log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-run-log-pr${{ github.event.pull_request.number }}
+          path: .expo-code-review/.runs/reviews.jsonl
+          if-no-files-found: ignore
+          retention-days: 14
