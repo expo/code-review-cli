@@ -1,0 +1,22 @@
+{
+  "$schema": "https://unpkg.com/@expo/code-review-cli/schema/routing.json",
+
+  // Central guardrails every scope inherits and cannot override.
+  "defaults": {
+    // Besides the root config.jsonc, this is the ONLY place credentials may be
+    // declared. To lock them here instead, add an "auth" block (mode / provider /
+    // the env var holding the token) — see the auth section of the root
+    // config.jsonc. Keep it in exactly ONE root-owned file; the CI guard enforces
+    // that the token env var name appears only once across all configs.
+    "enforceAgents": ["security"],
+    "commentTag": "expo-ai-code-reviewer"
+  },
+
+  // "single" = one aggregated comment (default) | "per-scope" = one comment per scope.
+  "comment": "single",
+
+  // Ordered; the LAST matching scope wins per changed file. Keep a '**/*' catch-all first.
+  "scopes": [
+    { "name": "default", "paths": ["**/*"], "config": "." }
+  ]
+}

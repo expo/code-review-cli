@@ -1,0 +1,25 @@
+// No `auth` here — credentials are locked to the ROOT .expo-code-review/config.jsonc /
+// routing.jsonc; a tokenEnv in this file is rejected by the loader AND the CI guard.
+{
+  // Default model for every agent in this scope. Override per-agent via frontmatter,
+  // or at runtime with REVIEWER_MODEL.
+  "model": "anthropic/claude-sonnet-5",
+
+  // Agents: every markdown file in agents/ beside this file is one reviewer for this
+  // scope (id = filename). shared.md + coordinator.md are this scope's prompts.
+
+  "policy": {
+    // Keep signal high by surfacing only critical/warning.
+    "includeSuggestions": false
+    // "maxFindings": 10
+  },
+
+  // Files to always skip within this scope, in addition to the built-in defaults.
+  "noise": { "additionalIgnores": [] }
+
+  // "chunk": { "maxChangedLines": 1000, "maxFiles": 20, "concurrency": 6 },
+
+  // No `commentTag` either — a scope's PR-comment marker is always derived as
+  // `<rootTag>:<scope-name>` so ci and `ecr review --scope --post` target the
+  // same comment. Declaring one here is rejected by the scope schema.
+}
