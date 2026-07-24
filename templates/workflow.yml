@@ -35,19 +35,88 @@ jobs:
           # Shallow is enough — the reviewer gets the diff from the API (`gh`).
           fetch-depth: 1
 
-      # SECURITY: this workflow checks out the PR's code, including
-      # .expo-code-review/config.jsonc, whose auth.tokenEnv names the env var the CLI
-      # forwards as the model credential. Refuse to run unless it's the expected value
-      # (below / repo var ECR_EXPECTED_TOKEN_ENV) so a PR can't repoint it at another
-      # secret in the runner. Keep this in sync with auth.tokenEnv in config.jsonc.
-      - name: Guard config.jsonc tokenEnv
+      # SECURITY: this workflow checks out the PR's code, including every
+      # .expo-code-review/config.jsonc + routing.jsonc, whose auth.tokenEnv names the
+      # env var the CLI forwards as the model credential. Refuse to run unless it
+      # appears exactly once, in a ROOT-owned file, equal to the expected value (repo
+      # var ECR_EXPECTED_TOKEN_ENV) so a PR can't repoint it at another runner secret.
+      #
+      # This step MUST stay FIRST after checkout — before setup-node / npx — so no
+      # PR-controlled code runs until the configs are validated. (Ordering is load-bearing.)
+      - name: Guard config tokenEnv (root + routing + all scopes)
         env:
           EXPECTED: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'ANTHROPIC_OAUTH_API_KEY' }}
         run: |
-          values=$(grep -oE '"tokenEnv"[[:space:]]*:[[:space:]]*"[A-Za-z0-9_]+"' .expo-code-review/config.jsonc | sed -E 's/.*"([A-Za-z0-9_]+)"$/\1/')
-          count=$(printf '%s\n' "$values" | grep -c .)
-          if [ "$count" != "1" ] || [ "$values" != "$EXPECTED" ]; then
-            echo "::error::.expo-code-review/config.jsonc auth.tokenEnv must be \"$EXPECTED\" (found: \"${values:-none}\"). Refusing to run so a PR can't redirect which secret is forwarded to the model provider."
+          # Sweep EVERY config the CLI could read — root + routing manifest + ALL
+          # .expo-code-review/config.jsonc files repo-wide (also ones no scope
+          # references yet, so a PR can't stage an unreferenced auth block). tokenEnv
+          # must appear exactly once, only in a ROOT-owned file, equal to EXPECTED.
+          #
+          # strip_jsonc <file>: drop // line and /* */ block comments the same
+          # string-aware way the CLI's JSONC loader does (so a commented-out example
+          # never trips the sweep, and a quote trick like `"x": "//"` can't hide a
+          # key the loader would still honor), then collapse all whitespace to
+          # spaces so a key/value split across lines still matches the line-oriented
+          # greps below. Layer 2 only — layer 1 is the CLI's own
+          # ECR_EXPECTED_TOKEN_ENV check at runtime, so guard/loader drift fails safe.
+          strip_jsonc() {
+            awk '
+              { buf = buf $0 "\n" }
+              END {
+                n = length(buf); out = ""; instr = 0; incomment = 0; inblock = 0; i = 1
+                while (i <= n) {
+                  c = substr(buf, i, 1); d = substr(buf, i + 1, 1)
+                  if (incomment) { if (c == "\n") { incomment = 0; out = out c }; i++; continue }
+                  if (inblock) { if (c == "*" && d == "/") { inblock = 0; i += 2; continue }; i++; continue }
+                  if (instr) {
+                    out = out c
+                    if (c == "\\") { out = out d; i += 2; continue }
+                    if (c == "\"") instr = 0
+                    i++; continue
+                  }
+                  if (c == "\"") { instr = 1; out = out c; i++; continue }
+                  if (c == "/" && d == "/") { incomment = 1; i += 2; continue }
+                  if (c == "/" && d == "*") { inblock = 1; i += 2; continue }
+                  out = out c; i++
+                }
+                printf "%s", out
+              }
+            ' "$1" | tr '\n\r\t' '   '
+          }
+          files=()
+          while IFS= read -r f; do files+=("$f"); done < <(find . -path ./node_modules -prune -o -type f \
+            \( -path '*/.expo-code-review/config.jsonc' -o -path '*/.expo-code-review/routing.jsonc' \) -print)
+          hits=""
+          for f in "${files[@]}"; do
+            found=$(strip_jsonc "$f" | grep -oE '"tokenEnv"[[:space:]]*:[[:space:]]*"[A-Za-z0-9_]+"' || true)
+            while IFS= read -r m; do
+              [ -n "$m" ] && hits="${hits}${f}:${m}"$'\n'
+            done <<< "$found"
+          done
+          count=$(printf '%s' "$hits" | grep -c . || true)
+          value=$(printf '%s' "$hits" | head -n 1 | sed -E 's/.*"([A-Za-z0-9_]+)"$/\1/')
+          file=$(printf '%s' "$hits" | head -n 1 | cut -d: -f1)
+          hits_flat=$(printf '%s' "$hits" | tr '\n' ';')
+          if [ "$count" != "1" ] || [ "$value" != "$EXPECTED" ] \
+             || { [ "$file" != "./.expo-code-review/config.jsonc" ] && [ "$file" != "./.expo-code-review/routing.jsonc" ]; }; then
+            echo "::error::tokenEnv must appear exactly once, in the root .expo-code-review/config.jsonc or routing.jsonc, as \"$EXPECTED\" (found $count occurrence(s): ${hits_flat:-none}). Refusing to run."
+            exit 1
+          fi
+          # commentTag global uniqueness (per-scope comment markers must never collide).
+          # The root config.jsonc and routing.jsonc legitimately share the root
+          # marker (the default scope keeps the root config's tag, and non-default
+          # scopes derive namespaced markers "<tag>:<scope>" from it), so exclude
+          # routing.jsonc from this sweep — uniqueness is asserted across the
+          # per-scope config.jsonc tags only.
+          tags=""
+          for f in "${files[@]}"; do
+            case "$f" in */routing.jsonc) continue ;; esac
+            found=$(strip_jsonc "$f" | grep -oE '"commentTag"[[:space:]]*:[[:space:]]*"[^"]+"' || true)
+            [ -n "$found" ] && tags="${tags}${found}"$'\n'
+          done
+          tags=$(printf '%s' "$tags" | sort)
+          if [ -n "$tags" ] && [ "$(printf '%s\n' "$tags" | sort -u | wc -l)" != "$(printf '%s\n' "$tags" | wc -l)" ]; then
+            echo "::error::duplicate commentTag across .expo-code-review config.jsonc files — per-scope comments would collide. Refusing to run."
             exit 1
           fi
 
@@ -66,6 +135,11 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Layer-1 auth lock: the CLI refuses to run when the tokenEnv it would
+          # honor (root config.jsonc, or routing.jsonc defaults.auth) differs from
+          # this — it catches what the text-based guard step above can't (e.g.
+          # JSON-escaped keys). Keep it in sync with the guard's EXPECTED.
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'ANTHROPIC_OAUTH_API_KEY' }}
           # Claude Pro/Max OAuth token (from `claude setup-token`) — the env var
           # named by auth.tokenEnv in config.jsonc. Store it as a repo secret.
           # (For an API key instead, set auth.mode "api-key" and pass that key here.)
