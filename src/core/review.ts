@@ -173,6 +173,17 @@ export async function runReview(
 
   const agentCosts: Record<string, number> = {};
   const tokenTotals: TokenUsage = {};
+  const agentTokens: Record<string, TokenUsage> = {};
+  // Declared outside the try so the error-path log still carries whatever the
+  // reviewers produced before the failure — partial findings are exactly what's
+  // needed to debug a run that died mid-way.
+  const agentFindings: Record<string, Finding[]> = {};
+  // Every model request's usage lands in the run total AND its bucket, so the run
+  // log can show cache effectiveness per pass and not just run-wide.
+  const trackTokens = (bucket: string, tokens?: TokenUsage): void => {
+    addTokenUsage(tokenTotals, tokens);
+    addTokenUsage((agentTokens[bucket] ??= {}), tokens);
+  };
 
   try {
     const workspace = await writePatchWorkspace(kept, metadata, runDir);
@@ -207,7 +218,6 @@ export async function runReview(
         `(${kept.length} files, concurrency ${config.chunk.concurrency})…`,
     );
 
-    const agentFindings: Record<string, Finding[]> = {};
     for (const agent of selectedAgents) {
       agentFindings[agent.id] = [];
       agentCosts[agent.id] = 0;
@@ -357,7 +367,7 @@ export async function runReview(
           parseReviewerOutput,
         );
         agentCosts[task.bucket] = (agentCosts[task.bucket] ?? 0) + cost;
-        addTokenUsage(tokenTotals, tokens);
+        trackTokens(task.bucket, tokens);
         (agentFindings[task.bucket] ??= []).push(...value.findings);
         completedPasses++;
         if (truncated) {
@@ -384,7 +394,7 @@ export async function runReview(
         }
         // Account for the abandoned investigation's spend regardless of what's next.
         agentCosts[task.bucket] = (agentCosts[task.bucket] ?? 0) + error.cost;
-        addTokenUsage(tokenTotals, error.tokens);
+        trackTokens(task.bucket, error.tokens);
 
         const remaining = passesDeadline - Date.now();
         // Cross-file analysis needs ≥2 files to be meaningful; a single-file
@@ -476,7 +486,7 @@ export async function runReview(
           truncated: coordinatorTruncated,
         } = await coordinate(handle, config, metadata, agentFindings, coverageNotes);
         agentCosts["coordinator"] = cost;
-        addTokenUsage(tokenTotals, coordinatorTokens);
+        trackTokens("coordinator", coordinatorTokens);
         consolidated = applyReviewPolicy(rawOutput, config.policy);
         if (coordinatorTruncated) {
           // The coordinator ran out of time and returned partial findings — flag it
@@ -507,11 +517,13 @@ export async function runReview(
     // finding against the real file, and adversarially verify criticals. This is
     // what stops a confident but wrong critical from shipping.
     const findingCountBeforeChecks = output.findings.length;
+    let verifierDropped: { finding: Finding; reason: string }[] = [];
     if (output.findings.length > 0) {
       progress("Verifying findings…");
       const verification = await verifyFindings(handle!, output.findings, process.cwd(), progress);
       agentCosts["verifier"] = verification.cost;
-      addTokenUsage(tokenTotals, verification.tokens);
+      trackTokens("verifier", verification.tokens);
+      verifierDropped = verification.dropped;
       if (verification.dropped.length > 0) {
         progress(`Verification dropped ${verification.dropped.length} unverified finding(s).`);
         output = {
@@ -554,6 +566,10 @@ export async function runReview(
       agentCosts,
       totalCost: sum(agentCosts),
       tokens: tokenTotals,
+      agentTokens,
+      agentFindings,
+      coverageNotes,
+      verifierDropped,
       durationMs: Date.now() - started,
       decision: output.decision,
       findingCount: output.findings.length,
@@ -567,6 +583,8 @@ export async function runReview(
       agentCosts,
       totalCost: sum(agentCosts),
       tokens: tokenTotals,
+      agentTokens,
+      agentFindings,
       durationMs: Date.now() - started,
       decision: null,
       findingCount: 0,
