@@ -254,6 +254,49 @@ and applies Anthropic prompt caching automatically.
 </details>
 
 <details>
+<summary><b>Tokens, cost &amp; prompt caching</b></summary>
+
+Every run reports what it spent and how much of it was served from the prompt
+cache, in three places:
+
+- **Job log (stderr)** — one line at the end of the run:
+  `Token usage — input …, output …, cache read …, cache write … (cost $…)`.
+- **GitHub Actions step summary** — a per-pass table (one row per agent, plus the
+  cross-cutting pass, coordinator, and verifier), the run's cache hit rate, and
+  the exact comment that was posted. The PR comment is updated in place on every
+  run, so the step summary is where past runs' comments remain readable.
+- **`.expo-code-review/.runs/reviews.jsonl`** — one JSON line per run (uploaded as
+  a CI artifact) with the same totals plus per-pass `agentTokens`, the raw
+  per-agent findings, coverage notes, and what the verifier dropped.
+
+**How the caching works.** Anthropic prompt caching is a *prefix match*: the
+provider caches the rendered prompt up to a marker, and any byte change anywhere
+in that prefix invalidates everything after it. The reviewer is laid out so the
+prefix is stable — the system prompt (`shared.md` + the agent's own `.md`) is
+byte-identical for every chunk an agent reviews, while the volatile parts (the
+diff, file lists, PR metadata) travel in the user message *after* the prefix and
+never touch it. The first call per agent **writes** the cache (`cache write`,
+billed ~1.25× the input price); every later chunk in the run **reads** it
+(`cache read`, ~0.1× the input price). Cache entries live ~5 minutes and are
+refreshed on use, which comfortably covers a run's concurrent calls.
+
+**Reading the numbers.** Hit rate = `cache read / (cache read + input)` — the
+share of prompt tokens served from cache instead of being reprocessed at full
+price. Multi-chunk reviews should show a high rate; single-chunk reviews mostly
+show writes (there is nothing to re-read within the run).
+
+**Keeping hits high:**
+
+- Keep `shared.md` and `agents/*.md` stable. Any edit writes a new prefix — one
+  extra cache write per agent on the next run, then it is warm again. Never put
+  varying text (dates, PR numbers) into prompt files.
+- Very short prompts may show `cache read 0`: prompts below the model's minimum
+  cacheable size (~1–4K tokens depending on the model) are silently not cached.
+  That is expected, not a bug.
+
+</details>
+
+<details>
 <summary><b>Configuration — <code>.expo-code-review/</code></b></summary>
 
 ```

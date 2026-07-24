@@ -83,16 +83,13 @@ export function buildReviewerSystem(config: LoadedConfig, agent: LoadedAgent): s
  * files (running it once instead of once-per-agent is a large latency win — the
  * task text was already identical across agents).
  */
-export function buildCrossCuttingSystem(config: LoadedConfig, agents: LoadedAgent[]): string {
-  const lenses = agents
-    .map((agent) => `- ${agent.id}: ${agent.description || agent.id}`)
-    .join("\n");
+export function buildCrossCuttingSystem(config: LoadedConfig): string {
+  // The list of specialist concerns lives in the TASK message (it varies with
+  // router selection); keeping this system prompt byte-stable across runs lets
+  // the provider's prompt cache reuse it.
   const role = [
     "You are the cross-cutting reviewer. Each changed file was already reviewed on",
-    "its own by specialist reviewers covering these concerns:",
-    "",
-    lenses,
-    "",
+    "its own by specialist reviewers (the task message lists their concerns).",
     "Your job is to catch issues that span MULTIPLE changed files — interactions the",
     "per-file reviews cannot see — across ALL of those concerns. Examples: a changed",
     "function or signature in one file that breaks a caller in another; inconsistent",
@@ -171,8 +168,12 @@ export function buildReviewerTask(
  */
 export function buildCrossCuttingTask(
   allFiles: PatchWorkspaceFile[],
+  agents: LoadedAgent[],
   filtered: FilteredFile[] = [],
 ): string {
+  const lenses = agents
+    .map((agent) => `- ${agent.id}: ${agent.description || agent.id}`)
+    .join("\n");
   const fileList = allFiles
     .map(
       (file) =>
@@ -181,7 +182,11 @@ export function buildCrossCuttingTask(
     .join("\n");
 
   return [
-    "This PR changed the files below, and each was already reviewed on its own.",
+    "This PR changed the files below, and each was already reviewed on its own by",
+    "specialist reviewers covering these concerns:",
+    "",
+    lenses,
+    "",
     "Now look ONLY for issues that span MULTIPLE changed files — interactions the",
     "per-file reviews cannot see. Examples: a changed function or signature in one",
     "file that breaks a caller in another; inconsistent or mismatched contracts",

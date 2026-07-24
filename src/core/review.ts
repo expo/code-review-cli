@@ -296,7 +296,7 @@ export async function runReview(
       tasks.push({
         bucket: CROSS_CUTTING_AGENT,
         kind: "cross-cutting",
-        system: buildCrossCuttingSystem(config, selectedAgents),
+        system: buildCrossCuttingSystem(config),
         label: "cross-file",
         title: "review-xcut",
         files: workspace.files,
@@ -317,7 +317,7 @@ export async function runReview(
     const buildTaskText = (task: ReviewTask): string => {
       const base =
         task.kind === "cross-cutting"
-          ? buildCrossCuttingTask(task.files, filtered)
+          ? buildCrossCuttingTask(task.files, selectedAgents, filtered)
           : buildReviewerTask(task.files, workspace.files, filtered);
       return task.fallback ? `${base}\n\n${NO_TOOLS_INSTRUCTION}` : base;
     };
@@ -865,7 +865,11 @@ export function renderUsageMarkdown(
   const uncached = totals.input ?? 0;
   if (read + uncached > 0) {
     const rate = Math.round((read / (read + uncached)) * 100);
-    lines.push("", `Prompt cache hit rate: **${rate}%** (cache read / (cache read + input)).`);
+    lines.push(
+      "",
+      `Prompt cache hit rate: **${rate}%** (cache read / (cache read + input)). ` +
+        'See "Tokens, cost & prompt caching" in the README for how to read these numbers.',
+    );
   }
   return lines.join("\n");
 }
