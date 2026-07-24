@@ -94,6 +94,35 @@ test("loadRoutingManifest: parses JSONC with comments + trailing commas", async 
   expect(m?.scopes.length).toBe(1);
 });
 
+test("loadRoutingManifest: options.configDir reads routing.jsonc from the override dir", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ecr-routing-"));
+  // The manifest lives ONLY in the override dir, not the default .expo-code-review.
+  await mkdir(path.join(root, "custom"), { recursive: true });
+  await writeFile(
+    path.join(root, "custom", "routing.jsonc"),
+    `{ "scopes": [{ "name": "override", "paths": ["**/*"], "config": "." }] }`,
+    "utf8",
+  );
+  const m = await loadRoutingManifest(root, { configDir: "custom" });
+  expect(m?.scopes[0]!.name).toBe("override");
+  // Without the override, the default dir has no manifest → null (backcompat).
+  expect(await loadRoutingManifest(root)).toBeNull();
+});
+
+test("loadRoutingManifest: no override resolves identically to the default dir (BACKCOMPAT)", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ecr-routing-"));
+  await mkdir(path.join(root, ".expo-code-review"), { recursive: true });
+  await writeFile(
+    path.join(root, ".expo-code-review", "routing.jsonc"),
+    `{ "scopes": [{ "name": "d", "paths": ["**/*"], "config": "." }] }`,
+    "utf8",
+  );
+  // Undefined configDir and an explicit-but-empty options object resolve the same
+  // default path — the ci-path equivalence for a run with no --config-dir.
+  expect((await loadRoutingManifest(root))?.scopes[0]!.name).toBe("d");
+  expect((await loadRoutingManifest(root, {}))?.scopes[0]!.name).toBe("d");
+});
+
 test("loadRoutingManifest: throws on a malformed manifest (never a silent fallback)", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "ecr-routing-"));
   await mkdir(path.join(root, ".expo-code-review"), { recursive: true });

@@ -108,7 +108,7 @@ is a ready example to adapt.
 | `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
 | `ecr doctor [--list-scopes]` | Check environment, config, credentials, and (with a manifest) scopes. |
 
-Extra flags for monorepos: `review --config-dir <dir>` (load config from an
+Extra flags for monorepos: `review`/`ci` `--config-dir <dir>` (load config from an
 alternate dir; also `ECR_CONFIG_DIR`), `ci --scopes a,b` (limit the fan-out to
 named scopes), `ci --comment single|per-scope` (override the manifest).
 
@@ -177,8 +177,13 @@ your-monorepo/
   stale comment deleted.
 - **Scoped flags** — `ecr ci --scopes a,b` limits the fan-out; `ecr ci --comment
   single|per-scope` overrides the manifest; `ecr review --scope <name>` runs one
-  scope locally; `ecr review --config-dir <dir>` / `ECR_CONFIG_DIR` load config from
-  an alternate directory; `ecr doctor --list-scopes` prints the scope table.
+  scope locally; `ecr review`/`ecr ci --config-dir <dir>` (or `ECR_CONFIG_DIR`)
+  load config from an alternate directory; `ecr doctor --list-scopes` prints the
+  scope table. **`--config-dir` designates an alternate ROOT config dir: both
+  `config.jsonc` and `routing.jsonc` are read from it, so the root config and its
+  manifest always travel together. Scope `config` paths stay repo-root-relative —
+  the override swaps the root config/manifest against the *real* scope tree, it
+  does not relocate the scopes themselves.**
 - **Adoption is incremental** — with no `routing.jsonc`, behavior is exactly as
   before (single config). Add the manifest with just a default scope → still one
   comment, identical behavior. Land per-team scope dirs one at a time; everything

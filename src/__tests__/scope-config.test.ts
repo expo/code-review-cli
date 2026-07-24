@@ -10,6 +10,7 @@ import {
   loadAuthFromRoot,
   CONFIG_DIRNAME,
 } from "../config/load.js";
+import { loadRoutingManifest } from "../config/routing.js";
 import type { RoutingManifest } from "../config/schema.js";
 
 async function writeConfigDir(
@@ -217,6 +218,47 @@ test("loadReviewConfig: options.configDir loads from an alternate dir", async ()
   });
   const config = await loadReviewConfig(root, { configDir: "custom" });
   expect(config.commentTag).toBe("custom-marker");
+});
+
+test("config-dir override composes: root config + routing.jsonc from override, scopes from repo root", async () => {
+  const root = await makeRoot('{ "commentTag": "real-root" }');
+  // The alternate ROOT config dir holds its own config.jsonc AND routing.jsonc.
+  await writeConfigDir(path.join(root, "altroot"), {
+    config: '{ "commentTag": "alt-root-tag" }',
+    agents: { correctness: agent("correctness"), security: agent("security") },
+  });
+  await writeFile(
+    path.join(root, "altroot", "routing.jsonc"),
+    `{ "scopes": [
+       { "name": "default", "paths": ["**/*"], "config": "." },
+       { "name": "www", "paths": ["server/www/**"], "config": "server/www" }
+     ] }`,
+    "utf8",
+  );
+  // The scope subtree lives at the REPO ROOT, not under the override dir.
+  await writeConfigDir(path.join(root, "server", "www", CONFIG_DIRNAME), {
+    config: '{ "model": "anthropic/claude-opus-4-1" }',
+    agents: { style: agent("style") },
+  });
+
+  // routing.jsonc is read from the override dir (the default tree's is absent).
+  const manifest = await loadRoutingManifest(root, { configDir: "altroot" });
+  expect(manifest).not.toBeNull();
+  expect(manifest!.scopes.map((s) => s.name)).toEqual(["default", "www"]);
+
+  // The root config artifacts follow the override.
+  const rootConfig = await loadReviewConfig(root, { configDir: "altroot" });
+  expect(rootConfig.commentTag).toBe("alt-root-tag");
+
+  // The default scope reuses the override's root config.
+  const def = await loadScopeConfig(root, manifest!.scopes[0]!, manifest!, rootConfig);
+  expect(def.commentTag).toBe("alt-root-tag");
+
+  // The nested scope is still resolved from the repo root (server/www), NOT the
+  // override dir — the override must not relocate the scopes themselves.
+  const www = await loadScopeConfig(root, manifest!.scopes[1]!, manifest!, rootConfig);
+  expect(www.agents.some((a) => a.id === "style")).toBe(true);
+  expect(www.agents.find((a) => a.id === "style")!.model).toBe("anthropic/claude-opus-4-1");
 });
 
 test("loadReviewConfig: ECR_CONFIG_DIR loads from the alternate dir; unset → .expo-code-review (BACKCOMPAT)", async () => {

@@ -56,6 +56,9 @@ Options:
   --agents <a,b>       Run only these agents (comma-separated ids); default: all
   --route              Let the router pick relevant agents from the diff
   --scopes <a,b>       Limit the fan-out to these named scopes (routing only)
+  --config-dir <dir>   Load the ROOT config.jsonc + routing.jsonc from <dir>
+                       instead of .expo-code-review/ (also ECR_CONFIG_DIR). Scope
+                       subtrees stay repo-root-relative.
   --comment <mode>     Override manifest comment mode: single | per-scope
   --force              Manual override: review even if the trigger policy (label
                        trigger / ai-review:skip) would skip. Break-glass and the
@@ -76,6 +79,17 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
   const route = argv.includes("--route");
   const scopesFilter = parseListFlag(argv, "--scopes");
   const commentOverride = parseCommentMode(argv);
+  // The ROOT config dir escape hatch (mirrors `ecr review`): an explicit
+  // --config-dir wins, else resolveConfigDir falls back to ECR_CONFIG_DIR, else
+  // the default .expo-code-review/. Applies to config.jsonc AND routing.jsonc.
+  let configDir: string | undefined;
+  try {
+    configDir = parseValueFlag(argv, "--config-dir");
+  } catch (error) {
+    process.stderr.write(`${errorMessage(error)}\n\n${CI_USAGE}`);
+    process.exitCode = 2;
+    return;
+  }
   // A maintainer's explicit `/review` (comment command or --force) is a manual
   // escape hatch that bypasses the trigger-policy gate only (see passesTriggerGate).
   const bypassTriggerGate = shouldBypassTriggerGate(argv);
@@ -98,14 +112,14 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
   // A malformed manifest is a loud, non-blocking error (never a silent fallback).
   let manifest: RoutingManifest | null;
   try {
-    manifest = await loadRoutingManifest(cwd);
+    manifest = await loadRoutingManifest(cwd, { configDir });
   } catch (error) {
     process.stderr.write(`CI reviewer: invalid routing.jsonc: ${errorMessage(error)}\n`);
     return;
   }
 
   if (manifest == null) {
-    await runLegacyCi(repo, prNumber, cwd, agents, route, bypassTriggerGate);
+    await runLegacyCi(repo, prNumber, cwd, agents, route, bypassTriggerGate, configDir);
     return;
   }
 
@@ -120,6 +134,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
       scopesFilter,
       commentOverride,
       bypassTriggerGate,
+      configDir,
     );
   } catch (error) {
     // Fan-out failures stay non-blocking (single-writer property is the point).
@@ -138,10 +153,11 @@ async function runLegacyCi(
   agents: string[] | undefined,
   route: boolean,
   bypassTriggerGate: boolean,
+  configDir: string | undefined,
 ): Promise<void> {
   let config;
   try {
-    config = await loadReviewConfig(cwd);
+    config = await loadReviewConfig(cwd, { configDir });
   } catch (error) {
     process.stderr.write(`CI reviewer: ${errorMessage(error)}\n`);
     return;
@@ -240,8 +256,11 @@ async function runRoutedCi(
   scopesFilter: string[] | undefined,
   commentOverride: "single" | "per-scope" | undefined,
   bypassTriggerGate: boolean,
+  configDir: string | undefined,
 ): Promise<void> {
-  const rootConfig = await loadReviewConfig(cwd);
+  // The root config + manifest follow the override; scope configs stay
+  // repo-root-relative (loadScopeConfig reads <root>/<scope.config>/.expo-code-review).
+  const rootConfig = await loadReviewConfig(cwd, { configDir });
   // The root/aggregate marker is the ACTUAL root-owned comment tag so the
   // pre-routing comment and its dismissal state upsert in place, not stranded
   // under a new marker (risk 8/9). manifest.defaults.commentTag is the
@@ -593,6 +612,20 @@ function parseListFlag(argv: string[], flag: string): string[] | undefined {
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean);
+}
+
+/** Parse a single-value flag (`--flag value`); undefined when absent, throws when
+ * present without a value (matching review.ts's requireValue). */
+function parseValueFlag(argv: string[], flag: string): string | undefined {
+  const index = argv.indexOf(flag);
+  if (index === -1) {
+    return undefined;
+  }
+  const value = argv[index + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return value;
 }
 
 /** Parse `--comment single|per-scope` (undefined = use the manifest's setting). */

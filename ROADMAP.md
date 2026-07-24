@@ -31,6 +31,21 @@ PRs** (do these first, in this order):
 
 ## Recently shipped
 
+- **`--config-dir`/`ECR_CONFIG_DIR` fully composes with routing (shipped
+  2026-07-23)** — the escape hatch previously half-composed: `loadReviewConfig`/
+  `hasConfig` honored the override but `loadRoutingManifest` and scope loading did
+  not, so the root config came from the override dir while `routing.jsonc` and
+  scope configs came from the default tree. The override now designates an
+  alternate ROOT config dir: `loadRoutingManifest(root, { configDir })` reads
+  `routing.jsonc` from the same resolved dir as `config.jsonc` (`resolveConfigDir`).
+  Scope `config` paths stay repo-root-relative (an override must not invent a
+  parallel scope universe), and each scope's `.expo-code-review` dir name is
+  unchanged — only the ROOT artifacts follow the override. `ecr ci` gained a
+  `--config-dir` flag (mirroring `ecr review`) threaded through the legacy and
+  routed config loads; `doctor` prints an ℹ line naming the resolved root dir when
+  the override is active; `verify-config` notes the override (its repo-wide
+  security sweep is unchanged). With no override, resolution is byte-identical
+  (backcompat).
 - **Full workflow template set + Opus rosters + SHA-pinned actions (shipped
   2026-07-23)** — `templates/` shipped only the auto (`pull_request`) `workflow.yml`,
   so both production adopters (eas-cli, universe) hand-wrote the `/review` command

@@ -177,7 +177,10 @@ export async function reviewCommand(argv: string[]): Promise<void> {
 
     // --scope: load the named scope's config and review only that scope's files.
     if (args.scope) {
-      const manifest = await loadRoutingManifest(cwd);
+      // --scope and --config-dir are mutually exclusive (validateArgs), so
+      // args.configDir is undefined here; pass it through for consistency and so
+      // the manifest always resolves from the same dir as the root config.
+      const manifest = await loadRoutingManifest(cwd, { configDir: args.configDir });
       if (!manifest) {
         throw new Error("no .expo-code-review/routing.jsonc — --scope requires a routing manifest");
       }
