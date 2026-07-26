@@ -166,20 +166,85 @@ export function buildReviewerTask(
  * large diff. It sees the whole change set and reports ONLY issues that span
  * multiple changed files, which per-chunk reviews can't see.
  */
+/**
+ * Total changed lines the cross-file task will inline before it stops and lists the
+ * rest as patch paths to read on demand. Sized to stay well inside the model's
+ * context on a normal PR while still covering the overwhelming majority of them; a
+ * genuinely huge diff degrades to the old read-on-demand behavior for its tail
+ * rather than overflowing.
+ */
+export const CROSS_CUTTING_INLINE_MAX_LINES = 6000;
+
+/**
+ * Split the changed files into the ones whose diffs are inlined into the cross-file
+ * task and the ones left for on-demand reads. Always inlines at least the first file
+ * so a single enormous file can't produce an all-deferred prompt. Exported for tests.
+ */
+export function splitCrossCuttingInline(
+  allFiles: PatchWorkspaceFile[],
+  maxLines = CROSS_CUTTING_INLINE_MAX_LINES,
+): { inlined: PatchWorkspaceFile[]; deferred: PatchWorkspaceFile[] } {
+  const inlined: PatchWorkspaceFile[] = [];
+  const deferred: PatchWorkspaceFile[] = [];
+  let lines = 0;
+  for (const file of allFiles) {
+    if (inlined.length > 0 && lines + file.changedLines > maxLines) {
+      deferred.push(file);
+      continue;
+    }
+    inlined.push(file);
+    lines += file.changedLines;
+  }
+  return { inlined, deferred };
+}
+
 export function buildCrossCuttingTask(
   allFiles: PatchWorkspaceFile[],
   agents: LoadedAgent[],
   filtered: FilteredFile[] = [],
+  /** Set for the no-tools fallback pass, which cannot open anything it isn't shown. */
+  opts: { noTools?: boolean } = {},
 ): string {
   const lenses = agents
     .map((agent) => `- ${agent.id}: ${agent.description || agent.id}`)
     .join("\n");
-  const fileList = allFiles
-    .map(
-      (file) =>
-        `- \`${sanitizeUntrusted(file.path)}\` (${file.status ?? "M"}) — patch: \`${file.patchPath}\``,
-    )
-    .join("\n");
+  // Inline the diffs instead of only naming their patch files. Reading them back was
+  // one tool round-trip per changed file BEFORE any tracing could start (13 reads and
+  // several minutes on a 14-file PR), spent on content we already have in memory.
+  const { inlined, deferred } = splitCrossCuttingInline(allFiles);
+  const inlinedDiffs = inlined.map(inlineDiff).join("\n\n");
+  // On a diff too large to inline whole, the tail is named either way — a file this
+  // pass can't see must never look unchanged. What differs is the instruction: a
+  // no-tools pass told to "read their patch files" would be told to do the one thing
+  // it can't, so it gets the same "you cannot see these, don't fault them" framing
+  // the noise-filtered files get.
+  const deferredSection =
+    deferred.length === 0
+      ? []
+      : opts.noTools
+        ? [
+            "",
+            "This PR changed these files too, but their diffs are NOT shown to you (the",
+            "diff is large) and you cannot open them on this pass:",
+            deferred
+              .map((file) => `- \`${sanitizeUntrusted(file.path)}\` (${file.status ?? "M"})`)
+              .join("\n"),
+            "",
+            "They WERE changed by this PR. Do NOT report that any of them was not updated,",
+            "and do not claim an interaction you cannot see in the diffs above.",
+          ]
+        : [
+            "",
+            "This PR changed these files too, but their diffs are NOT inlined above (the",
+            "diff is large). Read their patch files on demand if a cross-file interaction",
+            "points at them:",
+            deferred
+              .map(
+                (file) =>
+                  `- \`${sanitizeUntrusted(file.path)}\` (${file.status ?? "M"}) — patch: \`${file.patchPath}\``,
+              )
+              .join("\n"),
+          ];
 
   return [
     "This PR changed the files below, and each was already reviewed on its own by",
@@ -194,7 +259,7 @@ export function buildCrossCuttingTask(
     "single-file issues.",
     "",
     "Stay focused and efficient — you are on a time budget:",
-    "- Work from the patches of the CHANGED files listed below; that is your scope.",
+    "- Work from the diffs of the CHANGED files below; that is your scope.",
     "- Read additional source ONLY when directly needed to confirm a specific",
     "  cross-file interaction (e.g. open the caller a changed signature affects).",
     "- Do NOT audit unrelated parts of the repository or read files with no",
@@ -202,8 +267,10 @@ export function buildCrossCuttingTask(
     "- As soon as you have traced the cross-file interactions, return your answer;",
     "  do not keep exploring for completeness.",
     "",
-    "Changed files:",
-    fileList,
+    "Changed files (diffs inlined — you do not need to read these back):",
+    "",
+    inlinedDiffs,
+    ...deferredSection,
     ...filteredSection(filtered),
     "",
     "Return the single JSON object described in your instructions and nothing else.",

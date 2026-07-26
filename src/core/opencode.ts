@@ -46,6 +46,11 @@ export function addTokenUsage(into: TokenUsage, from?: TokenUsage): TokenUsage {
 
 // The coordinator consolidates findings; it needs no repo tools.
 const COORDINATOR_TOOLS = toolMap([]);
+// Every tool disabled, passed per-REQUEST (not per-agent) to make a "reply now,
+// don't investigate" prompt physically unable to call tools. A prompt-level plea is
+// not enough: in eas-cli#4084 the finalize ("stop and return what you have") reply
+// opened 7 more files and then blew its window, losing the whole pass.
+const NO_TOOLS = toolMap([]);
 // Agent id for the single combined cross-cutting pass (see review.ts). It MUST be
 // defined here so OpenCode uses this restricted tool set — otherwise the model
 // falls back to a default agent with full tools and crawls the whole repo, which
@@ -137,7 +142,59 @@ const HEARTBEAT_MS = 45_000;
 // over. Callers must treat AgentTimeoutError as "abandon", never "retry".
 const DEFAULT_MAX_WAIT_MS = 8 * 60 * 1000;
 // Extra budget for the "stop and summarize what you have" finalization prompt.
-const FINALIZE_WAIT_MS = 90 * 1000;
+// Deliberately generous: this is the ONLY chance to salvage a pass that ran out of
+// time, and at 90s it was losing that race. Tools are disabled for the request
+// (NO_TOOLS), so the reply is a single emit and normally lands in seconds.
+const FINALIZE_WAIT_MS = 3 * 60 * 1000;
+
+// ---- stall detection ----
+//
+// A pass is STALLED when its in-progress assistant message stops changing at all:
+// no new tool call, no streamed text or reasoning, no token growth. A model that is
+// genuinely thinking still grows that message every few seconds, so a gap this long
+// means the provider request is wedged (or stuck in an internal retry we cannot
+// see) — not that the work is hard.
+//
+// Motivating incident (eas-cli#4084, 2026-07-26): the cross-file pass ran 7 `read`
+// calls in its first 6 seconds and then sat completely silent for 25 minutes,
+// recording ZERO tokens (input, output, reasoning and cache all 0 in the run log),
+// until its wall-clock cap fired. The finalize salvage then also went silent, so the
+// pass's entire work product was lost and the PR got a coverage gap. Nothing in the
+// run distinguished "wedged" from "thinking" — the heartbeat just printed elapsed
+// seconds. A wall-clock cap alone cannot fix this: raising it only buys a longer
+// silence, which is why the cap is NOT the lever here.
+//
+// Unlike the wall-clock cap (non-convergence → abandon, never retry), a stall is
+// transient, so it earns ONE clean-slate retry inside the pass's existing budget.
+const STALL_MS = 4 * 60 * 1000;
+// Never let the watchdog outlast the pass it guards: a short pass (the 3m verifier,
+// a 4m no-tools fallback) would otherwise hit its deadline before the watchdog could
+// fire, and get none of this protection. Half the cap, with a floor that leaves room
+// for a slow first token.
+const MIN_STALL_MS = 30 * 1000;
+/** Exported for tests. */
+export function stallWindowMs(maxWaitMs: number): number {
+  return Math.min(STALL_MS, Math.max(MIN_STALL_MS, Math.floor(maxWaitMs / 2)));
+}
+// The finalize reply does no investigation and cannot call tools, so it should
+// stream within seconds; a much shorter silence already means wedged.
+const FINALIZE_STALL_MS = 60 * 1000;
+// Breathing room before the retry: if the silence came from provider-side throttling
+// or backoff, reconnecting instantly is the worst move.
+const STALL_RETRY_BACKOFF_MS = 20 * 1000;
+// Only retry when enough of the pass's budget remains for the fresh attempt to
+// plausibly finish; otherwise go straight to the soft landing.
+const STALL_RETRY_MIN_REMAINING_MS = STALL_MS + 60 * 1000;
+
+/**
+ * What to do about a stalled attempt: start over from a clean session, or stop and
+ * try to salvage findings. Exactly ONE retry, and only with enough budget left for it
+ * to land — a second wedged attempt would just spend the rest of the pass's window,
+ * which is the failure this whole mechanism exists to end. Exported for tests.
+ */
+export function stallAction(attempt: number, remainingMs: number): "retry" | "soft-land" {
+  return attempt === 0 && remainingMs > STALL_RETRY_MIN_REMAINING_MS ? "retry" : "soft-land";
+}
 
 const FINALIZE_PROMPT =
   "You have reached your time budget. STOP investigating now — do NOT read, grep, " +
@@ -158,6 +215,45 @@ class DeadlineReached extends Error {
   ) {
     super("deadline reached");
   }
+}
+
+/**
+ * Internal signal that an in-progress reply went silent (see STALL_MS). Distinct
+ * from DeadlineReached: the pass's time budget is NOT spent, so the caller can spend
+ * what's left on a fresh attempt instead of abandoning the work.
+ */
+class NoProgress extends Error {
+  constructor(
+    readonly cost: number = 0,
+    readonly tokens?: TokenUsage,
+    /** How long the reply had been unchanged when we gave up on it. */
+    readonly idleMs: number = 0,
+  ) {
+    super("no progress");
+  }
+}
+
+/**
+ * A cheap signature of how far along an in-progress reply is: its parts (count,
+ * type, streamed length, tool status) plus the message's token/cost counters. ANY
+ * real progress — a new tool call, another chunk of text or reasoning, a tool
+ * advancing pending → running → completed — changes it; a wedged request leaves it
+ * byte-identical poll after poll. Exported for tests.
+ */
+export function progressFingerprint(message: RawMessage): string {
+  const shape = (message.parts ?? [])
+    .map((part) => `${part.type ?? ""}:${(part.text ?? "").length}:${part.state?.status ?? ""}`)
+    .join("|");
+  const tokens = message.info?.tokens;
+  return [
+    shape,
+    tokens?.input ?? 0,
+    tokens?.output ?? 0,
+    tokens?.reasoning ?? 0,
+    tokens?.cache?.read ?? 0,
+    tokens?.cache?.write ?? 0,
+    message.info?.cost ?? 0,
+  ].join("~");
 }
 
 const DEADLINE_SENTINEL = Symbol("deadline");
@@ -197,11 +293,30 @@ async function raceDeadline<T>(
 export class AgentTimeoutError extends Error {
   readonly cost: number;
   readonly tokens?: TokenUsage;
-  constructor(agent: string, minutes: number, cost = 0, tokens?: TokenUsage) {
-    super(`Agent "${agent}" timed out after ${minutes} minutes (including finalize)`);
+  /**
+   * Why the pass was abandoned: it investigated without converging ("time"), or its
+   * model request went silent and did not recover after a fresh attempt ("stall").
+   * The caller's handling is the same (abandon), but the two have different causes —
+   * a wander is ours to bound, a stall is the provider's — so logs and coverage
+   * notes must not conflate them.
+   */
+  readonly reason: "time" | "stall";
+  constructor(
+    agent: string,
+    minutes: number,
+    cost = 0,
+    tokens?: TokenUsage,
+    reason: "time" | "stall" = "time",
+  ) {
+    super(
+      reason === "stall"
+        ? `Agent "${agent}" stalled: its model request went silent and produced nothing after a retry (${minutes} minutes)`
+        : `Agent "${agent}" timed out after ${minutes} minutes (including finalize)`,
+    );
     this.name = "AgentTimeoutError";
     this.cost = cost;
     this.tokens = tokens;
+    this.reason = reason;
   }
 }
 
@@ -241,78 +356,131 @@ export async function promptAgent(
     finalizeOnTimeout?: boolean;
   },
 ): Promise<PromptResult> {
-  const session = unwrap<{ id: string }>(
-    await handle.client.session.create({ body: { title: args.title } }),
-  );
-  const reportedTools = new Set<string>();
-  await sendSessionPrompt(handle, session.id, {
-    agent: args.agent,
-    system: args.system,
-    text: args.text,
-  });
-
   const maxWaitMs = args.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
-  try {
-    return await pollForCompletion(handle, session.id, {
-      agent: args.agent,
-      fromIndex: 0,
-      deadline: Date.now() + maxWaitMs,
-      onActivity: args.onActivity,
-      reportedTools,
-      maxToolCalls: args.maxToolCalls,
-    });
-  } catch (error) {
-    if (!(error instanceof DeadlineReached)) {
-      throw error;
-    }
-    // Cost/tokens burned during the (never-completed) investigation, so the
-    // finalize reply or the abandon path still accounts for them.
-    const spentCost = error.cost;
-    const spentTokens = error.tokens;
-    // Time budget hit. Interrupt the wandering run first.
-    await abortQuietly(handle, session.id);
+  // ONE deadline for the whole pass, shared by the first attempt and any stall
+  // retry, so retrying a wedged request can never push the pass past its declared
+  // cap (the budget math in review.ts depends on that being true).
+  const deadline = Date.now() + maxWaitMs;
+  // Spend from abandoned attempts, carried forward so a wedged attempt's cost and
+  // tokens still land in the run's metrics instead of vanishing.
+  let carriedCost = 0;
+  let carriedTokens: TokenUsage | undefined;
+  const carry = (result: PromptResult): PromptResult => ({
+    ...result,
+    cost: result.cost + carriedCost,
+    tokens: addTokenUsage(addTokenUsage({}, carriedTokens), result.tokens),
+  });
+  const absorb = (spent: { cost: number; tokens?: TokenUsage }): void => {
+    carriedCost += spent.cost;
+    carriedTokens = addTokenUsage(addTokenUsage({}, carriedTokens), spent.tokens);
+  };
+
+  /**
+   * Last chance to get something out of a pass that hit its ceiling: interrupt the
+   * run and ask the SAME (context-carrying) session for whatever it already has.
+   * Tools are disabled for this request, so it cannot resume investigating — the
+   * only thing it can do is emit.
+   */
+  const softLand = async (
+    sessionID: string,
+    reason: "time" | "stall",
+    reportedTools: Set<string>,
+  ): Promise<PromptResult> => {
+    await abortQuietly(handle, sessionID);
+    const minutes = Math.round(maxWaitMs / 60000);
     if (!args.finalizeOnTimeout) {
-      throw new AgentTimeoutError(
-        args.agent,
-        Math.round(maxWaitMs / 60000),
-        spentCost,
-        spentTokens,
-      );
+      throw new AgentTimeoutError(args.agent, minutes, carriedCost, carriedTokens, reason);
     }
-    // Soft landing: ask the (same, context-carrying) session to return whatever
-    // it has now. Only messages after this point count as the answer.
-    const baseline = (await fetchMessages(handle, session.id)).length;
-    args.onActivity?.("time budget reached — asking for findings so far");
-    await sendSessionPrompt(handle, session.id, {
+    // Only messages after this point count as the answer.
+    const baseline = (await fetchMessages(handle, sessionID)).length;
+    args.onActivity?.(
+      reason === "stall"
+        ? "no output after a retry — asking for findings so far"
+        : "time budget reached — asking for findings so far",
+    );
+    await sendSessionPrompt(handle, sessionID, {
       agent: args.agent,
       system: args.system,
       text: FINALIZE_PROMPT,
+      tools: NO_TOOLS,
     });
     try {
-      const result = await pollForCompletion(handle, session.id, {
+      const result = await pollForCompletion(handle, sessionID, {
         agent: args.agent,
         fromIndex: baseline,
         deadline: Date.now() + FINALIZE_WAIT_MS,
         onActivity: args.onActivity,
         reportedTools,
+        stallMs: FINALIZE_STALL_MS,
       });
-      return {
-        ...result,
-        cost: result.cost + spentCost,
-        tokens: addTokenUsage(addTokenUsage({}, spentTokens), result.tokens),
-        truncated: true,
-      };
+      return { ...carry(result), truncated: true };
     } catch (finalizeError) {
-      if (finalizeError instanceof DeadlineReached) {
-        await abortQuietly(handle, session.id);
+      if (finalizeError instanceof DeadlineReached || finalizeError instanceof NoProgress) {
+        await abortQuietly(handle, sessionID);
+        absorb(finalizeError);
         throw new AgentTimeoutError(
           args.agent,
           Math.round((maxWaitMs + FINALIZE_WAIT_MS) / 60000),
-          spentCost + finalizeError.cost,
-          addTokenUsage(addTokenUsage({}, spentTokens), finalizeError.tokens),
+          carriedCost,
+          carriedTokens,
+          reason,
         );
       }
       throw finalizeError;
+    }
+  };
+
+  for (let attempt = 0; ; attempt++) {
+    const session = unwrap<{ id: string }>(
+      await handle.client.session.create({
+        body: { title: attempt === 0 ? args.title : `${args.title}-retry${attempt}` },
+      }),
+    );
+    const reportedTools = new Set<string>();
+    await sendSessionPrompt(handle, session.id, {
+      agent: args.agent,
+      system: args.system,
+      text: args.text,
+    });
+
+    try {
+      return carry(
+        await pollForCompletion(handle, session.id, {
+          agent: args.agent,
+          fromIndex: 0,
+          deadline,
+          onActivity: args.onActivity,
+          reportedTools,
+          maxToolCalls: args.maxToolCalls,
+          stallMs: stallWindowMs(maxWaitMs),
+        }),
+      );
+    } catch (error) {
+      // Went silent. The request is wedged, not slow, so the first move is a clean
+      // slate — a fresh session, not the finalize prompt, which would be asking the
+      // wedged request to answer. Exactly one retry, and only when enough budget
+      // remains for it to land; after that the finalize is still worth a try as the
+      // only remaining salvage (in eas-cli#4084 the session did respond once aborted).
+      if (error instanceof NoProgress) {
+        await abortQuietly(handle, session.id);
+        absorb(error);
+        const remaining = deadline - Date.now();
+        if (stallAction(attempt, remaining) === "retry") {
+          args.onActivity?.(
+            `stalled — no output for ${Math.round(error.idleMs / 1000)}s; ` +
+              `retrying once from a clean session (${Math.round(remaining / 60000)}m of budget left)`,
+          );
+          await sleep(STALL_RETRY_BACKOFF_MS);
+          continue;
+        }
+        return await softLand(session.id, "stall", reportedTools);
+      }
+      // Ran the clock down while investigating: converge on what it has.
+      if (error instanceof DeadlineReached) {
+        absorb(error);
+        return await softLand(session.id, "time", reportedTools);
+      }
+      throw error;
     }
   }
 }
@@ -438,6 +606,9 @@ export async function promptAndParse<T>(
         agent: args.agent,
         system: args.system,
         text: CORRECTIVE,
+        // Re-emit only: the investigation is done, so no tools are needed and
+        // disabling them keeps the corrective from turning into a second wander.
+        tools: NO_TOOLS,
       });
       const retry = await pollForCompletion(handle, first.sessionID, {
         agent: args.agent,
@@ -445,6 +616,7 @@ export async function promptAndParse<T>(
         deadline: Date.now() + CORRECTIVE_WAIT_MS,
         onActivity: args.onActivity,
         reportedTools: new Set<string>(),
+        stallMs: FINALIZE_STALL_MS,
       });
       record(retry);
       return { value: parse(retry.text), cost, truncated, tokens };
@@ -496,7 +668,13 @@ async function fetchMessages(handle: OpencodeHandle, sessionID: string): Promise
 async function sendSessionPrompt(
   handle: OpencodeHandle,
   sessionID: string,
-  args: { agent: string; system: string; text: string },
+  args: {
+    agent: string;
+    system: string;
+    text: string;
+    /** Per-request tool override (see NO_TOOLS). Omit to use the agent's own set. */
+    tools?: Record<string, boolean>;
+  },
 ): Promise<void> {
   unwrap(
     await handle.client.session.promptAsync({
@@ -505,6 +683,7 @@ async function sendSessionPrompt(
         agent: args.agent,
         system: args.system,
         parts: [{ type: "text", text: args.text }],
+        ...(args.tools ? { tools: args.tools } : {}),
       },
     }),
   );
@@ -522,7 +701,8 @@ async function abortQuietly(handle: OpencodeHandle, sessionID: string): Promise<
  * Poll a session for the first assistant message at or after `fromIndex` to
  * complete. `fromIndex` lets a follow-up prompt (finalize, corrective retry)
  * skip the earlier completed message and wait for the NEW reply instead. Throws
- * DeadlineReached once `deadline` passes.
+ * DeadlineReached once `deadline` passes, or NoProgress once the reply has been
+ * unchanged for `stallMs` (see STALL_MS).
  */
 async function pollForCompletion(
   handle: OpencodeHandle,
@@ -534,6 +714,9 @@ async function pollForCompletion(
     onActivity?: (line: string) => void;
     reportedTools: Set<string>;
     maxToolCalls?: number;
+    /** No-progress ceiling. Undefined = no stall watchdog (never wait forever on
+     * a wedged request unless the caller has its own reason to). */
+    stallMs?: number;
   },
 ): Promise<PromptResult> {
   // Best-effort usage of the in-progress assistant message, so a task that times
@@ -542,6 +725,11 @@ async function pollForCompletion(
   let lastTokens: TokenUsage | undefined;
   const startedAt = Date.now();
   let lastEmitAt = startedAt;
+  // Stall watchdog state: when the reply last changed in any way, and what it looked
+  // like then. Starts at "now" so a prompt that never produces an assistant message
+  // at all (a wedged submission) also trips the watchdog.
+  let lastProgressAt = startedAt;
+  let lastFingerprint = "";
   const emit = (line: string): void => {
     lastEmitAt = Date.now();
     opts.onActivity?.(line);
@@ -553,9 +741,16 @@ async function pollForCompletion(
     await sleep(POLL_INTERVAL_MS);
 
     // Heartbeat if nothing has been reported for a while (e.g. the model is
-    // reasoning without calling tools), so a long pass doesn't look hung.
+    // reasoning without calling tools), so a long pass doesn't look hung. Say how
+    // long the reply has been unchanged, not just how long the pass has run — that
+    // distinction is what tells a slow investigation apart from a wedged request,
+    // and its absence is why eas-cli#4084 took a forensic dig to explain.
     if (opts.onActivity && Date.now() - lastEmitAt >= HEARTBEAT_MS) {
-      emit(`still working… ${Math.round((Date.now() - startedAt) / 1000)}s elapsed`);
+      const idleMs = Date.now() - lastProgressAt;
+      emit(
+        `still working… ${Math.round((Date.now() - startedAt) / 1000)}s elapsed` +
+          (idleMs >= HEARTBEAT_MS ? ` (no new output for ${Math.round(idleMs / 1000)}s)` : ""),
+      );
     }
 
     // Bound the fetch by the deadline: a stalled server can't push the task past
@@ -574,6 +769,13 @@ async function pollForCompletion(
     }
     if (assistant.info?.tokens) {
       lastTokens = assistant.info.tokens;
+    }
+
+    // Stall watchdog: did the reply change AT ALL since the last poll?
+    const fingerprint = progressFingerprint(assistant);
+    if (fingerprint !== lastFingerprint) {
+      lastFingerprint = fingerprint;
+      lastProgressAt = Date.now();
     }
 
     // Track each distinct tool call once (for the tool-call cap) and, the first
@@ -621,6 +823,19 @@ async function pollForCompletion(
     if (opts.maxToolCalls != null && opts.reportedTools.size > opts.maxToolCalls) {
       emit(`made ${opts.reportedTools.size} tool calls — wrapping up to stay on budget`);
       throw new DeadlineReached(lastCost, lastTokens);
+    }
+
+    // Still in progress and completely silent: the request is wedged, not slow.
+    // Bail out NOW rather than spending the rest of the cap on a dead request —
+    // the caller retries a stall from a clean session (see promptAgent).
+    if (opts.stallMs != null) {
+      const idleMs = Date.now() - lastProgressAt;
+      if (idleMs >= opts.stallMs) {
+        emit(
+          `no new output for ${Math.round(idleMs / 1000)}s — treating the model request as stalled`,
+        );
+        throw new NoProgress(lastCost, lastTokens, idleMs);
+      }
     }
   }
 }

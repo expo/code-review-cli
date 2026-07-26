@@ -112,15 +112,17 @@ export const RoutingManifestSchema = z
     budget: z
       .object({
         /** Total passes budget (minutes) split across active scopes. Sized to fit
-         * the scaffolded workflow's `timeout-minutes` (60) with margin for the
-         * coordinator, verification, and git/gh overhead. */
-        totalPassesMinutes: z.number().int().positive().default(32),
+         * the scaffolded workflow's `timeout-minutes` (90) with margin for the
+         * coordinator (10m), verification, and git/gh overhead. The cross-file pass
+         * expands to fill whatever of this window is left (see review.ts), so this
+         * is the knob that decides how long it may trace. */
+        totalPassesMinutes: z.number().int().positive().default(55),
         /** Per-scope floor (minutes): below this a scope review isn't worth
          * starting, so the even split clamps up to it — even when that makes the
          * scopes overshoot the total (ecr ci warns; doctor flags the worst case). */
         minScopeMinutes: z.number().int().positive().default(5),
       })
-      .default({ totalPassesMinutes: 32, minScopeMinutes: 5 }),
+      .default({ totalPassesMinutes: 55, minScopeMinutes: 5 }),
     defaults: z
       .object({
         /** The ONLY manifest-level place auth is honored (locks the root value).

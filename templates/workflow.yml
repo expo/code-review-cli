@@ -30,8 +30,12 @@ jobs:
     # the line below with, e.g.:
     #   if: contains(github.event.pull_request.labels.*.name, 'ai-review')
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'ai-review:skip') }}
-    # Backstop so a stalled review fails fast instead of hanging.
-    timeout-minutes: 60
+    # Backstop so a stalled review fails fast instead of hanging. This is the ONE cap
+    # with no soft landing (GitHub hard-kills the job and nothing is posted), so keep
+    # margin over the worst-case internal chain: the passes budget
+    # (budget.totalPassesMinutes, 55m — the cross-file pass expands to fill it) +
+    # coordinator (10m) + verification + CI setup.
+    timeout-minutes: 90
     # A reviewer failure must never fail the PR's checks.
     continue-on-error: true
     steps:

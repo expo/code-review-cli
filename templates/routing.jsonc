@@ -18,7 +18,7 @@
   // Passes budget, split across active scopes (they run sequentially in one `ecr ci`):
   // keep totalPassesMinutes inside the workflow's timeout-minutes; minScopeMinutes is
   // the floor below which a scope review isn't worth starting. Defaults shown.
-  // "budget": { "totalPassesMinutes": 32, "minScopeMinutes": 5 },
+  // "budget": { "totalPassesMinutes": 55, "minScopeMinutes": 5 },
 
   // Ordered; the LAST matching scope wins per changed file. Keep a '**/*' catch-all first.
   "scopes": [

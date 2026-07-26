@@ -15,8 +15,11 @@ PRs** (do these first, in this order):
 1. **Incremental / delta review** — review only what changed since the last review
    (persistent per-file-version state). Biggest speed + cost + reliability win on
    re-pushes; the last remaining lever for the monster-PR case. See §5.
-2. **Cross-cutting pass parallelization / bounding** — it's the serial long-pole on
-   large PRs (one pass over every changed file). Chunk it by package/proximity.
+2. **Cross-cutting pass parallelization** — it's the serial long-pole on large PRs
+   (one pass over every changed file), and it's now the pass that expands to fill the
+   remaining budget (§3 #10). Splitting it by *file halves* is not an option — that
+   hides the cross-half interactions it exists to find — but splitting by
+   package/proximity, where a boundary is a real architectural seam, still is.
 3. ✅ **Transient-error retry with backoff** *(shipped 2026-07-23, #3.)* A non-timeout,
    non-parse API error (one-off 429/5xx/network) used to drop that pass with no retry.
    Now retried with bounded backoff via `isTransientApiError` (excludes
@@ -183,14 +186,16 @@ PRs** (do these first, in this order):
 - **Speed knobs** — longest-processing-time-first task scheduling;
   `concurrency` 4→6; CI job timeout 20→30 min (so the
   worst-case internal cap chain fits with headroom).
-- **Inlined chunk diffs** — the reviewer task now embeds the assigned files' diffs
+- **Inlined chunk diffs** — the reviewer task embeds the assigned files' diffs
   (fenced as untrusted) instead of making the agent `read` each patch file, cutting
-  per-pass tool round-trips. (Other files + cross-cutting still read on demand.)
-- **Extended caps** — chunk 8→15m, cross-cutting 15→25m, coordinator 5→10m, CI job
-  30→50m (kept the invariant: worst-case serial chain < job timeout). Gives
-  slow-but-progressing passes room to converge instead of finalizing partial;
-  cost is longer max runs + more tokens. Still model-generation-bound on the
-  largest PRs — see §3 size guard / faster-model levers.
+  per-pass tool round-trips. The cross-file task now does the same, up to a line
+  budget (2026-07-26); only a huge diff's tail is still read on demand.
+- **Extended caps** — chunk 8→15m, coordinator 5→10m, CI job 30→50→90m (kept the
+  invariant: worst-case serial chain < job timeout). The cross-cutting pass went
+  15→25m and then off a fixed cap entirely — it now expands to fill the remaining
+  passes window (see §3 #10). Gives slow-but-progressing passes room to converge
+  instead of finalizing partial; cost is longer max runs + more tokens. Still
+  model-generation-bound on the largest PRs — see §3 size guard / faster-model levers.
 - **Generation-marker false-filter fix** — the noise filter matched generation
   markers (`@generated`, `do not edit`, …) anywhere in the first 40 added lines /
   4 KB, so hand-written files that merely *mention* those strings were wrongly
@@ -287,11 +292,13 @@ Guarantees (priority order; ✅ = shipped):
    posts a terminal state on any failure; the coordinator has a deterministic
    fallback so its failure can't discard findings; and a failed/timed-out run
    never renders as a clean "Approve".
-5. ✅ **Global time budget.** *(Shipped 2026-07-22.)* `PASSES_BUDGET_MS` (32m) is a
-   hard wall-clock ceiling for all passes incl. subdivision/fallback waves: past it,
-   a timed-out pass is reported as a gap rather than broken down further. Sits under
-   per-task caps (chunk 15m, cross-cutting 25m, coordinator 10m) and the CI job cap
-   (`timeout-minutes: 60`, the one hard-kill with no soft-landing).
+5. ✅ **Global time budget.** *(Shipped 2026-07-22; retuned 2026-07-26.)*
+   `PASSES_BUDGET_MS` (55m) is a hard wall-clock ceiling for all passes incl.
+   subdivision/fallback waves: past it, a timed-out pass is reported as a gap rather
+   than broken down further. Sits under per-task caps (chunk 15m, coordinator 10m) and
+   the CI job cap (`timeout-minutes: 90`, the one hard-kill with no soft-landing). The
+   cross-file pass has no fixed cap: it expands to fill whatever of the window is left
+   (see #10).
 6. ✅ **Size guard / degraded mode.** *(Largely addressed by #1.)* Subdivide-on-timeout
    is a *reactive* size guard: an oversized/dense chunk that can't converge is split
    until it does, rather than skipped. A *proactive* up-front "diff too large → review
@@ -309,6 +316,36 @@ Guarantees (priority order; ✅ = shipped):
    merge ref; fork PRs are protected (GitHub withholds secrets) but same-repo PRs
    run with secrets — acceptable for now (push access implies trust + label gate),
    but the npx switch removes the concern entirely.
+10. ✅ **Stall detection + an elastic cross-file pass.** *(Shipped 2026-07-26.)*
+    Motivating incident: the auto-review of eas-cli#4084 (14 files, 1.5k added lines)
+    ran 37 minutes and posted a review with ZERO findings and two coverage gaps. The
+    run log is unambiguous about why: the cross-file pass ran 7 `read` calls in its
+    first 6 seconds and then went completely silent for 24m52s — `agentTokens`
+    recorded `{input: 0, output: 0, reasoning: 0, cache: 0}` for it — until its 25m cap
+    fired. The finalize salvage then also went silent (and, ignoring its own
+    instructions, opened 7 more files), so the pass's entire work product was lost. The
+    coordinator stalled the same way and burned its full 10m cap on 618 input tokens.
+    The wall-clock cap was NOT the binding constraint: the pass did ~6 seconds of work
+    in 25 minutes, so a bigger budget would only have bought a longer silence. Fixes:
+    - **Stall watchdog** — the poll loop fingerprints the in-progress reply (parts,
+      streamed text/reasoning length, tool status, token counters). Unchanged for
+      `STALL_MS` (4m) ⇒ the request is wedged, so abandon it and retry ONCE from a
+      clean session, within the pass's existing deadline. Heartbeats now report how
+      long a reply has been silent, which is what made this diagnosable at all.
+    - **Tool-free salvage** — the finalize ("return what you have") and corrective
+      ("re-emit the JSON") requests pass a per-request all-false tool map, so they
+      physically cannot resume investigating. Finalize budget 90s → 3m.
+    - **Elastic cross-file budget** — a fixed 25m is replaced by "whatever is left of
+      the passes window", so on a large diff it can genuinely finish.
+    - **No more splitting the cross-file pass** — halving its file set hides exactly
+      the interactions it exists to find (a left-half/right-half interaction is
+      invisible to both halves) while reporting success. It now goes straight to the
+      no-tools fallback, which still sees the whole diff.
+    - **Inlined cross-file diffs** — it was spending one tool round-trip per changed
+      file to read back patches we already had in memory, before any tracing could
+      start. Now inlined up to a line budget, with the tail deferred on huge diffs.
+    - **Scaled tool-call ceiling** — cross-file 120 → `10 × files` (120–400), or the
+      fixed cap would become the binding constraint under the larger time budget.
 
 ### Prompt-injection posture (and the structural fix)
 
