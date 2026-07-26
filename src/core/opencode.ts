@@ -269,15 +269,30 @@ export function formatUnknownModels(
   if (refused.length > 0) {
     const provider = auth?.provider ?? refused[0]!.model.split("/")[0];
     const tokenEnv = auth?.tokenEnv;
+    // Two very different causes produce this identical symptom, and naming only the
+    // token sends people to regenerate a perfectly good one (it did exactly that to
+    // us). Rate limiting is listed FIRST because it's the one that looks like a bad
+    // credential but isn't fixed by replacing it.
     return (
       `The OpenCode server does not offer the "${provider}" provider, even though this run ` +
-      `supplied a ${auth?.mode ?? "configured"} credential for it — so the credential was REFUSED. ` +
-      `Every ${provider} model therefore looks nonexistent: ${refused.map((entry) => entry.model).join(", ")}.\n` +
+      `supplied a ${auth?.mode ?? "configured"} credential for it. OpenCode drops a provider whose ` +
+      `credential it could not use, which makes every ${provider} model look nonexistent: ` +
+      `${refused.map((entry) => entry.model).join(", ")}.\n` +
+      `Two things cause this, and they need opposite fixes:\n` +
+      `  1. The account is RATE LIMITED (HTTP 429). A subscription credential that is over its ` +
+      `usage window is refused exactly like an invalid one, and no amount of re-issuing helps — ` +
+      `you have to wait it out. Check with:\n` +
+      `       curl -s -o /dev/null -w '%{http_code}\\n' https://api.anthropic.com/v1/messages \\\n` +
+      `         -H "Authorization: Bearer $${tokenEnv ?? "TOKEN"}" -H "anthropic-beta: oauth-2025-04-20" \\\n` +
+      `         -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \\\n` +
+      `         -d '{"model":"claude-sonnet-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}'\n` +
+      `     429 = rate limited (wait); 401 = the credential really is bad; 200 = the credential is ` +
+      `fine and the problem is how it reached OpenCode.\n` +
       (tokenEnv
-        ? `Check the value of ${tokenEnv}. An OAuth token (auth.mode "oauth") is what \`claude setup-token\` ` +
-          `prints and starts with "sk-ant-oat01-"; a plain API key needs auth.mode "api-key" instead. A ` +
-          `truncated or half-pasted value fails exactly like this.\n`
-        : "") +
+        ? `  2. The credential is wrong for the mode. auth.mode "oauth" expects the token ` +
+          `\`claude setup-token\` prints; a plain API key belongs to auth.mode "api-key". A truncated ` +
+          `or half-pasted ${tokenEnv} fails the same way.\n`
+        : `  2. The credential is wrong for the configured auth.mode.\n`) +
       `Providers the server does offer: ${refused[0]!.suggestions.join(", ") || "(none)"}.`
     );
   }

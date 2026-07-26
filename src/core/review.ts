@@ -509,10 +509,18 @@ export async function runReview(
           (canSubdivide && task.depth < MAX_SUBDIVIDE_DEPTH) || !task.fallback;
         if (error.reason === "stall") {
           progress(
-            `  ${task.label}: its model requests went silent (stalled) and did not recover — reporting a coverage gap`,
+            `  ${task.label}: its model requests went silent (stalled) and did not recover — ` +
+              `most likely provider rate limiting; reporting a coverage gap`,
           );
+          // Name the likely cause. OpenCode retries a 429 internally without surfacing
+          // it, so provider throttling reaches us as pure silence — indistinguishable
+          // from a wedged connection, and the single most common reason a pass produces
+          // nothing at all. Saying "went silent" alone sends people hunting for a bug
+          // in the reviewer instead of checking their usage window.
           incomplete.push(
-            `${capitalize(task.coverageLabel)} could not run: its model requests went silent and produced no output, even after being retried; those changes were not fully reviewed.`,
+            `${capitalize(task.coverageLabel)} could not run: its model requests went silent and produced no output, even after being retried. ` +
+              `The usual cause is the model provider rate-limiting the account (a subscription credential over its usage window), which reaches this tool as silence rather than an error; ` +
+              `those changes were not fully reviewed.`,
           );
         } else if (couldStillReduce) {
           progress(
