@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 
-import { prepareAuth, checkProviderAuth } from "../core/auth.js";
+import { prepareAuth, checkProviderAuth, checkOauthTokenShape } from "../core/auth.js";
 import type { LoadedConfig } from "../config/schema.js";
 
 const cfg = (auth: unknown): LoadedConfig => ({ auth }) as unknown as LoadedConfig;
@@ -34,7 +34,9 @@ test("checkProviderAuth: oauth requires the token env to be set", () => {
   ).toBe(false);
   expect(
     checkProviderAuth(cfg({ mode: "oauth", provider: "anthropic", tokenEnv: "OAUTH" }), {
-      OAUTH: "tok",
+      // Must be a realistically-shaped token: the value is now validated too (see
+      // checkOauthTokenShape), so a stub like "tok" fails as truncated.
+      OAUTH: `sk-ant-oat01-${"x".repeat(90)}`,
     }).ok,
   ).toBe(true);
 });
@@ -97,4 +99,85 @@ test("prepareAuth: REVIEWER_MODEL override skips provider auth entirely (no thro
       process.env.REVIEWER_MODEL = prev;
     }
   }
+});
+
+// ---- OAuth token shape ----
+//
+// A malformed token is refused by OpenCode in the most misleading way available: the
+// provider vanishes from its provider list, so every configured model reports "model
+// not found" and nothing mentions credentials. Catch the unusable shapes up front.
+
+const OAUTH = "sk-ant-oat01-" + "x".repeat(90);
+
+test("a well-formed OAuth token passes", () => {
+  expect(checkOauthTokenShape("anthropic", OAUTH, "TOK").ok).toBe(true);
+});
+
+test("an OAuth token that lost its sk- prefix is rejected, and says so", () => {
+  // The exact value that cost a debugging session: `ant-oat01-…`. Provably wrong,
+  // because restoring the dropped "sk-" reproduces the documented shape exactly.
+  const r = checkOauthTokenShape("anthropic", "ant-oat01-" + "x".repeat(90), "TOK");
+  expect(r.ok).toBe(false);
+  expect(r.detail).toContain('missing its leading "sk-"');
+  expect(r.detail).toContain("claude setup-token");
+});
+
+test("an unrecognized shape only WARNS — a heuristic must not block a working setup", () => {
+  // We cannot prove Anthropic never mints other shapes, so this must still run.
+  const r = checkOauthTokenShape("anthropic", "sk-ant-somethingnew-" + "y".repeat(88), "TOK");
+  expect(r.ok).toBe(true);
+  expect(r.warning).toContain("does not start with");
+});
+
+test("a token unrelated to Anthropic's shapes warns rather than failing", () => {
+  const r = checkOauthTokenShape("anthropic", "totally-different-" + "z".repeat(90), "TOK");
+  expect(r.ok).toBe(true);
+  expect(r.warning).toBeDefined();
+});
+
+test("a well-formed OAuth token produces no warning at all", () => {
+  expect(checkOauthTokenShape("anthropic", OAUTH, "TOK").warning).toBeUndefined();
+});
+
+test("an API key in oauth mode is rejected with the mode to switch to", () => {
+  const r = checkOauthTokenShape("anthropic", "sk-ant-api03-" + "x".repeat(95), "TOK");
+  expect(r.ok).toBe(false);
+  expect(r.detail).toContain('"api-key"');
+});
+
+test("a truncated token is rejected before its prefix is even considered", () => {
+  const r = checkOauthTokenShape("anthropic", "sk-ant-oat01-short", "TOK");
+  expect(r.ok).toBe(false);
+  expect(r.detail).toContain("truncated");
+});
+
+test("surrounding whitespace is rejected (the classic CI secret paste)", () => {
+  const r = checkOauthTokenShape("anthropic", `${OAUTH}\n`, "TOK");
+  expect(r.ok).toBe(false);
+  expect(r.detail).toContain("whitespace");
+});
+
+test("a future oat-family prefix is accepted cleanly (forward compatible)", () => {
+  const r = checkOauthTokenShape("anthropic", "sk-ant-oat99-" + "y".repeat(90), "TOK");
+  expect(r.ok).toBe(true);
+  expect(r.warning).toBeUndefined();
+});
+
+test("formats of providers we do not know are never judged", () => {
+  expect(checkOauthTokenShape("someprovider", "whatever-" + "z".repeat(90), "TOK").ok).toBe(true);
+});
+
+test("checkProviderAuth rejects a malformed oauth token end to end", () => {
+  const r = checkProviderAuth(cfg({ mode: "oauth", provider: "anthropic", tokenEnv: "OAUTH" }), {
+    OAUTH: "ant-oat01-" + "x".repeat(90),
+  });
+  expect(r.ok).toBe(false);
+  expect(r.detail).toContain('missing its leading "sk-"');
+});
+
+test("checkProviderAuth accepts a well-formed oauth token", () => {
+  const r = checkProviderAuth(cfg({ mode: "oauth", provider: "anthropic", tokenEnv: "OAUTH" }), {
+    OAUTH: OAUTH,
+  });
+  expect(r.ok).toBe(true);
 });

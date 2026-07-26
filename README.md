@@ -483,4 +483,18 @@ Alternatives, all set in `config.auth` (credentials come from OpenCode):
 There is no shared fallback key; if a run fails for lack of credentials, authenticate
 a provider in OpenCode. `ecr doctor` diagnoses setup.
 
+**Setup errors fail fast, with the fix in the message.** A bad credential or model id
+would otherwise fail every pass identically — a run that spends its whole budget
+rediscovering one fixable thing, then reports N coverage gaps. So before any pass runs:
+
+- **The OAuth token's shape is checked.** OpenCode refuses a malformed credential by
+  dropping the provider entirely, which then surfaces as "model not found" for every
+  model, with nothing pointing at the token. A truncated value, surrounding whitespace,
+  a leading `sk-` lost in a copy-paste, or an API key where `auth.mode` is `"oauth"` is
+  now rejected by name.
+- **Configured model ids are checked against the running server**, so a typo or an id
+  the provider doesn't have is reported once, up front, with the close matches.
+- **`ecr doctor` reports the `opencode` version actually in use** and warns when a
+  different one is first on your `PATH` — runs use the version this package pins.
+
 </details>

@@ -37,6 +37,16 @@ verifies their findings, and posts one updating PR comment.
 - Scope configs never carry `auth`/`breakGlass` — those are root-only, enforced in
   the schema (`ScopeReviewConfigSchema`), the loader (`loadAuthFromRoot`), and the CI
   guard. With no `routing.jsonc`, behavior is byte-identical to single-config mode.
+- **`opencode-ai` and `@opencode-ai/sdk` are one unit — pinned EXACTLY, bumped
+  together.** The SDK spawns the CLI (`launch("opencode")`), so the two are a matched
+  pair: a CLI older than the SDK rejects model ids the SDK accepts. Exact pins stop an
+  `npx` install in CI from floating one ahead of the other, and `startOpencode`
+  prepends our own `node_modules/.bin` to `PATH` so a machine's global install can't
+  shadow the pinned one. `ecr doctor` prints the version actually in use.
+- **Fail fast and name the fix for setup errors.** A bad model id or credential hits
+  every pass identically, so it must throw once, before any pass runs, with the fix in
+  the message (`assertModelsResolvable`, `checkOauthTokenShape`) — never as N
+  indistinguishable coverage gaps discovered after spending the run's budget.
 
 ## Security invariants
 
