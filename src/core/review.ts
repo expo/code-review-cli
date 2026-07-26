@@ -11,6 +11,7 @@ import type { PatchWorkspaceFile } from "./noise.js";
 import {
   addTokenUsage,
   AgentTimeoutError,
+  assertModelsResolvable,
   buildOpencodeConfig,
   CROSS_CUTTING_AGENT,
   promptAndParse,
@@ -168,8 +169,23 @@ export async function runReview(
     await restoreCwd();
     throw new Error(
       `Failed to start the OpenCode server. Ensure the \`opencode\` CLI is installed and ` +
-        `model credentials are configured.\n${errorMessage(error)}`,
+        `model credentials are configured (\`ecr doctor\` checks both).\n${errorMessage(error)}`,
     );
+  }
+
+  // Preflight: a model id the server can't resolve would otherwise fail EVERY pass
+  // identically — N indistinguishable coverage gaps, after spending the run's budget
+  // discovering the same fixable thing N times. Throw once, up front, naming the fix.
+  try {
+    await assertModelsResolvable(handle, [
+      ...config.agents.map((agent) => agent.model),
+      config.coordinator.model,
+    ]);
+  } catch (error) {
+    handle.close();
+    await auth.cleanup();
+    await restoreCwd();
+    throw error;
   }
 
   const agentCosts: Record<string, number> = {};

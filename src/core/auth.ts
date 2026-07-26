@@ -47,6 +47,104 @@ export interface AuthReadiness {
   ok: boolean;
   /** Human-readable detail for `doctor` output and fail-fast error messages. */
   detail: string;
+  /**
+   * A credential that is suspicious but not provably broken. Reported by `doctor`,
+   * never a reason to refuse a run — the shape rules below are heuristics, and a
+   * heuristic must not block a setup that would have worked.
+   */
+  warning?: string;
+}
+
+/**
+ * Documented Anthropic OAuth token shape: `sk-ant-oat01-` + 95 chars = 108 total
+ * (what `claude setup-token` prints). Treated as a STRONG HINT, not a spec: it comes
+ * from observed tokens and third-party sources, not an Anthropic format guarantee, so
+ * an unrecognized shape only warns. The one exception is below — a value that becomes
+ * exactly this shape by restoring a dropped `sk-` is provably a mangled paste.
+ */
+const ANTHROPIC_OAUTH_PREFIX = "sk-ant-oat";
+/** Anthropic API keys — valid credentials, but for auth.mode "api-key", not "oauth". */
+const ANTHROPIC_API_KEY_PREFIX = "sk-ant-api";
+/** Shorter than any credential of any provider ⇒ truncated, whatever the format. */
+const MIN_TOKEN_LENGTH = 40;
+
+/**
+ * Catch an OAuth token that CANNOT work before it costs a whole run.
+ *
+ * Motivation: OpenCode refuses a malformed credential by dropping the provider from
+ * its provider list entirely, so every configured model then reports "model not
+ * found" and nothing anywhere mentions credentials. That misdirection cost a full
+ * debugging session for a value that had simply lost its leading `sk-`.
+ *
+ * The bar for `ok: false` is "this cannot be a valid credential", not "this looks
+ * odd", because a false rejection blocks a working setup — a worse failure than the
+ * one being prevented. Provable: whitespace, absurdly short, an API key in oauth
+ * mode, and an OAuth token missing its `sk-`. Everything else is at most a warning,
+ * and formats of providers we don't know are never judged at all.
+ */
+export function checkOauthTokenShape(
+  provider: string,
+  token: string,
+  tokenEnv: string,
+): AuthReadiness {
+  const ok = { ok: true, detail: `oauth for ${provider}; token env ${tokenEnv} is set` };
+  const fix = `Re-generate it with \`claude setup-token\` and set ${tokenEnv} to the full value.`;
+  if (token !== token.trim()) {
+    return {
+      ok: false,
+      detail:
+        `${tokenEnv} has leading/trailing whitespace (a newline from a copy-paste or a ` +
+        `\`cat\`-ed file is the usual cause); the provider will refuse it. ${fix}`,
+    };
+  }
+  if (token.length < MIN_TOKEN_LENGTH) {
+    return {
+      ok: false,
+      detail: `${tokenEnv} holds only ${token.length} characters, too short to be a real ${provider} token — it looks truncated. ${fix}`,
+    };
+  }
+  // Only anthropic's formats are known well enough to say anything about.
+  if (provider !== "anthropic") {
+    return ok;
+  }
+  if (token.startsWith(ANTHROPIC_API_KEY_PREFIX)) {
+    return {
+      ok: false,
+      detail:
+        `${tokenEnv} holds an Anthropic API key ("${ANTHROPIC_API_KEY_PREFIX}…"), but auth.mode is ` +
+        `"oauth", which expects the OAuth token from \`claude setup-token\` ` +
+        `("${ANTHROPIC_OAUTH_PREFIX}…"). Either set auth.mode to "api-key" in ` +
+        `.expo-code-review/config.jsonc, or put an OAuth token in ${tokenEnv}.`,
+    };
+  }
+  // Provable mangled paste: prepending the dropped "sk-" yields exactly the documented
+  // OAuth shape. Only this reconstruction earns a hard failure — the value is not a
+  // credential of any known kind as it stands, but is one character-for-character with
+  // its prefix restored.
+  if (!token.startsWith("sk-") && `sk-${token}`.startsWith(ANTHROPIC_OAUTH_PREFIX)) {
+    return {
+      ok: false,
+      detail:
+        `${tokenEnv} starts with "${token.slice(0, 10)}…", which is an Anthropic OAuth token ` +
+        `missing its leading "sk-" — the prefix was dropped when the value was copied ` +
+        `(adding it back gives "${ANTHROPIC_OAUTH_PREFIX}…", the shape \`claude setup-token\` ` +
+        `prints). OpenCode refuses a malformed credential by dropping the provider entirely, ` +
+        `which then surfaces as "model not found" for every model. ${fix}`,
+    };
+  }
+  if (!token.startsWith(ANTHROPIC_OAUTH_PREFIX)) {
+    // Unrecognized, but we can't prove it's wrong: Anthropic can mint shapes we don't
+    // know, so advise and continue rather than refusing to run.
+    return {
+      ...ok,
+      warning:
+        `${tokenEnv} does not start with "${ANTHROPIC_OAUTH_PREFIX}…" (the shape ` +
+        `\`claude setup-token\` prints for auth.mode "oauth"). It may still be valid — but if ` +
+        `the run fails with "model not found" for every model, the credential was refused, ` +
+        `and this is the first thing to check.`,
+    };
+  }
+  return ok;
 }
 
 /**
@@ -96,6 +194,10 @@ export function checkProviderAuth(
         ok: false,
         detail: `auth is oauth for ${provider} but token env "${tokenEnv}" is not set.`,
       };
+    }
+    const shape = checkOauthTokenShape(provider, env[tokenEnv]!, tokenEnv);
+    if (!shape.ok) {
+      return shape;
     }
     return { ok: true, detail: `oauth for ${provider}; token env ${tokenEnv} is set` };
   }
