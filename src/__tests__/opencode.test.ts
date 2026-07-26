@@ -207,6 +207,38 @@ test("duplicate model ids are reported once", () => {
   expect(problems).toHaveLength(1);
 });
 
+test("a refused credential blames the credential, not the model id", () => {
+  const unknown = findUnknownModels(
+    ["anthropic/claude-sonnet-5", "anthropic/claude-opus-4-8"],
+    { openai: ["gpt-5.5"] },
+    "anthropic",
+  );
+  expect(unknown.every((entry) => entry.reason === "credential")).toBe(true);
+  const text = formatUnknownModels(unknown, {
+    mode: "oauth",
+    provider: "anthropic",
+    tokenEnv: "ANTHROPIC_OAUTH_API_KEY",
+  });
+  // Rate limiting must be offered FIRST: a throttled subscription credential is
+  // refused exactly like an invalid one, and re-issuing the token does not help.
+  expect(text).toContain("RATE LIMITED");
+  expect(text.indexOf("RATE LIMITED")).toBeLessThan(text.indexOf("wrong for the mode"));
+  expect(text).toContain("429 = rate limited");
+  expect(text).toContain("ANTHROPIC_OAUTH_API_KEY");
+  // …and it must NOT read as "your model id is wrong", which is the wrong hunt.
+  expect(text).not.toContain("no such model");
+});
+
+test("a credentialed provider that IS present is not flagged", () => {
+  expect(
+    findUnknownModels(
+      ["anthropic/claude-sonnet-5"],
+      { anthropic: ["claude-sonnet-5"] },
+      "anthropic",
+    ),
+  ).toEqual([]);
+});
+
 test("the error text names the fix, not just the failure", () => {
   const text = formatUnknownModels(findUnknownModels(["anthropic/claude-sonnet-9"], AVAILABLE));
   expect(text).toContain("anthropic/claude-sonnet-9");
