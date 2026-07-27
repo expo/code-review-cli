@@ -1,8 +1,8 @@
 {
   // Default model for every agent. Override per-agent via frontmatter in the
   // agent's markdown, or at runtime with the REVIEWER_MODEL env var
-  // (e.g. REVIEWER_MODEL=openai/gpt-5.4-mini-fast).
-  "model": "anthropic/claude-sonnet-5",
+  // (e.g. REVIEWER_MODEL=openai/gpt-5.4-mini).
+  "model": "openai/gpt-5.5",
 
   // Agents: every markdown file in agents/ is one reviewer (id = filename).
   // Add or remove files to change the roster — no list needed here.
@@ -31,16 +31,16 @@
   // HTML marker used to find + update the single PR comment. Keep it stable.
   "commentTag": "expo-ai-code-reviewer",
 
-  // How model credentials are provided. Default: a Claude Pro/Max subscription.
-  //   "oauth":   tokenEnv holds a Claude Pro/Max OAuth token (from
-  //              `claude setup-token`); it's injected as a bearer credential.
-  //   "api-key": tokenEnv holds a provider API key (sent as x-api-key). If you
-  //              omit `auth`, OpenCode's own login / ANTHROPIC_API_KEY is used.
-  // For OpenAI/GPT or another provider, omit `auth` and set REVIEWER_MODEL after an
-  // `opencode auth login` for that provider.
+  // Mixed credentials: the ChatGPT/Codex subscription serves the default models
+  // (zero marginal cost); the usage-based API key serves only the pro-tier models
+  // the subscription excludes (security runs on openai-api/gpt-5.5-pro). The oauth
+  // tokenEnv holds the REFRESH token from an `opencode auth login` ChatGPT sign-in;
+  // "openai-api" is an alias (upstream openai) synthesized in the OpenCode config.
+  // ECR_EXPECTED_TOKEN_ENV (repo variable) must equal this comma-separated set.
   "auth": {
-    "mode": "oauth",
-    "provider": "anthropic",
-    "tokenEnv": "ANTHROPIC_OAUTH_API_KEY"
+    "providers": {
+      "openai": { "mode": "oauth", "tokenEnv": "CODEX_OAUTH_REFRESH_TOKEN" },
+      "openai-api": { "mode": "api-key", "tokenEnv": "OPENAI_API_KEY", "upstream": "openai" }
+    }
   }
 }

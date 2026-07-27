@@ -3,7 +3,10 @@ import { test, expect } from "bun:test";
 import { prepareAuth, checkProviderAuth, checkOauthTokenShape } from "../core/auth.js";
 import type { LoadedConfig } from "../config/schema.js";
 
-const cfg = (auth: unknown): LoadedConfig => ({ auth }) as unknown as LoadedConfig;
+// Internal auth is a LIST of entries; most tests exercise one credential, so the
+// helper wraps a single entry (pass an array for mixed setups).
+const cfg = (auth: unknown): LoadedConfig =>
+  ({ auth: Array.isArray(auth) ? auth : [auth] }) as unknown as LoadedConfig;
 
 test("checkProviderAuth: api-key is ready when the configured tokenEnv is set", () => {
   const r = checkProviderAuth(cfg({ mode: "api-key", provider: "anthropic", tokenEnv: "MY_KEY" }), {
@@ -167,6 +170,116 @@ test("formats of providers we do not know are never judged", () => {
   expect(checkOauthTokenShape("someprovider", "whatever-" + "z".repeat(90), "TOK").ok).toBe(true);
 });
 
+// ---- multi-provider auth (mixed subscription + API key) ----
+
+test("checkProviderAuth: every entry must be ready — one broken credential fails the run", () => {
+  const entries = [
+    { mode: "oauth", provider: "openai", tokenEnv: "CODEX_TOKEN" },
+    { mode: "api-key", provider: "openai-api", tokenEnv: "OPENAI_API_KEY", upstream: "openai" },
+  ];
+  const bothSet = checkProviderAuth(cfg(entries), {
+    CODEX_TOKEN: "r".repeat(60),
+    OPENAI_API_KEY: "sk-proj-xxx",
+  });
+  expect(bothSet.ok).toBe(true);
+  // The alias's key missing must fail fast — its passes would silently fail mid-run.
+  const oneMissing = checkProviderAuth(cfg(entries), { CODEX_TOKEN: "r".repeat(60) });
+  expect(oneMissing.ok).toBe(false);
+  expect(oneMissing.detail).toContain("OPENAI_API_KEY");
+});
+
+test("checkProviderAuth: an upstream alias requires its tokenEnv (no ambient fallback)", () => {
+  // A provider id we invented has no well-known key env; relying on OpenCode's
+  // login can't work either, so absence is a hard failure.
+  const r = checkProviderAuth(
+    cfg({ mode: "api-key", provider: "openai-api", upstream: "openai" }),
+    { OPENAI_API_KEY: "sk-proj-xxx" },
+  );
+  expect(r.ok).toBe(false);
+  expect(r.detail).toContain("upstream openai");
+});
+
+test("prepareAuth writes provider-shaped oauth entries into one isolated auth.json", async () => {
+  const prevModel = process.env.REVIEWER_MODEL;
+  const prevXdg = process.env.XDG_DATA_HOME;
+  delete process.env.REVIEWER_MODEL;
+  process.env.ECR_TEST_CODEX = "refresh-token-".padEnd(60, "r");
+  process.env.ECR_TEST_ANT = `sk-ant-oat01-${"x".repeat(95)}`;
+  try {
+    const prepared = await prepareAuth(
+      cfg([
+        { mode: "oauth", provider: "openai", tokenEnv: "ECR_TEST_CODEX" },
+        { mode: "oauth", provider: "anthropic", tokenEnv: "ECR_TEST_ANT" },
+      ]),
+    );
+    const written = JSON.parse(
+      await Bun.file(`${process.env.XDG_DATA_HOME}/opencode/auth.json`).text(),
+    );
+    // openai: the durable secret is the REFRESH token; expires 0 makes the codex
+    // plugin mint a fresh access token on first request (access tokens live ~1h,
+    // shorter than a worst-case run).
+    expect(written.openai).toEqual({
+      type: "oauth",
+      access: "",
+      refresh: process.env.ECR_TEST_CODEX,
+      expires: 0,
+    });
+    // anthropic-style: the token IS the access credential, far-future expiry.
+    expect(written.anthropic.access).toBe(process.env.ECR_TEST_ANT);
+    expect(written.anthropic.refresh).toBe("");
+    expect(written.anthropic.expires).toBeGreaterThan(Date.now());
+    await prepared.cleanup();
+  } finally {
+    delete process.env.ECR_TEST_CODEX;
+    delete process.env.ECR_TEST_ANT;
+    if (prevModel === undefined) {
+      delete process.env.REVIEWER_MODEL;
+    } else {
+      process.env.REVIEWER_MODEL = prevModel;
+    }
+    if (prevXdg === undefined) {
+      delete process.env.XDG_DATA_HOME;
+    } else {
+      process.env.XDG_DATA_HOME = prevXdg;
+    }
+  }
+});
+
+test("prepareAuth: an upstream alias does not clobber the provider key env", async () => {
+  // The alias's key is read via {env:tokenEnv} in the synthesized provider block;
+  // copying it into OPENAI_API_KEY would hijack the real "openai" provider (which
+  // may be oauth-backed) — so prepareAuth must leave the env alone.
+  const prevModel = process.env.REVIEWER_MODEL;
+  const prevKey = process.env.OPENAI_API_KEY;
+  delete process.env.REVIEWER_MODEL;
+  process.env.ECR_TEST_ALIAS_KEY = "sk-proj-".padEnd(50, "k");
+  delete process.env.OPENAI_API_KEY;
+  try {
+    const prepared = await prepareAuth(
+      cfg([
+        {
+          mode: "api-key",
+          provider: "openai-api",
+          tokenEnv: "ECR_TEST_ALIAS_KEY",
+          upstream: "openai",
+        },
+      ]),
+    );
+    expect(process.env.OPENAI_API_KEY).toBeUndefined();
+    await prepared.cleanup();
+  } finally {
+    delete process.env.ECR_TEST_ALIAS_KEY;
+    if (prevModel !== undefined) {
+      process.env.REVIEWER_MODEL = prevModel;
+    }
+    if (prevKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = prevKey;
+    }
+  }
+});
+
 test("checkProviderAuth rejects a malformed oauth token end to end", () => {
   const r = checkProviderAuth(cfg({ mode: "oauth", provider: "anthropic", tokenEnv: "OAUTH" }), {
     OAUTH: "ant-oat01-" + "x".repeat(90),
@@ -180,4 +293,39 @@ test("checkProviderAuth accepts a well-formed oauth token", () => {
     OAUTH: OAUTH,
   });
   expect(r.ok).toBe(true);
+});
+
+test("a well-known provider key env may only feed that provider", () => {
+  // The tokenEnv guard locks NAMES; this closes the mapping hole — a PR keeping the
+  // locked name but pointing its provider/upstream elsewhere would send one
+  // provider's key to a different provider.
+  const redirected = checkProviderAuth(
+    cfg({
+      mode: "api-key",
+      provider: "openai-api",
+      tokenEnv: "OPENAI_API_KEY",
+      upstream: "anthropic",
+    }),
+    { OPENAI_API_KEY: "sk-proj-xxx" },
+  );
+  expect(redirected.ok).toBe(false);
+  expect(redirected.detail).toContain("openai's");
+  // …while the legitimate mappings stay allowed: the provider itself…
+  expect(
+    checkProviderAuth(cfg({ mode: "api-key", provider: "openai", tokenEnv: "OPENAI_API_KEY" }), {
+      OPENAI_API_KEY: "sk-proj-xxx",
+    }).ok,
+  ).toBe(true);
+  // …and an alias whose UPSTREAM owns the key env.
+  expect(
+    checkProviderAuth(
+      cfg({
+        mode: "api-key",
+        provider: "openai-api",
+        tokenEnv: "OPENAI_API_KEY",
+        upstream: "openai",
+      }),
+      { OPENAI_API_KEY: "sk-proj-xxx" },
+    ).ok,
+  ).toBe(true);
 });

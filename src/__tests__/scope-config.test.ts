@@ -88,7 +88,7 @@ test("loadScopeConfig: config '.' reuses the root config, auth from loadAuthFrom
   expect(scoped.scopeName).toBe("default");
   expect(scoped.commentTag).toBe("root-tag"); // keeps the ROOT marker (risk 8)
   expect(scoped.agents.map((a) => a.id).sort()).toEqual(["correctness", "security"]);
-  expect(scoped.auth.tokenEnv).toBe("MANIFEST_TOKEN"); // from loadAuthFromRoot
+  expect(scoped.auth[0]?.tokenEnv).toBe("MANIFEST_TOKEN"); // from loadAuthFromRoot
 });
 
 test("loadScopeConfig: nested scope reads its own roster/prompts; auth forced from root", async () => {
@@ -111,7 +111,7 @@ test("loadScopeConfig: nested scope reads its own roster/prompts; auth forced fr
   expect(scoped.noise.additionalIgnores).toEqual(["www/gen/**"]);
   expect(scoped.agents.find((a) => a.id === "style")!.model).toBe("anthropic/claude-opus-4-1");
   // auth is forced from the root even though the scope config declares none.
-  expect(scoped.auth.tokenEnv).toBe("ROOT_TOKEN");
+  expect(scoped.auth[0]?.tokenEnv).toBe("ROOT_TOKEN");
 });
 
 test("loadScopeConfig: a scope declaring auth fails to load (Zod-level rejection)", async () => {
@@ -134,8 +134,8 @@ test("loadAuthFromRoot: defaults.auth (manifest) beats root config auth", async 
     defaults: { auth: { mode: "oauth", provider: "anthropic", tokenEnv: "MANIFEST" } },
     scopes: [{ name: "default", paths: ["**/*"], config: "." }],
   });
-  expect(loadAuthFromRoot(rootConfig, manifest).tokenEnv).toBe("MANIFEST");
-  expect(loadAuthFromRoot(rootConfig, null).tokenEnv).toBe("ROOT");
+  expect(loadAuthFromRoot(rootConfig, manifest)[0]?.tokenEnv).toBe("MANIFEST");
+  expect(loadAuthFromRoot(rootConfig, null)[0]?.tokenEnv).toBe("ROOT");
 });
 
 test("loadAuthFromRoot: manifest with defaults but no auth key keeps the root auth (no phantom stub)", async () => {
@@ -153,8 +153,8 @@ test("loadAuthFromRoot: manifest with defaults but no auth key keeps the root au
   // silently dropping the root's real oauth credential. It must stay undefined.
   expect(manifest.defaults.auth).toBeUndefined();
   const auth = loadAuthFromRoot(rootConfig, manifest);
-  expect(auth.mode).toBe("oauth");
-  expect(auth.tokenEnv).toBe("ANTHROPIC_OAUTH_API_KEY");
+  expect(auth[0]?.mode).toBe("oauth");
+  expect(auth[0]?.tokenEnv).toBe("ANTHROPIC_OAUTH_API_KEY");
 });
 
 test("loadScopeConfig: enforceAgents injects the ROOT agent with alwaysRun", async () => {
@@ -277,4 +277,89 @@ test("loadReviewConfig: ECR_CONFIG_DIR loads from the alternate dir; unset → .
   }
   // Without the env var, the default dir is used.
   expect((await loadReviewConfig(root)).commentTag).toBe("default-marker");
+});
+
+// ---- REVIEWER_MODEL override ----
+//
+// Regression: GitHub Actions passes `${{ vars.REVIEWER_MODEL }}` as an EMPTY STRING when
+// that repo variable doesn't exist, which both scaffolded workflows do. `??` only falls
+// through on null/undefined, so every configured model silently became "" and each agent
+// ran on whatever OpenCode picked by default — a config saying anthropic/claude-sonnet-5
+// reviewed with something else entirely, and nothing reported it.
+
+async function modelsWithOverride(value: string | undefined): Promise<string[]> {
+  const prev = process.env.REVIEWER_MODEL;
+  if (value === undefined) {
+    delete process.env.REVIEWER_MODEL;
+  } else {
+    process.env.REVIEWER_MODEL = value;
+  }
+  try {
+    const root = await makeRoot(JSON.stringify({ model: "anthropic/claude-sonnet-5" }));
+    const config = await loadReviewConfig(root);
+    return [...config.agents.map((a) => a.model), config.coordinator.model];
+  } finally {
+    if (prev === undefined) {
+      delete process.env.REVIEWER_MODEL;
+    } else {
+      process.env.REVIEWER_MODEL = prev;
+    }
+  }
+}
+
+test("an EMPTY REVIEWER_MODEL is ignored, not treated as a model id", async () => {
+  for (const model of await modelsWithOverride("")) {
+    expect(model).toBe("anthropic/claude-sonnet-5");
+  }
+});
+
+test("a whitespace-only REVIEWER_MODEL is ignored too", async () => {
+  for (const model of await modelsWithOverride("   ")) {
+    expect(model).toBe("anthropic/claude-sonnet-5");
+  }
+});
+
+test("an unset REVIEWER_MODEL uses the configured model", async () => {
+  for (const model of await modelsWithOverride(undefined)) {
+    expect(model).toBe("anthropic/claude-sonnet-5");
+  }
+});
+
+test("a real REVIEWER_MODEL still overrides every agent and the coordinator", async () => {
+  for (const model of await modelsWithOverride("openai/gpt-5.5")) {
+    expect(model).toBe("openai/gpt-5.5");
+  }
+});
+
+test("a REVIEWER_MODEL with stray whitespace is trimmed, not passed through", async () => {
+  for (const model of await modelsWithOverride(" openai/gpt-5.5\n")) {
+    expect(model).toBe("openai/gpt-5.5");
+  }
+});
+
+test("auth.providers map normalizes into one entry per provider (upstream preserved)", async () => {
+  const root = await makeRoot(
+    `{ "auth": { "providers": {
+        "openai":     { "mode": "oauth",   "tokenEnv": "CODEX_OAUTH_REFRESH_TOKEN" },
+        "openai-api": { "mode": "api-key", "tokenEnv": "OPENAI_API_KEY", "upstream": "openai" }
+    } } }`,
+  );
+  const config = await loadReviewConfig(root);
+  expect(config.auth).toEqual([
+    {
+      provider: "openai",
+      mode: "oauth",
+      tokenEnv: "CODEX_OAUTH_REFRESH_TOKEN",
+      upstream: undefined,
+    },
+    { provider: "openai-api", mode: "api-key", tokenEnv: "OPENAI_API_KEY", upstream: "openai" },
+  ]);
+});
+
+test("legacy single-object auth still parses (one normalized entry)", async () => {
+  const root = await makeRoot('{ "auth": { "mode": "api-key", "tokenEnv": "OPENAI_API_KEY" } }');
+  const config = await loadReviewConfig(root);
+  expect(config.auth).toEqual([
+    { provider: "openai", mode: "api-key", tokenEnv: "OPENAI_API_KEY" },
+  ]);
 });

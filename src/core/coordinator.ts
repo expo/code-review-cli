@@ -13,6 +13,8 @@ export interface CoordinationResult {
   // via the finalize path — so the caller can flag reduced coverage rather than
   // silently presenting a truncated consolidation as complete.
   truncated: boolean;
+  /** provider/model that actually answered (see PromptResult.model). */
+  model?: string;
 }
 
 /**
@@ -33,7 +35,7 @@ export async function coordinate(
 ): Promise<CoordinationResult> {
   const system = buildCoordinatorSystem(config);
   const text = buildCoordinatorTask(metadata, agentFindings, coverageNotes);
-  const { value, cost, tokens, truncated } = await promptAndParse(
+  const { value, cost, tokens, truncated, model } = await promptAndParse(
     handle,
     {
       agent: "coordinator",
@@ -45,5 +47,5 @@ export async function coordinate(
     },
     parseCoordinatorOutput,
   );
-  return { output: value, cost, tokens, truncated };
+  return { output: value, cost, tokens, truncated, model };
 }

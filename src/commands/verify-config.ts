@@ -16,15 +16,17 @@ The canonical pre-review guard (ships with the CLI). It sweeps EVERY
 plain recursive walk (skipping node_modules/.git, so a staged-but-unreferenced
 config can't hide from git's index), parses each with the real comment-aware JSONC
 parser (never regex-scraping), and refuses to run (exit 1) when:
-  • auth.tokenEnv (config) / defaults.auth.tokenEnv (routing.jsonc) appears more
-    than once, or in a non-root file, or — with --expected / ECR_EXPECTED_TOKEN_ENV
-    set — differs from the expected name or is absent (count must be exactly one);
+  • a tokenEnv (auth.tokenEnv, or any auth.providers.<id>.tokenEnv; routing.jsonc:
+    same under defaults.auth) appears in a non-root file, in more than one root
+    file, twice under the same name, or — with --expected / ECR_EXPECTED_TOKEN_ENV
+    set (comma-separated) — the declared set differs from the expected set;
   • a non-root config declares auth, breakGlass, or commentTag (root-locked keys);
   • any file fails to parse (fail-closed), reporting the parse error.
 Exit 0 = safe to run the review.
 
 Options:
-  --expected <ENV_NAME>   Require tokenEnv to equal this (else ECR_EXPECTED_TOKEN_ENV).
+  --expected <ENVS>       Require the declared tokenEnv set to equal this
+                          comma-separated set (else ECR_EXPECTED_TOKEN_ENV).
   --json                  Emit {ok, findings:[{file, problem}]} on stdout.
 `;
 
@@ -40,8 +42,11 @@ export interface VerifyResult {
 }
 
 interface ConfigFacts {
-  /** tokenEnv value declared (config auth.tokenEnv / routing defaults.auth.tokenEnv). */
-  tokenEnv?: string;
+  /**
+   * Every tokenEnv value declared: legacy `auth.tokenEnv`, or one per entry of
+   * the `auth.providers` map (routing.jsonc: same under `defaults.auth`).
+   */
+  tokenEnvs: string[];
   declaresAuth: boolean;
   declaresBreakGlass: boolean;
   declaresCommentTag: boolean;
@@ -88,22 +93,39 @@ function asObject(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+/** Every tokenEnv an auth block names — legacy single, or one per providers entry. */
+function collectTokenEnvs(auth: Record<string, unknown> | undefined): string[] {
+  if (!auth) {
+    return [];
+  }
+  const found: string[] = [];
+  if (typeof auth.tokenEnv === "string") {
+    found.push(auth.tokenEnv);
+  }
+  const providers = asObject(auth.providers);
+  for (const entry of Object.values(providers ?? {})) {
+    const tokenEnv = asObject(entry)?.tokenEnv;
+    if (typeof tokenEnv === "string") {
+      found.push(tokenEnv);
+    }
+  }
+  return found;
+}
+
 /** Read the security-relevant declarations from a parsed config/routing object. */
 function extractFacts(file: string, parsed: Record<string, unknown>): ConfigFacts {
   if (path.basename(file) === ROUTING_FILENAME) {
     // routing.jsonc locks auth under defaults.auth (defaults.auth.tokenEnv).
     const defaults = asObject(parsed.defaults);
-    const auth = asObject(defaults?.auth);
     return {
-      tokenEnv: typeof auth?.tokenEnv === "string" ? auth.tokenEnv : undefined,
+      tokenEnvs: collectTokenEnvs(asObject(defaults?.auth)),
       declaresAuth: Boolean(defaults) && "auth" in defaults!,
       declaresBreakGlass: false, // routing.jsonc has no breakGlass concept
       declaresCommentTag: Boolean(defaults) && "commentTag" in defaults!,
     };
   }
-  const auth = asObject(parsed.auth);
   return {
-    tokenEnv: typeof auth?.tokenEnv === "string" ? auth.tokenEnv : undefined,
+    tokenEnvs: collectTokenEnvs(asObject(parsed.auth)),
     declaresAuth: "auth" in parsed,
     declaresBreakGlass: "breakGlass" in parsed,
     declaresCommentTag: "commentTag" in parsed,
@@ -145,8 +167,8 @@ export async function verifyConfig(
     }
 
     const facts = extractFacts(file, object);
-    if (facts.tokenEnv !== undefined) {
-      tokenEnvOccurrences.push({ file: rel(file), value: facts.tokenEnv, isRoot });
+    for (const value of facts.tokenEnvs) {
+      tokenEnvOccurrences.push({ file: rel(file), value, isRoot });
     }
 
     if (!isRoot) {
@@ -169,38 +191,58 @@ export async function verifyConfig(
     }
   }
 
-  // tokenEnv must appear at most once, only in a root-owned file.
+  // tokenEnvs may only be declared in root-owned files…
   for (const occurrence of tokenEnvOccurrences.filter((o) => !o.isRoot)) {
     findings.push({
       file: occurrence.file,
       problem: `tokenEnv "${occurrence.value}" is declared outside the root config; only a root-owned config.jsonc/config.json or routing.jsonc may name the forwarded credential`,
     });
   }
-  if (tokenEnvOccurrences.length > 1) {
+  // …and all in ONE root file (multiple entries in one auth block are fine —
+  // that's the multi-provider map — but split across files there is no single
+  // honored source and a stale/staged second file could smuggle a credential).
+  const rootOccurrences = tokenEnvOccurrences.filter((o) => o.isRoot);
+  const rootFiles = [...new Set(rootOccurrences.map((o) => o.file))];
+  if (rootFiles.length > 1) {
     findings.push({
-      file: tokenEnvOccurrences.map((o) => o.file).join(", "),
-      problem: `tokenEnv is declared in ${tokenEnvOccurrences.length} files; it must appear exactly once, in a root-owned config`,
+      file: rootFiles.join(", "),
+      problem: `tokenEnv is declared in ${rootFiles.length} root files; all credential env names must live in ONE root-owned config`,
     });
   }
+  // Duplicate names within a file are a config bug worth failing on too: two auth
+  // entries forwarding the same env var means one of them is misconfigured.
+  const seen = new Set<string>();
+  for (const occurrence of rootOccurrences) {
+    if (seen.has(occurrence.value)) {
+      findings.push({
+        file: occurrence.file,
+        problem: `tokenEnv "${occurrence.value}" is declared more than once; each credential env name must appear exactly once`,
+      });
+    }
+    seen.add(occurrence.value);
+  }
 
-  // With an expectation set, exactly one root occurrence equal to it is required.
+  // With an expectation set, the declared names must equal the expected SET
+  // exactly (comma-separated; order-insensitive). A missing name is as much a
+  // finding as an extra one — a PR must not add, drop, or repoint credentials.
   const expected = options.expected;
   if (expected) {
-    const rootOccurrences = tokenEnvOccurrences.filter((o) => o.isRoot);
-    if (rootOccurrences.length === 0) {
+    const expectedSet = expected
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .sort();
+    const declared = [...seen].sort();
+    if (declared.length === 0) {
       findings.push({
         file: path.join(CONFIG_DIRNAME, "config.jsonc"),
-        problem: `no tokenEnv found, but an expected value "${expected}" is set — exactly one root-owned tokenEnv is required`,
+        problem: `no tokenEnv found, but expected "${expectedSet.join(", ")}" — the root-owned config must name exactly those credential env(s)`,
       });
-    } else {
-      for (const occurrence of rootOccurrences) {
-        if (occurrence.value !== expected) {
-          findings.push({
-            file: occurrence.file,
-            problem: `tokenEnv "${occurrence.value}" != expected "${expected}" — a PR must not repoint which secret is forwarded to the model provider`,
-          });
-        }
-      }
+    } else if (JSON.stringify(declared) !== JSON.stringify(expectedSet)) {
+      findings.push({
+        file: rootFiles.join(", ") || path.join(CONFIG_DIRNAME, "config.jsonc"),
+        problem: `declared tokenEnv set [${declared.join(", ")}] != expected [${expectedSet.join(", ")}] — a PR must not add, drop, or repoint which secrets are forwarded to model providers`,
+      });
     }
   }
 

@@ -5,7 +5,7 @@ import { z } from "zod";
 export const ReviewConfigSchema = z.object({
   /** Default model for every agent + the coordinator. Override per-agent via
    * frontmatter in the agent's markdown, or globally via REVIEWER_MODEL. */
-  model: z.string().default("anthropic/claude-sonnet-5"),
+  model: z.string().default("openai/gpt-5.5"),
   policy: z
     .object({
       includeSuggestions: z.boolean().default(false),
@@ -54,17 +54,48 @@ export const ReviewConfigSchema = z.object({
     .object({ marker: z.string().default("/skip-review") })
     .default({ marker: "/skip-review" }),
   commentTag: z.string().default("expo-ai-code-reviewer"),
+  // Two accepted shapes (see AuthConfigEntry for the canonical internal form):
+  //  - legacy single credential: { mode, provider, tokenEnv }
+  //  - per-provider map:         { providers: { <id>: { mode, tokenEnv, upstream? } } }
+  // The map form allows a MIXED setup — e.g. the "openai" provider on a ChatGPT/Codex
+  // subscription (mode "oauth", tokenEnv = the refresh token) plus an "openai-api"
+  // alias (upstream "openai") holding a metered API key for pro-tier models the
+  // subscription doesn't offer.
+  //
+  // Union order matters: the map form must be tried FIRST — the legacy object's keys
+  // all have defaults, so a non-strict legacy parse would accept (and gut) a
+  // { providers } object by stripping the unknown key.
   auth: z
-    .object({
-      // "api-key": the token env is sent as the provider's API key (x-api-key).
-      // "oauth": the token env is a Claude Pro/Max style OAuth token, injected
-      // into an isolated OpenCode auth.json so it's sent as a Bearer token.
-      mode: z.enum(["api-key", "oauth"]).default("api-key"),
-      provider: z.string().default("anthropic"),
-      /** Env var holding the key/token. */
-      tokenEnv: z.string().optional(),
-    })
-    .default({ mode: "api-key", provider: "anthropic" }),
+    .union([
+      z.object({
+        providers: z.record(
+          z.string(),
+          z.object({
+            // "api-key": tokenEnv holds the provider's API key.
+            // "oauth": tokenEnv holds an OAuth token, injected into an isolated
+            // OpenCode auth.json. For "openai" this is the REFRESH token from a
+            // ChatGPT/Codex sign-in (OpenCode's codex plugin mints access tokens
+            // from it). NOTE: anthropic oauth cannot work — OpenCode has no
+            // anthropic OAuth plugin and Anthropic prohibits subscription tokens
+            // in third-party tools.
+            mode: z.enum(["api-key", "oauth"]).default("api-key"),
+            tokenEnv: z.string().optional(),
+            // Set ⇒ this provider id is an ALIAS synthesized into the OpenCode
+            // config, backed by the named upstream's SDK ("openai", "anthropic",
+            // anything else = openai-compatible). Lets one upstream be reached
+            // with two credentials at once (subscription + API key).
+            upstream: z.string().optional(),
+          }),
+        ),
+      }),
+      z.object({
+        mode: z.enum(["api-key", "oauth"]).default("api-key"),
+        provider: z.string().default("openai"),
+        /** Env var holding the key/token. */
+        tokenEnv: z.string().optional(),
+      }),
+    ])
+    .default({ mode: "api-key", provider: "openai" }),
   review: z
     .object({
       // Which PRs `ecr ci` acts on — the source of truth for trigger policy (a
@@ -128,7 +159,7 @@ export const RoutingManifestSchema = z
         /** The ONLY manifest-level place auth is honored (locks the root value).
          * Unwrap the inner `.default()` first: in zod v4 a `.default().optional()`
          * chain still fires the default when the key is absent, which would make
-         * `defaults.auth` a phantom `{mode:'api-key',provider:'anthropic'}` for every
+         * `defaults.auth` a phantom `{mode:'api-key',provider:'openai'}` for every
          * manifest that omits auth and silently override the root config's real auth. */
         auth: ReviewConfigSchema.shape.auth.unwrap().optional(),
         /** Agent ids injected into every scope with alwaysRun, from the ROOT roster. */
@@ -213,6 +244,29 @@ export interface LoadedAgent {
   promptText: string;
 }
 
+/**
+ * One provider credential, canonical internal form (both config shapes normalize
+ * to a list of these — see normalizeAuth in load.ts).
+ */
+export interface AuthConfigEntry {
+  provider: string;
+  mode: "api-key" | "oauth";
+  /**
+   * Env var holding the credential. api-key: the key itself. oauth: the token —
+   * for provider "openai" this is the REFRESH token from a ChatGPT/Codex sign-in
+   * (access tokens live ~1h, shorter than a worst-case run, so the refresh token
+   * is the durable secret and OpenCode's codex plugin mints access tokens from it).
+   */
+  tokenEnv?: string;
+  /**
+   * Set ⇒ this provider id is an alias synthesized into the OpenCode config,
+   * backed by the named upstream's SDK. Used to reach one upstream with a second
+   * credential (e.g. "openai-api" upstream "openai" for pro-tier models billed to
+   * an API key, while "openai" itself runs on the subscription).
+   */
+  upstream?: string;
+}
+
 /** Fully-resolved config: prompt files read, models resolved, defaults applied. */
 export interface LoadedConfig {
   configDir: string;
@@ -238,11 +292,8 @@ export interface LoadedConfig {
   };
   breakGlassMarker: string;
   commentTag: string;
-  auth: {
-    mode: "api-key" | "oauth";
-    provider: string;
-    tokenEnv?: string;
-  };
+  /** Every configured provider credential (one entry for the legacy single shape). */
+  auth: AuthConfigEntry[];
   review: {
     trigger: "all" | "label";
     label: string;

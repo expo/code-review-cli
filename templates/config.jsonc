@@ -1,14 +1,14 @@
 {
   // Default model for every agent. Override per-agent via frontmatter in the
   // agent's markdown, or at runtime with the REVIEWER_MODEL env var
-  // (e.g. REVIEWER_MODEL=openai/gpt-5.4-mini-fast).
-  "model": "anthropic/claude-sonnet-5",
+  // (e.g. REVIEWER_MODEL=openai/gpt-5.4-mini).
+  "model": "openai/gpt-5.5",
 
   // Agents: every markdown file in agents/ is one reviewer (id = filename).
   // Add or remove files to change the roster — no list needed here.
   // shared.md (prepended to every agent + coordinator) and coordinator.md are
   // reserved filenames. Per-agent overrides go in each file's YAML frontmatter,
-  // e.g. `---\nmodel: anthropic/claude-opus-4-1\n---`.
+  // e.g. `---\nmodel: openai/gpt-5.5-pro\n---`.
 
   "policy": {
     // Phase 1: keep signal high by surfacing only critical/warning.
@@ -41,16 +41,29 @@
   // HTML marker used to find + update the single PR comment. Keep it stable.
   "commentTag": "expo-ai-code-reviewer",
 
-  // How model credentials are provided. Default: a Claude Pro/Max subscription.
-  //   "oauth":   tokenEnv holds a Claude Pro/Max OAuth token (from
-  //              `claude setup-token`); it's injected as a bearer credential.
-  //   "api-key": tokenEnv holds a provider API key (sent as x-api-key). If you
-  //              omit `auth`, OpenCode's own login / ANTHROPIC_API_KEY is used.
-  // For OpenAI/GPT or another provider, omit `auth` and set REVIEWER_MODEL after an
-  // `opencode auth login` for that provider.
+  // How model credentials are provided. Default: an OpenAI API key.
+  //   "api-key": tokenEnv names the env var holding a provider API key. In CI,
+  //              store the key as a repo secret and pass it under that env var
+  //              (the scaffolded workflow does). If you omit `auth` entirely,
+  //              OpenCode's own login / ambient provider env vars are used.
+  // For Anthropic/Claude, set provider "anthropic", tokenEnv "ANTHROPIC_API_KEY",
+  // and an anthropic/... model above. For another provider, omit `auth` and set
+  // REVIEWER_MODEL after an `opencode auth login` for that provider.
+  //
+  // MIXED setup (a ChatGPT/Codex subscription for the default models, plus a
+  // metered API key for pro-tier models the subscription doesn't offer): use the
+  // per-provider map instead, reference `openai-api/...` models in the frontmatter
+  // of the agents that need the pro tier, and set ECR_EXPECTED_TOKEN_ENV in the
+  // workflow to the comma-separated set of both env names.
+  //   "auth": { "providers": {
+  //     "openai":     { "mode": "oauth",   "tokenEnv": "CODEX_OAUTH_REFRESH_TOKEN" },
+  //     "openai-api": { "mode": "api-key", "tokenEnv": "OPENAI_API_KEY", "upstream": "openai" }
+  //   } }
+  // (openai oauth: tokenEnv holds the REFRESH token from an `opencode auth login`
+  // ChatGPT sign-in — copy `.openai.refresh` from OpenCode's auth.json.)
   "auth": {
-    "mode": "oauth",
-    "provider": "anthropic",
-    "tokenEnv": "ANTHROPIC_OAUTH_API_KEY"
+    "mode": "api-key",
+    "provider": "openai",
+    "tokenEnv": "OPENAI_API_KEY"
   }
 }

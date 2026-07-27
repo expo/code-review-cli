@@ -1,6 +1,11 @@
 import { readFile } from "node:fs/promises";
 
-import { loadAuthFromRoot, loadReviewConfig, loadScopeConfig } from "../config/load.js";
+import {
+  loadAuthFromRoot,
+  loadReviewConfig,
+  loadScopeConfig,
+  tokenEnvMismatch,
+} from "../config/load.js";
 import {
   loadRoutingManifest,
   resolveScopes,
@@ -169,11 +174,12 @@ async function runLegacyCi(
   // bash guard is a text sweep (layer 2) and can't see through JSON escapes; this
   // check compares the tokenEnv the loader actually honors.
   const expectedTokenEnv = process.env.ECR_EXPECTED_TOKEN_ENV;
-  if (expectedTokenEnv && config.auth.tokenEnv !== expectedTokenEnv) {
-    process.stderr.write(
-      `CI reviewer: auth.tokenEnv "${config.auth.tokenEnv ?? "(none)"}" != ECR_EXPECTED_TOKEN_ENV "${expectedTokenEnv}"; refusing to run.\n`,
-    );
-    return;
+  if (expectedTokenEnv) {
+    const mismatch = tokenEnvMismatch(config.auth, expectedTokenEnv);
+    if (mismatch) {
+      process.stderr.write(`CI reviewer: ${mismatch}; refusing to run.\n`);
+      return;
+    }
   }
 
   // Config-driven trigger policy (.expo-code-review/config.jsonc → review): decide
@@ -296,10 +302,9 @@ async function runRoutedCi(
   const expectedTokenEnv = process.env.ECR_EXPECTED_TOKEN_ENV;
   if (expectedTokenEnv) {
     const honored = loadAuthFromRoot(rootConfig, manifest);
-    if (honored.tokenEnv !== expectedTokenEnv) {
-      process.stderr.write(
-        `CI reviewer: honored auth.tokenEnv "${honored.tokenEnv ?? "(none)"}" != ECR_EXPECTED_TOKEN_ENV "${expectedTokenEnv}"; refusing to run.\n`,
-      );
+    const mismatch = tokenEnvMismatch(honored, expectedTokenEnv);
+    if (mismatch) {
+      process.stderr.write(`CI reviewer: honored ${mismatch}; refusing to run.\n`);
       return;
     }
   }

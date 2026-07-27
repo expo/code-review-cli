@@ -90,7 +90,7 @@ test("refuses a duplicate tokenEnv across root config.jsonc and routing.jsonc", 
   );
   const result = await verifyConfig(root, { expected: EXPECTED });
   expect(result.ok).toBe(false);
-  expect(problems(result.findings)).toContain("declared in 2 files");
+  expect(problems(result.findings)).toContain("declared in 2 root files");
 });
 
 test("refuses when the tokenEnv differs from the expected value", async () => {
@@ -102,7 +102,7 @@ test("refuses when the tokenEnv differs from the expected value", async () => {
   );
   const result = await verifyConfig(root, { expected: EXPECTED });
   expect(result.ok).toBe(false);
-  expect(problems(result.findings)).toContain(`!= expected "${EXPECTED}"`);
+  expect(problems(result.findings)).toContain(`!= expected [${EXPECTED}]`);
 });
 
 test("refuses (fail-closed) when a config fails to parse", async () => {
@@ -177,4 +177,60 @@ test("refuses zero tokenEnv occurrences when an expectation is set", async () =>
   const result = await verifyConfig(root, { expected: EXPECTED });
   expect(result.ok).toBe(false);
   expect(problems(result.findings)).toContain("no tokenEnv found");
+});
+
+// ---- multi-provider auth (auth.providers map) ----
+
+test("a providers map with several tokenEnvs in ONE root file passes against the expected set", async () => {
+  const root = await makeRoot();
+  await put(
+    root,
+    `${CONFIG_DIRNAME}/config.jsonc`,
+    `{
+      "auth": { "providers": {
+        "openai":     { "mode": "oauth",   "tokenEnv": "CODEX_OAUTH_REFRESH_TOKEN" },
+        "openai-api": { "mode": "api-key", "tokenEnv": "OPENAI_API_KEY", "upstream": "openai" }
+      } }
+    }`,
+  );
+  // Order-insensitive: the workflow may list the set in either order.
+  const result = await verifyConfig(root, {
+    expected: "OPENAI_API_KEY,CODEX_OAUTH_REFRESH_TOKEN",
+  });
+  expect(result.ok).toBe(true);
+});
+
+test("a providers map naming a credential OUTSIDE the expected set is refused", async () => {
+  const root = await makeRoot();
+  await put(
+    root,
+    `${CONFIG_DIRNAME}/config.jsonc`,
+    `{
+      "auth": { "providers": {
+        "openai":     { "mode": "oauth",   "tokenEnv": "CODEX_OAUTH_REFRESH_TOKEN" },
+        "openai-api": { "mode": "api-key", "tokenEnv": "SOME_OTHER_SECRET", "upstream": "openai" }
+      } }
+    }`,
+  );
+  // A PR must not be able to ADD a forwarded credential any more than repoint one.
+  const result = await verifyConfig(root, { expected: "CODEX_OAUTH_REFRESH_TOKEN" });
+  expect(result.ok).toBe(false);
+  expect(problems(result.findings)).toContain("SOME_OTHER_SECRET");
+});
+
+test("two providers entries forwarding the SAME env var are refused", async () => {
+  const root = await makeRoot();
+  await put(
+    root,
+    `${CONFIG_DIRNAME}/config.jsonc`,
+    `{
+      "auth": { "providers": {
+        "openai":     { "mode": "oauth",   "tokenEnv": "SHARED" },
+        "openai-api": { "mode": "api-key", "tokenEnv": "SHARED", "upstream": "openai" }
+      } }
+    }`,
+  );
+  const result = await verifyConfig(root);
+  expect(result.ok).toBe(false);
+  expect(problems(result.findings)).toContain("more than once");
 });

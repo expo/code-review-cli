@@ -26,6 +26,8 @@ export interface RunLogRecord {
   // "coordinator", "verifier") so cache effectiveness can be judged per pass, not
   // just run-wide.
   agentTokens?: Record<string, TokenUsage>;
+  /** provider/model that ACTUALLY answered each pass (not what was configured). */
+  agentModels?: Record<string, string>;
   // The reasoning trail behind the posted result: raw per-agent findings before
   // coordination, the coverage gaps reported to the coordinator, and the findings
   // the verifier rejected. Together these explain WHY the final finding set looks

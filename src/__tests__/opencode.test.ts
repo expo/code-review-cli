@@ -8,7 +8,33 @@ import {
   stallAction,
   findUnknownModels,
   formatUnknownModels,
+  buildOpencodeConfig,
 } from "../core/opencode.js";
+import type { LoadedConfig } from "../config/schema.js";
+
+/** Minimal LoadedConfig for buildOpencodeConfig tests. */
+function configWith(overrides: {
+  agents?: Array<{ id: string; model: string }>;
+  coordinatorModel?: string;
+  auth?: unknown[];
+}): LoadedConfig {
+  return {
+    agents: (overrides.agents ?? [{ id: "correctness", model: "openai/gpt-5.5" }]).map((agent) => ({
+      ...agent,
+      description: `${agent.id} reviewer`,
+      alwaysRun: false,
+      temperature: 0.1,
+      tools: {},
+      promptText: "",
+    })),
+    coordinator: {
+      model: overrides.coordinatorModel ?? "openai/gpt-5.5",
+      temperature: 0,
+      promptText: "",
+    },
+    auth: overrides.auth ?? [{ mode: "api-key", provider: "openai" }],
+  } as unknown as LoadedConfig;
+}
 
 test("classifies rate-limit / 5xx / network errors as transient", () => {
   for (const message of [
@@ -219,11 +245,15 @@ test("a refused credential blames the credential, not the model id", () => {
     provider: "anthropic",
     tokenEnv: "ANTHROPIC_OAUTH_API_KEY",
   });
-  // Rate limiting must be offered FIRST: a throttled subscription credential is
-  // refused exactly like an invalid one, and re-issuing the token does not help.
-  expect(text).toContain("RATE LIMITED");
-  expect(text.indexOf("RATE LIMITED")).toBeLessThan(text.indexOf("wrong for the mode"));
-  expect(text).toContain("429 = rate limited");
+  // The credential is usually FINE: anthropic oauth is a dead path in OpenCode
+  // (no anthropic OAuth support; Anthropic prohibits subscription tokens in
+  // third-party tools), so that must be stated BEFORE "your token is wrong" —
+  // naming the token first sent us to re-issue two perfectly good ones.
+  expect(text).toContain("credential itself is often FINE");
+  expect(text.indexOf("cannot work through OpenCode")).toBeLessThan(
+    text.indexOf("wrong for the mode"),
+  );
+  expect(text).toContain('"mode": "api-key"');
   expect(text).toContain("ANTHROPIC_OAUTH_API_KEY");
   // …and it must NOT read as "your model id is wrong", which is the wrong hunt.
   expect(text).not.toContain("no such model");
@@ -245,4 +275,50 @@ test("the error text names the fix, not just the failure", () => {
   expect(text).toContain("claude-sonnet-5");
   expect(text).toContain("config.jsonc");
   expect(text).toContain("ecr doctor");
+});
+
+// ---- buildOpencodeConfig: synthesized upstream-alias providers ----
+
+test("an upstream-alias auth entry synthesizes a provider block with exactly the referenced models", () => {
+  const config = configWith({
+    agents: [
+      { id: "correctness", model: "openai/gpt-5.5" },
+      { id: "security", model: "openai-api/gpt-5.5-pro" },
+    ],
+    coordinatorModel: "openai-api/gpt-5.5-pro",
+    auth: [
+      { mode: "oauth", provider: "openai", tokenEnv: "CODEX_TOKEN" },
+      { mode: "api-key", provider: "openai-api", tokenEnv: "OPENAI_API_KEY", upstream: "openai" },
+    ],
+  });
+  const opencode = buildOpencodeConfig(config) as {
+    provider?: Record<string, { npm: string; options: { apiKey: string }; models: object }>;
+  };
+  const alias = opencode.provider?.["openai-api"];
+  expect(alias).toBeDefined();
+  expect(alias!.npm).toBe("@ai-sdk/openai");
+  // The key is read straight from the configured env var, never inlined.
+  expect(alias!.options.apiKey).toBe("{env:OPENAI_API_KEY}");
+  // Only the ids the roster actually references — the bare model id, provider stripped.
+  expect(Object.keys(alias!.models)).toEqual(["gpt-5.5-pro"]);
+  // The real "openai" provider is NOT synthesized — the oauth credential owns it.
+  expect(opencode.provider?.openai).toBeUndefined();
+});
+
+test("no upstream aliases ⇒ no provider key in the OpenCode config at all", () => {
+  const opencode = buildOpencodeConfig(configWith({})) as Record<string, unknown>;
+  expect("provider" in opencode).toBe(false);
+});
+
+test("an unknown upstream falls back to the openai-compatible SDK", () => {
+  const config = configWith({
+    agents: [{ id: "correctness", model: "proxyprov/some-model" }],
+    auth: [
+      { mode: "api-key", provider: "proxyprov", tokenEnv: "PROXY_KEY", upstream: "somegateway" },
+    ],
+  });
+  const opencode = buildOpencodeConfig(config) as {
+    provider?: Record<string, { npm: string }>;
+  };
+  expect(opencode.provider?.proxyprov?.npm).toBe("@ai-sdk/openai-compatible");
 });

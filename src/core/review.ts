@@ -177,10 +177,11 @@ export async function runReview(
   // identically — N indistinguishable coverage gaps, after spending the run's budget
   // discovering the same fixable thing N times. Throw once, up front, naming the fix.
   try {
-    await assertModelsResolvable(handle, [
-      ...config.agents.map((agent) => agent.model),
-      config.coordinator.model,
-    ]);
+    await assertModelsResolvable(
+      handle,
+      [...config.agents.map((agent) => agent.model), config.coordinator.model],
+      config.auth,
+    );
   } catch (error) {
     handle.close();
     await auth.cleanup();
@@ -200,6 +201,23 @@ export async function runReview(
   const trackTokens = (bucket: string, tokens?: TokenUsage): void => {
     addTokenUsage(tokenTotals, tokens);
     addTokenUsage((agentTokens[bucket] ??= {}), tokens);
+  };
+  // The provider/model that ACTUALLY answered each pass, and any pass whose model was
+  // silently substituted for the configured one. OpenCode does that substitution
+  // quietly whenever an agent's model id is empty or unusable, so a run can review with
+  // a different model than config.jsonc names and look completely normal — which is
+  // exactly what happened for weeks behind an empty REVIEWER_MODEL. Recorded in the run
+  // log, reported in the log line, and surfaced as a coverage note when it happens.
+  const agentModels: Record<string, string> = {};
+  const substituted = new Set<string>();
+  const trackModel = (bucket: string, configured: string, actual?: string): void => {
+    if (!actual) {
+      return;
+    }
+    agentModels[bucket] = actual;
+    if (configured && actual !== configured) {
+      substituted.add(`${bucket}: configured ${configured}, ran ${actual}`);
+    }
   };
 
   try {
@@ -374,6 +392,14 @@ export async function runReview(
     // ahead of short ones so they don't dominate the tail of the makespan.
     tasks.sort((a, b) => b.maxWaitMs - a.maxWaitMs);
 
+    // What each task was CONFIGURED to run on — mirrors buildOpencodeConfig, which
+    // gives the cross-file pass the first agent's model. Compared against what actually
+    // answered so a silent substitution can't pass unnoticed.
+    const taskModel = (task: ReviewTask): string =>
+      task.kind === "cross-cutting"
+        ? (selectedAgents[0]?.model ?? config.coordinator.model)
+        : (selectedAgents.find((agent) => agent.id === task.bucket)?.model ?? "");
+
     // Build the task prompt on demand (so a subdivided task rebuilds over its
     // smaller file set); a fallback task forbids tools and reviews the inlined diff.
     const buildTaskText = (task: ReviewTask): string => {
@@ -414,7 +440,7 @@ export async function runReview(
     await runGrowableQueue(tasks, config.chunk.concurrency, async (task, enqueue) => {
       const minutes = Math.round(task.maxWaitMs / 60000);
       try {
-        const { value, cost, truncated, tokens } = await promptAndParse(
+        const { value, cost, truncated, tokens, model } = await promptAndParse(
           handle!,
           {
             agent: task.bucket,
@@ -430,6 +456,7 @@ export async function runReview(
         );
         agentCosts[task.bucket] = (agentCosts[task.bucket] ?? 0) + cost;
         trackTokens(task.bucket, tokens);
+        trackModel(task.bucket, taskModel(task), model);
         (agentFindings[task.bucket] ??= []).push(...value.findings);
         completedPasses++;
         if (truncated) {
@@ -540,6 +567,21 @@ export async function runReview(
       }
     });
 
+    // A substituted model means the review did not run on the model this repo
+    // configured — the findings may be from a weaker (or free-tier) model entirely.
+    // Never silent: it goes to the log, the coverage notes, and the run log.
+    if (substituted.size > 0) {
+      for (const line of substituted) {
+        progress(`  ⚠ model substituted — ${line}`);
+      }
+      incomplete.push(
+        `Some passes did not run on the configured model (${[...substituted].join("; ")}). ` +
+          `OpenCode silently falls back to a default model when the configured id is empty or ` +
+          `unusable, so these findings may come from a different (possibly much weaker) model ` +
+          `than intended — check the agents' \`model\`, \`coordinator.model\`, REVIEWER_MODEL, and the provider credential.`,
+      );
+    }
+
     // Note: routine noise filtering (lockfiles, generated, binary) is expected and
     // NOT a coverage gap — it stays in the run log (filteredFiles), not the
     // user-facing coverage note, which is reserved for passes that didn't finish.
@@ -566,9 +608,11 @@ export async function runReview(
           cost,
           tokens: coordinatorTokens,
           truncated: coordinatorTruncated,
+          model: coordinatorModel,
         } = await coordinate(handle, config, metadata, agentFindings, coverageNotes);
         agentCosts["coordinator"] = cost;
         trackTokens("coordinator", coordinatorTokens);
+        trackModel("coordinator", config.coordinator.model, coordinatorModel);
         consolidated = applyReviewPolicy(rawOutput, config.policy);
         if (coordinatorTruncated) {
           // The coordinator ran out of time and returned partial findings — flag it
@@ -605,6 +649,12 @@ export async function runReview(
       const verification = await verifyFindings(handle!, output.findings, process.cwd(), progress);
       agentCosts["verifier"] = verification.cost;
       trackTokens("verifier", verification.tokens);
+      // Mirrors buildOpencodeConfig, which gives the verifier the first agent's model.
+      trackModel(
+        "verifier",
+        config.agents[0]?.model ?? config.coordinator.model,
+        verification.model,
+      );
       verifierDropped = verification.dropped;
       if (verification.dropped.length > 0) {
         progress(`Verification dropped ${verification.dropped.length} unverified finding(s).`);
@@ -641,9 +691,19 @@ export async function runReview(
       output = { ...output, summary: reconcileSummary(output.summary, output.findings.length) };
     }
 
+    // Every pass says which model actually answered it — in the job log, the step
+    // summary table, and the run log — so a wrong or substituted model is always
+    // visible, not just when the substitution warning fires.
+    if (Object.keys(agentModels).length > 0) {
+      progress(
+        `Models used — ${Object.entries(agentModels)
+          .map(([bucket, model]) => `${bucket}: ${model}`)
+          .join("; ")}`,
+      );
+    }
     progress(formatUsageSummary(tokenTotals, sum(agentCosts)));
     await appendStepSummary(
-      renderUsageMarkdown(agentTokens, agentCosts, tokenTotals, sum(agentCosts)),
+      renderUsageMarkdown(agentTokens, agentCosts, tokenTotals, sum(agentCosts), agentModels),
     );
 
     await safeLog(logPath, {
@@ -652,6 +712,7 @@ export async function runReview(
       totalCost: sum(agentCosts),
       tokens: tokenTotals,
       agentTokens,
+      agentModels,
       agentFindings,
       coverageNotes,
       verifierDropped,
@@ -929,18 +990,19 @@ export function renderUsageMarkdown(
   agentCosts: Record<string, number>,
   totals: TokenUsage,
   totalCost: number,
+  agentModels: Record<string, string> = {},
 ): string {
-  const row = (label: string, tokens: TokenUsage, cost: number): string =>
-    `| ${label} | ${tokens.input ?? 0} | ${tokens.output ?? 0} | ${tokens.cache?.read ?? 0} | ${tokens.cache?.write ?? 0} | $${cost.toFixed(4)} |`;
+  const row = (label: string, model: string, tokens: TokenUsage, cost: number): string =>
+    `| ${label} | ${model} | ${tokens.input ?? 0} | ${tokens.output ?? 0} | ${tokens.cache?.read ?? 0} | ${tokens.cache?.write ?? 0} | $${cost.toFixed(4)} |`;
   const lines = [
     "### 🤖 AI review — token usage",
     "",
-    "| pass | input | output | cache read | cache write | cost |",
-    "| --- | ---: | ---: | ---: | ---: | ---: |",
+    "| pass | model | input | output | cache read | cache write | cost |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ...Object.keys(agentCosts).map((bucket) =>
-      row(bucket, agentTokens[bucket] ?? {}, agentCosts[bucket] ?? 0),
+      row(bucket, agentModels[bucket] ?? "—", agentTokens[bucket] ?? {}, agentCosts[bucket] ?? 0),
     ),
-    row("**total**", totals, totalCost),
+    row("**total**", "", totals, totalCost),
   ];
   const read = totals.cache?.read ?? 0;
   const uncached = totals.input ?? 0;

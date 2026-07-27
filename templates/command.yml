@@ -115,7 +115,8 @@ jobs:
       - name: Guard config tokenEnv (root + routing + all scopes)
         if: steps.cmd.outputs.run == 'true'
         env:
-          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'ANTHROPIC_OAUTH_API_KEY' }}
+          # (Comma-separated set for a multi-credential auth.providers config.)
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'OPENAI_API_KEY' }}
         run: npx --yes -p "@expo/code-review-cli@$ECR_VERSION" ecr verify-config
 
       - name: Run AI review
@@ -125,11 +126,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Layer-1 auth lock: the CLI refuses to run when the tokenEnv it would honor
           # differs from this. Keep it in sync with the guard's EXPECTED.
-          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'ANTHROPIC_OAUTH_API_KEY' }}
-          # Claude Pro/Max OAuth token (from `claude setup-token`) — the env var named
-          # by auth.tokenEnv in config.jsonc. Store it as a repo secret. (For an API
-          # key instead, set auth.mode "api-key" and pass that key here.)
-          ANTHROPIC_OAUTH_API_KEY: ${{ secrets.ANTHROPIC_OAUTH_API_KEY }}
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'OPENAI_API_KEY' }}
+          # OpenAI API key — the env var named by auth.tokenEnv in config.jsonc.
+          # Store it as a repo secret; a project-scoped key restricted to model
+          # inference (with a spend limit) is all the reviewer needs.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           # Optional: override the model for every agent (uses your OpenCode login).
           REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}
           AGENTS: ${{ steps.cmd.outputs.agents }}
