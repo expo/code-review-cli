@@ -36,8 +36,10 @@ jobs:
       startsWith(github.event.comment.body, '/review') &&
       contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
-    # Bound the run so a slow/stalled review fails fast rather than hanging.
-    timeout-minutes: 50
+    # Bound the run so a slow/stalled review fails fast rather than hanging. Keep it
+    # above the passes budget (budget.totalPassesMinutes, 55m) + coordinator (10m) +
+    # verification + setup, like the auto-review workflow's cap.
+    timeout-minutes: 90
     # A reviewer failure must never fail the PR's checks.
     continue-on-error: true
     steps:

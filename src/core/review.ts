@@ -252,7 +252,6 @@ export async function runReview(
     // These caps must fit inside PASSES_BUDGET_MS (below), which in turn fits inside
     // the CI job's timeout-minutes.
     const CHUNK_TIMEOUT_MS = 15 * 60 * 1000;
-    const CROSS_CUTTING_TIMEOUT_MS = 25 * 60 * 1000;
     // A subdivided sub-chunk is smaller, so it gets a shorter cap (halved per level,
     // floored) — enough to converge without letting the recursion balloon.
     const SUBDIVIDE_MIN_TIMEOUT_MS = 6 * 60 * 1000;
@@ -262,14 +261,61 @@ export async function runReview(
     // Tool-call ceilings — generous for a legitimate pass, low enough to catch
     // runaway roaming (the root cause of the non-convergent timeouts).
     const CHUNK_MAX_TOOL_CALLS = 50;
-    const CROSS_CUTTING_MAX_TOOL_CALLS = 120;
     // Global ceiling for ALL passes incl. subdivision/fallback waves, sized to
     // leave room for the coordinator (10m) + verification + overhead inside the CI
     // job timeout. Past this, a timed-out pass is reported as a gap rather than
     // broken down further, so total wall-clock stays bounded.
-    const PASSES_BUDGET_MS = 32 * 60 * 1000;
+    const PASSES_BUDGET_MS = 55 * 60 * 1000;
     const passesBudgetMs = options.passesBudgetMs ?? PASSES_BUDGET_MS;
     const passesDeadline = started + passesBudgetMs;
+
+    // The cross-file pass is the one pass whose scope cannot be traded for
+    // convergence: halving its file set deletes exactly the coverage it exists to
+    // provide (see the timeout branch below). So instead of a fixed cap it gets the
+    // WHOLE remaining passes window. Chunk passes run concurrently alongside it under
+    // their own caps, so a long cross-file pass doesn't starve them — it only extends
+    // the run toward the passes deadline, which the job timeout is sized for.
+    //
+    // Computed here, not as a constant, because the window is what's actually left:
+    // filtering, routing and server startup already spent some of it, and `ecr ci`
+    // divides the budget across active scopes.
+    //
+    // The reserve is what keeps its own salvage paths affordable: if it expanded into
+    // the entire window, then on a timeout there would be nothing left to run the
+    // whole-diff no-tools fallback with, and "elastic budget" would have quietly
+    // reintroduced the coverage gap it exists to prevent. Sized for the finalize
+    // soft-landing plus one FALLBACK_TIMEOUT_MS pass.
+    const CROSS_CUTTING_RESERVE_MS = FALLBACK_TIMEOUT_MS + 4 * 60 * 1000;
+    // Floor: never LESS generous than one chunk pass. On a run whose window is already
+    // small (many active scopes dividing the budget) this can exceed what's left, but
+    // that exposure is exactly what chunk passes already carry — their 15m cap can also
+    // outlast a small per-scope slice — and the job timeout keeps a wide margin over
+    // the budget for it. Dropping the pass instead would silently cost the coverage no
+    // other pass provides.
+    const crossCuttingWaitMs = Math.max(
+      CHUNK_TIMEOUT_MS,
+      passesDeadline - Date.now() - CROSS_CUTTING_RESERVE_MS,
+    );
+    // Tool calls are for TRACING (opening the caller a changed signature affects) —
+    // the changed files' diffs are inlined, so they are not spent fetching the diff.
+    // Scale with the diff's file count instead of fixing the ceiling: under a large
+    // elastic time budget a fixed cap becomes the binding constraint, and the extra
+    // time can't be used.
+    const CROSS_CUTTING_TOOL_CALLS_PER_FILE = 10;
+    const CROSS_CUTTING_MIN_TOOL_CALLS = 120;
+    const CROSS_CUTTING_MAX_TOOL_CALLS = 400;
+    const crossCuttingMaxToolCalls = Math.min(
+      CROSS_CUTTING_MAX_TOOL_CALLS,
+      Math.max(
+        CROSS_CUTTING_MIN_TOOL_CALLS,
+        CROSS_CUTTING_TOOL_CALLS_PER_FILE * workspace.files.length,
+      ),
+    );
+
+    // Coverage notes for passes that hit their time limit, stalled, failed, or were
+    // never started, surfaced in the final review so a cut-short run is never
+    // presented as complete.
+    const incomplete: string[] = [];
 
     const tasks: ReviewTask[] = [];
     for (const agent of selectedAgents) {
@@ -301,8 +347,8 @@ export async function runReview(
         title: "review-xcut",
         files: workspace.files,
         coverageLabel: "the cross-file review (issues spanning multiple changed files)",
-        maxWaitMs: CROSS_CUTTING_TIMEOUT_MS,
-        maxToolCalls: CROSS_CUTTING_MAX_TOOL_CALLS,
+        maxWaitMs: crossCuttingWaitMs,
+        maxToolCalls: crossCuttingMaxToolCalls,
         depth: 0,
         fallback: false,
       });
@@ -317,7 +363,9 @@ export async function runReview(
     const buildTaskText = (task: ReviewTask): string => {
       const base =
         task.kind === "cross-cutting"
-          ? buildCrossCuttingTask(task.files, selectedAgents, filtered)
+          ? buildCrossCuttingTask(task.files, selectedAgents, filtered, {
+              noTools: task.fallback,
+            })
           : buildReviewerTask(task.files, workspace.files, filtered);
       return task.fallback ? `${base}\n\n${NO_TOOLS_INSTRUCTION}` : base;
     };
@@ -340,9 +388,6 @@ export async function runReview(
       ...overrides,
     });
 
-    // Coverage notes for passes that hit their time limit or failed, surfaced in
-    // the final review so a cut-short run is never presented as complete.
-    const incomplete: string[] = [];
     let completedPasses = 0;
     let failedPasses = 0;
     // promptAndParse already retries internally (same-session corrective, then a
@@ -398,15 +443,15 @@ export async function runReview(
         trackTokens(task.bucket, error.tokens);
 
         const remaining = passesDeadline - Date.now();
-        // Cross-file analysis needs ≥2 files to be meaningful; a single-file
-        // reviewer chunk can't be split further.
-        const minFiles = task.kind === "cross-cutting" ? 2 : 1;
+        // Subdividing trades scope for convergence, which is the right trade for a
+        // reviewer chunk (each file still gets reviewed) and the WRONG one for the
+        // cross-file pass: an interaction between a file in the left half and one in
+        // the right half is invisible to both halves, so "splitting" it silently
+        // deletes the coverage the pass exists to provide while reporting success.
+        // It goes straight to the whole-diff no-tools fallback below instead.
+        const canSubdivide = task.kind === "reviewer" && task.files.length > 1;
         const childCap = Math.max(SUBDIVIDE_MIN_TIMEOUT_MS, Math.floor(task.maxWaitMs / 2));
-        if (
-          task.files.length > minFiles &&
-          task.depth < MAX_SUBDIVIDE_DEPTH &&
-          remaining > childCap
-        ) {
+        if (canSubdivide && task.depth < MAX_SUBDIVIDE_DEPTH && remaining > childCap) {
           const mid = Math.ceil(task.files.length / 2);
           const left = task.files.slice(0, mid);
           const right = task.files.slice(mid);
@@ -418,9 +463,12 @@ export async function runReview(
           enqueue(childTask(task, right, `↳${right.length}f`, over));
           return;
         }
-        // Can't subdivide further: try a fast no-tools pass over the inlined diff
-        // (reviewer only — cross-file analysis fundamentally needs to read files).
-        if (task.kind === "reviewer" && !task.fallback && remaining > FALLBACK_TIMEOUT_MS) {
+        // Can't (or shouldn't) subdivide: fall back to a fast no-tools pass over the
+        // inlined diffs. This works for the cross-file pass too — every changed file's
+        // diff is inlined in its task, so it can still reason across the whole diff
+        // without tools; it just can't open a caller outside the diff. A lighter
+        // cross-file review beats the coverage gap it used to report.
+        if (!task.fallback && remaining > FALLBACK_TIMEOUT_MS) {
           progress(
             `  ${task.label}: exceeded ${minutes}m — retrying ${filesLabel(task.files)} with a fast no-tools pass`,
           );
@@ -437,11 +485,20 @@ export async function runReview(
         // never silent. Distinguish WHY so the note doesn't overstate what happened:
         // we could still have split/fallen back, but the global budget ran out first,
         // vs. the task was already at its smallest reviewable unit and still failed.
+        // A stalled pass is called out separately: it did not run out of time doing
+        // work, its model requests went silent, which is an infrastructure symptom
+        // and not something a bigger budget or a smaller scope would have fixed.
         failedPasses++;
         const couldStillReduce =
-          (task.files.length > minFiles && task.depth < MAX_SUBDIVIDE_DEPTH) ||
-          (task.kind === "reviewer" && !task.fallback);
-        if (couldStillReduce) {
+          (canSubdivide && task.depth < MAX_SUBDIVIDE_DEPTH) || !task.fallback;
+        if (error.reason === "stall") {
+          progress(
+            `  ${task.label}: its model requests went silent (stalled) and did not recover — reporting a coverage gap`,
+          );
+          incomplete.push(
+            `${capitalize(task.coverageLabel)} could not run: its model requests went silent and produced no output, even after being retried; those changes were not fully reviewed.`,
+          );
+        } else if (couldStillReduce) {
           progress(
             `  ${task.label}: exceeded ${minutes}m and the run's time budget is spent — reporting a coverage gap`,
           );

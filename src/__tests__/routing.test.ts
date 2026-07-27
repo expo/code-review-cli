@@ -354,7 +354,7 @@ test("RoutingManifestSchema: budget defaults to today's totals when absent", () 
   const manifest = RoutingManifestSchema.parse({
     scopes: [{ name: "default", paths: ["**/*"], config: "." }],
   });
-  expect(manifest.budget).toEqual({ totalPassesMinutes: 32, minScopeMinutes: 5 });
+  expect(manifest.budget).toEqual({ totalPassesMinutes: 55, minScopeMinutes: 5 });
 });
 
 test("RoutingManifestSchema: budget honors custom values", () => {

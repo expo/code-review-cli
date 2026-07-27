@@ -185,7 +185,7 @@ your-monorepo/
   the override swaps the root config/manifest against the *real* scope tree, it
   does not relocate the scopes themselves.**
 - **Passes budget** — `defaults`-level `budget` bounds total review time:
-  `totalPassesMinutes` (default 32) is split across active scopes (which run
+  `totalPassesMinutes` (default 55) is split across active scopes (which run
   sequentially in one `ecr ci`), clamped up to `minScopeMinutes` (default 5) so a
   single scope still gets a workable window. When enough scopes are active that the
   floor would overshoot the total, `ecr ci` keeps the floor but warns, and `ecr
@@ -374,16 +374,32 @@ change which model reviewed your code. Use an explicit override instead.
 <details>
 <summary><b>Reliability</b> — never hangs, never silently drops work</summary>
 
-- **Per-task time caps** — chunk passes 15 min; cross-cutting 25 min; coordinator
-  10 min. A global passes budget (32 min) bounds all passes incl. the subdivision
-  waves, fitting inside the CI job's `timeout-minutes` (60).
+- **Per-task time caps** — chunk passes 15 min; coordinator 10 min. A global passes
+  budget (55 min) bounds all passes incl. the subdivision waves, fitting inside the
+  CI job's `timeout-minutes` (90).
+- **The cross-file pass is elastic** — it gets whatever is left of the passes budget
+  rather than a fixed cap, because it's the one pass whose scope can't be traded for
+  convergence: halving its file set deletes exactly the coverage it exists for. Chunk
+  passes run alongside it under their own caps, so a long cross-file pass doesn't
+  starve them.
 - **Tool-call cap** — a pass that makes too many `read`/`grep` calls without
   finishing is *wandering*, not converging; hitting the cap trips the soft landing.
+  The cross-file ceiling scales with the diff's file count (its diffs are inlined, so
+  tool calls go to *tracing*, not fetching).
+- **Stall detection** — a pass whose reply stops changing entirely (no new tool call,
+  no streamed text or reasoning, no token growth) has a wedged model request, not a
+  hard problem. After 4 min of silence it's abandoned and retried once from a clean
+  session, inside the same budget — instead of spending the whole cap on a dead
+  request. Progress lines say how long a reply has been silent, so this is legible in
+  the CI log.
 - **Soft landing on timeout** — at either cap, the run is interrupted and the agent
   is asked to return the findings it already has, rather than discarding its work.
-- **Subdivide-on-timeout** — a pass that times out with nothing to show has its
-  chunk split in half and the halves re-reviewed (recursively, down to a single
-  file), then a fast **no-tools fallback** over the inlined diff. Only a genuinely
+  Tools are disabled for that request, so the salvage step can't resume investigating
+  instead of answering.
+- **Subdivide-on-timeout** — a reviewer pass that times out with nothing to show has
+  its chunk split in half and the halves re-reviewed (recursively, down to a single
+  file), then a fast **no-tools fallback** over the inlined diff (the cross-file pass
+  skips straight to the fallback, which still sees the whole diff). Only a genuinely
   un-reducible pass reports a coverage gap — and it is always reported, never silent.
 - **Parse failures are retried** (same session, then once in a bounded fresh
   session) — separate from the timeout path.
