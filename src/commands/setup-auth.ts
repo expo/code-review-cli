@@ -6,6 +6,7 @@ import readline from "node:readline/promises";
 
 import { hasConfig, loadReviewConfig } from "../config/load.js";
 import type { AuthConfigEntry } from "../config/schema.js";
+import { jwtExpiryMs } from "../core/auth.js";
 import { opencodeBinSource } from "../core/opencode.js";
 import { errorMessage } from "../core/util.js";
 
@@ -62,16 +63,28 @@ export function opencodeAuthJsonPath(env: NodeJS.ProcessEnv = process.env): stri
   return path.join(dataHome, "opencode", "auth.json");
 }
 
-/** The stored ChatGPT sign-in's refresh token, if OpenCode has one. */
-async function readStoredRefreshToken(): Promise<string | null> {
+/**
+ * The stored ChatGPT sign-in's ACCESS token, if OpenCode has a live one. The
+ * refresh token deliberately never leaves OpenCode's store: refresh tokens are
+ * SINGLE-USE (rotation) and OpenCode is their sole legitimate consumer — a copy
+ * in a shell config or CI secret dies on the next rotation and can take the
+ * whole sign-in with it. The access token is a plain bearer that stays valid for
+ * days and never touches rotation.
+ */
+async function readStoredAccessToken(): Promise<{ token: string; expiresMs: number } | null> {
   try {
     const raw = await readFile(opencodeAuthJsonPath(), "utf8");
     const parsed = JSON.parse(raw) as Record<
       string,
-      { type?: string; refresh?: string } | undefined
+      { type?: string; access?: string } | undefined
     >;
     const openai = parsed.openai;
-    return openai?.type === "oauth" && openai.refresh ? openai.refresh : null;
+    if (openai?.type !== "oauth" || !openai.access) {
+      return null;
+    }
+    const expiresMs = jwtExpiryMs(openai.access) ?? 0;
+    // An expired stored token means the sign-in needs redoing anyway.
+    return expiresMs > Date.now() ? { token: openai.access, expiresMs } : null;
   } catch {
     return null;
   }
@@ -114,7 +127,7 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
     } else {
       err("No .expo-code-review config here — setting up the default ChatGPT/Codex flow.");
       plan = planFromAuth([
-        { provider: "openai", mode: "oauth", tokenEnv: "CODEX_OAUTH_REFRESH_TOKEN" },
+        { provider: "openai", mode: "oauth", tokenEnv: "CODEX_OAUTH_ACCESS_TOKEN" },
       ]);
     }
 
@@ -132,14 +145,17 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
       if (process.env[tokenEnv]) {
         err(`✓ ${tokenEnv} is already set in this shell — skipping the ChatGPT sign-in.`);
       } else {
-        let refresh = await readStoredRefreshToken();
-        if (refresh) {
-          err("Found an existing ChatGPT sign-in in OpenCode.");
-          if (!(await confirm(`Reuse it for ${tokenEnv}?`, yes))) {
-            refresh = null;
+        let stored = await readStoredAccessToken();
+        if (stored) {
+          err(
+            `Found a live ChatGPT sign-in in OpenCode (access token valid ` +
+              `${Math.max(1, Math.round((stored.expiresMs - Date.now()) / 86_400_000))} more day(s)).`,
+          );
+          if (!(await confirm(`Use it for ${tokenEnv}?`, yes))) {
+            stored = null;
           }
         }
-        if (!refresh) {
+        if (!stored) {
           err("This will run the bundled `opencode auth login` (interactive).");
           err("When it prompts:");
           err("  1. select the provider:  OpenAI");
@@ -156,19 +172,24 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
                 `\`opencode auth login\` exited with ${result.status ?? "a signal"}; nothing was changed.`,
               );
             }
-            refresh = await readStoredRefreshToken();
-            if (!refresh) {
+            stored = await readStoredAccessToken();
+            if (!stored) {
               throw new Error(
-                "The login finished but no ChatGPT sign-in was stored — did you select " +
+                "The login finished but no live ChatGPT sign-in was stored — did you select " +
                   'OpenAI → "Sign in with ChatGPT"? Re-run `ecr setup-auth` to try again.',
               );
             }
           }
         }
-        if (refresh) {
-          // The REFRESH token is the durable secret: access tokens are short-lived,
-          // and OpenCode mints them from this on demand.
-          exports.push(exportLine(tokenEnv, refresh));
+        if (stored) {
+          // The ACCESS token: a plain bearer, valid for days, no rotation involved.
+          // (The refresh token stays in OpenCode's store — it is single-use, and
+          // copying it anywhere kills it on the next rotation.)
+          exports.push(exportLine(tokenEnv, stored.token));
+          err(
+            `Note: this access token expires in ~${Math.max(1, Math.round((stored.expiresMs - Date.now()) / 86_400_000))} day(s); ` +
+              `re-run \`ecr setup-auth\` then to refresh it (your OpenCode sign-in stays valid).`,
+          );
         }
       }
     }

@@ -55,7 +55,7 @@ subscription** sign-in (it runs OpenCode's browser login and extracts the token
 for you). `doctor` offers to run it whenever a credential is missing.
 
 In CI, store the same values as repo secrets (`OPENAI_API_KEY`; plus
-`CODEX_OAUTH_REFRESH_TOKEN` for the mixed setup) — the scaffolded workflow
+`CODEX_OAUTH_ACCESS_TOKEN` for the mixed setup) — the scaffolded workflow
 forwards them.
 
 **Have a ChatGPT Plus/Pro (Codex) subscription? Use both.** The recommended
@@ -499,7 +499,7 @@ set in `config.auth` (credentials come from OpenCode):
 
   ```jsonc
   "auth": { "providers": {
-    "openai":     { "mode": "oauth",   "tokenEnv": "CODEX_OAUTH_REFRESH_TOKEN" },
+    "openai":     { "mode": "oauth",   "tokenEnv": "CODEX_OAUTH_ACCESS_TOKEN" },
     "openai-api": { "mode": "api-key", "tokenEnv": "OPENAI_API_KEY", "upstream": "openai" }
   } }
   ```
@@ -508,11 +508,14 @@ set in `config.auth` (credentials come from OpenCode):
   (`upstream` names the SDK it's backed by): agents reference `openai-api/gpt-5.5-pro`
   in frontmatter while everything else stays on `openai/gpt-5.5`. Notes:
 
-  - **The oauth `tokenEnv` holds the refresh token** from an `opencode auth login`
-    ChatGPT sign-in (copy `.openai.refresh` out of OpenCode's `auth.json`) —
-    access tokens are short-lived, so the refresh token is the durable secret and
-    OpenCode mints access tokens on demand. Refresh-token reuse across runs is
-    verified, so a static CI secret works.
+  - **The oauth `tokenEnv` holds the ACCESS token** from an `opencode auth login`
+    ChatGPT sign-in (`ecr setup-auth` extracts it) — a plain bearer, valid for
+    days, with no rotation involvement. Do **not** use the refresh token as a
+    shared secret: refresh tokens are single-use (rotation), so a static copy is
+    spent by its first use and the sign-in dies with it. Access tokens expire
+    (~10 days observed), so CI secrets need periodic re-minting — see the
+    token-rotator item in the [roadmap](./ROADMAP.md); `doctor` and the run
+    preflight warn before expiry.
   - **The API key needs exactly two permissions** — a *Restricted* key with
     *Model capabilities*: **Responses → Request** and **Chat completions →
     Request**; everything else (including *List models*) stays None. Create it
@@ -520,7 +523,7 @@ set in `config.auth` (credentials come from OpenCode):
     instructions too.)
   - **In CI**, set the `ECR_EXPECTED_TOKEN_ENV` repo variable to the
     comma-separated set of both env names
-    (`CODEX_OAUTH_REFRESH_TOKEN,OPENAI_API_KEY`) and pass both secrets in the
+    (`CODEX_OAUTH_ACCESS_TOKEN,OPENAI_API_KEY`) and pass both secrets in the
     workflow.
   - **Auditability**: every pass logs which provider/model answered it (job log,
     step summary, run log), so the subscription/API split is visible per run.

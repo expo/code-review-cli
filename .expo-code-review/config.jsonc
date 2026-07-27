@@ -39,7 +39,7 @@
   // ECR_EXPECTED_TOKEN_ENV (repo variable) must equal this comma-separated set.
   "auth": {
     "providers": {
-      "openai": { "mode": "oauth", "tokenEnv": "CODEX_OAUTH_REFRESH_TOKEN" },
+      "openai": { "mode": "oauth", "tokenEnv": "CODEX_OAUTH_ACCESS_TOKEN" },
       "openai-api": { "mode": "api-key", "tokenEnv": "OPENAI_API_KEY", "upstream": "openai" }
     }
   }

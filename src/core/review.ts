@@ -614,6 +614,9 @@ export async function runReview(
           "⚠️ The AI review could not complete: every review pass failed or timed out, " +
           'so these changes were effectively NOT reviewed. Treat this as "no review", not "looks good".',
         incomplete: coverageNotes,
+        // Presentation override: without it the comment header reads "Decision:
+        // Approve with comments" over a review that reviewed nothing (euxy#8).
+        couldNotComplete: true,
       };
     } else {
       progress("Coordinating findings…");

@@ -154,7 +154,12 @@ export function renderMarkdown(
   const dropped = withFp.filter(({ fp }) => dismissedByFp.has(fp));
 
   const lines: string[] = [commentMarker(tag), "## 🤖 AI code review", ""];
-  lines.push(`**Decision:** ${decisionLabel(review.decision)}`, "", review.summary, "");
+  lines.push(
+    `**Decision:** ${review.couldNotComplete ? "No review — every pass failed" : decisionLabel(review.decision)}`,
+    "",
+    review.summary,
+    "",
+  );
 
   if (review.incomplete.length > 0) {
     lines.push(
@@ -334,7 +339,9 @@ export function renderAggregateMarkdown(
       "| --- | --- | --- |",
     ];
     for (const { result, kept } of perScope) {
-      lines.push(`| ${result.scope} | ${decisionLabel(result.review.decision)} | ${kept.length} |`);
+      lines.push(
+        `| ${result.scope} | ${result.review.couldNotComplete ? "No review — every pass failed" : decisionLabel(result.review.decision)} | ${kept.length} |`,
+      );
     }
     lines.push("");
 

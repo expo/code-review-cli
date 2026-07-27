@@ -12,6 +12,29 @@ that is meant to merge and then iterate in follow-up PRs. What's **in** phase 1 
 under "Recently shipped" below. The highest-value work **deferred to follow-up
 PRs** (do these first, in this order):
 
+0. **Codex access-token rotator (cron) — MOST IMPORTANT NEXT.** CI subscription
+   auth now uses ACCESS tokens (~10-day observed lifetime) because refresh tokens
+   are single-use: sharing one as a static secret spent it on first use and killed
+   the whole sign-in ("Your refresh token has already been used…", euxy#8,
+   2026-07-27). Until the rotator exists, the access-token secrets need a manual
+   re-mint (~weekly): `ecr setup-auth` → `gh secret set CODEX_OAUTH_ACCESS_TOKEN`
+   per repo. Design (constraints are load-bearing):
+   - a scheduled workflow (~twice weekly + workflow_dispatch) in ONE home repo is
+     the refresh token's SOLE consumer — nothing else may ever hold or use it;
+   - serialized via a concurrency group (a race forks the rotation family);
+   - each run: one form-urlencoded refresh call (client_id
+     `app_EMoamEEZ73f0CkXaXp7hrann`, endpoint `auth.openai.com/oauth/token`),
+     then persist the NEW refresh token to its own secret FIRST, then fan the new
+     access token out to `CODEX_OAUTH_ACCESS_TOKEN` on every consumer repo
+     (code-review-cli, eas-cli, euxy, …);
+   - needs a fine-grained PAT with Actions-secrets write on the consumer repos
+     (GITHUB_TOKEN cannot write secrets);
+   - failure mode: crashing between spending the old token and saving the new one
+     loses the family (recover: `opencode auth login` + reseed) — the rotation
+     grace window makes an immediate retry likely to succeed, so retry once
+     before alerting;
+   - `doctor`/preflight already warn when the access token is near expiry, which
+     doubles as the rotator's health check.
 1. **Incremental / delta review** — review only what changed since the last review
    (persistent per-file-version state). Biggest speed + cost + reliability win on
    re-pushes; the last remaining lever for the monster-PR case. See §5.

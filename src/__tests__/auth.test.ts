@@ -1,6 +1,12 @@
 import { test, expect } from "bun:test";
 
-import { prepareAuth, checkProviderAuth, checkOauthTokenShape } from "../core/auth.js";
+import {
+  prepareAuth,
+  checkProviderAuth,
+  checkOauthTokenShape,
+  oauthAuthJsonEntry,
+  jwtExpiryMs,
+} from "../core/auth.js";
 import type { LoadedConfig } from "../config/schema.js";
 
 // Internal auth is a LIST of entries; most tests exercise one credential, so the
@@ -328,4 +334,47 @@ test("a well-known provider key env may only feed that provider", () => {
       { OPENAI_API_KEY: "sk-proj-xxx" },
     ).ok,
   ).toBe(true);
+});
+
+// ---- access-token support (rotation-safe subscription credentials) ----
+
+test("a JWT access token is used as-is with its own expiry — never refreshed", () => {
+  // Refresh tokens are SINGLE-USE: sharing one as a static secret killed the
+  // whole sign-in (euxy#8, "Your refresh token has already been used"). An
+  // access token is a plain bearer with no rotation involvement.
+  const exp = Math.floor(Date.now() / 1000) + 5 * 24 * 3600;
+  const jwt = `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.sig`;
+  const entry = oauthAuthJsonEntry("openai", jwt);
+  expect(entry).toEqual({ type: "oauth", access: jwt, refresh: "", expires: exp * 1000 });
+  // An opaque token is still treated as a refresh token (sole-consumer setups).
+  const opaque = oauthAuthJsonEntry("openai", "r".repeat(196));
+  expect(opaque).toEqual({ type: "oauth", access: "", refresh: "r".repeat(196), expires: 0 });
+});
+
+test("an EXPIRED access token fails fast with the re-mint instruction", () => {
+  const exp = Math.floor(Date.now() / 1000) - 2 * 24 * 3600;
+  const jwt = `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.sig`;
+  const r = checkProviderAuth(cfg({ mode: "oauth", provider: "openai", tokenEnv: "TOK" }), {
+    TOK: jwt,
+  });
+  expect(r.ok).toBe(false);
+  expect(r.detail).toContain("EXPIRED");
+  expect(r.detail).toContain("setup-auth");
+});
+
+test("a nearly-expired access token warns but never blocks", () => {
+  const exp = Math.floor(Date.now() / 1000) + 12 * 3600; // 12h left
+  const jwt = `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.sig`;
+  const r = checkProviderAuth(cfg({ mode: "oauth", provider: "openai", tokenEnv: "TOK" }), {
+    TOK: jwt,
+  });
+  expect(r.ok).toBe(true);
+  expect(r.warning).toContain("expires in");
+});
+
+test("jwtExpiryMs decodes exp and tolerates garbage", () => {
+  expect(jwtExpiryMs("not-a-jwt")).toBeNull();
+  expect(jwtExpiryMs("eyJ.%%%.sig")).toBeNull();
+  const jwt = `eyJ.${Buffer.from(JSON.stringify({ exp: 1000 })).toString("base64url")}.s`;
+  expect(jwtExpiryMs(jwt)).toBe(1000_000);
 });

@@ -59,11 +59,12 @@
   // of the agents that need the pro tier, and set ECR_EXPECTED_TOKEN_ENV in the
   // workflow to the comma-separated set of both env names.
   //   "auth": { "providers": {
-  //     "openai":     { "mode": "oauth",   "tokenEnv": "CODEX_OAUTH_REFRESH_TOKEN" },
+  //     "openai":     { "mode": "oauth",   "tokenEnv": "CODEX_OAUTH_ACCESS_TOKEN" },
   //     "openai-api": { "mode": "api-key", "tokenEnv": "OPENAI_API_KEY", "upstream": "openai" }
   //   } }
-  // (openai oauth: tokenEnv holds the REFRESH token from an `opencode auth login`
-  // ChatGPT sign-in — copy `.openai.refresh` from OpenCode's auth.json.)
+  // (openai oauth: tokenEnv holds the ACCESS token from an `opencode auth login`
+  // ChatGPT sign-in — `ecr setup-auth` extracts it. NEVER share the refresh
+  // token: it is single-use and dies on first rotation.)
   "auth": {
     "mode": "api-key",
     "provider": "openai",
