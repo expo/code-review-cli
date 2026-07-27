@@ -11,6 +11,7 @@ import type { PatchWorkspaceFile } from "./noise.js";
 import {
   addTokenUsage,
   AgentTimeoutError,
+  assertModelsResolvable,
   buildOpencodeConfig,
   CROSS_CUTTING_AGENT,
   promptAndParse,
@@ -168,8 +169,23 @@ export async function runReview(
     await restoreCwd();
     throw new Error(
       `Failed to start the OpenCode server. Ensure the \`opencode\` CLI is installed and ` +
-        `model credentials are configured.\n${errorMessage(error)}`,
+        `model credentials are configured (\`ecr doctor\` checks both).\n${errorMessage(error)}`,
     );
+  }
+
+  // Preflight: a model id the server can't resolve would otherwise fail EVERY pass
+  // identically — N indistinguishable coverage gaps, after spending the run's budget
+  // discovering the same fixable thing N times. Throw once, up front, naming the fix.
+  try {
+    await assertModelsResolvable(handle, [
+      ...config.agents.map((agent) => agent.model),
+      config.coordinator.model,
+    ]);
+  } catch (error) {
+    handle.close();
+    await auth.cleanup();
+    await restoreCwd();
+    throw error;
   }
 
   const agentCosts: Record<string, number> = {};
@@ -493,10 +509,18 @@ export async function runReview(
           (canSubdivide && task.depth < MAX_SUBDIVIDE_DEPTH) || !task.fallback;
         if (error.reason === "stall") {
           progress(
-            `  ${task.label}: its model requests went silent (stalled) and did not recover — reporting a coverage gap`,
+            `  ${task.label}: its model requests went silent (stalled) and did not recover — ` +
+              `most likely provider rate limiting; reporting a coverage gap`,
           );
+          // Name the likely cause. OpenCode retries a 429 internally without surfacing
+          // it, so provider throttling reaches us as pure silence — indistinguishable
+          // from a wedged connection, and the single most common reason a pass produces
+          // nothing at all. Saying "went silent" alone sends people hunting for a bug
+          // in the reviewer instead of checking their usage window.
           incomplete.push(
-            `${capitalize(task.coverageLabel)} could not run: its model requests went silent and produced no output, even after being retried; those changes were not fully reviewed.`,
+            `${capitalize(task.coverageLabel)} could not run: its model requests went silent and produced no output, even after being retried. ` +
+              `The usual cause is the model provider rate-limiting the account (a subscription credential over its usage window), which reaches this tool as silence rather than an error; ` +
+              `those changes were not fully reviewed.`,
           );
         } else if (couldStillReduce) {
           progress(

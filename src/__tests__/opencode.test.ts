@@ -6,6 +6,8 @@ import {
   progressFingerprint,
   stallWindowMs,
   stallAction,
+  findUnknownModels,
+  formatUnknownModels,
 } from "../core/opencode.js";
 
 test("classifies rate-limit / 5xx / network errors as transient", () => {
@@ -154,4 +156,93 @@ test("a stall is retried exactly once, and only with budget left to land it", ()
   // stall again before it had a chance to produce anything.
   expect(stallAction(0, 4 * MIN)).toBe("soft-land");
   expect(stallAction(0, 6 * MIN)).toBe("retry");
+});
+
+// ---- model preflight ----
+//
+// A wrong model id hits every pass identically, so it must be caught ONCE up front
+// rather than N times as indistinguishable coverage gaps. Motivating failure: a stale
+// global `opencode` rejecting `anthropic/claude-opus-4-8` with "Did you mean:
+// claude-opus-4-8" — a real config/version problem buried in per-pass noise.
+
+const AVAILABLE = {
+  anthropic: ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"],
+  openai: ["gpt-5.5"],
+};
+
+test("resolvable models produce no complaints", () => {
+  expect(
+    findUnknownModels(["anthropic/claude-sonnet-5", "anthropic/claude-opus-4-8"], AVAILABLE),
+  ).toEqual([]);
+});
+
+test("unknown provider is reported with the providers that do exist", () => {
+  const [problem] = findUnknownModels(["bedrock/claude-sonnet-5"], AVAILABLE);
+  expect(problem?.reason).toBe("provider");
+  expect(problem?.suggestions).toEqual(["anthropic", "openai"]);
+});
+
+test("unknown model suggests near matches from that provider", () => {
+  const [problem] = findUnknownModels(["anthropic/claude-sonnet-9"], AVAILABLE);
+  expect(problem?.reason).toBe("model");
+  // Prefix-matched against the requested id, so the suggestions are the plausible ones.
+  expect(problem?.suggestions).toEqual(["claude-haiku-4-5", "claude-opus-4-8", "claude-sonnet-5"]);
+});
+
+test("a bare model id (no provider) is reported, not silently accepted", () => {
+  // "claude-sonnet-5" alone is not a valid OpenCode id; it must be provider/model.
+  const [problem] = findUnknownModels(["claude-sonnet-5"], AVAILABLE);
+  expect(problem?.reason).toBe("provider");
+});
+
+test("only the FIRST slash splits provider from model", () => {
+  // openrouter-style ids contain a slash in the model half; splitting on every slash
+  // would make a valid id look unknown.
+  const available = { openrouter: ["anthropic/claude-sonnet-5"] };
+  expect(findUnknownModels(["openrouter/anthropic/claude-sonnet-5"], available)).toEqual([]);
+});
+
+test("duplicate model ids are reported once", () => {
+  const problems = findUnknownModels(["x/y", "x/y", "x/y"], AVAILABLE);
+  expect(problems).toHaveLength(1);
+});
+
+test("a refused credential blames the credential, not the model id", () => {
+  const unknown = findUnknownModels(
+    ["anthropic/claude-sonnet-5", "anthropic/claude-opus-4-8"],
+    { openai: ["gpt-5.5"] },
+    "anthropic",
+  );
+  expect(unknown.every((entry) => entry.reason === "credential")).toBe(true);
+  const text = formatUnknownModels(unknown, {
+    mode: "oauth",
+    provider: "anthropic",
+    tokenEnv: "ANTHROPIC_OAUTH_API_KEY",
+  });
+  // Rate limiting must be offered FIRST: a throttled subscription credential is
+  // refused exactly like an invalid one, and re-issuing the token does not help.
+  expect(text).toContain("RATE LIMITED");
+  expect(text.indexOf("RATE LIMITED")).toBeLessThan(text.indexOf("wrong for the mode"));
+  expect(text).toContain("429 = rate limited");
+  expect(text).toContain("ANTHROPIC_OAUTH_API_KEY");
+  // …and it must NOT read as "your model id is wrong", which is the wrong hunt.
+  expect(text).not.toContain("no such model");
+});
+
+test("a credentialed provider that IS present is not flagged", () => {
+  expect(
+    findUnknownModels(
+      ["anthropic/claude-sonnet-5"],
+      { anthropic: ["claude-sonnet-5"] },
+      "anthropic",
+    ),
+  ).toEqual([]);
+});
+
+test("the error text names the fix, not just the failure", () => {
+  const text = formatUnknownModels(findUnknownModels(["anthropic/claude-sonnet-9"], AVAILABLE));
+  expect(text).toContain("anthropic/claude-sonnet-9");
+  expect(text).toContain("claude-sonnet-5");
+  expect(text).toContain("config.jsonc");
+  expect(text).toContain("ecr doctor");
 });

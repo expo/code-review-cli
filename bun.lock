@@ -5,8 +5,8 @@
     "": {
       "name": "@expo/code-review-cli",
       "dependencies": {
-        "@opencode-ai/sdk": "^1.18.2",
-        "opencode-ai": "^1.18.2",
+        "@opencode-ai/sdk": "1.18.4",
+        "opencode-ai": "1.18.4",
         "zod": "^4.4.3",
       },
       "devDependencies": {

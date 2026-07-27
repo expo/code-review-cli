@@ -1,3 +1,6 @@
+import { createRequire } from "node:module";
+import path from "node:path";
+
 import { createOpencode } from "@opencode-ai/sdk";
 
 import type { LoadedConfig } from "../config/schema.js";
@@ -122,13 +125,213 @@ function unwrap<T>(res: any): T {
   return res as T;
 }
 
+/**
+ * Directory holding the `opencode` binary from OUR dependency tree, or null if it
+ * can't be resolved.
+ *
+ * The SDK spawns the server with a bare `launch("opencode", …)`, i.e. whatever comes
+ * first on PATH. That silently couples every run to the machine's global install:
+ * in CI, `npx -p @expo/code-review-cli` puts the temp prefix's `.bin` first and the
+ * pinned version wins, but on a developer machine an older global `opencode` shadows
+ * it and the pair drifts (a 1.18.1 CLI against a 1.18.4 SDK surfaced as
+ * `ProviderModelNotFoundError: Model not found: anthropic/claude-opus-4-8` — the CLI
+ * resolving a model id the SDK considered valid). Prepending this directory to PATH
+ * makes the version we declare in package.json the version we actually run.
+ */
+function bundledOpencodeBinDir(): string | null {
+  try {
+    const require = createRequire(import.meta.url);
+    // <…>/node_modules/opencode-ai/package.json → <…>/node_modules/.bin, which holds
+    // the correctly-named `opencode` shim (the package's own bin file is
+    // `opencode.exe`, so the package dir itself is NOT a usable PATH entry).
+    const pkg = require.resolve("opencode-ai/package.json");
+    return path.join(path.dirname(pkg), "..", ".bin");
+  } catch {
+    return null;
+  }
+}
+
+/** The `opencode` the SDK will actually spawn: ours if resolvable, else PATH's. */
+export function opencodeBinSource(): { dir: string | null; pinned: boolean } {
+  const dir = bundledOpencodeBinDir();
+  return { dir, pinned: dir !== null };
+}
+
 /** Start an in-process OpenCode server with the given inline config. */
 export async function startOpencode(config: unknown): Promise<OpencodeHandle> {
+  // Make our pinned CLI win over any global install (see bundledOpencodeBinDir).
+  // The SDK takes no `env`, so PATH is the only lever; it spreads `process.env` at
+  // spawn time, so setting it here reaches the child.
+  const binDir = bundledOpencodeBinDir();
+  if (binDir) {
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+  }
   const { client, server } = await createOpencode({
     hostname: "127.0.0.1",
+    // Port 0 = let the OS pick a free one. The SDK defaults to a FIXED 4096 and reads
+    // the real URL back from the server's startup line, so the default meant any
+    // already-running opencode (a developer's own session is the common case) made
+    // every local run die with an opaque `ServeError`.
+    port: 0,
     config: config as any,
   });
   return { client, url: server.url, close: () => server.close() };
+}
+
+/**
+ * A configured `provider/model` string that the running server can't resolve, with
+ * the closest ids it does know — the whole point is that the error names the fix.
+ */
+export interface UnknownModel {
+  model: string;
+  /**
+   * `credential` — the provider is the one we supplied a credential for, and the
+   * server still doesn't offer it: the credential was rejected, which is a very
+   * different fix from a typo'd id (and the one that actually bit us: a bad
+   * ANTHROPIC_OAUTH_API_KEY made every anthropic model look nonexistent).
+   * `provider` — no such provider at all. `model` — provider fine, model isn't.
+   */
+  reason: "credential" | "provider" | "model";
+  suggestions: string[];
+}
+
+/** Providers the server actually has, as `{ providerID: [modelID, …] }`. */
+export type ProviderModels = Record<string, string[]>;
+
+/**
+ * Check configured model ids against what the server can resolve. Pure so the
+ * matching rules are testable without a live server.
+ *
+ * A wrong model id is a CONFIG error: it hits every pass identically, no retry or
+ * smaller scope can fix it, and the run should say so once instead of reporting N
+ * indistinguishable "pass failed" gaps (or, worse, burning the whole budget first).
+ */
+export function findUnknownModels(
+  models: string[],
+  available: ProviderModels,
+  /** The provider we supplied a credential for, if any (see reason: "credential"). */
+  credentialedProvider?: string,
+): UnknownModel[] {
+  const unknown: UnknownModel[] = [];
+  for (const model of new Set(models)) {
+    // OpenCode model ids are `provider/model`; a model id may itself contain slashes
+    // (e.g. openrouter's `vendor/name`), so only the FIRST segment is the provider.
+    const slash = model.indexOf("/");
+    const providerID = slash === -1 ? model : model.slice(0, slash);
+    const modelID = slash === -1 ? "" : model.slice(slash + 1);
+    const providerModels = available[providerID];
+    if (!providerModels) {
+      unknown.push({
+        model,
+        // We configured this provider's credential and the server still doesn't
+        // offer it ⇒ the credential was refused, not the provider misnamed.
+        reason: providerID === credentialedProvider ? "credential" : "provider",
+        suggestions: Object.keys(available).sort(),
+      });
+      continue;
+    }
+    if (!providerModels.includes(modelID)) {
+      // Suggest ids that share a prefix with what was asked for, else the whole list.
+      const stem = modelID.split(/[-/]/)[0] ?? "";
+      const near = stem ? providerModels.filter((id) => id.startsWith(stem)) : [];
+      unknown.push({
+        model,
+        reason: "model",
+        suggestions: (near.length > 0 ? near : providerModels).slice(0, 8).sort(),
+      });
+    }
+  }
+  return unknown;
+}
+
+/** Ask the running server which providers/models it can resolve. */
+export async function fetchProviderModels(handle: OpencodeHandle): Promise<ProviderModels> {
+  const data = unwrap<{ providers?: Array<{ id?: string; models?: Record<string, unknown> }> }>(
+    await handle.client.config.providers(),
+  );
+  const available: ProviderModels = {};
+  for (const provider of data?.providers ?? []) {
+    if (provider?.id) {
+      available[provider.id] = Object.keys(provider.models ?? {});
+    }
+  }
+  return available;
+}
+
+/** Human-readable, copy-pasteable explanation of unresolvable model ids. */
+export function formatUnknownModels(
+  unknown: UnknownModel[],
+  auth?: { mode: string; provider: string; tokenEnv?: string },
+): string {
+  // A refused credential is one fact about the run, not one per model: report it once
+  // and name the token to check, rather than repeating it for every configured model.
+  const refused = unknown.filter((entry) => entry.reason === "credential");
+  if (refused.length > 0) {
+    const provider = auth?.provider ?? refused[0]!.model.split("/")[0];
+    const tokenEnv = auth?.tokenEnv;
+    // Two very different causes produce this identical symptom, and naming only the
+    // token sends people to regenerate a perfectly good one (it did exactly that to
+    // us). Rate limiting is listed FIRST because it's the one that looks like a bad
+    // credential but isn't fixed by replacing it.
+    return (
+      `The OpenCode server does not offer the "${provider}" provider, even though this run ` +
+      `supplied a ${auth?.mode ?? "configured"} credential for it. OpenCode drops a provider whose ` +
+      `credential it could not use, which makes every ${provider} model look nonexistent: ` +
+      `${refused.map((entry) => entry.model).join(", ")}.\n` +
+      `Two things cause this, and they need opposite fixes:\n` +
+      `  1. The account is RATE LIMITED (HTTP 429). A subscription credential that is over its ` +
+      `usage window is refused exactly like an invalid one, and no amount of re-issuing helps — ` +
+      `you have to wait it out. Check with:\n` +
+      `       curl -s -o /dev/null -w '%{http_code}\\n' https://api.anthropic.com/v1/messages \\\n` +
+      `         -H "Authorization: Bearer $${tokenEnv ?? "TOKEN"}" -H "anthropic-beta: oauth-2025-04-20" \\\n` +
+      `         -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \\\n` +
+      `         -d '{"model":"claude-sonnet-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}'\n` +
+      `     429 = rate limited (wait); 401 = the credential really is bad; 200 = the credential is ` +
+      `fine and the problem is how it reached OpenCode.\n` +
+      (tokenEnv
+        ? `  2. The credential is wrong for the mode. auth.mode "oauth" expects the token ` +
+          `\`claude setup-token\` prints; a plain API key belongs to auth.mode "api-key". A truncated ` +
+          `or half-pasted ${tokenEnv} fails the same way.\n`
+        : `  2. The credential is wrong for the configured auth.mode.\n`) +
+      `Providers the server does offer: ${refused[0]!.suggestions.join(", ") || "(none)"}.`
+    );
+  }
+  const lines = unknown.map((entry) =>
+    entry.reason === "provider"
+      ? `  ${entry.model} — unknown provider "${entry.model.split("/")[0]}". Configured providers: ${entry.suggestions.join(", ") || "(none — is the credential set?)"}`
+      : `  ${entry.model} — that provider has no such model. Close matches: ${entry.suggestions.join(", ") || "(none)"}`,
+  );
+  return (
+    `The configured model id(s) do not exist on the running OpenCode server:\n${lines.join("\n")}\n` +
+    `Fix the model in .expo-code-review/config.jsonc (agents' \`model\`, \`coordinator.model\`) ` +
+    `or REVIEWER_MODEL. Note that a model id must be "provider/model" (e.g. anthropic/claude-sonnet-5), ` +
+    `and that an out-of-date \`opencode\` can reject an id a newer one accepts — run \`ecr doctor\`.`
+  );
+}
+
+/**
+ * Fail fast when a configured model can't be resolved, BEFORE any pass runs. Never
+ * blocks the run on its own failure: if the providers endpoint can't be read (an
+ * older server, a transport blip), the review proceeds and any real problem surfaces
+ * per-pass as before.
+ */
+export async function assertModelsResolvable(
+  handle: OpencodeHandle,
+  models: string[],
+): Promise<void> {
+  let available: ProviderModels;
+  try {
+    available = await fetchProviderModels(handle);
+  } catch {
+    return;
+  }
+  if (Object.keys(available).length === 0) {
+    return;
+  }
+  const unknown = findUnknownModels(models, available);
+  if (unknown.length > 0) {
+    throw new Error(formatUnknownModels(unknown));
+  }
 }
 
 const POLL_INTERVAL_MS = 1000;

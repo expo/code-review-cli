@@ -14,8 +14,10 @@ import {
 import type { LoadedScopeConfig } from "../config/load.js";
 import type { RoutingManifest } from "../config/schema.js";
 import { checkProviderAuth } from "../core/auth.js";
+import { opencodeBinSource } from "../core/opencode.js";
 import { git, onPath, repoRoot, run } from "../core/exec.js";
 import { errorMessage } from "../core/util.js";
+import path from "node:path";
 
 const USAGE = `ecr doctor — check environment, config, and credentials
 
@@ -30,6 +32,20 @@ ownership over tracked files, and comment-tag uniqueness.
 Options:
   --list-scopes   Print the routing scope table (name, dir, paths, agents, tag)
 `;
+
+/**
+ * `opencode --version`, run from `binDir` if given (so the bundled CLI can be asked
+ * directly) or from PATH otherwise. Null when it can't be determined — a version we
+ * can't read is worth staying quiet about, not failing over.
+ */
+async function opencodeVersion(binDir: string | null): Promise<string | null> {
+  const command = binDir ? path.join(binDir, "opencode") : "opencode";
+  const { stdout, code } = await run(command, ["--version"], { check: false });
+  if (code !== 0) {
+    return null;
+  }
+  return stdout.trim().split("\n")[0]?.trim() || null;
+}
 
 /** Preflight checks so a broken setup surfaces clearly instead of silently no-opping. */
 export async function doctorCommand(argv: string[] = []): Promise<void> {
@@ -69,13 +85,38 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
     );
   }
 
-  const opencodeInstalled = await onPath("opencode");
+  // The SDK spawns a bare `opencode`, so the version that actually runs is a PATH
+  // lookup. Report which one wins and whether it matches the version this package
+  // pins: a stale global install against a newer SDK rejects model ids the SDK
+  // considers valid (`ProviderModelNotFoundError`), which is otherwise a baffling
+  // failure that only reproduces on one machine. `startOpencode` prepends our own
+  // bin dir so the pinned one wins at runtime — this just makes the drift visible.
+  const bin = opencodeBinSource();
+  const opencodeInstalled = (await onPath("opencode")) || bin.pinned;
   line(
     opencodeInstalled,
     opencodeInstalled
-      ? "opencode CLI found on PATH"
-      : "opencode CLI NOT on PATH (install `opencode-ai`, or add node_modules/.bin to PATH)",
+      ? "opencode CLI available"
+      : "opencode CLI NOT found (install `opencode-ai`, or add node_modules/.bin to PATH)",
   );
+  if (opencodeInstalled) {
+    const pinnedVersion = bin.pinned ? await opencodeVersion(bin.dir!) : null;
+    const pathVersion = await opencodeVersion(null);
+    if (pinnedVersion) {
+      line(true, `opencode ${pinnedVersion} (bundled with this reviewer; used at runtime)`);
+      if (pathVersion && pathVersion !== pinnedVersion) {
+        warn(
+          `a different opencode ${pathVersion} is first on your PATH — runs use the bundled ${pinnedVersion}, ` +
+            `but other tooling (and \`opencode\` by hand) will use ${pathVersion}`,
+        );
+      }
+    } else if (pathVersion) {
+      warn(
+        `using opencode ${pathVersion} from PATH — this reviewer's own \`opencode-ai\` dependency could not be ` +
+          `resolved, so the CLI and SDK versions can drift (a stale CLI rejects model ids the SDK accepts)`,
+      );
+    }
+  }
 
   line(await onPath("git"), "git found on PATH");
 
@@ -115,6 +156,11 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
 
       const readiness = checkProviderAuth(rootConfig);
       line(readiness.ok, `auth: ${readiness.detail}`);
+      // A suspicious-but-not-provably-broken credential: worth saying, never a failure
+      // (the shape rules are heuristics — see checkOauthTokenShape).
+      if (readiness.warning) {
+        warn(`auth: ${readiness.warning}`);
+      }
     } catch (error) {
       line(false, `config invalid: ${errorMessage(error)}`);
     }
