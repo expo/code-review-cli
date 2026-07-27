@@ -10,7 +10,8 @@
   "type": "module",
   "bin": {
     "ecr": "build/cli.js",
-    "expo-code-review": "build/cli.js"
+    "expo-code-review": "build/cli.js",
+    "code-review-cli": "build/cli.js"
   },
   "files": [
     "build",
