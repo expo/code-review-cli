@@ -12,8 +12,11 @@ import {
   scopePassesBudgetMs,
   formatOwnerTable,
 } from "../config/routing.js";
+import readline from "node:readline/promises";
+
 import type { LoadedScopeConfig } from "../config/load.js";
 import type { RoutingManifest } from "../config/schema.js";
+import { setupAuthCommand } from "./setup-auth.js";
 import { checkProviderAuth } from "../core/auth.js";
 import { opencodeBinSource } from "../core/opencode.js";
 import { git, onPath, repoRoot, run } from "../core/exec.js";
@@ -161,6 +164,27 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
       // (the shape rules are heuristics — see checkOauthTokenShape).
       if (readiness.warning) {
         warn(`auth: ${readiness.warning}`);
+      }
+      // A missing credential has a guided fix — offer it right here when someone is
+      // at the terminal, rather than making them find the command in the README.
+      if (!readiness.ok) {
+        if (process.stdin.isTTY && process.stdout.isTTY) {
+          const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+          let runIt = false;
+          try {
+            const answer = (await rl.question("  Run `ecr setup-auth` to fix this now? [Y/n] "))
+              .trim()
+              .toLowerCase();
+            runIt = answer === "" || answer === "y" || answer === "yes";
+          } finally {
+            rl.close();
+          }
+          if (runIt) {
+            await setupAuthCommand([]);
+          }
+        } else {
+          info("run `ecr setup-auth` for a guided credential setup");
+        }
       }
     } catch (error) {
       line(false, `config invalid: ${errorMessage(error)}`);

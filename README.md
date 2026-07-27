@@ -26,7 +26,12 @@ flowchart TD
 ## Usage
 
 Run via `npx @expo/code-review-cli <command>` (or the `ecr` / `expo-code-review`
-binary once installed).
+binary once installed). On a repo that already has `.expo-code-review/` set up,
+getting model credentials for local runs is one command:
+
+```bash
+npx @expo/code-review-cli setup-auth
+```
 
 Reviewing a PR (`--pr`/`ci`) needs the GitHub CLI — `brew install gh && gh auth login`.
 Everything else the reviewer needs (including the `opencode` runtime) ships with the
@@ -34,34 +39,24 @@ package.
 
 ### First-time setup
 
-Scaffold, add credentials, verify.
-
 ```bash
-# Scaffold .expo-code-review/ + a CI workflow (--no-workflow to skip)
+# 1. Scaffold .expo-code-review/ + a CI workflow (--no-workflow to skip)
 npx @expo/code-review-cli init
-```
-
-Then give it model credentials. **Default: an OpenAI API key** — the scaffolded
-config reviews with GPT via `auth.mode "api-key"`.
-
-Create the key in the OpenAI dashboard, scoped to the minimum the reviewer needs:
-
-- Put it in a **dedicated project** (not "Default project") so you can set a
-  monthly budget + alert on it and see the reviewer's spend in isolation.
-- Make it a **Restricted** key with exactly two permissions, both under *Model
-  capabilities*: **Responses (/v1/responses) → Request** and **Chat completions
-  (/v1/chat/completions) → Request**. Everything else — including *List models* —
-  stays **None** (the reviewer resolves model ids from its own catalog and only
-  ever makes inference requests).
-
-```bash
-export OPENAI_API_KEY=sk-proj-...
-# Check env, config, and credentials
+# 2. Get model credentials — guided; prints the export lines for your shell config
+npx @expo/code-review-cli setup-auth
+# 3. Verify env, config, and credentials
 npx @expo/code-review-cli doctor
 ```
 
-In CI, store the same key as the `OPENAI_API_KEY` repo secret (the scaffolded
-workflow forwards it).
+`setup-auth` reads the repo's config and walks through each credential it needs:
+an OpenAI **API key** (the scaffolded default — it prints where to create the key
+and the exact restricted permissions to grant), and/or a **ChatGPT/Codex
+subscription** sign-in (it runs OpenCode's browser login and extracts the token
+for you). `doctor` offers to run it whenever a credential is missing.
+
+In CI, store the same values as repo secrets (`OPENAI_API_KEY`; plus
+`CODEX_OAUTH_REFRESH_TOKEN` for the mixed setup) — the scaffolded workflow
+forwards them.
 
 **Have a ChatGPT Plus/Pro (Codex) subscription? Use both.** The recommended
 production setup pairs the subscription (runs the default models at no marginal
@@ -115,6 +110,7 @@ is a ready example to adapt.
 | `ecr init [--no-workflow] [--force]` | Scaffold `.expo-code-review/` (config, agents, prompts) + a CI workflow. |
 | `ecr init --monorepo` | …and add a `routing.jsonc` routing manifest (one default scope). |
 | `ecr init --scope <dir>` | Scaffold a per-team scope under `<dir>` and register it in the manifest. |
+| `ecr setup-auth [--yes]` | Walk through getting model credentials for local runs (ChatGPT sign-in and/or API keys), printing the `export` lines for your shell config. |
 | `ecr review [options]` | Review local changes and print an advisory review (default command). |
 | `ecr review --scope <name>` | Review only one routing scope over just that scope's changed files. |
 | `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
@@ -508,9 +504,11 @@ set in `config.auth` (credentials come from OpenCode):
     access tokens are short-lived, so the refresh token is the durable secret and
     OpenCode mints access tokens on demand. Refresh-token reuse across runs is
     verified, so a static CI secret works.
-  - **The API key needs the same two permissions** as the default setup above
-    (Responses + Chat completions → Request; all else None), in a budget-capped
-    project.
+  - **The API key needs exactly two permissions** — a *Restricted* key with
+    *Model capabilities*: **Responses → Request** and **Chat completions →
+    Request**; everything else (including *List models*) stays None. Create it
+    in a dedicated, budget-capped project. (`ecr setup-auth` prints these
+    instructions too.)
   - **In CI**, set the `ECR_EXPECTED_TOKEN_ENV` repo variable to the
     comma-separated set of both env names
     (`CODEX_OAUTH_REFRESH_TOKEN,OPENAI_API_KEY`) and pass both secrets in the

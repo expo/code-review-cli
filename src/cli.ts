@@ -4,6 +4,7 @@ import { dismissCommand } from "./commands/dismiss.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { initCommand } from "./commands/init.js";
 import { reviewCommand } from "./commands/review.js";
+import { setupAuthCommand } from "./commands/setup-auth.js";
 import { verifyConfigCommand } from "./commands/verify-config.js";
 
 const USAGE = `expo-code-review (ecr) — config-driven AI code reviewer
@@ -14,6 +15,7 @@ Usage:
   ecr dismiss --pr <n> <id...>     Hide a finding on a PR (see \`ecr dismiss --help\`).
   ecr undismiss --pr <n> <id...>   Restore a dismissed finding.
   ecr init [--monorepo] [--scope <dir>]   Scaffold .expo-code-review/ in this repo.
+  ecr setup-auth [--yes]   Walk through getting model credentials for local runs.
   ecr doctor [--list-scopes]   Check environment, config, credentials, and scopes.
   ecr verify-config [--expected <env>] [--json]   Refuse to run if a config could redirect the credential (CI guard).
 
@@ -51,6 +53,9 @@ async function main(): Promise<void> {
       break;
     case "init":
       await initCommand(rest);
+      break;
+    case "setup-auth":
+      await setupAuthCommand(rest);
       break;
     case "doctor":
       await doctorCommand(rest);
