@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
 
+import path from "node:path";
+
 import {
+  CONFIG_DIRNAME,
+  hasScopeConfig,
   loadAuthFromRoot,
   loadReviewConfig,
   loadScopeConfig,
@@ -22,6 +26,7 @@ import type { CoordinatorOutput } from "../core/schema.js";
 import { runReview } from "../core/review.js";
 import { GitHubPRSource } from "../sources/github-pr.js";
 import { memoizeSource } from "../sources/source.js";
+import type { PreparedReadRoot, ReviewSource } from "../sources/source.js";
 import { GitHubReporter } from "../reporters/github.js";
 
 /** Resolve the PR number from the Actions event payload or GITHUB_REF. */
@@ -53,6 +58,15 @@ For GitHub Actions: reads the PR number + repo from the event/env, gets the diff
 via \`gh pr diff\`, runs the reviewer, and upserts a single PR comment. Comment-only
 and non-blocking (a reviewer failure never fails the PR's checks).
 
+Trust model: review policy and reviewer configuration (config.jsonc, routing,
+prompts, models, auth mapping) load from the PR's immutable BASE commit,
+materialized via the GitHub API — never from the PR head — so a PR cannot change
+the reviewer that evaluates it; config changes activate after merge. The PR head
+is materialized separately (pinned to its immutable OID, scrubbed of ambient
+runtime config) purely as source content to read and verify against. If the
+trusted base cannot be materialized, the run fails closed with one terminal
+comment; it never falls back to the checkout.
+
 Monorepos: when .expo-code-review/routing.jsonc exists, ci fans out INTERNALLY —
 it assigns each changed file to exactly one scope (last-match-wins) and reviews
 each active scope over only its files, then renders one aggregated comment (or one
@@ -63,8 +77,17 @@ Options:
   --route              Let the router pick relevant agents from the diff
   --scopes <a,b>       Limit the fan-out to these named scopes (routing only)
   --config-dir <dir>   Load the ROOT config.jsonc + routing.jsonc from <dir>
-                       instead of .expo-code-review/ (also ECR_CONFIG_DIR). Scope
-                       subtrees stay repo-root-relative.
+                       instead of .expo-code-review/ (also ECR_CONFIG_DIR). A
+                       RELATIVE dir resolves beneath the trusted base commit; an
+                       ABSOLUTE dir is an explicit operator trust decision. Scope
+                       subtrees always resolve beneath the trusted base commit.
+  --unsafe-config-from-head
+                       COMPATIBILITY ESCAPE HATCH: load configuration from the
+                       current checkout instead of the PR's trusted base commit.
+                       This lets a same-repo PR change the reviewer (policy,
+                       prompts, model, auth mapping) that evaluates itself.
+                       Never scaffolded; prints a security warning; will be
+                       removed on a scheduled minor boundary.
   --comment <mode>     Override manifest comment mode: single | per-scope
   --force              Manual override: review even if the trigger policy (label
                        trigger / ai-review:skip) would skip. Break-glass and the
@@ -99,6 +122,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
   // A maintainer's explicit `/review` (comment command or --force) is a manual
   // escape hatch that bypasses the trigger-policy gate only (see passesTriggerGate).
   const bypassTriggerGate = shouldBypassTriggerGate(argv);
+  const unsafeConfigFromHead = argv.includes("--unsafe-config-from-head");
   const root = await repoRoot();
   if (root && root !== process.cwd()) {
     process.chdir(root);
@@ -115,37 +139,138 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
     return;
   }
 
-  // A malformed manifest is a loud, non-blocking error (never a silent fallback).
-  let manifest: RoutingManifest | null;
-  try {
-    manifest = await loadRoutingManifest(cwd, { configDir });
-  } catch (error) {
-    process.stderr.write(`CI reviewer: invalid routing.jsonc: ${errorMessage(error)}\n`);
-    return;
-  }
+  // ONE source for the whole run: metadata (incl. immutable OIDs), the diff, and
+  // the PR-head read root are each fetched once and shared across scopes.
+  const ghSource = new GitHubPRSource({ prNumber, repo, cwd });
+  const source = memoizeSource(ghSource);
 
-  if (manifest == null) {
-    await runLegacyCi(repo, prNumber, cwd, agents, route, bypassTriggerGate, configDir);
-    return;
-  }
-
-  try {
-    await runRoutedCi(
-      manifest,
-      repo,
-      prNumber,
-      cwd,
-      agents,
-      route,
-      scopesFilter,
-      commentOverride,
-      bypassTriggerGate,
-      configDir,
+  // Trusted configuration root: review policy and reviewer config load from the
+  // PR's immutable BASE commit, so the PR head is data, never policy. Fail CLOSED:
+  // when the base can't be materialized, post the one terminal comment and stop —
+  // silently reading the checkout would let a head checkout smuggle config in.
+  let trustedRoot: PreparedReadRoot | null = null;
+  let configRoot = cwd;
+  if (unsafeConfigFromHead) {
+    process.stderr.write(
+      "CI reviewer: ⚠ SECURITY — --unsafe-config-from-head is set: reviewer configuration " +
+        "(policy, prompts, models, auth mapping) is being loaded from the current checkout, so " +
+        "a same-repository PR can change the reviewer that evaluates it. This escape hatch will " +
+        "be removed in a future minor release.\n",
     );
-  } catch (error) {
-    // Fan-out failures stay non-blocking (single-writer property is the point).
-    process.stderr.write(`CI reviewer: routed run failed (non-blocking): ${errorMessage(error)}\n`);
+  } else {
+    try {
+      trustedRoot = await ghSource.prepareTrustedConfigRootAsync();
+      configRoot = trustedRoot.dir;
+    } catch (error) {
+      const reason = errorMessage(error);
+      process.stderr.write(
+        `CI reviewer: could not materialize the PR's base commit for trusted configuration ` +
+          `(failing closed, not reviewing): ${reason}\n`,
+      );
+      await postTerminalFailureNote(
+        repo,
+        prNumber,
+        cwd,
+        `it could not load trusted configuration from the PR's base commit (${reason}). ` +
+          `This usually means the runner has no git checkout or no usable GH_TOKEN; re-run once fixed`,
+      );
+      return;
+    }
   }
+
+  try {
+    // A malformed manifest is a loud, non-blocking error (never a silent fallback).
+    let manifest: RoutingManifest | null;
+    try {
+      manifest = await loadRoutingManifest(configRoot, { configDir });
+    } catch (error) {
+      process.stderr.write(`CI reviewer: invalid routing.jsonc: ${errorMessage(error)}\n`);
+      return;
+    }
+
+    if (manifest == null) {
+      await runLegacyCi(source, repo, prNumber, cwd, configRoot, {
+        agents,
+        route,
+        bypassTriggerGate,
+        configDir,
+      });
+      return;
+    }
+
+    try {
+      await runRoutedCi(source, manifest, repo, prNumber, cwd, configRoot, {
+        agents,
+        route,
+        scopesFilter,
+        commentOverride,
+        bypassTriggerGate,
+        configDir,
+      });
+    } catch (error) {
+      // Fan-out failures stay non-blocking (single-writer property is the point).
+      process.stderr.write(
+        `CI reviewer: routed run failed (non-blocking): ${errorMessage(error)}\n`,
+      );
+    }
+  } finally {
+    await source.dispose();
+    await trustedRoot?.cleanup();
+  }
+}
+
+/**
+ * The one terminal "this PR was NOT reviewed" comment for failures that happen
+ * before any configuration is loaded (trusted-root materialization). Uses the
+ * DEFAULT comment tag/break-glass marker because the config that could customize
+ * them is exactly what failed to load; a repo with a custom tag gets a fresh
+ * comment rather than an upsert, which is the acceptable degraded case.
+ */
+async function postTerminalFailureNote(
+  repo: string,
+  prNumber: number,
+  cwd: string,
+  reason: string,
+): Promise<void> {
+  try {
+    const reporter = new GitHubReporter({
+      prNumber,
+      repo,
+      commentTag: "expo-ai-code-reviewer",
+      breakGlassMarker: "/skip-review",
+      cwd,
+    });
+    await reporter.report({
+      decision: "approve_with_comments",
+      findings: [],
+      summary: `⚠️ The AI reviewer failed to run, so this change was **not** reviewed: ${reason}.`,
+      incomplete: [],
+      couldNotComplete: true,
+    });
+  } catch (postError) {
+    process.stderr.write(
+      `CI reviewer: also failed to post the failure notice: ${errorMessage(postError)}\n`,
+    );
+  }
+}
+
+/** Options shared by the legacy and routed CI paths (parsed from argv once). */
+interface CiRunOptions {
+  agents: string[] | undefined;
+  route: boolean;
+  scopesFilter?: string[] | undefined;
+  commentOverride?: "single" | "per-scope" | undefined;
+  bypassTriggerGate: boolean;
+  configDir: string | undefined;
+}
+
+/**
+ * Run-log + patch-workspace anchor: ALWAYS the workspace checkout, never the
+ * (temporary, removed-on-exit) trusted config root — the workflow uploads
+ * `.expo-code-review/.runs/reviews.jsonl` from the workspace as an artifact.
+ */
+function workspaceRunsDir(cwd: string): string {
+  return path.join(cwd, CONFIG_DIRNAME, ".runs");
 }
 
 /**
@@ -153,17 +278,17 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
  * routing.jsonc the CLI behaves exactly as before (backcompat invariant).
  */
 async function runLegacyCi(
+  source: ReviewSource,
   repo: string,
   prNumber: number,
   cwd: string,
-  agents: string[] | undefined,
-  route: boolean,
-  bypassTriggerGate: boolean,
-  configDir: string | undefined,
+  configRoot: string,
+  options: CiRunOptions,
 ): Promise<void> {
+  const { agents, route, bypassTriggerGate, configDir } = options;
   let config;
   try {
-    config = await loadReviewConfig(cwd, { configDir });
+    config = await loadReviewConfig(configRoot, { configDir });
   } catch (error) {
     process.stderr.write(`CI reviewer: ${errorMessage(error)}\n`);
     return;
@@ -211,11 +336,12 @@ async function runLegacyCi(
   }
 
   try {
-    const review = await runReview(new GitHubPRSource({ prNumber, repo, cwd }), {
+    const review = await runReview(source, {
       config,
       mode: "ci",
       agents,
       route,
+      runsDir: workspaceRunsDir(cwd),
       onProgress: (message) => process.stderr.write(`${message}\n`),
     });
     await reporter.report(review);
@@ -254,20 +380,19 @@ function failureReview(scopeName: string, reason: string): CoordinatorOutput {
 
 /** The routing fan-out: one process, N scopes reviewed sequentially, one render. */
 async function runRoutedCi(
+  source: ReviewSource & { dispose(): Promise<void> },
   manifest: RoutingManifest,
   repo: string,
   prNumber: number,
   cwd: string,
-  agents: string[] | undefined,
-  route: boolean,
-  scopesFilter: string[] | undefined,
-  commentOverride: "single" | "per-scope" | undefined,
-  bypassTriggerGate: boolean,
-  configDir: string | undefined,
+  configRoot: string,
+  options: CiRunOptions,
 ): Promise<void> {
+  const { agents, route, scopesFilter, commentOverride, bypassTriggerGate, configDir } = options;
   // The root config + manifest follow the override; scope configs stay
-  // repo-root-relative (loadScopeConfig reads <root>/<scope.config>/.expo-code-review).
-  const rootConfig = await loadReviewConfig(cwd, { configDir });
+  // relative to the TRUSTED root (loadScopeConfig reads
+  // <configRoot>/<scope.config>/.expo-code-review).
+  const rootConfig = await loadReviewConfig(configRoot, { configDir });
   // The root/aggregate marker is the ACTUAL root-owned comment tag so the
   // pre-routing comment and its dismissal state upsert in place, not stranded
   // under a new marker (risk 8/9). manifest.defaults.commentTag is the
@@ -322,7 +447,6 @@ async function runRoutedCi(
     return;
   }
 
-  const source = memoizeSource(new GitHubPRSource({ prNumber, repo, cwd }));
   const changed = await source.getChangedFiles();
   const resolution = resolveScopes(
     manifest,
@@ -369,7 +493,6 @@ async function runRoutedCi(
     if (await bgReporter.checkBreakGlass()) {
       process.stderr.write(`CI reviewer: ${rootConfig.breakGlassMarker} detected; skipping.\n`);
       await bgReporter.postSkipNote();
-      await source.dispose();
       return;
     }
   } catch (error) {
@@ -379,21 +502,17 @@ async function runRoutedCi(
   }
 
   // Build ONE link context for all scopes (rate-limit hygiene): diff lines from the
-  // already-fetched changed files, base SHA via a single `gh pr view`.
+  // already-fetched changed files, base OID from the memoized PR metadata (the same
+  // immutable OID the trusted config root was materialized from).
   const link: LinkContext = {
     repo,
     prNumber,
     diffLines: buildDiffLineIndex(changed.map((file) => ({ path: file.path, patch: file.patch }))),
   };
   try {
-    const { stdout } = await run(
-      "gh",
-      ["pr", "view", String(prNumber), "--repo", repo, "--json", "baseRefOid"],
-      { cwd },
-    );
-    const oid = (JSON.parse(stdout) as { baseRefOid?: string }).baseRefOid;
-    if (oid) {
-      link.baseSha = oid;
+    const { baseOid } = await source.getMetadata();
+    if (baseOid) {
+      link.baseSha = baseOid;
     }
   } catch {
     // leave baseSha unset → out-of-diff findings degrade to plain text
@@ -419,7 +538,20 @@ async function runRoutedCi(
     const isDefault = scope.configDir === ".";
     let review: CoordinatorOutput;
     try {
-      const config = await loadScopeConfig(cwd, scopeDef, manifest, rootConfig);
+      // A scope whose config dir doesn't exist at the TRUSTED base commit is a
+      // scope this PR introduces: review it with the root config rather than
+      // failing the run on exactly that PR. The scope's own config (PR-owned,
+      // untrusted for this run) activates once it merges.
+      let effectiveScopeDef = scopeDef;
+      if (!hasScopeConfig(configRoot, scopeDef)) {
+        process.stderr.write(
+          `CI reviewer: [${scope.name}] no config at "${scopeDef.config}" in the PR's base ` +
+            `commit (new in this PR?); reviewing with the root config — the scope's config ` +
+            `takes effect after merge.\n`,
+        );
+        effectiveScopeDef = { ...scopeDef, config: "." };
+      }
+      const config = await loadScopeConfig(configRoot, effectiveScopeDef, manifest, rootConfig);
       review = await runReview(source, {
         config,
         mode: "ci",
@@ -427,6 +559,7 @@ async function runRoutedCi(
         route,
         includePaths: scope.files,
         passesBudgetMs: budget,
+        runsDir: workspaceRunsDir(cwd),
         onProgress: (message) => process.stderr.write(`[${scope.name}] ${message}\n`),
       });
     } catch (error) {
@@ -436,7 +569,6 @@ async function runRoutedCi(
     }
     results.push({ scope: scope.name, isDefault, review });
   }
-  await source.dispose();
 
   const reporterFor = (tag: string, withLink = false): GitHubReporter =>
     new GitHubReporter({

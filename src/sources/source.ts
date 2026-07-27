@@ -17,6 +17,11 @@ export interface ReviewSource {
    * agents also read surrounding source and the verifier re-reads cited files — and
    * those must be the PR-HEAD versions, not whatever happens to be checked out.
    * Return `null` (or omit the method) to just review the current working directory.
+   *
+   * Contract: `null` means "no tree to materialize" (a deliberate, safe
+   * fall-through to the current checkout). A materialization FAILURE throws —
+   * the review core fails closed on it in CI mode and falls back softly only in
+   * local mode, where the user's own checkout is an acceptable read root.
    */
   prepareReadRootAsync?(): Promise<PreparedReadRoot | null>;
 }

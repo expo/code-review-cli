@@ -40,9 +40,11 @@ Options:
   --no-fail            always exit 0, even on request-changes
   -h, --help           show this help
 
-Note: agents read the local working tree for surrounding context, so --pr uses the
-PR's diff (authoritative) but your checked-out files for context. For full fidelity
-on a PR, \`gh pr checkout <n>\` first, then run a plain \`ecr review\`.
+Note: with --repo (or in CI), --pr materializes the PR-head tree (pinned to its
+immutable commit, scrubbed of ambient runtime config) so reads match the PR; if
+that isn't possible, it falls back to your checked-out files with a warning.
+Config always loads from YOUR checkout in local runs — you are the trust
+principal here. In \`ecr ci\`, config loads from the PR's trusted base commit.
 
 Exit codes: 0 approve / approve-with-comments, 1 request-changes, 2 error.
 `;

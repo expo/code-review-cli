@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import type { LoadedAgent, LoadedConfig } from "../config/schema.js";
-import type { ReviewSource } from "../sources/source.js";
+import type { PreparedReadRoot, ReviewSource } from "../sources/source.js";
 import { prepareAuth } from "./auth.js";
 import { coordinate } from "./coordinator.js";
 import { writeRunLog } from "./log.js";
@@ -46,6 +46,14 @@ export interface ReviewRunOptions {
   includePaths?: string[];
   /** Wall-clock ceiling for all review passes. Default: today's PASSES_BUDGET_MS. */
   passesBudgetMs?: number;
+  /**
+   * Directory for the run log + patch workspace (`.runs/`). Defaults to
+   * `<configDir>/.runs` — correct when config lives in the checkout, WRONG when
+   * config was materialized into a temporary trusted root (removed on exit, and
+   * CI uploads the log from the workspace path). `ecr ci` pins this to the
+   * workspace checkout explicitly.
+   */
+  runsDir?: string;
 }
 
 /**
@@ -96,7 +104,7 @@ export async function runReview(
   const started = Date.now();
   const runId = makeRunId();
   const progress = options.onProgress ?? (() => {});
-  const runsRoot = path.join(config.configDir, ".runs");
+  const runsRoot = options.runsDir ?? path.join(config.configDir, ".runs");
   const runDir = path.join(runsRoot, runId);
   const logPath = path.join(runsRoot, "reviews.jsonl");
 
@@ -151,19 +159,28 @@ export async function runReview(
     return output;
   }
 
-  // Prepare auth BEFORE the chdir below: it doesn't depend on the working directory,
-  // and doing it first means nothing that can throw sits between the chdir and the
-  // guarded blocks — so a prepareAuth failure can't leak the worktree or leave cwd
-  // pointing at it.
-  const auth = await prepareAuth(config);
-
-  // Read the PR-head tree (not the current checkout) when the source can materialize
-  // it, so the agents' surrounding-source reads and the verifier's re-reads see the
-  // versions that match the diff. Config is already fully loaded in memory, so the
-  // chdir doesn't affect it; run-log/patch paths are absolute; gh/git calls already
-  // ran above. Fails soft to the current directory.
+  // Materialize the PR-head tree (not the current checkout) when the source can, so
+  // the agents' surrounding-source reads and the verifier's re-reads see the versions
+  // that match the diff. Config is already fully loaded in memory, so the chdir below
+  // doesn't affect it; run-log/patch paths are absolute; gh/git calls already ran
+  // above. Failure policy is MODE-DEPENDENT (see resolveReadRoot): CI fails closed —
+  // with a base-SHA checkout the fallback tree is pre-PR content, and silently
+  // reviewing/verifying that drops real findings — while a local run falls back to
+  // the user's own checkout with a warning.
   const originalCwd = process.cwd();
-  const readRoot = (await source.prepareReadRootAsync?.()) ?? null;
+  const readRoot = await resolveReadRoot(source, options.mode, progress);
+
+  // Prepare auth BEFORE the chdir below: it doesn't depend on the working directory,
+  // and doing it after readRoot but before chdir means a prepareAuth failure can't
+  // leave cwd pointing at the worktree — it only has the worktree itself to release.
+  let auth: Awaited<ReturnType<typeof prepareAuth>>;
+  try {
+    auth = await prepareAuth(config);
+  } catch (error) {
+    await readRoot?.cleanup();
+    throw error;
+  }
+
   const restoreCwd = async (): Promise<void> => {
     if (readRoot) {
       process.chdir(originalCwd);
@@ -871,6 +888,47 @@ export function reconcileSummary(summary: string, remaining: number): string {
     "this summary was written, so it may mention issues no longer listed below._\n\n" +
     summary
   );
+}
+
+/**
+ * Resolve the tree the review reads from, applying the mode's trust policy:
+ *
+ * - `null` from the source means "nothing to materialize" — reviewing the current
+ *   checkout is intended (local diffs, or `--pr` without a repo). Never an error.
+ * - A materialization FAILURE (throw) is fatal in CI: the checkout there is the
+ *   trusted BASE tree, and falling back to it would silently review and verify
+ *   pre-PR file contents (dropping real findings with no trace in the output).
+ *   The throw propagates to `ecr ci`'s catch, which posts the one terminal
+ *   "not reviewed" comment.
+ * - The same failure in local mode degrades softly to the user's own checkout —
+ *   the user is the trust principal there and sees the warning directly.
+ *
+ * Exported for tests.
+ */
+export async function resolveReadRoot(
+  source: ReviewSource,
+  mode: ReviewRunOptions["mode"],
+  progress: (message: string) => void,
+): Promise<PreparedReadRoot | null> {
+  if (!source.prepareReadRootAsync) {
+    return null;
+  }
+  try {
+    return await source.prepareReadRootAsync();
+  } catch (error) {
+    if (mode === "ci") {
+      throw new Error(
+        `Could not materialize the PR-head tree to review (and the CI checkout is the ` +
+          `trusted base, so reviewing it instead would silently review the wrong ` +
+          `contents): ${errorMessage(error)}`,
+      );
+    }
+    progress(
+      `Could not materialize the PR-head tree (${errorMessage(error)}); ` +
+        `reading the current checkout instead — file contents may not match the PR.`,
+    );
+    return null;
+  }
 }
 
 /** Capitalize the first letter (coverage notes read as sentences). */

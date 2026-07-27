@@ -39,10 +39,21 @@ jobs:
     # A reviewer failure must never fail the PR's checks.
     continue-on-error: true
     steps:
+      # SECURITY: check out the PR's immutable BASE commit, never the PR head or
+      # merge ref. Everything security-sensitive on this runner (`ecr verify-config`'s
+      # sweep, and any ambient files) therefore comes from a commit that already
+      # merged. `ecr ci` additionally enforces this itself: it materializes the base
+      # commit via the GitHub API for configuration and the head commit (scrubbed of
+      # runtime config) for source reads, so this checkout is defense in depth, not
+      # the only line. persist-credentials off — the CLI's own git fetches
+      # authenticate through `gh` from GH_TOKEN, so the token never lands in
+      # .git/config.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           # Shallow is enough — the reviewer gets the diff from the API (`gh`).
           fetch-depth: 1
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -52,16 +63,17 @@ jobs:
           # to save an empty cache and error).
           package-manager-cache: false
 
-      # SECURITY: this workflow checks out the PR's code, including every
+      # SECURITY: the TRUSTED BASE checkout above includes every
       # .expo-code-review/config.jsonc + routing.jsonc, whose auth.tokenEnv names the
       # env var the CLI forwards as the model credential. The canonical guard ships
       # with the CLI: `ecr verify-config` sweeps every config (root + routing + all
       # scopes, referenced or not) with the engine's real JSONC parser and refuses
       # unless tokenEnv appears exactly once, in a ROOT-owned file, equal to the
-      # expected value (repo var ECR_EXPECTED_TOKEN_ENV) — so a PR can't repoint it at
-      # another runner secret, sneak in a JSON-escaped key, or stage an unreferenced
-      # scope config with its own auth. This is layer 2; layer 1 is the runtime
-      # ECR_EXPECTED_TOKEN_ENV lock in `ecr ci` itself, so guard/loader drift fails safe.
+      # expected value (repo var ECR_EXPECTED_TOKEN_ENV) — so a config change can't
+      # repoint it at another runner secret, sneak in a JSON-escaped key, or stage an
+      # unreferenced scope config with its own auth. This is layer 2; layer 1 is the
+      # runtime ECR_EXPECTED_TOKEN_ENV lock in `ecr ci` itself, so guard/loader drift
+      # fails safe.
       #
       # This step MUST run BEFORE `ecr ci` (before any PR code is built or loaded).
       # Only setup-node (runtime install) precedes it; running the PUBLISHED package

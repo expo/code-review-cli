@@ -83,6 +83,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+          # Dismiss never fetches; gh authenticates from GH_TOKEN. Keep the token
+          # out of .git/config.
+          persist-credentials: false
 
       - name: Set up Node
         if: steps.cmd.outputs.run == 'true'

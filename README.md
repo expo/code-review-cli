@@ -218,16 +218,31 @@ your-monorepo/
   (e.g. `security`) are injected into every scope with `alwaysRun`, taken from the
   root roster — a scope defining a same-id agent gets the root one, so a team can't
   shadow the enforced reviewer with a weaker version on its own subtree.
-- **Config comes from the checked-out ref (documented tradeoff).** The scaffolded
-  auto workflow checks out the PR **merge ref**, so a PR *can* edit rosters, prompts,
-  and routing globs for its own advisory review — that only steers what the
-  comment-only reviewer says about that PR. What a PR can **never** do is touch
-  credentials: `auth` is locked by the scope-schema rejection, the CLI's runtime
-  `ECR_EXPECTED_TOKEN_ENV` check, and the guard step above, all three of which run
-  against whatever ref is checked out. A `/review`-command workflow that checks out
-  only the trusted base ref (see eas-cli's) closes the prompt-tampering vector too;
-  resolving config from the base ref on the auto path as well is on the
-  [roadmap](./ROADMAP.md).
+- **Configuration comes from the PR's trusted base commit.** In `ecr ci`, review
+  policy and reviewer configuration — `config.jsonc`, `routing.jsonc`, prompts,
+  models, and the auth mapping — load from the PR's immutable **base** commit,
+  materialized via the GitHub API. The PR head is untrusted data: it is
+  materialized separately (pinned to its immutable OID) purely as source content
+  to read and verify against. A PR editing rosters, prompts, or routing is
+  reviewed under the **previous** config; its changes activate after merge. If
+  the base commit can't be materialized, the run fails closed (one terminal
+  comment) — it never falls back to the checkout. A scope config that is new in
+  a PR is reviewed with the root config until it merges.
+- **The model runtime never sees PR-owned ambient config.** The head worktree the
+  agents read from is scrubbed of runtime configuration before the OpenCode
+  server starts: `opencode.json{,c}`, `.opencode/` (plugins), `AGENTS.md`,
+  `CLAUDE.md`, `.claude/`, `.mcp.json`, `.cursor*`, and `.env*` at every depth.
+  A PR can't install a plugin, MCP server, instruction file, or `.env` into the
+  process that holds the model credential and the comment token. (Changes to
+  those files are still reviewed — their diffs are inlined in the prompt — but a
+  finding citing one can't be re-read during verification; that's the tradeoff.)
+- **The scaffolded workflows check out only the base commit** with
+  `persist-credentials: false`; the CLI's own git fetches authenticate through
+  `gh` from `GH_TOKEN`, so the token never lands in `.git/config` or argv. The
+  CLI enforces the trust model itself, so a custom workflow that checks out the
+  PR head still gets base-commit configuration. The temporary escape hatch
+  `ecr ci --unsafe-config-from-head` restores the old behavior with a loud
+  security warning and will be removed on a minor boundary.
 
 Ownership is enforced with CODEOWNERS: `/.expo-code-review/routing.jsonc @your-infra`
 (the single authoritative router) and `/server/www/.expo-code-review/ @your-www-team`

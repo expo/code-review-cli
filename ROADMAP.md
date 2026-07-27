@@ -385,18 +385,18 @@ Untrusted input reaches the reviewer from three places; defenses by layer:
 - **Prior comments / dismissal state** — NOT fed back to the review agents (runs are
   stateless), so there is no injection path there. The embedded comment state is
   only ever read from the bot's own comment (GitHub write perms are the boundary).
-- **The reviewer's OWN config, prompts, and code** — the sharpest vector, and the
-  one not fully closed. The `pull_request` auto-workflow checks out the PR *merge
-  ref*, so a same-repo PR can rewrite `.expo-code-review/` (agent prompts,
-  `config.jsonc`, `tokenEnv`) **or the CLI source itself** and it runs with secrets.
-  In-PR mitigations shipped: the `auth.ts` denylist refuses to forward well-known
-  non-provider secrets even if config names them, and the security agent is told to
-  treat PR-supplied config as attacker-controlled. **Structural fix (post-merge
-  follow-up):** have the auto-workflow build + load config from the **trusted base
-  ref** (the diff still comes from `gh pr diff`), exactly like the `/review` command
-  workflow already does — or switch to the published package via `npx` (item 9).
-  This can't land in *this* PR because the reviewer package isn't on `main` yet, so
-  the base ref has nothing to build; it becomes available the moment this merges.
+- **The reviewer's OWN config, prompts, and code** — **structurally closed** (see
+  `PLAN-trusted-base-config.md`). `ecr ci` loads all review configuration (config,
+  routing, prompts, models, auth mapping) from the PR's immutable **base commit**,
+  materialized via the GitHub API, failing closed when it can't; the PR head is
+  materialized separately (OID-pinned) as source data only and is **scrubbed of
+  ambient runtime config** (`opencode.json{,c}`, `.opencode/` plugins, `AGENTS.md`,
+  `CLAUDE.md`, `.claude/`, `.mcp.json`, `.cursor*`, `.env*`) before the OpenCode
+  server starts, so a PR can't install a plugin/MCP/instruction file/`.env` into
+  the credentialed process. The scaffolded workflows check out only the base SHA
+  with `persist-credentials: false`, and the engine runs as the published npm
+  package. Earlier defense-in-depth stays: the `auth.ts` denylist, the
+  scope-schema auth rejection, `ECR_EXPECTED_TOKEN_ENV`, and `verify-config`.
 
 ## 4. Caching (LLM cost / quota / latency)
 

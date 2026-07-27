@@ -38,6 +38,13 @@ export interface ReviewMetadata {
   body: string;
   baseRef: string;
   headRef: string;
+  /**
+   * Immutable commit OIDs for the PR's base and head, when the source can resolve
+   * them (GitHub PRs). Materialization pins to these — never to branch names —
+   * so a rename/force-push between API calls can't swap the reviewed tree.
+   */
+  baseOid?: string;
+  headOid?: string;
 }
 
 export const FindingSchema = z.object({

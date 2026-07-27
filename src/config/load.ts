@@ -249,6 +249,22 @@ export interface LoadedScopeConfig extends LoadedConfig {
 }
 
 /**
+ * Whether a scope's own config dir exists under `root` — the same path
+ * `loadScopeConfig` reads (deliberately NOT via resolveConfigDir: ECR_CONFIG_DIR
+ * must never redirect scope subtrees). `ecr ci` uses this against the TRUSTED
+ * BASE root to give scopes that are new in a PR a defined miss behavior (review
+ * with the root config; the scope config activates after merge) instead of
+ * failing the run on exactly the PR that introduces the scope.
+ */
+export function hasScopeConfig(root: string, scope: RoutingScope): boolean {
+  if (scope.config === ".") {
+    return true;
+  }
+  const dir = path.join(root, scope.config, CONFIG_DIRNAME);
+  return existsSync(path.join(dir, "config.jsonc")) || existsSync(path.join(dir, "config.json"));
+}
+
+/**
  * Load one scope's fully-resolved config. The default scope (config '.') reuses
  * the root config unchanged except auth; a nested scope reads its own
  * `.expo-code-review/` via the scope schema (auth/breakGlass rejected by Zod).

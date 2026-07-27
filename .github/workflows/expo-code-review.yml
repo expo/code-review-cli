@@ -33,33 +33,43 @@ jobs:
     # A reviewer failure must never fail the PR's checks.
     continue-on-error: true
     steps:
+      # SECURITY: check out the PR's immutable BASE commit, never the PR head or
+      # merge ref. This repo self-reviews from source, so the base checkout is what
+      # keeps a PR from rewriting the ENGINE that reviews it — engine (and config)
+      # changes activate after merge, exactly like the trust model `ecr ci` enforces
+      # for config internally. persist-credentials off — the CLI's own git fetches
+      # authenticate through `gh` from GH_TOKEN, so the token never lands in
+      # .git/config.
       - uses: actions/checkout@v5
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           # Shallow is enough — the reviewer gets the diff from the API (`gh`).
           fetch-depth: 1
+          persist-credentials: false
 
       - uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # SECURITY: this workflow checks out the PR's code, including
-      # .expo-code-review/config.jsonc, whose auth.tokenEnv names the env var the CLI
-      # forwards as the model credential. `ecr verify-config` is the canonical guard
-      # (ships with the CLI): it parses every config with the real JSONC parser and
-      # refuses unless tokenEnv appears exactly once, in a ROOT-owned file, equal to
-      # the expected value (repo var ECR_EXPECTED_TOKEN_ENV) so a PR can't repoint it
-      # at another runner secret. This repo self-reviews from its OWN source (not the
-      # published package), so the guard runs from source too — same engine as `ci`.
+      # SECURITY: the TRUSTED BASE checkout above includes .expo-code-review/
+      # config.jsonc, whose auth.tokenEnv names the env var the CLI forwards as the
+      # model credential. `ecr verify-config` is the canonical guard (ships with the
+      # CLI): it parses every config with the real JSONC parser and refuses unless
+      # tokenEnv appears exactly once, in a ROOT-owned file, equal to the expected
+      # value (repo var ECR_EXPECTED_TOKEN_ENV). This repo self-reviews from BASE
+      # source, so the guard runs from that same base source — same engine as `ci`.
       - name: Guard config tokenEnv
         env:
           ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CODEX_OAUTH_ACCESS_TOKEN,OPENAI_API_KEY' }}
         run: bun run src/cli.ts verify-config
 
       - name: Run AI review
-        # True self-review: this repo IS the reviewer, so run the CLI from the PR's
-        # own source instead of the published npm package. `bun run` puts
-        # node_modules/.bin (which has the `opencode` binary) on PATH.
+        # True self-review: this repo IS the reviewer, so run the CLI from source —
+        # the trusted BASE commit's source (see the checkout above), never the PR's.
+        # `bun run` puts node_modules/.bin (which has the `opencode` binary) on PATH.
+        # `ecr ci` materializes the PR head itself (OID-pinned, scrubbed of ambient
+        # runtime config) for the reviewers' source reads.
         run: bun run src/cli.ts ci
         continue-on-error: true
         env:
