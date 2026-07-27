@@ -294,3 +294,38 @@ test("checkProviderAuth accepts a well-formed oauth token", () => {
   });
   expect(r.ok).toBe(true);
 });
+
+test("a well-known provider key env may only feed that provider", () => {
+  // The tokenEnv guard locks NAMES; this closes the mapping hole — a PR keeping the
+  // locked name but pointing its provider/upstream elsewhere would send one
+  // provider's key to a different provider.
+  const redirected = checkProviderAuth(
+    cfg({
+      mode: "api-key",
+      provider: "openai-api",
+      tokenEnv: "OPENAI_API_KEY",
+      upstream: "anthropic",
+    }),
+    { OPENAI_API_KEY: "sk-proj-xxx" },
+  );
+  expect(redirected.ok).toBe(false);
+  expect(redirected.detail).toContain("openai's");
+  // …while the legitimate mappings stay allowed: the provider itself…
+  expect(
+    checkProviderAuth(cfg({ mode: "api-key", provider: "openai", tokenEnv: "OPENAI_API_KEY" }), {
+      OPENAI_API_KEY: "sk-proj-xxx",
+    }).ok,
+  ).toBe(true);
+  // …and an alias whose UPSTREAM owns the key env.
+  expect(
+    checkProviderAuth(
+      cfg({
+        mode: "api-key",
+        provider: "openai-api",
+        tokenEnv: "OPENAI_API_KEY",
+        upstream: "openai",
+      }),
+      { OPENAI_API_KEY: "sk-proj-xxx" },
+    ).ok,
+  ).toBe(true);
+});

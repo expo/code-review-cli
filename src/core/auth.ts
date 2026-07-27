@@ -167,6 +167,25 @@ export function checkAuthEntry(
     };
   }
 
+  // A well-known provider key env may only feed THAT provider. The tokenEnv guard
+  // locks which env names are forwarded, but not where they go — without this, a
+  // PR-supplied auth entry could keep the locked name (e.g. OPENAI_API_KEY) and
+  // point its provider/upstream somewhere else, sending one provider's key to a
+  // different provider.
+  if (tokenEnv) {
+    const keyOwner = Object.entries(PROVIDER_KEY_ENV).find(([, env]) => env === tokenEnv)?.[0];
+    if (keyOwner && keyOwner !== provider && keyOwner !== upstream) {
+      return {
+        ok: false,
+        detail:
+          `auth for ${provider} names tokenEnv "${tokenEnv}", which is ${keyOwner}'s ` +
+          `well-known key env — refusing to send one provider's credential to another. ` +
+          `Use a credential minted for ${provider}${upstream ? ` (upstream ${upstream})` : ""}, ` +
+          `or fix the provider/upstream mapping.`,
+      };
+    }
+  }
+
   if (mode === "oauth") {
     if (!tokenEnv) {
       return {
