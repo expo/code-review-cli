@@ -19,6 +19,8 @@ export interface VerificationResult {
   dropped: Array<{ finding: Finding; reason: string }>;
   cost: number;
   tokens: TokenUsage;
+  /** provider/model that actually answered the verify calls (see PromptResult.model). */
+  model?: string;
 }
 
 /**
@@ -103,6 +105,7 @@ export async function verifyFindings(
 ): Promise<VerificationResult> {
   const dropped: Array<{ finding: Finding; reason: string }> = [];
   let cost = 0;
+  let model: string | undefined;
   const tokens: TokenUsage = {};
 
   // Phase 1 — deterministic quote-grounding for every finding.
@@ -129,6 +132,7 @@ export async function verifyFindings(
           value,
           cost: verifyCost,
           tokens: verifyTokens,
+          model: verifyModel,
         } = await promptAndParse(
           handle,
           {
@@ -143,6 +147,7 @@ export async function verifyFindings(
         );
         cost += verifyCost;
         addTokenUsage(tokens, verifyTokens);
+        model = verifyModel ?? model;
         if (value.verified) {
           verdicts.set(finding, "keep");
         } else {
@@ -164,5 +169,5 @@ export async function verifyFindings(
 
   // Preserve original order.
   const kept = findings.filter((finding) => verdicts.get(finding) === "keep");
-  return { kept, dropped, cost, tokens };
+  return { kept, dropped, cost, tokens, model };
 }

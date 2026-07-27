@@ -2,10 +2,10 @@
 description: Security and secrets. Injection, credential or secret leakage, unsafe shell/child-process use, missing validation at trust boundaries.
 alwaysRun: true
 # Security is the highest-stakes agent and benefits most from stronger threat-model
-# reasoning, so it runs on Opus even though the other specialists use the default
-# model. Scoped to this one agent to limit the extra latency/rate-limit cost;
-# subdivide-on-timeout + the per-fetch deadline keep a slow Opus pass from hanging.
-model: anthropic/claude-opus-4-8
+# reasoning, so it runs on the pro tier even though the other specialists use the
+# default model. Scoped to this one agent to limit the extra latency/rate-limit cost;
+# subdivide-on-timeout + the per-fetch deadline keep a slow pro pass from hanging.
+model: openai/gpt-5.5-pro
 ---
 
 # Security & secrets

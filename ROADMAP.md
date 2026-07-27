@@ -585,8 +585,13 @@ Still open:
 
 Current: `config.jsonc` `model` is the default; per-agent and `coordinator.md`
 frontmatter `model:` override it; `REVIEWER_MODEL` env is a global override.
-Precedence: env > frontmatter > config default. In use: Sonnet 5 for the
-specialists + cross-file pass, Haiku for the coordinator.
+Precedence: env > frontmatter > config default. In use (since 2026-07-26):
+GPT-5.5 for the specialists + cross-file pass, GPT-5.4-mini for the coordinator.
+(Previously "Claude via subscription OAuth" — which, it turned out, never
+actually ran: OpenCode has no Anthropic OAuth support (Anthropic prohibits
+subscription tokens in third-party tools), so it silently substituted its free
+gateway model in CI. That incident drove the model-preflight, `agentModels`
+run-log tracking, and the per-pass "Models used" reporting.)
 
 **Decision (2026-07-22): do NOT auto-map to a cross-provider "equivalent"** (e.g.
 silently swapping `anthropic/claude-sonnet-5` for an OpenAI model when only OpenAI
@@ -607,15 +612,53 @@ Wanted instead:
   review output** ("primary X unavailable; this pass ran on fallback Y") — never
   silent. Would need to be tier-aware given the mixed-model setup (a single global
   fallback would flatten the specialist-vs-coordinator model distinction).
-- **First-class multi-provider support (Anthropic / OpenAI / others).** Today only
-  Anthropic has clean config-level auth (`api-key` / `oauth`); using GPT or another
-  provider works only through the `REVIEWER_MODEL` env override plus a manual
-  `opencode auth login`. Make provider + auth selection first-class in `config.jsonc`
-  (and per-agent frontmatter) so a repo can, from config alone, run entirely on
-  OpenAI, or mix — e.g. GPT for one agent and Claude for another, or a GPT
-  coordinator over Claude specialists. Both Anthropic and OpenAI should be equally
-  supported, with room for more (Google, OpenRouter, local). Pairs with the
-  fail-fast provider-auth check above.
+- ✅ **First-class multi-provider support — mixed credentials (shipped 2026-07-26).**
+  `auth` now accepts a per-provider map (`auth.providers`) alongside the legacy
+  single object: each entry is `{mode, tokenEnv, upstream?}`, normalized internally
+  to a list. `upstream` synthesizes an alias provider in the OpenCode config
+  (`npm` per upstream, `options.apiKey: {env:tokenEnv}`, models = the ids the
+  roster references) so ONE upstream can be reached with TWO credentials at once —
+  the motivating setup: `openai` on a ChatGPT/Codex subscription (`mode: "oauth"`,
+  tokenEnv = the refresh token; OpenCode's codex plugin mints/refreshes access
+  tokens) for the default models, plus `openai-api` (upstream `openai`) holding a
+  metered API key for the pro tier the subscription excludes (`gpt-5.5-pro`).
+  Security guard updated to SET semantics: `ECR_EXPECTED_TOKEN_ENV` /
+  `verify-config --expected` take a comma-separated set that must equal the
+  declared tokenEnvs exactly (root-locked, no duplicates, one root file), and the
+  runtime lock in `ecr ci` compares the same set. OpenAI's policy allows
+  subscription auth in third-party tools (unlike Anthropic's). Verified locally
+  2026-07-26: subscription provider registers with the filtered model list,
+  `gpt-5.5` answers at $0, the `openai-api/gpt-5.5-pro` alias answers on the key,
+  and refresh-token REUSE across runs works — a static CI secret is viable.
+  *Open:* alias models are config-declared so OpenCode reports their cost as $0
+  (token counts correct; the OpenAI project dashboard is the spend source of
+  truth) — could be fixed by embedding models.dev pricing in the synthesized
+  block; per-agent mixing beyond the alias mechanism (Google, OpenRouter, local).
+
+## Claude Code (`claude -p`) as an alternative review engine
+
+OpenCode cannot use a Claude Pro/Max subscription (Anthropic prohibits
+subscription OAuth tokens in third-party tools, and OpenCode ships no Anthropic
+OAuth support), so today Claude is reachable only via a metered API key. But
+**Claude Code itself is first-party**: `claude -p` (headless print mode, with
+`--output-format json`, `--allowedTools`, and per-invocation system prompts) can
+run the same specialist/coordinator passes under a developer's existing
+subscription login.
+
+- **Consider a pluggable engine layer:** `opencode` (current) vs `claude -p` per
+  run, selected by config or auto-detected.
+- **Use `claude -p` locally by default** (i.e. when not on CI): developers already
+  have Claude Code installed and logged in, so `ecr review` would need zero extra
+  credential setup and zero per-token cost — the subscription covers it, sanctioned.
+- **CI keeps the current OpenCode + API-key path** (deterministic, secret-scoped);
+  `claude setup-token` + the official `claude-code-action` is the sanctioned
+  subscription route in CI if we ever want it, but it means adopting the Agent SDK
+  rather than shelling out.
+- Open questions: mapping the agent model (restricted tools read/grep/glob/list,
+  JSON-only output, per-agent system prompts) onto `claude -p` flags; parity for
+  token/cache/cost reporting (`agentModels`, run logs); stall/timeout handling
+  outside OpenCode's poll loop; and whether the coordinator/verifier stay on one
+  engine while specialists use another.
 
 ## Full-repository review (audit mode)
 

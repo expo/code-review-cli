@@ -41,21 +41,33 @@ Scaffold, add credentials, verify.
 npx @expo/code-review-cli init
 ```
 
-Then give it model credentials. **Recommended: a Claude Pro/Max subscription** — the
-scaffolded config uses OAuth by default, so just mint a token and export it under the
-env var your `config.jsonc`'s `auth.tokenEnv` names:
+Then give it model credentials. **Default: an OpenAI API key** — the scaffolded
+config reviews with GPT via `auth.mode "api-key"`.
+
+Create the key in the OpenAI dashboard, scoped to the minimum the reviewer needs:
+
+- Put it in a **dedicated project** (not "Default project") so you can set a
+  monthly budget + alert on it and see the reviewer's spend in isolation.
+- Make it a **Restricted** key with exactly two permissions, both under *Model
+  capabilities*: **Responses (/v1/responses) → Request** and **Chat completions
+  (/v1/chat/completions) → Request**. Everything else — including *List models* —
+  stays **None** (the reviewer resolves model ids from its own catalog and only
+  ever makes inference requests).
 
 ```bash
-# Mint a Claude Pro/Max token (prints an sk-ant-oat… token)
-claude setup-token
-# Export it under the env var your config.jsonc's auth.tokenEnv names
-export ANTHROPIC_OAUTH_API_KEY=sk-ant-oat...
+export OPENAI_API_KEY=sk-proj-...
 # Check env, config, and credentials
 npx @expo/code-review-cli doctor
 ```
 
-Prefer an Anthropic **API key**, or **OpenAI/GPT** or another provider? See
-[Other providers & auth modes](#other-providers) at the bottom.
+In CI, store the same key as the `OPENAI_API_KEY` repo secret (the scaffolded
+workflow forwards it).
+
+**Have a ChatGPT Plus/Pro (Codex) subscription? Use both.** The recommended
+production setup pairs the subscription (runs the default models at no marginal
+cost) with the usage-based key (covers only the pro-tier models the subscription
+excludes) — see [the mixed setup](#other-providers) below. Prefer
+**Anthropic/Claude** or another provider? Same section.
 
 ### Reviewing (already configured)
 
@@ -142,7 +154,7 @@ your-monorepo/
   // Central guardrails every scope inherits and CANNOT override.
   "defaults": {
     // The ONLY place auth/tokenEnv is honored (besides the root config.jsonc).
-    "auth": { "mode": "oauth", "provider": "anthropic", "tokenEnv": "ANTHROPIC_OAUTH_API_KEY" },
+    "auth": { "mode": "api-key", "provider": "openai", "tokenEnv": "OPENAI_API_KEY" },
     "enforceAgents": ["security"],            // always runs on every scope, roster or not
     "commentTag": "expo-ai-code-reviewer"     // per-scope markers derive from this
   },
@@ -160,7 +172,7 @@ your-monorepo/
 // server/www/.expo-code-review/config.jsonc  (the www team owns this)
 {
   // NO "auth" block — locked centrally; a tokenEnv here is rejected by loader + CI guard.
-  "model": "anthropic/claude-sonnet-5",
+  "model": "openai/gpt-5.5",
   "policy": { "includeSuggestions": false },
   "noise":  { "additionalIgnores": ["server/www/**/__generated__/**"] }
   // shared.md, coordinator.md, agents/*.md live beside this file — the www team's roster.
@@ -249,7 +261,7 @@ Ownership is enforced with CODEOWNERS: `/.expo-code-review/routing.jsonc @your-i
   suppressed.
 
 Built on the [OpenCode](https://opencode.ai) SDK, which spawns the model provider
-and applies Anthropic prompt caching automatically.
+and applies the provider's prompt caching automatically.
 
 </details>
 
@@ -269,16 +281,17 @@ cache, in three places:
   a CI artifact) with the same totals plus per-pass `agentTokens`, the raw
   per-agent findings, coverage notes, and what the verifier dropped.
 
-**How the caching works.** Anthropic prompt caching is a *prefix match*: the
-provider caches the rendered prompt up to a marker, and any byte change anywhere
+**How the caching works.** Provider prompt caching is a *prefix match*: the
+provider caches the rendered prompt up to a point, and any byte change anywhere
 in that prefix invalidates everything after it. The reviewer is laid out so the
 prefix is stable — the system prompt (`shared.md` + the agent's own `.md`) is
 byte-identical for every chunk an agent reviews, while the volatile parts (the
 diff, file lists, PR metadata) travel in the user message *after* the prefix and
-never touch it. The first call per agent **writes** the cache (`cache write`,
-billed ~1.25× the input price); every later chunk in the run **reads** it
-(`cache read`, ~0.1× the input price). Cache entries live ~5 minutes and are
-refreshed on use, which comfortably covers a run's concurrent calls.
+never touch it. OpenAI caches automatically (no write premium; cached input is
+billed at a steep discount and shows up as `cache read`); Anthropic charges a
+small premium to **write** the cache (~1.25× input) and ~0.1× input to **read**
+it. Entries live minutes, refreshed on use — comfortably covering a run's
+concurrent calls.
 
 **Reading the numbers.** Hit rate = `cache read / (cache read + input)` — the
 share of prompt tokens served from cache instead of being reprocessed at full
@@ -317,7 +330,7 @@ show writes (there is nothing to re-read within the run).
 ---
 description: One line the router uses to decide relevance.
 alwaysRun: true        # run even when the router would skip this agent
-model: anthropic/claude-sonnet-5     # override the default model
+model: openai/gpt-5.5-pro     # override the default model
 temperature: 0.1
 ---
 
@@ -326,14 +339,14 @@ temperature: 0.1
 
 For a real-world example, see eas-cli's
 [`.expo-code-review/`](https://github.com/expo/eas-cli/tree/main/.expo-code-review)
-— correctness/security/consistency agents, Opus for security + the coordinator, and
-per-repo `noise.additionalIgnores`.
+— correctness/security/consistency agents, a stronger model for security + the
+coordinator, and per-repo `noise.additionalIgnores`.
 
 `config.jsonc` (JSONC — comments + trailing commas supported):
 
 ```jsonc
 {
-  "model": "anthropic/claude-sonnet-5",       // default model for the specialists
+  "model": "openai/gpt-5.5",                  // default model for the specialists
   "policy": { "includeSuggestions": false },  // suppress suggestion-severity findings
   "chunk": { "maxChangedLines": 1000, "maxFiles": 20, "concurrency": 6 },
   "noise": { "additionalIgnores": ["packages/*/build/**"] },
@@ -342,8 +355,8 @@ per-repo `noise.additionalIgnores`.
               "skipLabel": "ai-review:skip" }, // "label" (only labeled PRs)
   "breakGlass": { "marker": "/skip-review" }, // PR body marker that skips the review
   "commentTag": "expo-ai-code-reviewer",      // hidden tag used to find/update the comment
-  "auth": { "mode": "oauth", "provider": "anthropic",
-            "tokenEnv": "ANTHROPIC_OAUTH_API_KEY" }
+  "auth": { "mode": "api-key", "provider": "openai",
+            "tokenEnv": "OPENAI_API_KEY" }
 }
 ```
 
@@ -357,14 +370,19 @@ Precedence: **`REVIEWER_MODEL` env** (global override) → per-file **frontmatte
 setup, and a developer can override everything locally.
 
 - **Specialist agents** (correctness/security/consistency) benefit from a
-  reasoning-tier model — **Sonnet** is the quality/speed sweet spot (default for
-  correctness/consistency). **Opus** finds more but is slower and more
-  rate-limited, so scope it to the highest-stakes agent: **security runs on Opus**
-  (set in `security.md` frontmatter), the rest on Sonnet.
+  reasoning-tier model — **`openai/gpt-5.5`** is the quality/speed sweet spot
+  (the scaffolded default). The **pro tier** finds more but is slower and more
+  expensive, so scope it to the highest-stakes agent: **security runs on
+  `openai/gpt-5.5-pro`** (set in `security.md` frontmatter), the rest on the default.
 - **The coordinator** makes the final call (dedupe / re-judge / decide) — worth a
   strong model; set it in `coordinator.md` frontmatter.
 - If latency/timeouts dominate on big PRs, moving the specialists to a faster model
-  is the most direct lever (a real recall tradeoff — measure it).
+  (e.g. `openai/gpt-5.4-mini`) is the most direct lever (a real recall tradeoff —
+  measure it).
+- **Every run logs which model actually answered each pass** — in the job log
+  (`Models used — …`), the Actions step summary table, and the run log's
+  `agentModels` — and warns loudly if a pass ran on a different model than
+  configured, so a provider-side substitution can never pass unnoticed.
 
 There is no automatic cross-provider "equivalent" fallback — that would silently
 change which model reviewed your code. Use an explicit override instead.
@@ -464,21 +482,56 @@ visible even in CI (where the run log is ephemeral).
 <details>
 <summary><b>Other providers & auth modes</b></summary>
 
-The recommended setup is a Claude Pro/Max subscription (OAuth) — see Usage above.
-Alternatives, all set in `config.auth` (credentials come from OpenCode):
+The recommended setup is an OpenAI API key — see Usage above. Alternatives, all
+set in `config.auth` (credentials come from OpenCode):
 
-- **Anthropic API key** — set `auth.mode` to `"api-key"` and point `tokenEnv` at the
-  env var holding the key (e.g. `ANTHROPIC_API_KEY`); it's sent as `x-api-key`. Omit
-  the `auth` block entirely to fall back to OpenCode's own login / `ANTHROPIC_API_KEY`.
-- **OAuth (Pro/Max)** — `tokenEnv` holds an `sk-ant-oat…` token from
-  `claude setup-token` (*not* an x-api-key); it's written to an isolated OpenCode
-  `auth.json` as a bearer credential, using the native subscription path.
-- **OpenAI / GPT, or another provider** — the current path is the `REVIEWER_MODEL`
+- **ChatGPT/Codex subscription (OAuth) + usage-based API key — the recommended
+  mix.** OpenAI permits subscription auth in third-party tools, and OpenCode
+  ships the plugin for it — so the reviewer runs its default models on the
+  subscription (zero marginal cost) and reserves the metered key for pro-tier
+  models the subscription doesn't offer (`gpt-5.5-pro` is subscription-excluded).
+  Use the per-provider map form:
+
+  ```jsonc
+  "auth": { "providers": {
+    "openai":     { "mode": "oauth",   "tokenEnv": "CODEX_OAUTH_REFRESH_TOKEN" },
+    "openai-api": { "mode": "api-key", "tokenEnv": "OPENAI_API_KEY", "upstream": "openai" }
+  } }
+  ```
+
+  `openai-api` is an alias the reviewer synthesizes in the OpenCode config
+  (`upstream` names the SDK it's backed by): agents reference `openai-api/gpt-5.5-pro`
+  in frontmatter while everything else stays on `openai/gpt-5.5`. Notes:
+
+  - **The oauth `tokenEnv` holds the refresh token** from an `opencode auth login`
+    ChatGPT sign-in (copy `.openai.refresh` out of OpenCode's `auth.json`) —
+    access tokens are short-lived, so the refresh token is the durable secret and
+    OpenCode mints access tokens on demand. Refresh-token reuse across runs is
+    verified, so a static CI secret works.
+  - **The API key needs the same two permissions** as the default setup above
+    (Responses + Chat completions → Request; all else None), in a budget-capped
+    project.
+  - **In CI**, set the `ECR_EXPECTED_TOKEN_ENV` repo variable to the
+    comma-separated set of both env names
+    (`CODEX_OAUTH_REFRESH_TOKEN,OPENAI_API_KEY`) and pass both secrets in the
+    workflow.
+  - **Auditability**: every pass logs which provider/model answered it (job log,
+    step summary, run log), so the subscription/API split is visible per run.
+    One caveat: OpenCode can't price alias models (they're config-declared), so
+    pro passes report `$0` in the run log's cost column — token counts are
+    correct, and the OpenAI project dashboard is the source of truth for spend.
+- **Anthropic / Claude (API key)** — set `auth.provider` to `"anthropic"`, point
+  `tokenEnv` at the env var holding a Console API key (e.g. `ANTHROPIC_API_KEY`),
+  and use `anthropic/...` model ids; the key is sent as `x-api-key`. Note that
+  Claude Pro/Max **subscription** tokens cannot be used here: Anthropic prohibits
+  them in third-party tools, and OpenCode has no Anthropic OAuth support — only an
+  API key works.
+- **Another provider** — the current path is the `REVIEWER_MODEL`
   env override: `opencode auth login` once (pick the provider), then run with
-  e.g. `REVIEWER_MODEL=openai/gpt-5.4-mini-fast`. It overrides every agent's model
-  and uses your OpenCode login, so no `auth` block is needed. *(First-class
-  per-provider config — Anthropic/OpenAI/others in `config.jsonc`, and mixing them
-  per agent — is on the [roadmap](./ROADMAP.md).)*
+  e.g. `REVIEWER_MODEL=google/gemini-3-pro`. It overrides every agent's model
+  and uses your OpenCode login, so no `auth` block is needed. *(Per-agent
+  provider mixing beyond the alias mechanism above is on the
+  [roadmap](./ROADMAP.md).)*
 
 There is no shared fallback key; if a run fails for lack of credentials, authenticate
 a provider in OpenCode. `ecr doctor` diagnoses setup.
@@ -487,11 +540,11 @@ a provider in OpenCode. `ecr doctor` diagnoses setup.
 would otherwise fail every pass identically — a run that spends its whole budget
 rediscovering one fixable thing, then reports N coverage gaps. So before any pass runs:
 
-- **The OAuth token's shape is checked.** OpenCode refuses a malformed credential by
+- **The credential's shape is checked.** OpenCode refuses a malformed credential by
   dropping the provider entirely, which then surfaces as "model not found" for every
-  model, with nothing pointing at the token. A truncated value, surrounding whitespace,
-  a leading `sk-` lost in a copy-paste, or an API key where `auth.mode` is `"oauth"` is
-  now rejected by name.
+  model, with nothing pointing at the credential. A truncated value, surrounding
+  whitespace, or a token that can't work for the configured `auth.mode` is rejected
+  by name.
 - **Configured model ids are checked against the running server**, so a typo or an id
   the provider doesn't have is reported once, up front, with the close matches.
 - **`ecr doctor` reports the `opencode` version actually in use** and warns when a

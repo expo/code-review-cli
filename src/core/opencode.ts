@@ -30,6 +30,15 @@ export interface PromptResult {
   truncated?: boolean;
   /** Token usage for the model request that produced this reply (for cache metrics). */
   tokens?: TokenUsage;
+  /**
+   * The provider/model that ACTUALLY answered, as reported by the server — not what
+   * was configured. OpenCode silently substitutes a default when an agent's model id
+   * is empty or unusable, so without this a run can review with a completely different
+   * model than the config names and nothing says so. (It did: an empty REVIEWER_MODEL
+   * wiped every configured id and reviews ran on whatever provider happened to be
+   * available.) Undefined when the server didn't report it.
+   */
+  model?: string;
 }
 
 /** Sum token usage across attempts (for per-task/run totals). */
@@ -111,7 +120,48 @@ export function buildOpencodeConfig(config: LoadedConfig): Record<string, unknow
       "You are the review coordinator. Follow the user message exactly and return only the requested JSON.",
     tools: COORDINATOR_TOOLS,
   };
-  return { $schema: "https://opencode.ai/config.json", agent };
+
+  // Synthesize a provider block for each upstream-alias auth entry, so one
+  // upstream can be reached with two credentials at once (e.g. "openai" on a
+  // ChatGPT/Codex subscription for the default models, plus an "openai-api"
+  // alias holding a metered API key for pro-tier models the subscription
+  // doesn't offer). The alias's model list is exactly the ids the roster
+  // references under that provider — OpenCode needs custom providers' models
+  // declared, and declaring only what's used keeps the preflight meaningful.
+  const provider: Record<string, unknown> = {};
+  const referencedModels = [
+    ...config.agents.map((reviewer) => reviewer.model),
+    config.coordinator.model,
+  ];
+  for (const entry of config.auth) {
+    if (!entry.upstream || !entry.tokenEnv) {
+      continue;
+    }
+    const models: Record<string, unknown> = {};
+    for (const id of referencedModels) {
+      const slash = id.indexOf("/");
+      if (slash > 0 && id.slice(0, slash) === entry.provider) {
+        models[id.slice(slash + 1)] = {};
+      }
+    }
+    provider[entry.provider] = {
+      npm:
+        entry.upstream === "openai"
+          ? "@ai-sdk/openai"
+          : entry.upstream === "anthropic"
+            ? "@ai-sdk/anthropic"
+            : "@ai-sdk/openai-compatible",
+      name: entry.provider,
+      options: { apiKey: `{env:${entry.tokenEnv}}` },
+      models,
+    };
+  }
+
+  return {
+    $schema: "https://opencode.ai/config.json",
+    agent,
+    ...(Object.keys(provider).length > 0 ? { provider } : {}),
+  };
 }
 
 /** hey-api style responses come back as { data, error }; unwrap or throw. */
@@ -195,6 +245,14 @@ export interface UnknownModel {
   suggestions: string[];
 }
 
+/** `provider/model` as the server reported it, or undefined if it reported neither. */
+export function formatModel(providerID?: string, modelID?: string): string | undefined {
+  if (!providerID && !modelID) {
+    return undefined;
+  }
+  return `${providerID ?? "?"}/${modelID ?? "?"}`;
+}
+
 /** Providers the server actually has, as `{ providerID: [modelID, …] }`. */
 export type ProviderModels = Record<string, string[]>;
 
@@ -209,9 +267,14 @@ export type ProviderModels = Record<string, string[]>;
 export function findUnknownModels(
   models: string[],
   available: ProviderModels,
-  /** The provider we supplied a credential for, if any (see reason: "credential"). */
-  credentialedProvider?: string,
+  /** Provider(s) we supplied a credential for, if any (see reason: "credential"). */
+  credentialedProvider?: string | string[],
 ): UnknownModel[] {
+  const credentialed = new Set(
+    typeof credentialedProvider === "string"
+      ? [credentialedProvider]
+      : (credentialedProvider ?? []),
+  );
   const unknown: UnknownModel[] = [];
   for (const model of new Set(models)) {
     // OpenCode model ids are `provider/model`; a model id may itself contain slashes
@@ -225,7 +288,7 @@ export function findUnknownModels(
         model,
         // We configured this provider's credential and the server still doesn't
         // offer it ⇒ the credential was refused, not the provider misnamed.
-        reason: providerID === credentialedProvider ? "credential" : "provider",
+        reason: credentialed.has(providerID) ? "credential" : "provider",
         suggestions: Object.keys(available).sort(),
       });
       continue;
@@ -261,38 +324,44 @@ export async function fetchProviderModels(handle: OpencodeHandle): Promise<Provi
 /** Human-readable, copy-pasteable explanation of unresolvable model ids. */
 export function formatUnknownModels(
   unknown: UnknownModel[],
-  auth?: { mode: string; provider: string; tokenEnv?: string },
+  auths?:
+    | { mode: string; provider: string; tokenEnv?: string }
+    | Array<{ mode: string; provider: string; tokenEnv?: string }>,
 ): string {
   // A refused credential is one fact about the run, not one per model: report it once
   // and name the token to check, rather than repeating it for every configured model.
   const refused = unknown.filter((entry) => entry.reason === "credential");
   if (refused.length > 0) {
-    const provider = auth?.provider ?? refused[0]!.model.split("/")[0];
+    const refusedProvider = refused[0]!.model.split("/")[0];
+    const entries = auths ? (Array.isArray(auths) ? auths : [auths]) : [];
+    const auth = entries.find((entry) => entry.provider === refusedProvider) ?? entries[0];
+    const provider = auth?.provider ?? refusedProvider;
     const tokenEnv = auth?.tokenEnv;
-    // Two very different causes produce this identical symptom, and naming only the
-    // token sends people to regenerate a perfectly good one (it did exactly that to
-    // us). Rate limiting is listed FIRST because it's the one that looks like a bad
-    // credential but isn't fixed by replacing it.
+    // Do NOT blame the token alone: the most common causes have nothing to do with
+    // the credential's validity (see below). An earlier version of this message sent
+    // us to re-issue two perfectly good tokens.
+    const oauth = auth?.mode === "oauth";
+    const deadOauth = oauth && provider === "anthropic";
     return (
       `The OpenCode server does not offer the "${provider}" provider, even though this run ` +
       `supplied a ${auth?.mode ?? "configured"} credential for it. OpenCode drops a provider whose ` +
       `credential it could not use, which makes every ${provider} model look nonexistent: ` +
       `${refused.map((entry) => entry.model).join(", ")}.\n` +
-      `Two things cause this, and they need opposite fixes:\n` +
-      `  1. The account is RATE LIMITED (HTTP 429). A subscription credential that is over its ` +
-      `usage window is refused exactly like an invalid one, and no amount of re-issuing helps — ` +
-      `you have to wait it out. Check with:\n` +
-      `       curl -s -o /dev/null -w '%{http_code}\\n' https://api.anthropic.com/v1/messages \\\n` +
-      `         -H "Authorization: Bearer $${tokenEnv ?? "TOKEN"}" -H "anthropic-beta: oauth-2025-04-20" \\\n` +
-      `         -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \\\n` +
-      `         -d '{"model":"claude-sonnet-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}'\n` +
-      `     429 = rate limited (wait); 401 = the credential really is bad; 200 = the credential is ` +
-      `fine and the problem is how it reached OpenCode.\n` +
+      `The credential itself is often FINE. Check these in order:\n` +
+      (deadOauth
+        ? `  1. anthropic OAuth cannot work through OpenCode at all. Anthropic does not permit ` +
+          `Pro/Max subscription tokens in third-party tools, and OpenCode (since 1.3.0) ships no ` +
+          `anthropic OAuth support — an oauth credential never registers the provider, no matter ` +
+          `how valid the token is. Switch auth in .expo-code-review/config.jsonc to ` +
+          `{ "mode": "api-key", "provider": "anthropic", "tokenEnv": "ANTHROPIC_API_KEY" } with a ` +
+          `Console API key, or run with REVIEWER_MODEL set to a model you are logged into ` +
+          `(e.g. REVIEWER_MODEL=openai/gpt-5.5).\n`
+        : "") +
       (tokenEnv
-        ? `  2. The credential is wrong for the mode. auth.mode "oauth" expects the token ` +
-          `\`claude setup-token\` prints; a plain API key belongs to auth.mode "api-key". A truncated ` +
-          `or half-pasted ${tokenEnv} fails the same way.\n`
-        : `  2. The credential is wrong for the configured auth.mode.\n`) +
+        ? `  ${deadOauth ? "2" : "1"}. The credential is wrong for the mode. ` +
+          `auth.mode "api-key" expects a plain API key for ${provider}; an OAuth/subscription ` +
+          `token is not an API key. A truncated or half-pasted ${tokenEnv} fails the same way.\n`
+        : `  ${deadOauth ? "2" : "1"}. The credential is wrong for the configured auth.mode.\n`) +
       `Providers the server does offer: ${refused[0]!.suggestions.join(", ") || "(none)"}.`
     );
   }
@@ -318,6 +387,7 @@ export function formatUnknownModels(
 export async function assertModelsResolvable(
   handle: OpencodeHandle,
   models: string[],
+  auths?: Array<{ mode: string; provider: string; tokenEnv?: string }>,
 ): Promise<void> {
   let available: ProviderModels;
   try {
@@ -328,9 +398,13 @@ export async function assertModelsResolvable(
   if (Object.keys(available).length === 0) {
     return;
   }
-  const unknown = findUnknownModels(models, available);
+  const unknown = findUnknownModels(
+    models,
+    available,
+    auths?.map((entry) => entry.provider),
+  );
   if (unknown.length > 0) {
-    throw new Error(formatUnknownModels(unknown));
+    throw new Error(formatUnknownModels(unknown, auths));
   }
 }
 
@@ -784,14 +858,17 @@ export async function promptAndParse<T>(
     finalizeOnTimeout?: boolean;
   },
   parse: (text: string) => T,
-): Promise<{ value: T; cost: number; truncated: boolean; tokens: TokenUsage }> {
+): Promise<{ value: T; cost: number; truncated: boolean; tokens: TokenUsage; model?: string }> {
   let cost = 0;
   let truncated = false;
+  let model: string | undefined;
   const tokens: TokenUsage = {};
   const record = (result: PromptResult): void => {
     cost += result.cost;
     truncated = truncated || (result.truncated ?? false);
     addTokenUsage(tokens, result.tokens);
+    // Keep the model from whichever attempt actually answered.
+    model = result.model ?? model;
   };
 
   const first = await withTransientRetry(`Agent "${args.agent}"`, args.onActivity, () =>
@@ -799,7 +876,7 @@ export async function promptAndParse<T>(
   );
   record(first);
   try {
-    return { value: parse(first.text), cost, truncated, tokens };
+    return { value: parse(first.text), cost, truncated, tokens, model };
   } catch {
     // Same-session corrective retry: send the nudge as a follow-up and wait for
     // the NEW assistant message (past the current message count).
@@ -822,7 +899,7 @@ export async function promptAndParse<T>(
         stallMs: FINALIZE_STALL_MS,
       });
       record(retry);
-      return { value: parse(retry.text), cost, truncated, tokens };
+      return { value: parse(retry.text), cost, truncated, tokens, model };
     } catch {
       // Fresh-session last resort: a clean slate for a genuinely confused run.
       const fresh = await promptAgent(handle, {
@@ -832,7 +909,7 @@ export async function promptAndParse<T>(
       });
       record(fresh);
       try {
-        return { value: parse(fresh.text), cost, truncated, tokens };
+        return { value: parse(fresh.text), cost, truncated, tokens, model };
       } catch (finalError) {
         throw new Error(
           `Agent "${args.agent}" did not return parseable JSON after retries: ${
@@ -853,6 +930,9 @@ interface RawMessage {
     cost?: number;
     tokens?: TokenUsage;
     time?: { completed?: number };
+    /** Which provider/model the server actually used for this reply. */
+    providerID?: string;
+    modelID?: string;
   };
   parts?: Array<{
     id?: string;
@@ -1017,6 +1097,7 @@ async function pollForCompletion(
         cost: assistant.info?.cost ?? 0,
         sessionID,
         tokens: assistant.info?.tokens,
+        model: formatModel(assistant.info?.providerID, assistant.info?.modelID),
       };
     }
 

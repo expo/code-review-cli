@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { LoadedConfig } from "../config/schema.js";
+import type { AuthConfigEntry, LoadedConfig } from "../config/schema.js";
 
 export interface PreparedAuth {
   cleanup: () => Promise<void>;
@@ -148,28 +148,14 @@ export function checkOauthTokenShape(
 }
 
 /**
- * Decide whether the configured model provider has a usable credential, WITHOUT
- * mutating the environment. Shared by `prepareAuth` (fail fast before spinning up
- * the server and every pass) and `doctor` (report), so the two never drift.
- *
- * We only report `ok: false` when we're confident there is no credential — a
- * missing OAuth token, a forbidden tokenEnv, or an api-key run with neither the
- * configured tokenEnv nor the provider's own key env set. When nothing is
- * configured and no known key env is present, we assume OpenCode's own login may
- * cover it and don't hard-fail. `REVIEWER_MODEL` bypasses provider auth entirely.
+ * Decide whether ONE configured credential is usable, WITHOUT mutating the
+ * environment. See checkProviderAuth for the all-entries wrapper.
  */
-export function checkProviderAuth(
-  config: LoadedConfig,
+export function checkAuthEntry(
+  entry: AuthConfigEntry,
   env: NodeJS.ProcessEnv = process.env,
 ): AuthReadiness {
-  const { mode, provider, tokenEnv } = config.auth;
-
-  if (env.REVIEWER_MODEL) {
-    return {
-      ok: true,
-      detail: `REVIEWER_MODEL override (${env.REVIEWER_MODEL}); using OpenCode's own login for that model`,
-    };
-  }
+  const { mode, provider, tokenEnv, upstream } = entry;
 
   if (tokenEnv && FORBIDDEN_TOKEN_ENVS.has(tokenEnv)) {
     return {
@@ -185,8 +171,7 @@ export function checkProviderAuth(
     if (!tokenEnv) {
       return {
         ok: false,
-        detail:
-          'auth.mode "oauth" requires auth.tokenEnv to name the env var holding the OAuth token.',
+        detail: `auth mode "oauth" for ${provider} requires tokenEnv to name the env var holding the OAuth token.`,
       };
     }
     if (!env[tokenEnv]) {
@@ -199,7 +184,29 @@ export function checkProviderAuth(
     if (!shape.ok) {
       return shape;
     }
-    return { ok: true, detail: `oauth for ${provider}; token env ${tokenEnv} is set` };
+    return { ...shape, detail: `oauth for ${provider}; token env ${tokenEnv} is set` };
+  }
+
+  // api-key with an upstream alias: the synthesized provider reads the key
+  // straight from {env:tokenEnv}, so both must exist — there is no ambient
+  // fallback for a provider id we invented.
+  if (upstream) {
+    if (!tokenEnv) {
+      return {
+        ok: false,
+        detail: `auth for ${provider} (upstream ${upstream}) requires tokenEnv — the synthesized provider reads the key from that env var.`,
+      };
+    }
+    if (!env[tokenEnv]) {
+      return {
+        ok: false,
+        detail: `auth for ${provider} (upstream ${upstream}) names token env "${tokenEnv}" but it is not set.`,
+      };
+    }
+    return {
+      ok: true,
+      detail: `api-key for ${provider} (upstream ${upstream}); token env ${tokenEnv} is set`,
+    };
   }
 
   // api-key: usable if the configured tokenEnv is set, or the provider's own key
@@ -227,29 +234,90 @@ export function checkProviderAuth(
 }
 
 /**
- * Prepare model credentials for the OpenCode server based on the repo's auth mode.
- * Must run before the server starts (it mutates env). Returns a cleanup handle.
+ * Decide whether EVERY configured provider credential is usable, WITHOUT
+ * mutating the environment. Shared by `prepareAuth` (fail fast before spinning up
+ * the server and every pass) and `doctor` (report), so the two never drift.
  *
- * - `api-key`: copy the configured token env into the provider's API-key env var
- *   (so the workflow can pass a namespaced secret and OpenCode still finds it).
- * - `oauth`: write an isolated OpenCode `auth.json` with the token as a Bearer
- *   OAuth credential and point OpenCode at it via XDG_DATA_HOME, so it uses its
- *   native Claude Pro/Max path (correct bearer + oauth headers) rather than
- *   x-api-key. Isolated so it never touches the developer's real auth.json.
+ * All entries must pass — a mixed setup with one broken credential would fail
+ * exactly the passes routed to it, which is the silent-degradation this check
+ * exists to prevent. `REVIEWER_MODEL` bypasses provider auth entirely.
+ */
+export function checkProviderAuth(
+  config: LoadedConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): AuthReadiness {
+  if (env.REVIEWER_MODEL) {
+    return {
+      ok: true,
+      detail: `REVIEWER_MODEL override (${env.REVIEWER_MODEL}); using OpenCode's own login for that model`,
+    };
+  }
+
+  const details: string[] = [];
+  const warnings: string[] = [];
+  for (const entry of config.auth) {
+    const readiness = checkAuthEntry(entry, env);
+    if (!readiness.ok) {
+      return readiness;
+    }
+    details.push(readiness.detail);
+    if (readiness.warning) {
+      warnings.push(readiness.warning);
+    }
+  }
+  return {
+    ok: true,
+    detail: details.join("; "),
+    ...(warnings.length > 0 ? { warning: warnings.join("; ") } : {}),
+  };
+}
+
+/**
+ * The auth.json entry for one oauth credential. Provider-shaped:
+ * - openai: the durable secret is the REFRESH token (a ChatGPT/Codex sign-in's
+ *   access tokens live ~1h, shorter than a worst-case run), so store it with
+ *   `expires: 0` and let OpenCode's codex plugin mint access tokens on demand.
+ * - everything else: the token IS the access credential (e.g. long-lived
+ *   setup-token style bearers), far-future expiry so OpenCode never tries to
+ *   refresh a credential that has no refresh half.
+ */
+export function oauthAuthJsonEntry(
+  provider: string,
+  token: string,
+): Record<string, string | number> {
+  if (provider === "openai") {
+    return { type: "oauth", access: "", refresh: token, expires: 0 };
+  }
+  return { type: "oauth", access: token, refresh: "", expires: Date.now() + YEAR_MS };
+}
+
+/**
+ * Prepare model credentials for the OpenCode server from the repo's auth entries
+ * (any mix of modes/providers). Must run before the server starts (it mutates
+ * env). Returns a cleanup handle.
+ *
+ * - `api-key` (standard provider): copy the configured token env into the
+ *   provider's API-key env var (so the workflow can pass a namespaced secret and
+ *   OpenCode still finds it).
+ * - `api-key` (upstream alias): nothing to do here — buildOpencodeConfig
+ *   synthesizes a provider block whose options read `{env:tokenEnv}` directly.
+ * - `oauth`: write ALL oauth credentials into one isolated OpenCode `auth.json`
+ *   and point OpenCode at it via XDG_DATA_HOME (see oauthAuthJsonEntry for the
+ *   per-provider shapes). Isolated so it never touches the developer's real
+ *   auth.json.
  */
 export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
   const noop: PreparedAuth = { cleanup: async () => {} };
-  const { mode, provider, tokenEnv } = config.auth;
 
   // REVIEWER_MODEL is an explicit "use this model with my own creds" override — a
-  // common local case (e.g. the repo config targets Claude OAuth in CI, but a dev
-  // runs against their own OpenAI login). Don't inject the configured provider's
+  // common local case (e.g. the repo config targets a CI credential, but a dev
+  // runs against their own OpenCode login). Don't inject the configured providers'
   // auth; let OpenCode use whatever it's logged into for the override model.
   if (process.env.REVIEWER_MODEL) {
     return noop;
   }
 
-  // Fail fast, before starting the server and every pass, if the configured
+  // Fail fast, before starting the server and every pass, if ANY configured
   // provider has no usable credential — otherwise it surfaces as N failed passes
   // mid-run. This is the same readiness check `doctor` reports, and it also covers
   // the forbidden-secret guard (refusing to forward a well-known unrelated secret).
@@ -258,38 +326,36 @@ export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
     throw new Error(readiness.detail);
   }
 
-  if (mode === "api-key") {
-    if (tokenEnv) {
-      const value = process.env[tokenEnv];
-      const target = PROVIDER_KEY_ENV[provider] ?? "ANTHROPIC_API_KEY";
-      // The explicitly-configured tokenEnv is authoritative — set it even if the
-      // provider env is already present, so config wins over ambient env.
-      if (value) {
+  const authJson: Record<string, unknown> = {};
+  for (const entry of config.auth) {
+    const { mode, provider, tokenEnv, upstream } = entry;
+    const value = tokenEnv ? process.env[tokenEnv] : undefined;
+    if (mode === "api-key") {
+      // Upstream aliases read {env:tokenEnv} from the synthesized provider block.
+      if (!upstream && tokenEnv && value) {
+        const target = PROVIDER_KEY_ENV[provider] ?? "ANTHROPIC_API_KEY";
+        // The explicitly-configured tokenEnv is authoritative — set it even if the
+        // provider env is already present, so config wins over ambient env.
         process.env[target] = value;
       }
+      continue;
     }
-    return noop;
+    // oauth — checkProviderAuth guarantees tokenEnv is set and present; read
+    // defensively so TypeScript narrows and this stays correct if called directly.
+    if (!value) {
+      throw new Error(
+        `auth mode "oauth" for ${provider} requires tokenEnv to name a set OAuth token env.`,
+      );
+    }
+    authJson[provider] = oauthAuthJsonEntry(provider, value);
   }
 
-  // oauth — checkProviderAuth guarantees tokenEnv is set and present; read
-  // defensively so TypeScript narrows and this stays correct if called directly.
-  const token = tokenEnv ? process.env[tokenEnv] : undefined;
-  if (!token) {
-    throw new Error('auth.mode "oauth" requires auth.tokenEnv to name a set OAuth token env.');
+  if (Object.keys(authJson).length === 0) {
+    return noop;
   }
 
   const dir = await mkdtemp(path.join(tmpdir(), "ecr-auth-"));
   await mkdir(path.join(dir, "opencode"), { recursive: true });
-  const authJson = {
-    [provider]: {
-      type: "oauth",
-      access: token,
-      refresh: "",
-      // Far-future expiry so OpenCode uses the token as-is and does not try to
-      // refresh it (setup-token tokens are long-lived and carry no refresh).
-      expires: Date.now() + YEAR_MS,
-    },
-  };
   await writeFile(path.join(dir, "opencode", "auth.json"), JSON.stringify(authJson), "utf8");
   process.env.XDG_DATA_HOME = dir;
 

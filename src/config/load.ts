@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 
 import { ReviewConfigSchema, ScopeReviewConfigSchema } from "./schema.js";
+import type { AuthConfigEntry } from "./schema.js";
 import type {
   LoadedAgent,
   LoadedConfig,
@@ -95,7 +96,14 @@ async function loadConfigDir(
   >;
   const parsed = schema.parse(rawObject) as ParsedConfig;
 
-  const override = process.env.REVIEWER_MODEL;
+  // An EMPTY REVIEWER_MODEL means "not set", not "use the empty model". GitHub Actions
+  // passes `${{ vars.REVIEWER_MODEL }}` as an empty string whenever that repo variable
+  // doesn't exist — which both scaffolded workflows do — so `??` (which only falls
+  // through on null/undefined) silently replaced every configured model with "". Every
+  // agent and the coordinator then ran on whatever OpenCode picked by default, so a
+  // config saying `anthropic/claude-sonnet-5` reviewed with something else entirely and
+  // nothing anywhere said so. Trim too: a stray newline is the same class of accident.
+  const override = process.env.REVIEWER_MODEL?.trim() || undefined;
   const defaultModel = override ?? parsed.model;
   const resolveModel = (frontmatterModel?: string): string =>
     override ?? frontmatterModel ?? defaultModel;
@@ -159,14 +167,64 @@ async function loadConfigDir(
     // Scope configs can't declare commentTag (scope schema rejects it);
     // loadScopeConfig overwrites this placeholder with the manifest default.
     commentTag: parsed.commentTag ?? "expo-ai-code-reviewer",
-    auth: {
-      mode: parsed.auth?.mode ?? "api-key",
-      provider: parsed.auth?.provider ?? "anthropic",
-      tokenEnv: parsed.auth?.tokenEnv,
-    },
+    auth: normalizeAuth(parsed.auth),
     review: parsed.review,
   };
   return { config, raw: rawObject };
+}
+
+/**
+ * Normalize either accepted `auth` shape (legacy single object, or the
+ * per-provider `{ providers }` map) into the canonical entry list. Absent auth
+ * means the schema default (api-key/openai, no tokenEnv).
+ */
+export function normalizeAuth(
+  auth:
+    | { mode: "api-key" | "oauth"; provider: string; tokenEnv?: string }
+    | {
+        providers: Record<
+          string,
+          { mode: "api-key" | "oauth"; tokenEnv?: string; upstream?: string }
+        >;
+      }
+    | undefined,
+): AuthConfigEntry[] {
+  if (!auth) {
+    return [{ provider: "openai", mode: "api-key" }];
+  }
+  if ("providers" in auth) {
+    return Object.entries(auth.providers).map(([provider, entry]) => ({
+      provider,
+      mode: entry.mode,
+      tokenEnv: entry.tokenEnv,
+      upstream: entry.upstream,
+    }));
+  }
+  return [{ provider: auth.provider, mode: auth.mode, tokenEnv: auth.tokenEnv }];
+}
+
+/**
+ * Runtime auth lock: null when the entries' tokenEnv names equal the expected
+ * comma-separated set exactly (order-insensitive), else a human-readable
+ * mismatch. Set semantics because a multi-provider auth block names several
+ * credential envs — a PR must not be able to add, drop, or repoint any of them.
+ */
+export function tokenEnvMismatch(auth: AuthConfigEntry[], expected: string): string | null {
+  const declared = [
+    ...new Set(auth.map((entry) => entry.tokenEnv).filter((v): v is string => Boolean(v))),
+  ].sort();
+  const expectedSet = [
+    ...new Set(
+      expected
+        .split(",")
+        .map((name) => name.trim())
+        .filter(Boolean),
+    ),
+  ].sort();
+  if (JSON.stringify(declared) === JSON.stringify(expectedSet)) {
+    return null;
+  }
+  return `configured tokenEnv set [${declared.join(", ") || "(none)"}] != ECR_EXPECTED_TOKEN_ENV [${expectedSet.join(", ")}]`;
 }
 
 /**
@@ -181,7 +239,7 @@ export function loadAuthFromRoot(
 ): LoadedConfig["auth"] {
   const override = manifest?.defaults.auth;
   if (override) {
-    return { mode: override.mode, provider: override.provider, tokenEnv: override.tokenEnv };
+    return normalizeAuth(override);
   }
   return rootConfig.auth;
 }

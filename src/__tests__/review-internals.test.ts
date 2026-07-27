@@ -174,7 +174,7 @@ test("formatUsageSummary omits cost when zero and reasoning when absent", () => 
   expect(s).not.toContain("cost");
 });
 
-test("renderUsageMarkdown emits one row per pass, a total, and the cache hit rate", () => {
+test("renderUsageMarkdown emits one row per pass with its model, a total, and the cache hit rate", () => {
   const s = renderUsageMarkdown(
     {
       correctness: { input: 1000, output: 200, cache: { read: 9000, write: 500 } },
@@ -183,10 +183,13 @@ test("renderUsageMarkdown emits one row per pass, a total, and the cache hit rat
     { correctness: 0.01, coordinator: 0.002 },
     { input: 1500, output: 300, cache: { read: 9000, write: 900 } },
     0.012,
+    { correctness: "openai/gpt-5.5" },
   );
-  expect(s).toContain("| correctness | 1000 | 200 | 9000 | 500 | $0.0100 |");
-  expect(s).toContain("| coordinator | 500 | 100 | 0 | 400 | $0.0020 |");
-  expect(s).toContain("| **total** | 1500 | 300 | 9000 | 900 | $0.0120 |");
+  // Each pass names the model that ACTUALLY answered it; a pass the server never
+  // reported a model for shows "—" rather than pretending to know.
+  expect(s).toContain("| correctness | openai/gpt-5.5 | 1000 | 200 | 9000 | 500 | $0.0100 |");
+  expect(s).toContain("| coordinator | — | 500 | 100 | 0 | 400 | $0.0020 |");
+  expect(s).toContain("| **total** |  | 1500 | 300 | 9000 | 900 | $0.0120 |");
   // 9000 / (9000 + 1500) ≈ 86%
   expect(s).toContain("**86%**");
 });

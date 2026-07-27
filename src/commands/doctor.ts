@@ -4,6 +4,7 @@ import {
   loadAuthFromRoot,
   hasConfig,
   resolveConfigDir,
+  tokenEnvMismatch,
 } from "../config/load.js";
 import {
   loadRoutingManifest,
@@ -234,16 +235,21 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
     const hasManifestAuth = Boolean(manifest.defaults.auth);
     line(
       true,
-      `auth singleton: honored from ${hasManifestAuth ? "routing.jsonc defaults.auth" : "root config.jsonc"} (${auth.mode}/${auth.provider})`,
+      `auth singleton: honored from ${hasManifestAuth ? "routing.jsonc defaults.auth" : "root config.jsonc"} ` +
+        `(${auth.map((entry) => `${entry.mode}/${entry.provider}`).join(", ")})`,
     );
-    if (auth.tokenEnv) {
-      const expected = process.env.ECR_EXPECTED_TOKEN_ENV;
-      if (expected && expected !== auth.tokenEnv) {
-        line(false, `auth.tokenEnv "${auth.tokenEnv}" != ECR_EXPECTED_TOKEN_ENV "${expected}"`);
-      } else {
+    const expected = process.env.ECR_EXPECTED_TOKEN_ENV;
+    if (expected) {
+      const mismatch = tokenEnvMismatch(auth, expected);
+      if (mismatch) {
+        line(false, `auth: ${mismatch}`);
+      }
+    }
+    for (const entry of auth) {
+      if (entry.tokenEnv) {
         line(
-          Boolean(process.env[auth.tokenEnv]),
-          `auth token env ${auth.tokenEnv} is ${process.env[auth.tokenEnv] ? "set" : "NOT set"}`,
+          Boolean(process.env[entry.tokenEnv]),
+          `auth token env ${entry.tokenEnv} (${entry.provider}) is ${process.env[entry.tokenEnv] ? "set" : "NOT set"}`,
         );
       }
     }
