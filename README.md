@@ -344,7 +344,7 @@ coordinator, and per-repo `noise.additionalIgnores`.
 {
   "model": "openai/gpt-5.5",                  // default model for the specialists
   "policy": { "includeSuggestions": false },  // suppress suggestion-severity findings
-  "chunk": { "maxChangedLines": 1000, "maxFiles": 20, "concurrency": 6 },
+  "chunk": { "maxChangedLines": 1000, "maxFiles": 20 },  // concurrency defaults: 6 (API key) / 3 (subscription)
   "noise": { "additionalIgnores": ["packages/*/build/**"] },
   "review": { "trigger": "all",               // which PRs `ecr ci` reviews: "all"
               "label": "ai-review",            // (default, except ai-review:skip) or
@@ -406,6 +406,15 @@ change which model reviewed your code. Use an explicit override instead.
   session, inside the same budget — instead of spending the whole cap on a dead
   request. Progress lines say how long a reply has been silent, so this is legible in
   the CI log.
+- **Rate limits are detected and waited out, not fought.** The reviewer watches the
+  OpenCode server's own log for provider 429s (hard evidence, per run). A stall
+  *with* recent 429 evidence is throttling, not a wedge — the pass waits in 90s
+  beats (without consuming its one retry) instead of re-sending its whole context
+  into a limited account; explicit 429 errors retry on a slow 15s/45s/90s schedule.
+  Subscription (oauth) runs also default to `concurrency` 3 instead of 6, since one
+  account may be serving several PRs' reviews at once. Rate-limit events are
+  reported in the job log and the run log (`rateLimitEvents`), so throttling is a
+  visible fact about a run, never a mystery slowdown.
 - **Soft landing on timeout** — at either cap, the run is interrupted and the agent
   is asked to return the findings it already has, rather than discarding its work.
   Tools are disabled for that request, so the salvage step can't resume investigating

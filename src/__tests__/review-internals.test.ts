@@ -9,7 +9,9 @@ import {
   isAuthError,
   formatUsageSummary,
   renderUsageMarkdown,
+  effectiveConcurrency,
 } from "../core/review.js";
+import type { LoadedConfig } from "../config/schema.js";
 import type { PatchWorkspaceFile } from "../core/noise.js";
 import type { CoordinatorOutput, Finding } from "../core/schema.js";
 
@@ -197,4 +199,28 @@ test("renderUsageMarkdown emits one row per pass with its model, a total, and th
 test("renderUsageMarkdown omits the hit rate when no prompt tokens were used", () => {
   const s = renderUsageMarkdown({}, {}, {}, 0);
   expect(s).not.toContain("hit rate");
+});
+
+// ---- auth-mode-aware concurrency ----
+
+test("effectiveConcurrency: explicit config wins; subscription defaults lower", () => {
+  const cfg = (chunk: object, auth: object[]): LoadedConfig =>
+    ({ chunk, auth }) as unknown as LoadedConfig;
+  // An explicit value always wins, whatever the auth mode.
+  expect(
+    effectiveConcurrency(cfg({ concurrency: 8 }, [{ mode: "oauth", provider: "openai" }])),
+  ).toBe(8);
+  // A subscription (oauth) credential defaults lower: one account handles six
+  // parallel streams poorly, and several PRs may share the credential.
+  expect(effectiveConcurrency(cfg({}, [{ mode: "oauth", provider: "openai" }]))).toBe(3);
+  expect(
+    effectiveConcurrency(
+      cfg({}, [
+        { mode: "oauth", provider: "openai" },
+        { mode: "api-key", provider: "openai-api", upstream: "openai" },
+      ]),
+    ),
+  ).toBe(3);
+  // Pure API-key runs keep the full default.
+  expect(effectiveConcurrency(cfg({}, [{ mode: "api-key", provider: "openai" }]))).toBe(6);
 });

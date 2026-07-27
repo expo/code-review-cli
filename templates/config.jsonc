@@ -23,6 +23,9 @@
   // Large diffs are split into focused chunks by changed-line count, plus a
   // cross-cutting pass for multi-file issues. Diffs under maxChangedLines are one
   // full-context pass. Defaults shown; raise/lower per your model + PR sizes.
+  // Concurrency defaults by auth mode: 6 with an API key, 3 on a subscription
+  // (oauth) credential — one account handles many parallel streams poorly, and
+  // several PRs may review on the same credential at once. Set it to override.
   // "chunk": { "maxChangedLines": 1000, "maxFiles": 20, "concurrency": 4 },
 
   // Which PRs `ecr ci` reviews. This is the source of truth for trigger policy;

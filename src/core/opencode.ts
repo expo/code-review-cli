@@ -4,6 +4,7 @@ import path from "node:path";
 import { createOpencode } from "@opencode-ai/sdk";
 
 import type { LoadedConfig } from "../config/schema.js";
+import { RateLimitWatch } from "./throttle.js";
 import { toolMap } from "./tools.js";
 import { errorMessage, sleep } from "./util.js";
 
@@ -11,6 +12,8 @@ export interface OpencodeHandle {
   client: any;
   url: string;
   close: () => void;
+  /** Rate-limit evidence from this server's own log (see core/throttle.ts). */
+  rateLimit: RateLimitWatch;
 }
 
 /** Token usage as reported on an OpenCode assistant message's `info.tokens`. */
@@ -225,7 +228,9 @@ export async function startOpencode(config: unknown): Promise<OpencodeHandle> {
     port: 0,
     config: config as any,
   });
-  return { client, url: server.url, close: () => server.close() };
+  // Watch THIS server's log for provider throttle evidence (prepareAuth has already
+  // pointed XDG_DATA_HOME at the run's isolated dir when auth is injected).
+  return { client, url: server.url, close: () => server.close(), rateLimit: new RateLimitWatch() };
 }
 
 /**
@@ -459,18 +464,31 @@ const FINALIZE_STALL_MS = 60 * 1000;
 // Breathing room before the retry: if the silence came from provider-side throttling
 // or backoff, reconnecting instantly is the worst move.
 const STALL_RETRY_BACKOFF_MS = 20 * 1000;
+// When the account is provably rate-limited, wait in longer beats: re-sending the
+// pass's whole context into a throttled account only deepens the limit. Several
+// waits fit inside a pass budget, and each is long enough for a limit window to move.
+const RATE_LIMIT_WAIT_MS = 90 * 1000;
 // Only retry when enough of the pass's budget remains for the fresh attempt to
 // plausibly finish; otherwise go straight to the soft landing.
 const STALL_RETRY_MIN_REMAINING_MS = STALL_MS + 60 * 1000;
 
 /**
- * What to do about a stalled attempt: start over from a clean session, or stop and
- * try to salvage findings. Exactly ONE retry, and only with enough budget left for it
- * to land — a second wedged attempt would just spend the rest of the pass's window,
+ * What to do about a stalled attempt: WAIT (the account is provably rate-limited —
+ * see core/throttle.ts — so patience beats re-sending the context; waits don't
+ * consume the one retry), start over from a clean session, or stop and salvage
+ * findings. Exactly ONE wedged retry, and only with enough budget left for it to
+ * land — a second wedged attempt would just spend the rest of the pass's window,
  * which is the failure this whole mechanism exists to end. Exported for tests.
  */
-export function stallAction(attempt: number, remainingMs: number): "retry" | "soft-land" {
-  return attempt === 0 && remainingMs > STALL_RETRY_MIN_REMAINING_MS ? "retry" : "soft-land";
+export function stallAction(
+  wedgedRetries: number,
+  remainingMs: number,
+  rateLimited = false,
+): "wait" | "retry" | "soft-land" {
+  if (rateLimited && remainingMs > STALL_RETRY_MIN_REMAINING_MS) {
+    return "wait";
+  }
+  return wedgedRetries === 0 && remainingMs > STALL_RETRY_MIN_REMAINING_MS ? "retry" : "soft-land";
 }
 
 const FINALIZE_PROMPT =
@@ -707,6 +725,7 @@ export async function promptAgent(
     }
   };
 
+  let wedgedRetries = 0;
   for (let attempt = 0; ; attempt++) {
     const session = unwrap<{ id: string }>(
       await handle.client.session.create({
@@ -738,11 +757,29 @@ export async function promptAgent(
       // wedged request to answer. Exactly one retry, and only when enough budget
       // remains for it to land; after that the finalize is still worth a try as the
       // only remaining salvage (in eas-cli#4084 the session did respond once aborted).
+      //
+      // EXCEPT when the server log shows the account is rate-limited: then the
+      // silence is throttling, not a wedge, and the patient move is to wait —
+      // re-sending the pass's whole context would deepen the limit. Waits repeat
+      // (never consuming the one wedged retry) until the evidence goes stale or
+      // the pass runs out of room, both bounded by the pass deadline.
       if (error instanceof NoProgress) {
         await abortQuietly(handle, session.id);
         absorb(error);
+        await handle.rateLimit.check();
         const remaining = deadline - Date.now();
-        if (stallAction(attempt, remaining) === "retry") {
+        const action = stallAction(wedgedRetries, remaining, handle.rateLimit.recentlyLimited());
+        if (action === "wait") {
+          args.onActivity?.(
+            `provider is rate-limiting this account (429 in the server log; ` +
+              `${handle.rateLimit.events} so far) — waiting ${Math.round(RATE_LIMIT_WAIT_MS / 1000)}s ` +
+              `instead of retrying (${Math.round(remaining / 60000)}m of budget left)`,
+          );
+          await sleep(RATE_LIMIT_WAIT_MS);
+          continue;
+        }
+        if (action === "retry") {
+          wedgedRetries++;
           args.onActivity?.(
             `stalled — no output for ${Math.round(error.idleMs / 1000)}s; ` +
               `retrying once from a clean session (${Math.round(remaining / 60000)}m of budget left)`,
@@ -772,6 +809,20 @@ const CORRECTIVE_WAIT_MS = 2 * 60 * 1000;
 
 /** Backoff (ms) before the 2nd and 3rd attempt of a transient-failing model call. */
 const TRANSIENT_BACKOFF_MS = [2_000, 8_000];
+/**
+ * Rate limits need patience, not persistence: a limited account stays limited for
+ * tens of seconds to minutes, so the 2s/8s schedule just burns the retries. Shared
+ * subscription credentials (several PRs reviewing at once) make this the common
+ * transient, hence the dedicated, slower schedule.
+ */
+const RATE_LIMIT_BACKOFF_MS = [15_000, 45_000, 90_000];
+
+const RATE_LIMIT_ERROR = /\b429\b|rate.?limit|too many requests/i;
+
+/** A transient error that is specifically a provider rate limit. */
+export function isRateLimitError(error: unknown): boolean {
+  return !(error instanceof AgentTimeoutError) && RATE_LIMIT_ERROR.test(errorMessage(error));
+}
 
 /**
  * A transient, retryable API failure — a one-off rate-limit (429), server error
@@ -821,13 +872,15 @@ async function withTransientRetry<T>(
     try {
       return await fn();
     } catch (error) {
-      const waitMs = TRANSIENT_BACKOFF_MS[attempt];
+      // Rate limits get the slower, longer schedule — see RATE_LIMIT_BACKOFF_MS.
+      const schedule = isRateLimitError(error) ? RATE_LIMIT_BACKOFF_MS : TRANSIENT_BACKOFF_MS;
+      const waitMs = schedule[attempt];
       if (waitMs === undefined || !isTransientApiError(error)) {
         throw error;
       }
       onActivity?.(
         `${label}: transient API error (${errorMessage(error)}); retry ${attempt + 1}/${
-          TRANSIENT_BACKOFF_MS.length
+          schedule.length
         } in ${Math.round(waitMs / 1000)}s`,
       );
       await sleep(waitMs);
