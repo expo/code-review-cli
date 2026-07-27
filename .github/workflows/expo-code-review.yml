@@ -53,7 +53,7 @@ jobs:
       # published package), so the guard runs from source too — same engine as `ci`.
       - name: Guard config tokenEnv
         env:
-          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CODEX_OAUTH_REFRESH_TOKEN,OPENAI_API_KEY' }}
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CODEX_OAUTH_ACCESS_TOKEN,OPENAI_API_KEY' }}
         run: bun run src/cli.ts verify-config
 
       - name: Run AI review
@@ -66,13 +66,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Layer-1 auth lock: `ecr ci` re-checks the honored tokenEnv at runtime,
           # catching what the guard step above can't. Keep in sync with the guard.
-          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CODEX_OAUTH_REFRESH_TOKEN,OPENAI_API_KEY' }}
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CODEX_OAUTH_ACCESS_TOKEN,OPENAI_API_KEY' }}
           # Mixed credentials (see config.jsonc auth.providers): the ChatGPT/Codex
-          # subscription refresh token serves the default models; the usage-based
+          # subscription ACCESS token serves the default models; the usage-based
           # API key (project-scoped, inference-only, budget-capped) serves the
           # pro-tier security pass. ECR_EXPECTED_TOKEN_ENV (repo variable) locks
           # the comma-separated set of BOTH names.
-          CODEX_OAUTH_REFRESH_TOKEN: ${{ secrets.CODEX_OAUTH_REFRESH_TOKEN }}
+          CODEX_OAUTH_ACCESS_TOKEN: ${{ secrets.CODEX_OAUTH_ACCESS_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           # Optional: override the model for every agent (uses your OpenCode login).
           REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}

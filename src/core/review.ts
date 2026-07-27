@@ -73,6 +73,21 @@ function makeRunId(): string {
  * → coordinate → apply policy. Returns a CoordinatorOutput; the CLI commands are
  * thin wrappers that supply a Source and render the result.
  */
+/**
+ * Max concurrent reviewer calls: an explicit config value wins; otherwise 3 when a
+ * subscription (oauth) credential is configured, else 6. One ChatGPT account
+ * handles six parallel streams poorly — requests get parked server-side (the
+ * stall signature seen on eas-cli#4084), and several PRs may be reviewing on the
+ * same credential at once — so subscription runs trade a little wall-clock for a
+ * lot of reliability. Exported for tests.
+ */
+export function effectiveConcurrency(config: LoadedConfig): number {
+  if (config.chunk.concurrency) {
+    return config.chunk.concurrency;
+  }
+  return config.auth.some((entry) => entry.mode === "oauth") ? 3 : 6;
+}
+
 export async function runReview(
   source: ReviewSource,
   options: ReviewRunOptions,
@@ -247,10 +262,11 @@ export async function runReview(
     );
     // Only chunk (and add a cross-cutting pass) when the diff exceeds one chunk.
     const chunked = chunks.length > 1;
+    const concurrency = effectiveConcurrency(config);
     progress(
       `Running ${selectedAgents.length} reviewer(s) [${selectedAgents.map((a) => a.id).join(", ")}] over ${chunks.length} chunk(s)` +
         `${chunked ? " + cross-cutting pass" : ""} ` +
-        `(${kept.length} files, concurrency ${config.chunk.concurrency})…`,
+        `(${kept.length} files, concurrency ${concurrency})…`,
     );
 
     for (const agent of selectedAgents) {
@@ -437,7 +453,7 @@ export async function runReview(
     // TIMEOUT, instead of dropping the work we break it into units that converge:
     // subdivide the chunk, then a fast no-tools pass, and only report a coverage gap
     // when even that can't finish inside the budget — so dropped work is never silent.
-    await runGrowableQueue(tasks, config.chunk.concurrency, async (task, enqueue) => {
+    await runGrowableQueue(tasks, concurrency, async (task, enqueue) => {
       const minutes = Math.round(task.maxWaitMs / 60000);
       try {
         const { value, cost, truncated, tokens, model } = await promptAndParse(
@@ -598,6 +614,9 @@ export async function runReview(
           "⚠️ The AI review could not complete: every review pass failed or timed out, " +
           'so these changes were effectively NOT reviewed. Treat this as "no review", not "looks good".',
         incomplete: coverageNotes,
+        // Presentation override: without it the comment header reads "Decision:
+        // Approve with comments" over a review that reviewed nothing (euxy#8).
+        couldNotComplete: true,
       };
     } else {
       progress("Coordinating findings…");
@@ -691,6 +710,17 @@ export async function runReview(
       output = { ...output, summary: reconcileSummary(output.summary, output.findings.length) };
     }
 
+    // Surface provider throttling as a fact about the run: passes already waited or
+    // backed off, but the operator should still SEE that it happened (a run that
+    // was rate-limited is slower and may carry partial passes — that's the cause).
+    await handle!.rateLimit.check();
+    if (handle!.rateLimit.events > 0) {
+      progress(
+        `  ⚠ provider rate-limited this run ${handle!.rateLimit.events} time(s) ` +
+          `(429s in the OpenCode server log) — passes waited it out rather than failing`,
+      );
+    }
+
     // Every pass says which model actually answered it — in the job log, the step
     // summary table, and the run log — so a wrong or substituted model is always
     // visible, not just when the substitution warning fires.
@@ -716,6 +746,7 @@ export async function runReview(
       agentFindings,
       coverageNotes,
       verifierDropped,
+      ...(handle!.rateLimit.events > 0 ? { rateLimitEvents: handle!.rateLimit.events } : {}),
       durationMs: Date.now() - started,
       decision: output.decision,
       findingCount: output.findings.length,

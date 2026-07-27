@@ -103,6 +103,34 @@ export function checkOauthTokenShape(
       detail: `${tokenEnv} holds only ${token.length} characters, too short to be a real ${provider} token — it looks truncated. ${fix}`,
     };
   }
+  // A ChatGPT access token carries its own expiry — check it up front, so a
+  // lapsed credential is one clear message instead of N failed passes, and a
+  // nearly-lapsed one warns before it bites mid-run.
+  if (provider === "openai" && isJwtAccessToken(token)) {
+    const expires = jwtExpiryMs(token);
+    if (expires !== null) {
+      const remainingMs = expires - Date.now();
+      if (remainingMs <= 0) {
+        return {
+          ok: false,
+          detail:
+            `${tokenEnv} holds a ChatGPT access token that EXPIRED ${Math.ceil(-remainingMs / 86_400_000)} day(s) ago. ` +
+            `Mint a fresh one (\`ecr setup-auth\`, or your token-rotator job) and update ${tokenEnv}.`,
+        };
+      }
+      if (remainingMs < 3 * 86_400_000) {
+        return {
+          ...ok,
+          detail: `oauth for ${provider}; token env ${tokenEnv} is set`,
+          warning:
+            `${tokenEnv}'s ChatGPT access token expires in ${Math.max(1, Math.round(remainingMs / 3_600_000))}h — ` +
+            `re-mint it soon (\`ecr setup-auth\`, or your token-rotator job).`,
+        };
+      }
+    }
+    return { ...ok, detail: `oauth for ${provider}; token env ${tokenEnv} is set` };
+  }
+
   // Only anthropic's formats are known well enough to say anything about.
   if (provider !== "anthropic") {
     return ok;
@@ -291,11 +319,38 @@ export function checkProviderAuth(
   };
 }
 
+/** A ChatGPT access token is a JWT (three base64url segments); refresh tokens are opaque. */
+export function isJwtAccessToken(token: string): boolean {
+  return token.startsWith("eyJ") && token.split(".").length === 3;
+}
+
+/** A JWT's `exp` claim as epoch ms, decoded (not verified) — null when unreadable. */
+export function jwtExpiryMs(token: string): number | null {
+  const payload = token.split(".")[1];
+  if (!payload) {
+    return null;
+  }
+  try {
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
+      exp?: unknown;
+    };
+    return typeof claims.exp === "number" ? claims.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * The auth.json entry for one oauth credential. Provider-shaped:
- * - openai: the durable secret is the REFRESH token (a ChatGPT/Codex sign-in's
- *   access tokens live ~1h, shorter than a worst-case run), so store it with
- *   `expires: 0` and let OpenCode's codex plugin mint access tokens on demand.
+ * The auth.json entry for one oauth credential. Shaped by what the token IS:
+ * - a JWT (an ACCESS token, e.g. from `ecr setup-auth` or a rotator job): use it
+ *   as-is and never refresh — refresh tokens are SINGLE-USE (rotation), so a
+ *   static/shared secret must not participate in rotation at all. Expiry comes
+ *   from the JWT's own `exp` claim so OpenCode trusts it exactly as long as it
+ *   is valid.
+ * - an opaque openai token (a REFRESH token): store it with `expires: 0` and let
+ *   OpenCode's codex plugin mint the access token. Only safe when this run is
+ *   the token's SOLE consumer — a value shared across runs/repos dies on first
+ *   rotation (learned the hard way).
  * - everything else: the token IS the access credential (e.g. long-lived
  *   setup-token style bearers), far-future expiry so OpenCode never tries to
  *   refresh a credential that has no refresh half.
@@ -304,10 +359,11 @@ export function oauthAuthJsonEntry(
   provider: string,
   token: string,
 ): Record<string, string | number> {
-  if (provider === "openai") {
+  if (provider === "openai" && !isJwtAccessToken(token)) {
     return { type: "oauth", access: "", refresh: token, expires: 0 };
   }
-  return { type: "oauth", access: token, refresh: "", expires: Date.now() + YEAR_MS };
+  const expires = isJwtAccessToken(token) ? jwtExpiryMs(token) : null;
+  return { type: "oauth", access: token, refresh: "", expires: expires ?? Date.now() + YEAR_MS };
 }
 
 /**

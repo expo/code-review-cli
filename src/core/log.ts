@@ -28,6 +28,8 @@ export interface RunLogRecord {
   agentTokens?: Record<string, TokenUsage>;
   /** provider/model that ACTUALLY answered each pass (not what was configured). */
   agentModels?: Record<string, string>;
+  /** Provider rate-limit (429) events observed in the OpenCode server log this run. */
+  rateLimitEvents?: number;
   // The reasoning trail behind the posted result: raw per-agent findings before
   // coordination, the coverage gaps reported to the coordinator, and the findings
   // the verifier rejected. Together these explain WHY the final finding set looks

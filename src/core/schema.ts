@@ -86,6 +86,14 @@ export const CoordinatorOutputSchema = z.object({
    * cut-short review is never presented as complete.
    */
   incomplete: z.array(z.string()).default([]),
+  /**
+   * True when EVERY pass failed — nothing was actually reviewed. Set by the
+   * engine, never the model. Reporters must not render an approving decision
+   * label for such a run (the decision enum has no "no review" member, and
+   * widening it would ripple through dismiss state and exit codes — this flag
+   * overrides the presentation instead).
+   */
+  couldNotComplete: z.boolean().optional(),
 });
 export type CoordinatorOutput = z.infer<typeof CoordinatorOutputSchema>;
 

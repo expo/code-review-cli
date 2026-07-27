@@ -4,10 +4,10 @@ import { planFromAuth, exportLine, opencodeAuthJsonPath } from "../commands/setu
 
 test("plan: the mixed setup needs one ChatGPT login and one manual key", () => {
   const plan = planFromAuth([
-    { provider: "openai", mode: "oauth", tokenEnv: "CODEX_OAUTH_REFRESH_TOKEN" },
+    { provider: "openai", mode: "oauth", tokenEnv: "CODEX_OAUTH_ACCESS_TOKEN" },
     { provider: "openai-api", mode: "api-key", tokenEnv: "OPENAI_API_KEY", upstream: "openai" },
   ]);
-  expect(plan.chatgptLogin).toEqual({ tokenEnv: "CODEX_OAUTH_REFRESH_TOKEN" });
+  expect(plan.chatgptLogin).toEqual({ tokenEnv: "CODEX_OAUTH_ACCESS_TOKEN" });
   expect(plan.manualKeys).toEqual([
     { provider: "openai-api", tokenEnv: "OPENAI_API_KEY", upstream: "openai" },
   ]);
@@ -27,8 +27,8 @@ test("plan: anthropic oauth is unsupported (dead path), api-key without tokenEnv
 });
 
 test("export line is single-quoted so shells never expand the value", () => {
-  expect(exportLine("CODEX_OAUTH_REFRESH_TOKEN", "abc$HOME!x")).toBe(
-    "export CODEX_OAUTH_REFRESH_TOKEN='abc$HOME!x'",
+  expect(exportLine("CODEX_OAUTH_ACCESS_TOKEN", "abc$HOME!x")).toBe(
+    "export CODEX_OAUTH_ACCESS_TOKEN='abc$HOME!x'",
   );
 });
 

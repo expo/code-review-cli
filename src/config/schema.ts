@@ -40,10 +40,15 @@ export const ReviewConfigSchema = z.object({
       maxChangedLines: z.number().int().positive().default(1000),
       // Secondary guard so a chunk isn't an absurd number of tiny-diff files.
       maxFiles: z.number().int().positive().default(20),
-      // Max concurrent reviewer calls across all agents/chunks.
-      concurrency: z.number().int().positive().default(6),
+      // Max concurrent reviewer calls across all agents/chunks. Unset ⇒ resolved
+      // from the auth mode: 6 for API-key runs, 3 when a subscription (oauth)
+      // credential is configured — one ChatGPT account handles six parallel
+      // streams poorly (requests get parked = the stall signature), and several
+      // PRs may be reviewing on the same credential at once. An explicit value
+      // here always wins. See effectiveConcurrency in core/review.ts.
+      concurrency: z.number().int().positive().optional(),
     })
-    .default({ maxChangedLines: 1000, maxFiles: 20, concurrency: 6 }),
+    .default({ maxChangedLines: 1000, maxFiles: 20 }),
   noise: z
     .object({
       additionalIgnores: z.array(z.string()).default([]),
@@ -284,7 +289,8 @@ export interface LoadedConfig {
   chunk: {
     maxChangedLines: number;
     maxFiles: number;
-    concurrency: number;
+    /** Unset ⇒ resolved by effectiveConcurrency (auth-mode-aware default). */
+    concurrency?: number;
   };
   noise: {
     additionalIgnores: string[];
