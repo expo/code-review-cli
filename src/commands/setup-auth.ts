@@ -7,6 +7,7 @@ import readline from "node:readline/promises";
 import { hasConfig, loadReviewConfig } from "../config/load.js";
 import type { AuthConfigEntry } from "../config/schema.js";
 import { jwtExpiryMs } from "../core/auth.js";
+import { claudeSubscriptionActive } from "../core/claude-code.js";
 import { opencodeBinSource } from "../core/opencode.js";
 import { errorMessage } from "../core/util.js";
 
@@ -18,6 +19,10 @@ getting each credential:
     \`opencode auth login\` (interactive; opens your browser), then prints the
     \`export <tokenEnv>=…\` line to add to your shell config. An existing
     OpenCode ChatGPT sign-in is reused instead of re-authenticating.
+  • a Claude Max/Team subscription (any anthropic/… model): reuses an active
+    \`claude\` login when present, or runs \`claude setup-token\` (interactive;
+    opens your browser) and prints the \`export <tokenEnv>=…\` line for
+    CI/headless runs.
   • an API key (api-key entries): prints where to create the key, the exact
     permissions it needs, and the export line to fill in.
 
@@ -32,16 +37,30 @@ Options:
 export interface SetupPlan {
   /** oauth/openai entry — satisfiable by an `opencode auth login` ChatGPT sign-in. */
   chatgptLogin?: { tokenEnv: string };
+  /** anthropic model/entry — satisfiable by a `claude setup-token` subscription login. */
+  claudeLogin?: { tokenEnv: string };
   /** api-key entries — a human must mint these; we print instructions. */
   manualKeys: Array<{ provider: string; tokenEnv: string; upstream?: string }>;
   /** oauth entries for providers we have no automated flow for. */
   unsupported: AuthConfigEntry[];
 }
 
-export function planFromAuth(auth: AuthConfigEntry[]): SetupPlan {
+export function planFromAuth(auth: AuthConfigEntry[], models: string[] = []): SetupPlan {
   const plan: SetupPlan = { manualKeys: [], unsupported: [] };
+  // anthropic is always served by the Claude Code CLI — a `claude setup-token`
+  // subscription login covers it. Trigger on either an explicit anthropic auth
+  // entry OR any anthropic/… model in the roster (an entry is entirely optional).
+  const anthropicEntry = auth.find((entry) => entry.provider === "anthropic");
+  const usesAnthropicModel = models.some(
+    (model) => model === "anthropic" || model.startsWith("anthropic/"),
+  );
+  if (anthropicEntry || usesAnthropicModel) {
+    plan.claudeLogin = { tokenEnv: anthropicEntry?.tokenEnv ?? "CLAUDE_CODE_OAUTH_TOKEN" };
+  }
   for (const entry of auth) {
-    if (entry.mode === "oauth" && entry.provider === "openai" && entry.tokenEnv) {
+    if (entry.provider === "anthropic") {
+      continue; // handled above (claude engine); mode is irrelevant here.
+    } else if (entry.mode === "oauth" && entry.provider === "openai" && entry.tokenEnv) {
       plan.chatgptLogin = { tokenEnv: entry.tokenEnv };
     } else if (entry.mode === "api-key" && entry.tokenEnv) {
       plan.manualKeys.push({
@@ -123,7 +142,10 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
     let plan: SetupPlan;
     if (hasConfig(process.cwd())) {
       const config = await loadReviewConfig(process.cwd());
-      plan = planFromAuth(config.auth);
+      plan = planFromAuth(config.auth, [
+        ...config.agents.map((agent) => agent.model),
+        config.coordinator.model,
+      ]);
     } else {
       err("No .expo-code-review config here — setting up the default ChatGPT/Codex flow.");
       plan = planFromAuth([
@@ -131,7 +153,12 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
       ]);
     }
 
-    if (!plan.chatgptLogin && plan.manualKeys.length === 0 && plan.unsupported.length === 0) {
+    if (
+      !plan.chatgptLogin &&
+      !plan.claudeLogin &&
+      plan.manualKeys.length === 0 &&
+      plan.unsupported.length === 0
+    ) {
       out(
         "This repo's auth config needs no local credential setup (OpenCode's own login covers it).",
       );
@@ -139,6 +166,41 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
     }
 
     const exports: string[] = [];
+
+    if (plan.claudeLogin) {
+      const { tokenEnv } = plan.claudeLogin;
+      if (process.env[tokenEnv]) {
+        err(`✓ ${tokenEnv} is already set in this shell — skipping the Claude subscription login.`);
+      } else {
+        // A live local `claude` login already covers interactive runs — only CI or
+        // a headless box needs the token in an env var.
+        const loggedIn = await claudeSubscriptionActive();
+        if (loggedIn) {
+          err(
+            "✓ A Claude Max/Team subscription login is active locally — `ecr review` works now. " +
+              `You only need ${tokenEnv} for CI/headless runs.`,
+          );
+        }
+        err("`claude setup-token` mints a 1-year subscription token (opens your browser).");
+        if (!(await confirm("Run it now?", yes))) {
+          err("Skipped `claude setup-token`.");
+        } else {
+          const result = spawnSync("claude", ["setup-token"], { stdio: "inherit" });
+          if (result.status !== 0) {
+            throw new Error(
+              `\`claude setup-token\` exited with ${result.status ?? "a signal"}; nothing was changed.`,
+            );
+          }
+          // setup-token prints the token to the terminal and persists it nowhere we
+          // can read back, so the user pastes it into the export line themselves.
+          err(
+            `Copy the token \`claude setup-token\` just printed and paste it in place of the ` +
+              `placeholder below.`,
+          );
+          exports.push(exportLine(tokenEnv, "<paste the token setup-token printed>"));
+        }
+      }
+    }
 
     if (plan.chatgptLogin) {
       const { tokenEnv } = plan.chatgptLogin;

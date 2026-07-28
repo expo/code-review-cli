@@ -65,6 +65,24 @@
   // (openai oauth: tokenEnv holds the ACCESS token from an `opencode auth login`
   // ChatGPT sign-in — `ecr setup-auth` extracts it. NEVER share the refresh
   // token: it is single-use and dies on first rotation.)
+  //
+  // Anthropic runs through the Claude Code CLI, inferred from the model — set your
+  // models to "anthropic/…" (e.g. anthropic/claude-opus-5, anthropic/claude-sonnet-5)
+  // and run `claude setup-token`, exporting the token as CLAUDE_CODE_OAUTH_TOKEN (CI)
+  // or rely on your local `claude` login. An auth entry is OPTIONAL (tokenEnv just
+  // names the credential env); `ecr setup-auth` walks you through it.
+  //   "auth": { "providers": {
+  //     "anthropic": { "tokenEnv": "CLAUDE_CODE_OAUTH_TOKEN" }
+  //   } }
+  //
+  // MIXING engines is supported: the engine is inferred per agent from its model, so
+  // an anthropic entry may coexist with an openai (or any other) OpenCode provider.
+  // Each agent's `model` selects its engine — an `anthropic/…` agent runs through the
+  // Claude Code CLI while an `openai/…` agent runs through OpenCode, in the SAME run.
+  //   "auth": { "providers": {
+  //     "anthropic": { "tokenEnv": "CLAUDE_CODE_OAUTH_TOKEN" },
+  //     "openai":    { "mode": "oauth", "tokenEnv": "CODEX_OAUTH_ACCESS_TOKEN" }
+  //   } }
   "auth": {
     "mode": "api-key",
     "provider": "openai",

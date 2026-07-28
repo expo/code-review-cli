@@ -61,6 +61,17 @@ export class RateLimitWatch {
 
   constructor(private readonly file: string = opencodeLogFile()) {}
 
+  /**
+   * Record rate-limit evidence directly, for an engine that has no log file to
+   * scan (the Claude Code CLI surfaces limits per-invocation, not in a log the
+   * way the OpenCode server does). Feeds the same `events`/`recentlyLimited`
+   * signals `check()` would.
+   */
+  note(count = 1): void {
+    this.events += count;
+    this.lastSeenAt = Date.now();
+  }
+
   /** Scan newly-appended log lines for rate-limit evidence. */
   async check(): Promise<number> {
     try {

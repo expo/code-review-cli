@@ -214,6 +214,50 @@ export function checkAuthEntry(
     }
   }
 
+  // anthropic is ALWAYS served by the Claude Code CLI (engine inferred from the
+  // `anthropic/…` model, not from `mode`), so `mode` is irrelevant here. The
+  // credential is the machine's `claude` login, an ambient CLAUDE_CODE_OAUTH_TOKEN,
+  // or a named tokenEnv. The CLI validates the token, so the only token-shape check
+  // here is a coarse exfil guard on a NAMED tokenEnv's value (below); the
+  // FORBIDDEN/cross-provider guards above already block the well-known secrets.
+  if (provider === "anthropic") {
+    // A named-but-unset tokenEnv is NOT fatal: startClaudeCode falls back to the
+    // machine's `claude` login (the common local case — the config names the CI
+    // secret). startClaudeCode still fails fast when neither credential exists.
+    if (tokenEnv && !env[tokenEnv]) {
+      return {
+        ok: true,
+        detail: `anthropic via the Claude Code CLI; falling back to the local \`claude\` login`,
+        warning:
+          `token env "${tokenEnv}" is not set — using the machine's \`claude\` login ` +
+          `(set it for CI/headless runs; mint with \`claude setup-token\`).`,
+      };
+    }
+    // tokenEnv is set AND present: its value is forwarded to api.anthropic.com as the
+    // bearer. The destination is ALWAYS Anthropic, so a value that is not an Anthropic
+    // credential ("sk-ant-…" covers both the "sk-ant-oat" OAuth token and "sk-ant-api"
+    // keys) cannot authenticate there but CAN be a foreign CI secret the config named
+    // — refuse it. This meets the "cannot be valid" bar the shape heuristics use, and
+    // fires at both prepareAuth and startClaudeCode's forwarding-site recheck.
+    if (tokenEnv && env[tokenEnv] && !env[tokenEnv]!.startsWith("sk-ant-")) {
+      return {
+        ok: false,
+        detail:
+          `token env "${tokenEnv}" does not hold an Anthropic credential (expected "sk-ant-…", ` +
+          `the shape \`claude setup-token\` prints, or an Anthropic API key). anthropic is served ` +
+          `by the Claude Code CLI, which authenticates to Anthropic, so a value of another shape ` +
+          `cannot work there and would leak that secret to Anthropic — point auth.tokenEnv at a ` +
+          `token minted for Anthropic.`,
+      };
+    }
+    return {
+      ok: true,
+      detail:
+        `anthropic via the Claude Code CLI; ` +
+        (tokenEnv ? `token env ${tokenEnv} is set` : "using the local `claude` login"),
+    };
+  }
+
   if (mode === "oauth") {
     if (!tokenEnv) {
       return {
@@ -281,13 +325,50 @@ export function checkAuthEntry(
 }
 
 /**
- * Decide whether EVERY configured provider credential is usable, WITHOUT
- * mutating the environment. Shared by `prepareAuth` (fail fast before spinning up
- * the server and every pass) and `doctor` (report), so the two never drift.
+ * The set of providers this config actually routes a model to: the `provider/`
+ * prefix of every agent model plus the coordinator's. Returns null when no model
+ * information is available (e.g. a bare config in a unit test) — callers read that
+ * as "can't scope, consider every entry". Every real config loaded by
+ * loadReviewConfig has agents, so scoping always applies at runtime.
  *
- * All entries must pass — a mixed setup with one broken credential would fail
- * exactly the passes routed to it, which is the silent-degradation this check
- * exists to prevent. `REVIEWER_MODEL` bypasses provider auth entirely.
+ * The fixed cross-cutting/verifier roles reuse an agent's model, so their provider
+ * is already covered by the agent set — mirrors engineForModel's `provider/` split.
+ */
+function providersInUse(config: LoadedConfig): Set<string> | null {
+  const models: string[] = [];
+  for (const agent of config.agents ?? []) {
+    if (agent.model) {
+      models.push(agent.model);
+    }
+  }
+  if (config.coordinator?.model) {
+    models.push(config.coordinator.model);
+  }
+  if (models.length === 0) {
+    return null;
+  }
+  const providers = new Set<string>();
+  for (const model of models) {
+    const slash = model.indexOf("/");
+    providers.add(slash > 0 ? model.slice(0, slash) : model);
+  }
+  return providers;
+}
+
+/**
+ * Decide whether EVERY configured provider credential a model actually uses is
+ * usable, WITHOUT mutating the environment. Shared by `prepareAuth` (fail fast
+ * before spinning up the server and every pass) and `doctor` (report), so the two
+ * never drift.
+ *
+ * Scoped to providers in use: an `auth` entry for a provider no agent routes to is
+ * dead config (the shipped default is `api-key`/openai, so a config that switches
+ * every model to `anthropic/…` but leaves — or omits — the `auth` block would
+ * otherwise be spuriously blocked demanding OPENAI_API_KEY, defeating the
+ * `claude`-login fallback). Only used entries gate the run; all of them must pass —
+ * a mixed setup with one broken credential would fail exactly the passes routed to
+ * it, which is the silent-degradation this check exists to prevent. `REVIEWER_MODEL`
+ * bypasses provider auth entirely.
  */
 export function checkProviderAuth(
   config: LoadedConfig,
@@ -300,9 +381,13 @@ export function checkProviderAuth(
     };
   }
 
+  const inUse = providersInUse(config);
   const details: string[] = [];
   const warnings: string[] = [];
   for (const entry of config.auth) {
+    if (inUse && !inUse.has(entry.provider)) {
+      continue;
+    }
     const readiness = checkAuthEntry(entry, env);
     if (!readiness.ok) {
       return readiness;
@@ -314,7 +399,11 @@ export function checkProviderAuth(
   }
   return {
     ok: true,
-    detail: details.join("; "),
+    // No used entry (e.g. every model is anthropic and the only `auth` block is the
+    // shipped openai default): the run relies on the Claude Code CLI's own login.
+    detail:
+      details.join("; ") ||
+      "no provider credential needed for the models in use (relying on the engine's own login)",
     ...(warnings.length > 0 ? { warning: warnings.join("; ") } : {}),
   };
 }
@@ -401,10 +490,24 @@ export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
     throw new Error(readiness.detail);
   }
 
+  // Same scoping as checkProviderAuth: only forward credentials for providers a
+  // model actually routes to. A dead entry for an unused provider must not have its
+  // tokenEnv copied into a key env — checkProviderAuth skipped its guard, so
+  // forwarding it here would reintroduce the exact secret-forwarding it prevents.
+  const inUse = providersInUse(config);
   const authJson: Record<string, unknown> = {};
   for (const entry of config.auth) {
     const { mode, provider, tokenEnv, upstream } = entry;
+    if (inUse && !inUse.has(provider)) {
+      continue;
+    }
     const value = tokenEnv ? process.env[tokenEnv] : undefined;
+    // anthropic is claude-engine-only: it never writes an OpenCode auth.json /
+    // XDG_DATA_HOME nor injects ANTHROPIC_API_KEY here — its credential is passed
+    // per-invocation via the child env built in startClaudeCode.
+    if (provider === "anthropic") {
+      continue;
+    }
     if (mode === "api-key") {
       // Upstream aliases read {env:tokenEnv} from the synthesized provider block.
       if (!upstream && tokenEnv && value) {

@@ -204,8 +204,14 @@ test("renderUsageMarkdown omits the hit rate when no prompt tokens were used", (
 // ---- auth-mode-aware concurrency ----
 
 test("effectiveConcurrency: explicit config wins; subscription defaults lower", () => {
-  const cfg = (chunk: object, auth: object[]): LoadedConfig =>
-    ({ chunk, auth }) as unknown as LoadedConfig;
+  // buildEngineMap reads agents + coordinator, so give each config a model.
+  const cfg = (chunk: object, auth: object[], model = "openai/gpt-5.5"): LoadedConfig =>
+    ({
+      chunk,
+      auth,
+      agents: [{ id: "a", model }],
+      coordinator: { model },
+    }) as unknown as LoadedConfig;
   // An explicit value always wins, whatever the auth mode.
   expect(
     effectiveConcurrency(cfg({ concurrency: 8 }, [{ mode: "oauth", provider: "openai" }])),
@@ -223,4 +229,34 @@ test("effectiveConcurrency: explicit config wins; subscription defaults lower", 
   ).toBe(3);
   // Pure API-key runs keep the full default.
   expect(effectiveConcurrency(cfg({}, [{ mode: "api-key", provider: "openai" }]))).toBe(6);
+});
+
+test("effectiveConcurrency: the claude engine caps on an OAUTH credential, not an api-key one", () => {
+  const cfg = (auth: object[]): LoadedConfig =>
+    ({
+      chunk: {},
+      auth,
+      agents: [{ id: "a", model: "anthropic/claude-opus-5" }],
+      coordinator: { model: "anthropic/claude-opus-5" },
+    }) as unknown as LoadedConfig;
+  const oat = `sk-ant-oat01-${"x".repeat(95)}`;
+  const apiKey = `sk-ant-api03-${"y".repeat(95)}`;
+  // Login fallback (no forwardable token) → subscription → cap 3.
+  expect(effectiveConcurrency(cfg([{ mode: "api-key", provider: "anthropic" }]), {})).toBe(3);
+  // An "sk-ant-oat…" subscription token → cap 3.
+  expect(
+    effectiveConcurrency(cfg([{ mode: "api-key", provider: "anthropic", tokenEnv: "TOK" }]), {
+      TOK: oat,
+    }),
+  ).toBe(3);
+  // An Anthropic API key is metered per-request → NO cap (full 6).
+  expect(
+    effectiveConcurrency(cfg([{ mode: "api-key", provider: "anthropic", tokenEnv: "TOK" }]), {
+      TOK: apiKey,
+    }),
+  ).toBe(6);
+  // An explicit config value still wins over the cap.
+  const explicit = cfg([{ mode: "api-key", provider: "anthropic" }]);
+  explicit.chunk = { concurrency: 5 } as never;
+  expect(effectiveConcurrency(explicit, {})).toBe(5);
 });

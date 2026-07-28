@@ -47,3 +47,8 @@ test("fingerprint v2: keys on evidence, not the (nondeterministic) title", () =>
   const c = finding({ title: "Null deref here", evidence: "const totally = different();" });
   expect(fingerprintFinding(a)).not.toBe(fingerprintFinding(c));
 });
+
+test("extractJsonObject: an empty response names the cause instead of 'undefined'", () => {
+  expect(() => extractJsonObject("")).toThrow(/an EMPTY response/);
+  expect(() => extractJsonObject("prose with no json at all")).toThrow(/no \{\.\.\.\}/);
+});

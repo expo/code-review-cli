@@ -80,9 +80,13 @@ export const ReviewConfigSchema = z.object({
             // "oauth": tokenEnv holds an OAuth token, injected into an isolated
             // OpenCode auth.json. For "openai" this is the REFRESH token from a
             // ChatGPT/Codex sign-in (OpenCode's codex plugin mints access tokens
-            // from it). NOTE: anthropic oauth cannot work — OpenCode has no
-            // anthropic OAuth plugin and Anthropic prohibits subscription tokens
-            // in third-party tools.
+            // from it).
+            // NOTE: provider "anthropic" is ALWAYS served by the Claude Code CLI
+            // (the engine is inferred from the `anthropic/…` model, not this mode) —
+            // for anthropic, mode is irrelevant; tokenEnv optionally names the
+            // credential env (an "sk-ant-oat…" subscription token or an Anthropic
+            // API key), and no entry at all falls back to the machine's `claude`
+            // login. See core/claude-code.ts.
             mode: z.enum(["api-key", "oauth"]).default("api-key"),
             tokenEnv: z.string().optional(),
             // Set ⇒ this provider id is an ALIAS synthesized into the OpenCode
@@ -255,6 +259,12 @@ export interface LoadedAgent {
  */
 export interface AuthConfigEntry {
   provider: string;
+  /**
+   * How this credential is supplied to OpenCode ("api-key" or "oauth"). IRRELEVANT
+   * for provider "anthropic": an `anthropic/…` model is always served by the Claude
+   * Code CLI (engine inferred from the model), which reads the credential from
+   * tokenEnv or the machine's `claude` login regardless of this field.
+   */
   mode: "api-key" | "oauth";
   /**
    * Env var holding the credential. api-key: the key itself. oauth: the token —

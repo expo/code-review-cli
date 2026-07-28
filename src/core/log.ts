@@ -28,8 +28,11 @@ export interface RunLogRecord {
   agentTokens?: Record<string, TokenUsage>;
   /** provider/model that ACTUALLY answered each pass (not what was configured). */
   agentModels?: Record<string, string>;
-  /** Provider rate-limit (429) events observed in the OpenCode server log this run. */
+  /** Provider rate-limit events observed this run (OpenCode 429s + Claude Code CLI
+   * subscription rate/usage limits), summed across every engine the run drove. */
   rateLimitEvents?: number;
+  /** Rate-limit events split by engine, present only when a mixed run drove both. */
+  rateLimitByEngine?: { opencode: number; claudeCode: number };
   // The reasoning trail behind the posted result: raw per-agent findings before
   // coordination, the coverage gaps reported to the coordinator, and the findings
   // the verifier rejected. Together these explain WHY the final finding set looks
