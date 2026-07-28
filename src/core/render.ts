@@ -227,6 +227,23 @@ function renderSeveritySections(
   return out;
 }
 
+/**
+ * Indent every line of a multi-line value to a list item's content column.
+ *
+ * Rationales embed a `<details>` block, and only indenting the first line let
+ * that HTML escape the list item: GitHub then treated the closing `</details>`
+ * as ending a top-level HTML block, and because the next finding's bullet
+ * followed after a single newline it was emitted as raw text instead of
+ * Markdown. Every finding after the first in a group rendered with visible
+ * `**` and backticks.
+ *
+ * Blank lines stay truly empty — trailing whitespace would make them
+ * non-blank and reopen the same class of parsing bug.
+ */
+function indentContinuation(value: string, indent = "  "): string[] {
+  return value.split("\n").map((line) => (line.trim() === "" ? "" : `${indent}${line}`));
+}
+
 function renderFindingLines(
   finding: Finding,
   link?: LinkContext,
@@ -234,11 +251,14 @@ function renderFindingLines(
 ): string[] {
   const out = [
     `- **${finding.title}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\``,
-    `  ${finding.rationale}`,
+    ...indentContinuation(finding.rationale),
   ];
   if (finding.suggestion) {
-    out.push(`  _Suggestion:_ ${finding.suggestion}`);
+    out.push(...indentContinuation(`_Suggestion:_ ${finding.suggestion}`));
   }
+  // Separator so a rationale ending in `</details>` cannot swallow the next
+  // bullet. Findings are already loose list items, so this changes no spacing.
+  out.push("");
   return out;
 }
 

@@ -166,3 +166,44 @@ test("renders per-severity headers with counts", () => {
   expect(out).toMatch(/Critical \(1\)/i);
   expect(out).toMatch(/Warning \(1\)/i);
 });
+
+test("a rationale ending in </details> does not swallow the next finding's bullet", () => {
+  // Regression: findings were pushed back-to-back and only the rationale's FIRST
+  // line was indented, so the embedded <details> escaped the list item. GitHub
+  // then treated everything up to the next blank line as raw text, and every
+  // finding after the first in a group rendered with visible ** and backticks.
+  const withDetails = (title: string) =>
+    finding({
+      severity: "critical",
+      title,
+      rationale:
+        "**Confidence:** High — traced.\n\n<details>\n<summary>Evidence and reasoning</summary>\n\nThe path.\n\n</details>",
+    });
+  const body = renderMarkdown(
+    { ...base, decision: "request_changes", findings: [withDetails("First"), withDetails("Second")] },
+    "tag",
+  );
+
+  const lines = body.split("\n");
+  for (const [index, line] of lines.entries()) {
+    if (line.trimEnd() !== "</details>") continue;
+    // The line after a closing </details> must be blank, or Markdown after it is
+    // emitted raw.
+    expect(lines[index + 1] ?? "").toBe("");
+  }
+
+  // Both bullets must survive as list items rather than one leaking into the other.
+  expect(lines.filter((line) => line.startsWith("- **")).length).toBe(2);
+  expect(body).toContain("- **Second**");
+});
+
+test("multi-line rationales stay indented inside their list item", () => {
+  const body = renderMarkdown(
+    { ...base, findings: [finding({ rationale: "line one\n\n<details>\nx\n</details>" })] },
+    "tag",
+  );
+  // Non-blank continuation lines are indented to the content column; blank lines
+  // stay exactly empty so they still terminate HTML blocks.
+  expect(body).toContain("  <details>");
+  expect(body).not.toMatch(/^ +$/m);
+});
