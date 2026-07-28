@@ -1,9 +1,9 @@
 ---
 description: Security and secrets. Injection, credential or secret leakage, unsafe shell/child-process use, missing validation at trust boundaries.
 alwaysRun: true
-# Security is the highest-stakes agent, so it runs on the pro tier — via the
-# openai-api alias (metered API key), because the subscription excludes pro models.
-model: openai-api/gpt-5.5-pro
+# Security is the highest-stakes agent, so it runs on the Opus tier (included in
+# the Max/Team subscription the claude-code engine authenticates with).
+model: anthropic/claude-opus-5
 ---
 
 # Security & secrets

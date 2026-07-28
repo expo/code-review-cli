@@ -1,7 +1,7 @@
 ---
 # The coordinator only consolidates text (no repo tools), so a fast, cheap model
 # fits and keeps this serial step from adding latency. Override as you like.
-model: openai/gpt-5.4-mini
+model: anthropic/claude-haiku-4-5
 ---
 
 # Coordinator — consolidation & decision
