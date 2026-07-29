@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { run } from "../core/exec.js";
 import { parseUnifiedDiff } from "../core/diff.js";
-import { scrubAmbientRuntimeConfig } from "../core/scrub.js";
+import { removeEscapingSymlinks, scrubAmbientRuntimeConfig } from "../core/scrub.js";
 import type { DiffEntry, ReviewMetadata } from "../core/schema.js";
 import type { PreparedReadRoot, ReviewSource } from "./source.js";
 
@@ -152,6 +152,9 @@ export class GitHubPRSource implements ReviewSource {
    * OpenCode server is started with this directory as its project root, and
    * anything it discovers there is attacker-controlled PR content executing or
    * injecting inside a process that holds the model credential and GH_TOKEN.
+   * Out-of-tree symlinks are stripped in the same pass: read tools are scoped by
+   * the literal path argument but follow symlinks underneath, so a PR-committed
+   * link escaping the tree would otherwise read arbitrary host files.
    *
    * Returns null only when no owner/repo is configured (a local `--pr` run
    * without --repo, where the current checkout is an acceptable read root).
@@ -173,6 +176,7 @@ export class GitHubPRSource implements ReviewSource {
     );
     try {
       await scrubAmbientRuntimeConfig(root.dir);
+      await removeEscapingSymlinks(root.dir);
     } catch (error) {
       // A half-scrubbed tree must never become the runtime's project root.
       await root.cleanup().catch(() => {});

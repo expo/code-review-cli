@@ -234,18 +234,28 @@ export function claudeModelMatches(requested: string, actualKey: string): boolea
  * (Glob withheld — directory crawling is what made them wander), and the coordinator
  * plus the no-tools fallback get none. Whatever the role, every GRANTED read tool is
  * path-scoped to the review tree (`//<cwd>/**`, Claude Code's absolute-path rule)
- * with `dontAsk` denying any call that matches no allow rule. This closes the
- * prompt-injection exfil path: untrusted PR content is the review input and findings
- * are posted as PR comments, so any unscoped read-capable tool (a bare `Grep` no less
- * than a bare `Read`) would let an injected instruction read
- * `~/.claude/.credentials.json` (the subscription token this engine authenticates
- * with), `/proc/self/environ`, `.env*`, or SSH keys and emit them into a finding.
- * Verified empirically against the installed CLI: in-tree Read/Grep succeed,
- * out-of-tree Read/Grep/Glob (`/etc`, `~/.zshrc`) are denied by the unmatched-rule
- * denial; a withheld read tool is denied BY NAME because an EMPTY allow list
- * default-allows reads. NO scoped deny rules: `Read(//**)` would deny the tree itself
- * (paths resolve to absolute), and `Read(~/**)` denies the whole tree whenever the
- * repo lives under the home directory — the common case.
+ * with `dontAsk` denying any call that matches no allow rule. This narrows the
+ * prompt-injection exfil path for DIRECT out-of-tree reads: untrusted PR content is
+ * the review input and findings are posted as PR comments, so any unscoped
+ * read-capable tool (a bare `Grep` no less than a bare `Read`) would let an injected
+ * instruction read `~/.claude/.credentials.json` (the subscription token this engine
+ * authenticates with), `/proc/self/environ`, `.env*`, or SSH keys and emit them into
+ * a finding. Verified empirically against the installed CLI: in-tree Read/Grep
+ * succeed, out-of-tree Read/Grep/Glob (`/etc`, `~/.zshrc`) are denied by the
+ * unmatched-rule denial; a withheld read tool is denied BY NAME because an EMPTY
+ * allow list default-allows reads. NO scoped deny rules: `Read(//**)` would deny the
+ * tree itself (paths resolve to absolute), and `Read(~/**)` denies the whole tree
+ * whenever the repo lives under the home directory — the common case.
+ *
+ * This is NOT, by itself, a boundary against a symlink committed inside the PR-head
+ * tree (e.g. `docs/notes.md -> ~/.claude/.credentials.json`): the permission rule
+ * matches the literal path ARGUMENT, which is in-tree, but Read/Grep then follow the
+ * symlink via fs and return the out-of-tree target's contents. That gap is closed
+ * UPSTREAM of this argv, where there is still a filesystem to preflight: read-root
+ * materialization strips symlinks that resolve outside the tree
+ * (removeEscapingSymlinks in scrub.ts, run by prepareReadRootAsync). Runs whose read
+ * root is the user's own checkout (local diffs) don't get the sweep — the user is
+ * the trust principal for their own tree's symlinks.
  */
 export function buildClaudeArgs(opts: {
   model: string;

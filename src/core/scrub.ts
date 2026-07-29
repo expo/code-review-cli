@@ -1,4 +1,4 @@
-import { readdir, rm } from "node:fs/promises";
+import { readdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -62,5 +62,63 @@ export async function scrubAmbientRuntimeConfig(root: string): Promise<string[]>
     }
   };
   await walk(root);
+  return removed.sort();
+}
+
+/**
+ * Remove symlinks whose fully resolved target lies outside the materialized tree.
+ *
+ * The model runtime's read tools are path-scoped by the LITERAL path argument
+ * (buildClaudeArgs' permission rules, and equally OpenCode's project-root
+ * containment), but the fs layer underneath follows symlinks — so a PR-committed
+ * link (`docs/notes.md -> ~/.claude/.credentials.json`) passes the in-tree check
+ * and reads the out-of-tree target. Git can only materialize regular files,
+ * directories, and symlinks, so stripping escaping symlinks here closes the whole
+ * class.
+ *
+ * Fail closed: a link whose target cannot be resolved (broken, or a chain that
+ * leaves the tree at any hop) is removed too — the target could come into
+ * existence later, and a broken link has no legitimate review value. In-tree
+ * links survive (realpath resolves chains, so an in-tree alias of an in-tree
+ * file is provably contained). Unlike the config scrub, this walk descends into
+ * node_modules (a committed one is attacker content); `.git` stays skipped — in
+ * a worktree it is an ECR-created gitdir link, not PR content.
+ *
+ * Must only ever run on a tree ECR created and will delete. Returns the
+ * repo-relative paths removed so callers can log them.
+ */
+export async function removeEscapingSymlinks(root: string): Promise<string[]> {
+  // realpath the boundary itself: tmpdir-based roots are often behind symlinks
+  // (macOS /var -> /private/var), and containment must compare resolved paths.
+  const boundary = await realpath(root);
+  const removed: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        let contained = false;
+        try {
+          const target = await realpath(full);
+          contained = target === boundary || target.startsWith(boundary + path.sep);
+        } catch {
+          // Unresolvable link: leave `contained` false (fail closed).
+        }
+        if (!contained) {
+          await rm(full, { force: true });
+          // Relative to the RESOLVED boundary — the walk runs there, and the
+          // caller's `root` may itself sit behind a symlink (macOS /var).
+          removed.push(path.relative(boundary, full));
+        }
+        // In-tree directory links are kept but never descended: their contents
+        // are walked once via the real path, and descending would loop on cycles.
+        continue;
+      }
+      if (entry.isDirectory() && entry.name !== ".git") {
+        await walk(full);
+      }
+    }
+  };
+  await walk(boundary);
   return removed.sort();
 }
