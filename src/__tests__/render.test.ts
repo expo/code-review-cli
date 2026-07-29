@@ -180,7 +180,11 @@ test("a rationale ending in </details> does not swallow the next finding's bulle
         "**Confidence:** High — traced.\n\n<details>\n<summary>Evidence and reasoning</summary>\n\nThe path.\n\n</details>",
     });
   const body = renderMarkdown(
-    { ...base, decision: "request_changes", findings: [withDetails("First"), withDetails("Second")] },
+    {
+      ...base,
+      decision: "request_changes",
+      findings: [withDetails("First"), withDetails("Second")],
+    },
     "tag",
   );
 
