@@ -1,3 +1,7 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { expect, test } from "bun:test";
 
 import { resolveOnPath, run } from "../core/exec.js";
@@ -17,6 +21,39 @@ test("run with input: timeout kills the child and resolves timedOut (no throw)",
   // The kill fired at the deadline, not after the child's own 30s.
   expect(Date.now() - started).toBeLessThan(10_000);
 });
+
+test("run with input: timeout kills the whole process group, not just the direct child", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ecr-exec-test-"));
+  const pidFile = join(dir, "grandchild.pid");
+  try {
+    const result = await run("sh", ["-c", `sleep 30 & echo $! >"${pidFile}"; wait`], {
+      input: "",
+      timeout: 250,
+      check: true,
+    });
+    expect(result.timedOut).toBe(true);
+    const grandchildPid = Number((await readFile(pidFile, "utf8")).trim());
+    // If only the direct `sh` had been signaled, this detached grandchild `sleep`
+    // would still be alive; process.kill throws ESRCH once the whole group is gone.
+    expect(() => process.kill(grandchildPid, 0)).toThrow();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("run with input: escalates to SIGKILL after the grace period when the child traps SIGTERM", async () => {
+  const started = Date.now();
+  const result = await run(
+    "node",
+    ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"],
+    { input: "", timeout: 250, check: true },
+  );
+  expect(result.timedOut).toBe(true);
+  // SIGTERM alone never ends a process that traps it; only the 5s grace-timer
+  // SIGKILL escalation does, so a duration past that proves the path fired.
+  expect(Date.now() - started).toBeGreaterThanOrEqual(5000);
+  expect(Date.now() - started).toBeLessThan(10_000);
+}, 10_000);
 
 test("run without input: timeout resolves timedOut too (execFile path, same contract)", async () => {
   const started = Date.now();

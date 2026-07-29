@@ -7,7 +7,7 @@ import type { LoadedConfig } from "../config/schema.js";
 // Type-only: erased at compile time, so it creates NO runtime import cycle. The
 // Claude engine is reached at runtime via dynamic import() in the dispatch
 // branches below; claude-code.ts statically imports the shared helpers here.
-import type { ClaudeCodeHandle } from "./claude-code.js";
+import type { ClaudeCodeHandle, Engine } from "./claude-code.js";
 import { RateLimitWatch } from "./throttle.js";
 import { toolMap } from "./tools.js";
 import { errorMessage, sleep } from "./util.js";
@@ -26,15 +26,28 @@ export const CLAUDE_CODE_ENGINE = "claude-code" as const;
 export function resolveEngineDispatch(
   handle: OpencodeHandle,
   agent: string,
-): { engine: "opencode" | "claude-code"; claudeHandle?: ClaudeCodeHandle } {
+): { engine: "opencode" } | { engine: "claude-code"; claudeHandle: ClaudeCodeHandle } {
   const engine = handle.engineOf?.(agent) ?? handle.engine ?? "opencode";
   if (engine !== CLAUDE_CODE_ENGINE) {
     return { engine };
   }
-  const claudeHandle = (
-    handle.engine === CLAUDE_CODE_ENGINE ? handle : handle.claude
-  ) as ClaudeCodeHandle;
-  return { engine, claudeHandle };
+  // A claude-only run: the carrier itself IS the claude handle. Cast is safe (and
+  // still needed) because `handle` is typed OpencodeHandle here regardless.
+  if (handle.engine === CLAUDE_CODE_ENGINE) {
+    return { engine, claudeHandle: handle as ClaudeCodeHandle };
+  }
+  // Mixed run: engineOf routed this agent to claude-code, so the carrier's `.claude`
+  // field must be set. If it isn't, that's an invariant violation in how the handle
+  // was assembled, not a runtime fluke — fail loudly here instead of letting a bad
+  // cast smuggle `undefined` past the type checker and crash deep inside
+  // runClaudePrompt with no clue what went wrong.
+  if (!handle.claude) {
+    throw new Error(
+      `Agent "${agent}" is routed to the claude-code engine but this handle has no ` +
+        `.claude carrier — the handle was assembled inconsistently.`,
+    );
+  }
+  return { engine, claudeHandle: handle.claude };
 }
 
 export interface OpencodeHandle {
@@ -46,13 +59,13 @@ export interface OpencodeHandle {
   /** Which review engine this handle drives. undefined ⇒ the OpenCode engine
    * (default); "claude-code" ⇒ the Claude Code CLI engine, a superset handle
    * (see ClaudeCodeHandle) that the seam functions dispatch to. */
-  engine?: "opencode" | "claude-code";
+  engine?: Engine;
   /** Present on the carrier when the run ALSO drives the Claude Code engine: the
    * real claude handle, used by the per-agent dispatch below when engineOf routes an
    * agent to claude-code and the carrier itself is the opencode handle. */
   claude?: ClaudeCodeHandle;
   /** Per-agent engine router; undefined ⇒ single-engine run keyed by `engine`. */
-  engineOf?: (agent: string) => "opencode" | "claude-code";
+  engineOf?: (agent: string) => Engine;
 }
 
 /** Token usage as reported on an OpenCode assistant message's `info.tokens`. */
@@ -692,7 +705,7 @@ export async function promptAgent(
   const dispatch = resolveEngineDispatch(handle, args.agent);
   if (dispatch.engine === CLAUDE_CODE_ENGINE) {
     const { runClaudePrompt } = await import("./claude-code.js");
-    return runClaudePrompt(dispatch.claudeHandle!, args);
+    return runClaudePrompt(dispatch.claudeHandle, args);
   }
   const maxWaitMs = args.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
   // ONE deadline for the whole pass, shared by the first attempt and any stall
@@ -958,7 +971,7 @@ export async function promptAndParse<T>(
   const dispatch = resolveEngineDispatch(handle, args.agent);
   if (dispatch.engine === CLAUDE_CODE_ENGINE) {
     const { claudeCodePromptAndParse } = await import("./claude-code.js");
-    return claudeCodePromptAndParse(dispatch.claudeHandle!, args, parse);
+    return claudeCodePromptAndParse(dispatch.claudeHandle, args, parse);
   }
   let cost = 0;
   let truncated = false;

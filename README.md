@@ -110,7 +110,7 @@ is a ready example to adapt.
 | `ecr init [--no-workflow] [--force]` | Scaffold `.expo-code-review/` (config, agents, prompts) + a CI workflow. |
 | `ecr init --monorepo` | …and add a `routing.jsonc` routing manifest (one default scope). |
 | `ecr init --scope <dir>` | Scaffold a per-team scope under `<dir>` and register it in the manifest. |
-| `ecr setup-auth [--yes]` | Walk through getting model credentials for local runs (ChatGPT sign-in and/or API keys), printing the `export` lines for your shell config. |
+| `ecr setup-auth [--yes]` | Walk through getting model credentials for local runs (ChatGPT/Claude sign-in and/or API keys), printing the `export` lines for your shell config. |
 | `ecr review [options]` | Review local changes and print an advisory review (default command). |
 | `ecr review --scope <name>` | Review only one routing scope over just that scope's changed files. |
 | `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
@@ -588,8 +588,11 @@ rediscovering one fixable thing, then reports N coverage gaps. So before any pas
   model, with nothing pointing at the credential. A truncated value, surrounding
   whitespace, or a token that can't work for the configured `auth.mode` is rejected
   by name.
-- **Configured model ids are checked against the running server**, so a typo or an id
-  the provider doesn't have is reported once, up front, with the close matches.
+- **Configured model ids for OpenCode-routed providers are checked against the running
+  server**, so a typo or an id the provider doesn't have is reported once, up front,
+  with the close matches. `anthropic/…` (Claude Code) model ids aren't checked up
+  front — Claude validates them per-request, so a typo there surfaces as a per-pass
+  error instead.
 - **`ecr doctor` reports the `opencode` version actually in use** and warns when a
   different one is first on your `PATH` — runs use the version this package pins.
 

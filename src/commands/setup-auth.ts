@@ -282,9 +282,7 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
       err("");
       err(
         `auth for "${entry.provider}" is mode "oauth", which has no automated setup flow here` +
-          (entry.provider === "anthropic"
-            ? " — and cannot work: Anthropic prohibits subscription tokens in third-party tools. Use an API key instead."
-            : `. Set ${entry.tokenEnv ?? "its token env"} manually.`),
+          `. Set ${entry.tokenEnv ?? "its token env"} manually.`,
       );
     }
 

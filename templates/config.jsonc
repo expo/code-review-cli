@@ -49,9 +49,9 @@
   //              store the key as a repo secret and pass it under that env var
   //              (the scaffolded workflow does). If you omit `auth` entirely,
   //              OpenCode's own login / ambient provider env vars are used.
-  // For Anthropic/Claude, set provider "anthropic", tokenEnv "ANTHROPIC_API_KEY",
-  // and an anthropic/... model above. For another provider, omit `auth` and set
-  // REVIEWER_MODEL after an `opencode auth login` for that provider.
+  // For Anthropic/Claude, see the dedicated block below (it now runs through the
+  // Claude Code CLI). For another provider, omit `auth` and set REVIEWER_MODEL
+  // after an `opencode auth login` for that provider.
   //
   // MIXED setup (a ChatGPT/Codex subscription for the default models, plus a
   // metered API key for pro-tier models the subscription doesn't offer): use the

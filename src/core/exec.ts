@@ -160,7 +160,10 @@ function runWithInput(
     const killChild = (sig: NodeJS.Signals): void => {
       try {
         if (process.platform === "win32" && child.pid !== undefined) {
-          spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"]);
+          // A no-op error handler is required: an async spawn failure (ENOENT/EPERM)
+          // has no other listener here and would otherwise throw unhandled and
+          // crash the parent, defeating the point of this cleanup path.
+          spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"]).on("error", () => {});
         } else if (detached && child.pid !== undefined) {
           process.kill(-child.pid, sig);
         } else {
@@ -205,11 +208,19 @@ function runWithInput(
     child.stderr.on("data", (chunk: string) => {
       stderr = cap(stderr, chunk);
     });
+    // A late I/O error on either stream (e.g. the process group getting
+    // SIGKILLed mid-read) would otherwise throw unhandled and crash the
+    // parent; the close handler reports the real outcome regardless.
+    child.stdout.on("error", () => {});
+    child.stderr.on("error", () => {});
     child.on("error", (error) => {
       clearTimers();
       liveChildKillers.delete(emergencyKill);
       if (!check) {
-        resolve({ stdout, stderr, code: 1, timedOut, overflowed });
+        // A spawn error (ENOENT/EACCES) fires before any stderr can be
+        // captured, so fall back to error.message rather than resolving
+        // with an unexplained empty stderr.
+        resolve({ stdout, stderr: stderr || error.message, code: 1, timedOut, overflowed });
         return;
       }
       reject(new Error(`Command failed: ${command} ${args.join(" ")}\n${error.message}`.trim()));

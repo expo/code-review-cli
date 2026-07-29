@@ -31,7 +31,8 @@ export interface RunLogRecord {
   /** Provider rate-limit events observed this run (OpenCode 429s + Claude Code CLI
    * subscription rate/usage limits), summed across every engine the run drove. */
   rateLimitEvents?: number;
-  /** Rate-limit events split by engine, present only when a mixed run drove both. */
+  /** Rate-limit events split by engine, present whenever any engine reported a
+   * rate-limit event (the non-triggering engine reads 0). */
   rateLimitByEngine?: { opencode: number; claudeCode: number };
   // The reasoning trail behind the posted result: raw per-agent findings before
   // coordination, the coverage gaps reported to the coordinator, and the findings
