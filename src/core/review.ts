@@ -200,7 +200,16 @@ export async function runReview(
   // live credential (buildEngineMap only inspects config, so nothing needs cleanup
   // yet at this point). Nothing throws here anymore — one run may drive BOTH the
   // Claude Code CLI engine and OpenCode at once, inferred per agent from its model.
-  const { engineOf, modelOf, usesOpencode, usesClaude } = buildEngineMap(config);
+  //
+  // Scope the engine set to the SELECTED agents so a run whose passes never touch
+  // Claude doesn't start (and fail on a missing CLI/token for) the Claude Code
+  // engine. An explicit `--agents` subset is known here; routing picks from the full
+  // roster later (its router needs an engine up first), so a routed/all run keeps
+  // the full roster and can drive either engine.
+  const { engineOf, modelOf, usesOpencode, usesClaude } = buildEngineMap(
+    config,
+    explicitAgents ?? config.agents,
+  );
 
   const originalCwd = process.cwd();
   const readRoot = await resolveReadRoot(source, options.mode, progress);

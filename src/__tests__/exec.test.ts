@@ -1,10 +1,17 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 
 import { expect, test } from "bun:test";
 
-import { resolveOnPath, run } from "../core/exec.js";
+import {
+  git,
+  resetTrustedToolCache,
+  resolveOnPath,
+  resolveTrustedTool,
+  run,
+  taskkillPath,
+} from "../core/exec.js";
 
 test("run with input: feeds stdin through the spawn path", async () => {
   const result = await run("cat", [], { input: "hello stdin" });
@@ -98,4 +105,86 @@ test("resolveOnPath: absolute path for a real command, null for a fake one", asy
   expect(sh).not.toBeNull();
   expect(sh!.startsWith("/")).toBe(true);
   expect(await resolveOnPath("definitely-not-a-real-command-ecr")).toBeNull();
+});
+
+test("resolveTrustedTool: resolves git to an absolute path, memoized to one lookup", async () => {
+  resetTrustedToolCache();
+  const first = resolveTrustedTool("git");
+  // The SAME promise is returned for a repeated call, so the many git()/gh callers
+  // share one which/where lookup instead of each spawning their own.
+  expect(resolveTrustedTool("git")).toBe(first);
+  const gitPath = await first;
+  expect(isAbsolute(gitPath)).toBe(true);
+});
+
+test("resolveTrustedTool: refuses (throws on) a binary that resolves inside the reviewed tree", async () => {
+  // realpath so the dir has no /var→/private/var symlink to defeat the in-tree check.
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "ecr-trusted-intree-")));
+  const bin = join(dir, "gh");
+  await writeFile(bin, `#!/bin/sh\necho hijacked\n`, "utf8");
+  await chmod(bin, 0o755);
+  const savedPath = process.env.PATH;
+  const savedCwd = process.cwd();
+  process.env.PATH = `${dir}${delimiter}${savedPath ?? ""}`;
+  process.chdir(dir); // cwd now CONTAINS the fake gh → in-tree
+  resetTrustedToolCache();
+  try {
+    // resolveOnPath finds dir/gh (from tmpdir), pathInside refuses it → a throw, so a
+    // PR-committed shim is never spawned with ambient secrets in its env.
+    await expect(resolveTrustedTool("gh")).rejects.toThrow(/reviewed tree/);
+  } finally {
+    process.chdir(savedCwd);
+    if (savedPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = savedPath;
+    }
+    resetTrustedToolCache();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("git: spawns the resolved absolute path, never a bare `git`", async () => {
+  // A fake git that reports how it was invoked ($0). cwd stays the repo root (out of
+  // this temp dir), so the fake is on PATH but NOT in-tree — resolved, not refused.
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "ecr-trusted-git-")));
+  const bin = join(dir, "git");
+  await writeFile(bin, `#!/bin/sh\nprintf '%s' "$0"\n`, "utf8");
+  await chmod(bin, 0o755);
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${dir}${delimiter}${savedPath ?? ""}`;
+  resetTrustedToolCache();
+  try {
+    const argv0 = (await git(["rev-parse"], dir)).trim();
+    // The absolute resolved path reached the child, not a bare "git" (which libuv
+    // would resolve against the child cwd on Windows).
+    expect(argv0).toBe(bin);
+    expect(argv0).not.toBe("git");
+  } finally {
+    if (savedPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = savedPath;
+    }
+    resetTrustedToolCache();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("taskkillPath: an absolute System32 path, never a bare `taskkill`", () => {
+  const saved = process.env.SystemRoot;
+  try {
+    process.env.SystemRoot = "C:\\Windows";
+    const resolved = taskkillPath();
+    // A bare name would let libuv resolve it against the untrusted cwd on Windows; an
+    // absolute path does no search at all.
+    expect(resolved).not.toBe("taskkill");
+    expect(resolved.replace(/\\/g, "/")).toBe("C:/Windows/System32/taskkill.exe");
+  } finally {
+    if (saved === undefined) {
+      delete process.env.SystemRoot;
+    } else {
+      process.env.SystemRoot = saved;
+    }
+  }
 });

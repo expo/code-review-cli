@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { run } from "../core/exec.js";
+import { resolveTrustedTool, run } from "../core/exec.js";
 import { parseUnifiedDiff } from "../core/diff.js";
 import { removeEscapingSymlinks, scrubAmbientRuntimeConfig } from "../core/scrub.js";
 import type { DiffEntry, ReviewMetadata } from "../core/schema.js";
@@ -52,8 +52,9 @@ export class GitHubPRSource implements ReviewSource {
   }
 
   private async fetchMetadata(): Promise<ReviewMetadata> {
+    const gh = await resolveTrustedTool("gh");
     const { stdout } = await run(
-      "gh",
+      gh,
       [
         "pr",
         "view",
@@ -86,8 +87,9 @@ export class GitHubPRSource implements ReviewSource {
   }
 
   async getChangedFiles(): Promise<DiffEntry[]> {
+    const gh = await resolveTrustedTool("gh");
     const { stdout } = await run(
-      "gh",
+      gh,
       ["pr", "diff", String(this.options.prNumber), ...this.repoArgs()],
       { cwd: this.options.cwd },
     );
@@ -108,10 +110,11 @@ export class GitHubPRSource implements ReviewSource {
     }
     const cwd = this.options.cwd;
     const url = `https://github.com/${this.options.repo}.git`;
+    const gitPath = await resolveTrustedTool("git");
     let parent: string | undefined;
     try {
       await run(
-        "git",
+        gitPath,
         [...GH_CREDENTIAL_HELPER_ARGS, "fetch", "--no-tags", "--depth=1", url, ref],
         { cwd },
       );
@@ -120,13 +123,13 @@ export class GitHubPRSource implements ReviewSource {
       // Check out the OID (not FETCH_HEAD): if the ref moved between the API call
       // and this fetch, the OID is absent and this fails instead of silently
       // materializing a different tree than the one the diff was fetched for.
-      await run("git", ["worktree", "add", "--detach", dir, oid], { cwd });
+      await run(gitPath, ["worktree", "add", "--detach", dir, oid], { cwd });
       const removeParent = parent;
       return {
         dir,
         cleanup: async () => {
           try {
-            await run("git", ["worktree", "remove", "--force", dir], { cwd });
+            await run(gitPath, ["worktree", "remove", "--force", dir], { cwd });
           } catch {
             // best effort — fall through to removing the temp dir
           }

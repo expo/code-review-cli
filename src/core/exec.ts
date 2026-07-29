@@ -163,7 +163,7 @@ function runWithInput(
           // A no-op error handler is required: an async spawn failure (ENOENT/EPERM)
           // has no other listener here and would otherwise throw unhandled and
           // crash the parent, defeating the point of this cleanup path.
-          spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"]).on("error", () => {});
+          spawn(taskkillPath(), ["/pid", String(child.pid), "/T", "/F"]).on("error", () => {});
         } else if (detached && child.pid !== undefined) {
           process.kill(-child.pid, sig);
         } else {
@@ -254,16 +254,70 @@ function runWithInput(
   });
 }
 
+/**
+ * Memoized trusted resolutions for the host `git`/`gh` binaries, keyed by name so
+ * git()'s many callers share ONE which/where lookup instead of each spawning their
+ * own. See resolveTrustedTool.
+ */
+const trustedToolResolutions = new Map<string, Promise<string>>();
+
+/**
+ * Resolve `git`/`gh` to a trusted ABSOLUTE path, refusing any binary that resolves
+ * INSIDE the reviewed tree. Every git/gh spawn goes through this, never a bare name.
+ *
+ * A review has chdir'd into the untrusted PR-head tree (and `ecr review` of a local
+ * branch, plus `ecr ci`/doctor, operate on an untrusted checkout). libuv on Windows
+ * searches the child's cwd BEFORE PATH when the command is a BARE NAME, so a
+ * PR-committed `git.bat`/`gh.exe` at the repo root would win the lookup and run with
+ * ambient secrets (GH_TOKEN, model creds) in its environment. Spawning a resolved
+ * absolute path does no cwd search at all — the same property that fixed `claude`
+ * and `opencode`. resolveOnPath itself does the which/where lookup from tmpdir(), so
+ * the in-tree shim is never even FOUND on POSIX or Windows; pathInside is the backstop.
+ *
+ * Memoized per name: resolveOnPath is cwd-INDEPENDENT (it looks up from tmpdir), so a
+ * first call can never cache a cwd-tainted value, and the host binary is stable for
+ * the process. The caller's cwd is NOT changed — only the binary is resolved, so
+ * git/gh keep operating on their target tree. Throws (not null) so callers that
+ * assume a working git/gh fail loudly rather than silently spawning nothing.
+ */
+export function resolveTrustedTool(name: "git" | "gh"): Promise<string> {
+  let resolution = trustedToolResolutions.get(name);
+  if (!resolution) {
+    resolution = (async () => {
+      const resolved = await resolveOnPath(name);
+      if (!resolved) {
+        throw new Error(`The \`${name}\` CLI is not installed or not on PATH.`);
+      }
+      if (pathInside(resolved, process.cwd())) {
+        throw new Error(
+          `refusing to run a \`${name}\` binary found inside the reviewed tree (${resolved}) — ` +
+            `install ${name} on the host and remove it from the repository.`,
+        );
+      }
+      return resolved;
+    })();
+    trustedToolResolutions.set(name, resolution);
+  }
+  return resolution;
+}
+
+/** Test-only: drop memoized git/gh resolutions so a test can re-resolve under a changed cwd/PATH. */
+export function resetTrustedToolCache(): void {
+  trustedToolResolutions.clear();
+}
+
 export async function git(args: string[], cwd?: string): Promise<string> {
-  const { stdout } = await run("git", args, { cwd });
+  const gitPath = await resolveTrustedTool("git");
+  const { stdout } = await run(gitPath, args, { cwd });
   return stdout;
 }
 
 /** Resolve owner/repo from the current checkout via gh (for PR-targeting commands). */
 export async function resolveRepo(cwd?: string): Promise<string> {
   try {
+    const gh = await resolveTrustedTool("gh");
     const { stdout } = await run(
-      "gh",
+      gh,
       ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
       {
         cwd,
@@ -312,6 +366,20 @@ export async function resolveOnPath(command: string): Promise<string | null> {
 export function pathInside(filePath: string, dir: string): boolean {
   const rel = path.relative(path.resolve(dir), path.resolve(filePath));
   return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+/**
+ * Absolute path to Windows' `taskkill`, so a process-tree kill never spawns a BARE
+ * `taskkill` — during a review the cwd is the untrusted PR-head tree, and Windows
+ * resolves a bare name against the current directory before PATH, so a PR-committed
+ * `taskkill.exe`/`.bat` at the tree root could otherwise run in place of the real one
+ * (with ambient secrets in its env) on the timeout-kill path. An absolute path does no
+ * search at all. `taskkill` always lives in System32, and `SystemRoot` is set by
+ * Windows, never by the PR. Callers stay win32-guarded.
+ */
+export function taskkillPath(): string {
+  const root = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+  return path.join(root, "System32", "taskkill.exe");
 }
 
 /** Whether an executable is resolvable on PATH. */

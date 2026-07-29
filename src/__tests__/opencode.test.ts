@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import path from "node:path";
 
 import {
   isTransientApiError,
@@ -10,6 +11,7 @@ import {
   formatUnknownModels,
   buildOpencodeConfig,
   resolveEngineDispatch,
+  resolveOpencodeCli,
 } from "../core/opencode.js";
 import type { OpencodeHandle } from "../core/opencode.js";
 import type { ClaudeCodeHandle } from "../core/claude-code.js";
@@ -353,4 +355,16 @@ test("an unknown upstream falls back to the openai-compatible SDK", () => {
     provider?: Record<string, { npm: string }>;
   };
   expect(opencode.provider?.proxyprov?.npm).toBe("@ai-sdk/openai-compatible");
+});
+
+test("resolveOpencodeCli: resolves the bundled shim to an absolute path, never a bare `opencode`", async () => {
+  const cli = await resolveOpencodeCli();
+  // opencode-ai is a dependency, so the bundled shim resolves in this repo.
+  expect(cli).not.toBeNull();
+  expect(path.isAbsolute(cli!)).toBe(true);
+  expect(path.basename(cli!)).toBe("opencode");
+  // The shim from OUR dependency tree (node_modules/.bin), resolved relative to the
+  // module rather than cwd — so a PR-committed `opencode` at the reviewed cwd can never
+  // be what a doctor/setup-auth spawn picks up. Reverting to a bare "opencode" fails here.
+  expect(cli).toContain(`${path.sep}.bin${path.sep}`);
 });

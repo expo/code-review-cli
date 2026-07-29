@@ -65,6 +65,16 @@ export function sanitizeUntrusted(input: string, maxLength = 4000): string {
   return out.trim();
 }
 
+/**
+ * sanitizeUntrusted for a value that must stay on ONE line — a single-line bullet in a
+ * prompt. Collapsing newlines stops injected text from forging a standalone boundary
+ * line (e.g. a bare `EVIDENCE` fence delimiter) that the token-oriented
+ * sanitizeUntrusted does not itself remove.
+ */
+export function flattenUntrusted(input: string, maxLength = 4000): string {
+  return sanitizeUntrusted(input, maxLength).replace(/\s*\n\s*/g, " ");
+}
+
 function withShared(config: LoadedConfig, rolePrompt: string): string {
   return config.sharedPromptText
     ? `${config.sharedPromptText}\n\n---\n\n${rolePrompt}`
@@ -324,8 +334,16 @@ export function buildVerifierTask(
     `- line: ${finding.line ?? "(unspecified)"}`,
     `- severity: ${finding.severity}`,
     `- category: ${finding.category}`,
-    `- title: ${finding.title}`,
-    `- rationale: ${finding.rationale}`,
+    // title/rationale are LLM-authored over the untrusted diff (a reviewer may quote an
+    // adjacent malicious comment straight into them), and buildVerifierSystem is
+    // deliberately NOT wrapped in the shared injection-defense rules — so, like
+    // finding.file above, neutralize their prompt-boundary constructs rather than
+    // interpolating them raw. Flatten to one line too: these are single-line bullet
+    // values, so collapsing newlines stops injected text from forging a standalone
+    // boundary line (e.g. a bare `EVIDENCE` fence delimiter) that sanitizeUntrusted,
+    // which targets role/PR tokens, would not catch.
+    `- title: ${flattenUntrusted(finding.title)}`,
+    `- rationale: ${flattenUntrusted(finding.rationale)}`,
   ];
   if (finding.evidence) {
     lines.push(

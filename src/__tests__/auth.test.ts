@@ -183,6 +183,45 @@ test("checkProviderAuth: FORBIDDEN + cross-provider guards still fire for an ant
   expect(crossed.detail).toContain("openai's");
 });
 
+// ---- Anthropic OAuth env is anthropic-owned (cross-provider guard) ----
+
+test("checkProviderAuth: a non-anthropic entry naming CLAUDE_CODE_OAUTH_TOKEN is refused", () => {
+  // The long-lived Claude Max/Team subscription token would otherwise be forwarded to
+  // a FOREIGN provider (here openai) as its bearer — it is neither in FORBIDDEN nor a
+  // PROVIDER_KEY_ENV value, so only the anthropic-owned guard catches it.
+  for (const tokenEnv of ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"]) {
+    const r = checkProviderAuth(cfg({ mode: "api-key", provider: "openai", tokenEnv }), {
+      [tokenEnv]: `sk-ant-oat01-${"x".repeat(95)}`,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain("anthropic's");
+  }
+});
+
+test("checkProviderAuth: an anthropic entry naming CLAUDE_CODE_OAUTH_TOKEN is still allowed", () => {
+  // The guard keys on OWNER≠provider, so anthropic's own use of its OAuth env passes.
+  const r = checkProviderAuth(
+    cfg({ mode: "oauth", provider: "anthropic", tokenEnv: "ANTHROPIC_AUTH_TOKEN" }),
+    { ANTHROPIC_AUTH_TOKEN: `sk-ant-oat01-${"x".repeat(95)}` },
+  );
+  expect(r.ok).toBe(true);
+});
+
+test("checkProviderAuth: an upstream=anthropic alias may name CLAUDE_CODE_OAUTH_TOKEN", () => {
+  // upstream is anthropic, so the owner matches the upstream and the token is not
+  // being sent to a foreign provider.
+  const r = checkProviderAuth(
+    cfg({
+      mode: "api-key",
+      provider: "myanthropic",
+      upstream: "anthropic",
+      tokenEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+    }),
+    { CLAUDE_CODE_OAUTH_TOKEN: `sk-ant-oat01-${"x".repeat(95)}` },
+  );
+  expect(r.ok).toBe(true);
+});
+
 // A config that routes every model to a provider, plus the auth block. Used to
 // exercise the provider-in-use scoping (the bare `cfg` helper has no models, so it
 // can't scope and considers every entry).

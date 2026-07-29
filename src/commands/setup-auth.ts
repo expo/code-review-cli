@@ -7,8 +7,8 @@ import readline from "node:readline/promises";
 import { hasConfig, loadReviewConfig } from "../config/load.js";
 import type { AuthConfigEntry } from "../config/schema.js";
 import { jwtExpiryMs } from "../core/auth.js";
-import { claudeSubscriptionActive } from "../core/claude-code.js";
-import { opencodeBinSource } from "../core/opencode.js";
+import { claudeSubscriptionActive, resolveClaudeCli } from "../core/claude-code.js";
+import { resolveOpencodeCli } from "../core/opencode.js";
 import { errorMessage } from "../core/util.js";
 
 const USAGE = `ecr setup-auth — set up model credentials for local runs
@@ -172,9 +172,13 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
       if (process.env[tokenEnv]) {
         err(`✓ ${tokenEnv} is already set in this shell — skipping the Claude subscription login.`);
       } else {
+        // Resolve to a trusted absolute path (refusing an in-tree binary), never a
+        // bare `claude`: setup-auth may run inside a cloned untrusted repo, so a
+        // PR-committed shim must not be the `claude` we probe or hand the terminal to.
+        const claudeCliPath = await resolveClaudeCli();
         // A live local `claude` login already covers interactive runs — only CI or
         // a headless box needs the token in an env var.
-        const loggedIn = await claudeSubscriptionActive();
+        const loggedIn = await claudeSubscriptionActive({ cliPath: claudeCliPath ?? undefined });
         if (loggedIn) {
           err(
             "✓ A Claude Max/Team subscription login is active locally — `ecr review` works now. " +
@@ -184,8 +188,16 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
         err("`claude setup-token` mints a 1-year subscription token (opens your browser).");
         if (!(await confirm("Run it now?", yes))) {
           err("Skipped `claude setup-token`.");
+        } else if (!claudeCliPath) {
+          throw new Error(
+            "The `claude` CLI is not installed on this host (npm i -g " +
+              "@anthropic-ai/claude-code); nothing was changed.",
+          );
         } else {
-          const result = spawnSync("claude", ["setup-token"], { stdio: "inherit" });
+          const result = spawnSync(claudeCliPath, ["setup-token"], {
+            stdio: "inherit",
+            cwd: os.tmpdir(),
+          });
           if (result.status !== 0) {
             throw new Error(
               `\`claude setup-token\` exited with ${result.status ?? "a signal"}; nothing was changed.`,
@@ -226,9 +238,22 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
           if (!(await confirm("Run it now?", yes))) {
             err("Skipped the ChatGPT sign-in.");
           } else {
-            const binDir = opencodeBinSource().dir;
-            const opencode = binDir ? path.join(binDir, "opencode") : "opencode";
-            const result = spawnSync(opencode, ["auth", "login"], { stdio: "inherit" });
+            // Resolve to a trusted absolute path (our bundled shim, else PATH with an
+            // in-tree refusal), never a bare `opencode`: setup-auth may run inside a
+            // cloned untrusted repo, so a PR-committed shim must not be the CLI we hand
+            // the terminal to. Run from tmpdir(), never the (possibly untrusted) cwd —
+            // the login writes to OpenCode's global auth store, not the working dir.
+            const opencodeCli = await resolveOpencodeCli();
+            if (!opencodeCli) {
+              throw new Error(
+                "The `opencode` CLI is not available (install `opencode-ai`, or add " +
+                  "node_modules/.bin to PATH); nothing was changed.",
+              );
+            }
+            const result = spawnSync(opencodeCli, ["auth", "login"], {
+              stdio: "inherit",
+              cwd: os.tmpdir(),
+            });
             if (result.status !== 0) {
               throw new Error(
                 `\`opencode auth login\` exited with ${result.status ?? "a signal"}; nothing was changed.`,

@@ -1,4 +1,5 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -9,6 +10,7 @@ import {
   buildClaudeArgs,
   buildEngineMap,
   claudeCodePromptAndParse,
+  claudeSubscriptionActive,
   claudeTemperatureNote,
   claudeTokenCredential,
   classifyClaudeError,
@@ -143,6 +145,46 @@ test("buildEngineMap: engine follows each agent's model, not auth", () => {
   // cross-cutting/verifier follow agents[0].model (anthropic → claude-code here).
   expect(map.engineOf["cross-cutting"]).toBe("claude-code");
   expect(map.engineOf["verifier"]).toBe("claude-code");
+});
+
+test("buildEngineMap: a selected subset scopes the engine set to the passes that run", () => {
+  const config = {
+    agents: [
+      { id: "oai", model: "openai/gpt-5.5", tools: {} },
+      { id: "anth", model: "anthropic/claude-opus-5", tools: {} },
+    ],
+    coordinator: { model: "openai/gpt-5.5" },
+    auth: [],
+  } as unknown as LoadedConfig;
+  // The full roster drives both engines.
+  expect(buildEngineMap(config).usesClaude).toBe(true);
+  // Selecting only the OpenCode agent (agents[0], and the coordinator, are OpenCode)
+  // means no pass touches Claude — usesClaude is false, so a `--agents oai` run never
+  // starts (and can't fail on a missing CLI/token for) the Claude Code engine.
+  const openaiOnly = buildEngineMap(config, [config.agents[0]!]);
+  expect(openaiOnly.usesClaude).toBe(false);
+  expect(openaiOnly.usesOpencode).toBe(true);
+  expect(openaiOnly.engineOf["anth"]).toBeUndefined(); // not selected → not dispatchable
+  // Selecting only the anthropic agent needs the Claude engine.
+  expect(buildEngineMap(config, [config.agents[1]!]).usesClaude).toBe(true);
+});
+
+test("buildEngineMap: the always-run verifier/cross-cutting keep the full roster's default model", () => {
+  // agents[0] is anthropic (the verifier/cross-cutting default model), the coordinator
+  // is OpenCode. Even selecting ONLY the OpenCode agent still runs the verifier on
+  // agents[0], so Claude is genuinely required and must not be dropped here.
+  const config = {
+    agents: [
+      { id: "anth", model: "anthropic/claude-opus-5", tools: {} },
+      { id: "oai", model: "openai/gpt-5.5", tools: {} },
+    ],
+    coordinator: { model: "openai/gpt-5.5" },
+    auth: [],
+  } as unknown as LoadedConfig;
+  const map = buildEngineMap(config, [config.agents[1]!]); // select the OpenCode agent
+  expect(map.usesClaude).toBe(true);
+  expect(map.engineOf["verifier"]).toBe("claude-code");
+  expect(map.engineOf["cross-cutting"]).toBe("claude-code");
 });
 
 test("claudeModelId: strips a leading provider segment; bare ids pass through", () => {
@@ -422,6 +464,71 @@ test("pathInside: inside → true; outside/self → false", async () => {
   expect(pathInside("/repo", "/repo")).toBe(false);
   expect(pathInside("/usr/local/bin/claude", "/repo")).toBe(false);
   expect(pathInside("/repo/../elsewhere/claude", "/repo")).toBe(false);
+});
+
+test("claudeSubscriptionActive: probes the resolved path from tmpdir with the given env, never bare `claude`", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ecr-claude-sub-"));
+  const bin = path.join(dir, "claude");
+  const probe = path.join(dir, "probe");
+  // Record how it was invoked ($0), from where (pwd), and the env var it received,
+  // then report an active Max login.
+  await writeFile(
+    bin,
+    `#!/bin/sh
+printf '%s' "$0" > "${probe}.argv0"
+pwd > "${probe}.cwd"
+printf '%s' "$ECR_PROBE_ENV" > "${probe}.env"
+echo "Logged in to a Max subscription"
+exit 0
+`,
+    "utf8",
+  );
+  await chmod(bin, 0o755);
+  try {
+    const active = await claudeSubscriptionActive({
+      cliPath: bin,
+      env: { PATH: process.env.PATH ?? "", ECR_PROBE_ENV: "sentinel" },
+    });
+    expect(active).toBe(true);
+    // The resolved absolute path was spawned, not a bare "claude".
+    expect(await readFile(`${probe}.argv0`, "utf8")).toBe(bin);
+    // From tmpdir(), never the inherited (possibly untrusted) cwd.
+    expect(await realpath((await readFile(`${probe}.cwd`, "utf8")).trim())).toBe(
+      await realpath(tmpdir()),
+    );
+    // The caller's allowlisted env reached the child (and nothing else — it replaces
+    // process.env), so ambient secrets never leak into the probe.
+    expect(await readFile(`${probe}.env`, "utf8")).toBe("sentinel");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("claudeSubscriptionActive: refuses (never runs) an in-tree `claude` when resolving internally", async () => {
+  // realpath so the dir has no /var→/private/var symlink to defeat the in-tree check.
+  const dir = await realpath(await mkdtemp(path.join(tmpdir(), "ecr-claude-intree-")));
+  const bin = path.join(dir, "claude");
+  const ran = path.join(dir, "ran");
+  await writeFile(bin, `#!/bin/sh\ntouch "${ran}"\necho "logged in"\nexit 0\n`, "utf8");
+  await chmod(bin, 0o755);
+  const savedPath = process.env.PATH;
+  const savedCwd = process.cwd();
+  process.env.PATH = `${dir}${path.delimiter}${savedPath ?? ""}`;
+  process.chdir(dir); // cwd now CONTAINS the fake claude → in-tree
+  try {
+    // Internal resolution: resolveOnPath finds dir/claude, pathInside refuses it, so
+    // the probe returns false WITHOUT executing the PR-committed binary.
+    expect(await claudeSubscriptionActive()).toBe(false);
+    expect(existsSync(ran)).toBe(false);
+  } finally {
+    process.chdir(savedCwd);
+    if (savedPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = savedPath;
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("buildClaudeArgs: a Windows backslash cwd is normalized in the tool scopes", () => {

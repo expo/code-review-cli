@@ -177,15 +177,26 @@ export function engineForModel(model: string): Engine {
  * into its richer per-role agent records. The per-model inference converges to one
  * engine automatically when every model is identical (e.g. under REVIEWER_MODEL), so
  * no run-level convergence code is needed.
+ *
+ * `agents` scopes the reviewer ids to a specific run's SELECTED agents (an explicit
+ * `--agents` subset); it defaults to the full roster. usesOpencode/usesClaude then
+ * report only the engines that run actually drives, so a subset whose passes never
+ * touch Claude doesn't force startClaudeCode (missing CLI/token) for nothing. The
+ * fixed roles always run, so the verifier/cross-cutting shared model and the
+ * coordinator model stay on the FULL roster (config.agents[0] / coordinator) — those
+ * passes use them regardless of which reviewers were selected.
  */
-export function buildEngineMap(config: LoadedConfig): {
+export function buildEngineMap(
+  config: LoadedConfig,
+  agents: readonly LoadedConfig["agents"][number][] = config.agents,
+): {
   engineOf: Record<string, Engine>;
   modelOf: Record<string, string>;
   usesOpencode: boolean;
   usesClaude: boolean;
 } {
   const modelOf: Record<string, string> = {};
-  for (const agent of config.agents) {
+  for (const agent of agents) {
     modelOf[agent.id] = agent.model;
   }
   const shared = config.agents[0]?.model ?? config.coordinator.model;
@@ -660,13 +671,56 @@ export async function assertClaudeModels(
   }
 }
 
+/** A `claude auth status --text` line that indicates a usable Max/Team login. */
+const SUBSCRIPTION_STATUS_RE = /max|team|subscription|logged in/i;
+
+/**
+ * Resolve the host `claude` binary the way this engine trusts it: a PATH lookup from
+ * a trusted cwd (resolveOnPath, never the inherited one) and a refusal of any binary
+ * that resolves INSIDE the current tree. Null when unresolved or in-tree.
+ *
+ * Every `claude` spawn goes through a resolved-and-checked absolute path, never a
+ * bare name: the process may have chdir'd into an untrusted PR-head tree (a review)
+ * and doctor/setup-auth may run inside a cloned untrusted repo, so a bare name lets a
+ * PR-committed `claude` shim win the lookup and run with ambient secrets in its env.
+ * startClaudeCode keeps its own inline resolution (it needs to distinguish "missing"
+ * from "in-tree" for its error messages); the read-only callers use this.
+ */
+export async function resolveClaudeCli(): Promise<string | null> {
+  const cliPath = await resolveOnPath("claude");
+  if (!cliPath || pathInside(cliPath, process.cwd())) {
+    return null;
+  }
+  return cliPath;
+}
+
 /**
  * Whether a Claude Max/Team subscription login is active locally. Shared by
- * `ecr doctor` and `ecr setup-auth` so they agree on the load-bearing regex.
+ * startClaudeCode, `ecr doctor`, and `ecr setup-auth` so they agree on the
+ * load-bearing regex.
+ *
+ * SECURITY: this may run AFTER the process has chdir'd into the untrusted PR-head
+ * tree (startClaudeCode calls it mid-run), and doctor/setup-auth may themselves run
+ * inside a cloned untrusted repo. So it must never spawn a BARE `claude` with the
+ * inherited cwd — on Windows (and some PATH setups) that resolves the current
+ * directory first, letting a PR-committed `claude` shim run with ambient secrets in
+ * its env. startClaudeCode passes the CLI it already resolved and pathInside-checked
+ * plus its allowlisted childEnv; doctor/setup-auth pass nothing and get the same
+ * trusted resolution internally. Either way the probe runs from tmpdir(), never cwd.
  */
-export async function claudeSubscriptionActive(): Promise<boolean> {
-  const status = await run("claude", ["auth", "status", "--text"], { check: false });
-  return status.code === 0 && /max|team|subscription|logged in/i.test(status.stdout);
+export async function claudeSubscriptionActive(
+  cli: { cliPath?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<boolean> {
+  const cliPath = cli.cliPath ?? (await resolveClaudeCli());
+  if (!cliPath) {
+    return false;
+  }
+  const status = await run(cliPath, ["auth", "status", "--text"], {
+    check: false,
+    cwd: tmpdir(),
+    env: cli.env,
+  });
+  return status.code === 0 && SUBSCRIPTION_STATUS_RE.test(status.stdout);
 }
 
 /** A forwardable Claude credential and how the CLI takes it. */
@@ -762,7 +816,7 @@ export async function startClaudeCode(config: LoadedConfig): Promise<ClaudeCodeH
   if (
     !childEnv.CLAUDE_CODE_OAUTH_TOKEN &&
     !childEnv.ANTHROPIC_API_KEY &&
-    !(await claudeSubscriptionActive())
+    !(await claudeSubscriptionActive({ cliPath, env: childEnv }))
   ) {
     throw new Error(
       "No Claude credential found: " +

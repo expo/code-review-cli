@@ -8,6 +8,7 @@ import type { LoadedConfig } from "../config/schema.js";
 // Claude engine is reached at runtime via dynamic import() in the dispatch
 // branches below; claude-code.ts statically imports the shared helpers here.
 import type { ClaudeCodeHandle, Engine } from "./claude-code.js";
+import { pathInside, resolveOnPath } from "./exec.js";
 import { RateLimitWatch } from "./throttle.js";
 import { toolMap } from "./tools.js";
 import { errorMessage, sleep } from "./util.js";
@@ -262,11 +263,51 @@ export function opencodeBinSource(): { dir: string | null; pinned: boolean } {
   return { dir, pinned: dir !== null };
 }
 
+/**
+ * Resolve the `opencode` binary the way we trust it: OUR bundled shim when the
+ * dependency resolves, else a PATH lookup from a trusted cwd (resolveOnPath, never
+ * the inherited one) with a refusal of any binary that resolves INSIDE the current
+ * tree. Null when unresolved or in-tree.
+ *
+ * `ecr doctor`/`ecr setup-auth` may run inside a cloned untrusted repo, so a bare
+ * `opencode` handed to execFile/spawn resolves against the inherited cwd — and Windows
+ * checks the current directory before PATH, letting a PR-committed `opencode` shim run
+ * with ambient secrets in its env. Every opencode spawn in those commands goes through
+ * this, mirroring resolveClaudeCli for the `claude` binary.
+ */
+export async function resolveOpencodeCli(): Promise<string | null> {
+  const bundled = bundledOpencodeBinDir();
+  if (bundled) {
+    // Our own dependency tree (require.resolve is relative to THIS module, not cwd), so
+    // it's trusted by construction — and NO in-tree refusal here: ecr's node_modules
+    // commonly sits under cwd when run from its own repo, which pathInside would then
+    // wrongly reject.
+    return path.join(bundled, "opencode");
+  }
+  // PATH fallback: resolved from a trusted cwd, and refused if it lands in-tree.
+  const cliPath = await resolveOnPath("opencode");
+  if (!cliPath || pathInside(cliPath, process.cwd())) {
+    return null;
+  }
+  return cliPath;
+}
+
 /** Start an in-process OpenCode server with the given inline config. */
 export async function startOpencode(config: unknown): Promise<OpencodeHandle> {
   // Make our pinned CLI win over any global install (see bundledOpencodeBinDir).
   // The SDK takes no `env`, so PATH is the only lever; it spreads `process.env` at
   // spawn time, so setting it here reaches the child.
+  //
+  // SECURITY residual (accepted, POSIX-only deployment): the SDK spawns a BARE
+  // `opencode` (cross-spawn `launch("opencode")`), which on Windows resolves the name
+  // against the current directory before PATH — during a review the cwd is the
+  // untrusted PR-head tree, so a PR-committed `opencode.exe` at its root could run in
+  // its place. We deliberately do NOT reimplement the SDK's server bootstrap to inject
+  // an absolute path here: on POSIX (the supported platform) `execvp` never searches
+  // the cwd, so the hijack cannot fire, and forking the launch would mean silently
+  // maintaining our own copy of it against SDK drift. The direct-spawn `opencode`
+  // callers we own (`ecr doctor`/`ecr setup-auth`) are still hardened via
+  // resolveOpencodeCli. Revisit if Windows becomes a supported target.
   const binDir = bundledOpencodeBinDir();
   if (binDir) {
     process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;

@@ -17,6 +17,22 @@ const PROVIDER_KEY_ENV: Record<string, string> = {
 };
 
 /**
+ * Provider-owned credential env vars BEYOND the x-api-key ones above: Anthropic's
+ * OAuth/subscription bearer envs. CLAUDE_CODE_OAUTH_TOKEN holds the long-lived (1-year)
+ * Claude Max/Team subscription token that `ecr setup-auth`/`claude setup-token` export,
+ * and ANTHROPIC_AUTH_TOKEN is Anthropic's documented bearer var. They belong to
+ * anthropic, so the cross-provider guard below refuses a non-anthropic entry that names
+ * one — without this, `{provider:"openai", tokenEnv:"CLAUDE_CODE_OAUTH_TOKEN"}` passes
+ * (neither a FORBIDDEN secret nor a PROVIDER_KEY_ENV value) and prepareAuth forwards the
+ * Anthropic subscription token to a foreign provider as its bearer. They are NOT in
+ * FORBIDDEN_TOKEN_ENVS because an anthropic entry may legitimately name them.
+ */
+const ANTHROPIC_TOKEN_ENVS: Record<string, string> = {
+  CLAUDE_CODE_OAUTH_TOKEN: "anthropic",
+  ANTHROPIC_AUTH_TOKEN: "anthropic",
+};
+
+/**
  * Env vars that must NEVER be forwarded to a model provider. `auth.tokenEnv` names
  * the env var whose value becomes the provider credential — but that config is
  * loaded from the repo, and in the CI auto-review it can be PR-controlled. A PR
@@ -201,13 +217,15 @@ export function checkAuthEntry(
   // point its provider/upstream somewhere else, sending one provider's key to a
   // different provider.
   if (tokenEnv) {
-    const keyOwner = Object.entries(PROVIDER_KEY_ENV).find(([, env]) => env === tokenEnv)?.[0];
+    const keyOwner =
+      Object.entries(PROVIDER_KEY_ENV).find(([, env]) => env === tokenEnv)?.[0] ??
+      ANTHROPIC_TOKEN_ENVS[tokenEnv];
     if (keyOwner && keyOwner !== provider && keyOwner !== upstream) {
       return {
         ok: false,
         detail:
           `auth for ${provider} names tokenEnv "${tokenEnv}", which is ${keyOwner}'s ` +
-          `well-known key env — refusing to send one provider's credential to another. ` +
+          `well-known credential env — refusing to send one provider's credential to another. ` +
           `Use a credential minted for ${provider}${upstream ? ` (upstream ${upstream})` : ""}, ` +
           `or fix the provider/upstream mapping.`,
       };
