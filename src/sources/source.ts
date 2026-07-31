@@ -2,6 +2,40 @@
 import type { DiffEntry, ReviewMetadata } from "../core/schema.js";
 
 /**
+ * The paths-only manifest of the OPEN pull requests stacked on top of this PR
+ * (they branch off its head). Fetched by a source, injected into the coordinator
+ * so an absence-style finding a later PR already addresses can be requalified.
+ * Everything in it is PR-author-controlled, so it is treated as untrusted data.
+ */
+// @ref LLP 0010#the-upstack-manifest [implements] — paths-only, author-controlled, fetched once per run
+export interface StackManifest {
+  upstackPRs: Array<{ number: number; title: string; authorLogin: string; files: string[] }>;
+  /** A per-PR file list hit its cap (maxFilesPerPr) — the manifest is a subset. */
+  truncated: boolean;
+}
+
+/** Bounds + gates for the upward stack walk. Resolved in the command layer from the
+ * trusted-base stack config; never head-controlled. Presence of this option (not a
+ * boolean) is what turns the walk on. */
+// @ref LLP 0010#bounded-guarded-upward-walk [constrained-by] — every field is a hard bound the walk must never exceed
+export interface StackWalkOptions {
+  maxDepth: number;
+  maxPrs: number;
+  maxFilesPerPr: number;
+  requireSameAuthor: boolean;
+}
+
+/** Pick the walk bounds out of a resolved stack config (drops enable/v2 fields). */
+export function stackWalkFromConfig(stack: StackWalkOptions): StackWalkOptions {
+  return {
+    maxDepth: stack.maxDepth,
+    maxPrs: stack.maxPrs,
+    maxFilesPerPr: stack.maxFilesPerPr,
+    requireSameAuthor: stack.requireSameAuthor,
+  };
+}
+
+/**
  * A Source is where the diff comes from. CI and local mode differ only in which
  * Source (and Reporter) is wired into the otherwise-identical review core.
  */
@@ -9,6 +43,14 @@ export interface ReviewSource {
   getMetadata(): Promise<ReviewMetadata>;
   /** Changed files as path + patch text per file. */
   getChangedFiles(): Promise<DiffEntry[]>;
+  /**
+   * Optionally walk the OPEN PRs stacked on top of this one and return a paths-only
+   * manifest. Any error, rate limit, non-stack PR, or empty result returns `null`
+   * (fail-open — a broken walk never blocks or changes a review). Omitted entirely
+   * by sources with no concept of a stack (LocalGitSource) → a structural no-op.
+   */
+  // @ref LLP 0010#the-upstack-manifest [constrained-by] — fail-open: any failure returns null, never throws, so a broken walk leaves the review exactly as if the feature were off
+  getStackContextAsync?(options: StackWalkOptions): Promise<StackManifest | null>;
   /**
    * Optionally materialize the exact tree the review should READ from and return its
    * directory + a cleanup. The review core chdirs into it while running the agents
@@ -47,11 +89,22 @@ export function memoizeSource(source: ReviewSource): ReviewSource & { dispose():
   let metadataPromise: Promise<ReviewMetadata> | undefined;
   let changedPromise: Promise<DiffEntry[]> | undefined;
   let readRootPromise: Promise<PreparedReadRoot | null> | undefined;
+  let stackPromise: Promise<StackManifest | null> | undefined;
   let realHandle: PreparedReadRoot | null = null;
 
+  const stackFn = source.getStackContextAsync;
   return {
     getMetadata: () => (metadataPromise ??= source.getMetadata()),
     getChangedFiles: () => (changedPromise ??= source.getChangedFiles()),
+    // One PR has one stack: fetch it once and share it across every scope's run
+    // (like getMetadata). Only exposed when the wrapped source can walk a stack, so
+    // an optional-chained call on a stack-less source stays a structural no-op.
+    ...(stackFn
+      ? {
+          getStackContextAsync: (options: StackWalkOptions) =>
+            (stackPromise ??= stackFn.call(source, options)),
+        }
+      : {}),
     prepareReadRootAsync: async () => {
       readRootPromise ??= source.prepareReadRootAsync
         ? source.prepareReadRootAsync()

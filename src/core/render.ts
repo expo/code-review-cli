@@ -152,8 +152,12 @@ export function renderMarkdown(
 ): string {
   const dismissedByFp = new Map(dismissed.map((record) => [record.fp, record]));
   const withFp = review.findings.map((finding) => ({ finding, fp: fingerprintFinding(finding) }));
-  const kept = withFp.filter(({ fp }) => !dismissedByFp.has(fp));
+  const notDismissed = withFp.filter(({ fp }) => !dismissedByFp.has(fp));
   const dropped = withFp.filter(({ fp }) => dismissedByFp.has(fp));
+  // A requalified finding is addressed by a stacked PR: shown in its own collapsed
+  // section and counted, but never in the main (blocking) severity list.
+  const kept = notDismissed.filter(({ finding }) => !finding.requalifiedBy);
+  const requalified = notDismissed.filter(({ finding }) => finding.requalifiedBy);
 
   const lines: string[] = [commentMarker(tag), "## 🤖 AI code review", ""];
   lines.push(
@@ -172,6 +176,8 @@ export function renderMarkdown(
     );
   }
 
+  lines.push(...requalificationAuditNote(requalified.map((entry) => entry.finding)));
+
   if (kept.length === 0) {
     lines.push("No findings.", "");
   } else {
@@ -180,6 +186,17 @@ export function renderMarkdown(
         kept.map((entry) => entry.finding),
         link,
       ),
+    );
+  }
+
+  if (requalified.length > 0) {
+    lines.push(
+      "<details>",
+      `<summary>🔁 Addressed in stacked PRs (${requalified.length})</summary>`,
+      "",
+      ...requalified.flatMap(({ finding, fp }) => addressedLines(finding, fp, link)),
+      "</details>",
+      "",
     );
   }
 
@@ -265,6 +282,42 @@ function renderFindingLines(
   return out;
 }
 
+// @ref LLP 0010#rendering-in-all-three-paths [implements] — the visible audit count is mandatory: requalification's only effect on a real finding is moving it out of the blocking set, so it must never be silent
+/**
+ * The visible one-line audit note in the OPEN body, naming the addressing PRs. This
+ * is what keeps requalification from being a "collapsed fold nobody reads": the
+ * count and PR numbers show above the fold. Empty when nothing was requalified.
+ */
+function requalificationAuditNote(requalified: Finding[]): string[] {
+  if (requalified.length === 0) {
+    return [];
+  }
+  const prNumbers = [
+    ...new Set(
+      requalified
+        .map((finding) => finding.requalifiedBy?.prNumber)
+        .filter((n): n is number => n != null),
+    ),
+  ].sort((a, b) => a - b);
+  const prList = prNumbers.map((n) => `#${n}`).join(", ");
+  return [
+    `> 🔁 **${requalified.length} finding(s)** marked addressed by stacked PR(s) (${prList}); ` +
+      "excluded from the decision but shown below.",
+    "",
+  ];
+}
+
+/** One bullet per finding in the "Addressed in stacked PRs" section — names the
+ * addressing PR and the exact upstack path relied on. */
+function addressedLines(finding: Finding, fp: string, link?: LinkContext): string[] {
+  const requalified = finding.requalifiedBy!;
+  const reason = requalified.reason ? `: ${requalified.reason}` : "";
+  return [
+    `- **${finding.title}** — ${location(finding, link)} \`id:${fp}\` — addressed in ` +
+      `#${requalified.prNumber} (\`${requalified.file}\`)${reason}`,
+  ];
+}
+
 /** Parse the fingerprints embedded in a previously-posted comment body. */
 export function parseEmbeddedFingerprints(body: string, tag: string): string[] {
   // Escape the (config-controlled) tag so regex metacharacters can't break the match.
@@ -336,15 +389,20 @@ export function renderAggregateMarkdown(
   const idOf = (result: ScopeReviewResult, finding: Finding): string =>
     scopedFingerprint(result.isDefault ? null : result.scope, finding);
 
-  // Split each scope's findings into kept/dropped once (dismissal is limit-independent).
+  // Split each scope's findings into kept/requalified/dropped once (dismissal and
+  // requalification are both limit-independent). `kept` is the active/blocking set;
+  // requalified findings are addressed by a stacked PR — counted and shown, never
+  // in the blocking list.
   const perScope = results.map((result) => {
     const withId = result.review.findings.map((finding) => ({
       finding,
       id: idOf(result, finding),
     }));
+    const notDismissed = withId.filter((entry) => !dismissedByFp.has(entry.id));
     return {
       result,
-      kept: withId.filter((entry) => !dismissedByFp.has(entry.id)),
+      kept: notDismissed.filter((entry) => !entry.finding.requalifiedBy),
+      requalified: notDismissed.filter((entry) => entry.finding.requalifiedBy),
       dropped: withId.filter((entry) => dismissedByFp.has(entry.id)),
     };
   });
@@ -392,15 +450,30 @@ export function renderAggregateMarkdown(
     // embedded state trims KEPT findings to the same set so a truncated comment
     // still fits GitHub's body limit (the hidden findings are noted, not silently
     // carried) — but dismissed findings are always kept in state (see below).
-    const rendered = perScope.map(({ result, kept, dropped }) => ({
+    const rendered = perScope.map(({ result, kept, requalified, dropped }) => ({
       result,
       shown: sortFindings(kept.map((entry) => entry.finding)).slice(0, limitPerScope),
       hidden: Math.max(0, kept.length - limitPerScope),
+      // The requalified section is trimmed by the same per-scope limit as shown: it
+      // is coordinator-populated (a wide stack can requalify many findings at once),
+      // and an untrimmed section would keep the truncation loop below from ever
+      // converging under MAX_COMMENT_CHARS. The audit note carries the TOTAL count,
+      // so trimming never hides that requalification happened.
+      requalified: requalified.slice(0, limitPerScope),
+      requalifiedHidden: Math.max(0, requalified.length - limitPerScope),
+      requalifiedAll: requalified,
       dropped,
     }));
 
-    for (const { result, shown, hidden } of rendered) {
-      const open = shown.length > 0 ? " open" : "";
+    for (const {
+      result,
+      shown,
+      hidden,
+      requalified,
+      requalifiedAll,
+      requalifiedHidden,
+    } of rendered) {
+      const open = shown.length > 0 || requalifiedAll.length > 0 ? " open" : "";
       const keptCount = shown.length + hidden;
       lines.push(
         `<details${open}>`,
@@ -410,6 +483,7 @@ export function renderAggregateMarkdown(
       if (result.review.summary) {
         lines.push(result.review.summary, "");
       }
+      lines.push(...requalificationAuditNote(requalifiedAll.map((entry) => entry.finding)));
       if (shown.length === 0) {
         lines.push("No findings.", "");
       } else {
@@ -417,6 +491,19 @@ export function renderAggregateMarkdown(
       }
       if (hidden > 0) {
         lines.push(`_…and ${hidden} more finding(s) — see the workflow log._`, "");
+      }
+      if (requalifiedAll.length > 0) {
+        lines.push(
+          `**🔁 Addressed in stacked PRs (${requalifiedAll.length})**`,
+          "",
+          ...requalified.flatMap((entry) => addressedLines(entry.finding, entry.id, link)),
+        );
+        if (requalifiedHidden > 0) {
+          lines.push(
+            `_…and ${requalifiedHidden} more addressed finding(s) — see the workflow log._`,
+          );
+        }
+        lines.push("");
       }
       lines.push("</details>", "");
     }
@@ -452,11 +539,24 @@ export function renderAggregateMarkdown(
     // review) so /undismiss can restore them and the Dismissed section persists
     // across re-renders. The per-scope data (`scopes`) plus a merged v1 `review`
     // keep both v2 and v1 consumers working.
-    const stateScopes: ScopeReviewResult[] = rendered.map(({ result, shown, dropped }) => ({
-      scope: result.scope,
-      isDefault: result.isDefault,
-      review: { ...result.review, findings: [...shown, ...dropped.map((entry) => entry.finding)] },
-    }));
+    const stateScopes: ScopeReviewResult[] = rendered.map(
+      ({ result, shown, requalified, dropped }) => ({
+        scope: result.scope,
+        isDefault: result.isDefault,
+        // Requalified findings ride the embedded state (like dismissed ones) so a
+        // re-render (/dismiss) round-trips them and the addressed section persists.
+        // Under truncation they are trimmed exactly like `shown` — state bytes count
+        // toward the comment size, so an untrimmed list would defeat the cap loop.
+        review: {
+          ...result.review,
+          findings: [
+            ...shown,
+            ...requalified.map((entry) => entry.finding),
+            ...dropped.map((entry) => entry.finding),
+          ],
+        },
+      }),
+    );
     const merged: CoordinatorOutput = {
       decision: worst,
       findings: stateScopes.flatMap((scope) => scope.review.findings),
@@ -479,7 +579,12 @@ export function renderAggregateMarkdown(
 
   let limit = Number.POSITIVE_INFINITY;
   let body = buildBody(limit);
-  const largestScope = Math.max(0, ...perScope.map((entry) => entry.kept.length));
+  // Seed from the largest per-scope section the limit applies to — kept OR
+  // requalified — so the halving loop shrinks whichever one is oversized.
+  const largestScope = Math.max(
+    0,
+    ...perScope.map((entry) => Math.max(entry.kept.length, entry.requalified.length)),
+  );
   while (body.length > MAX_COMMENT_CHARS && limit > 3) {
     limit =
       limit === Number.POSITIVE_INFINITY

@@ -62,6 +62,18 @@ export const FindingSchema = z.object({
    * the finding is treated as hallucinated and dropped.
    */
   evidence: z.string().optional(),
+  /**
+   * Set by the coordinator (and then ground-checked, see groundStackRequalification)
+   * when a later, stacked-on-top PR already addresses this absence-style finding:
+   * `prNumber` + the EXACT upstack manifest `file` relied on + a one-line `reason`.
+   * A requalified finding is never dropped — it renders in its own section, is
+   * counted, and is only excluded from the blocking decision. Never part of the
+   * fingerprint, so dismissal identity is stable across re-reviews.
+   */
+  // @ref LLP 0010#requalification-schema-and-fingerprints [constrained-by] — annotate-only; excluded from fingerprintFinding so dismissal identity never lapses on requalification
+  requalifiedBy: z
+    .object({ prNumber: z.number().int(), file: z.string(), reason: z.string() })
+    .optional(),
 });
 export type Finding = z.infer<typeof FindingSchema>;
 

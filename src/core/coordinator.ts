@@ -2,6 +2,7 @@
 import type { LoadedConfig } from "../config/schema.js";
 import { promptAndParse } from "./opencode.js";
 import type { OpencodeHandle, TokenUsage } from "./opencode.js";
+import type { StackManifest } from "../sources/source.js";
 import { buildCoordinatorSystem, buildCoordinatorTask } from "./prompts.js";
 import { parseCoordinatorOutput } from "./schema.js";
 import type { CoordinatorOutput, Finding, ReviewMetadata } from "./schema.js";
@@ -33,9 +34,10 @@ export async function coordinate(
   metadata: ReviewMetadata,
   agentFindings: Record<string, Finding[]>,
   coverageNotes: string[] = [],
+  stackManifest?: StackManifest | null,
 ): Promise<CoordinationResult> {
   const system = buildCoordinatorSystem(config);
-  const text = buildCoordinatorTask(metadata, agentFindings, coverageNotes);
+  const text = buildCoordinatorTask(metadata, agentFindings, coverageNotes, stackManifest);
   const { value, cost, tokens, truncated, model } = await promptAndParse(
     handle,
     {

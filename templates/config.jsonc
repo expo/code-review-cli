@@ -89,5 +89,23 @@
     "mode": "api-key",
     "provider": "openai",
     "tokenEnv": "OPENAI_API_KEY"
-  }
+  },
+
+  // Stack-aware requalification (ROOT-ONLY; off by default). When on, `ecr ci` walks
+  // the OPEN PRs stacked on top of this one and lets the coordinator mark an
+  // absence-style finding (a missing test/migration/doc) as addressed when a later
+  // stacked PR already adds it. Such findings are never dropped — they render in a
+  // collapsed "Addressed in stacked PRs" section, are counted in a visible audit line,
+  // and are only excluded from the blocking decision. Critical/secrets/security
+  // findings are never requalifiable. Loaded only from the trusted base commit, so a
+  // PR cannot enable, widen, or disable its own requalification.
+  // "stack": {
+  //   "enabled": false,          // turn the feature on
+  //   "maxDepth": 4,             // how many levels up the stack to walk
+  //   "maxPrs": 8,               // children per level to follow
+  //   "maxFilesPerPr": 100,      // per-child file-list cap
+  //   "requireSameAuthor": true, // only children by this PR's author (anti-poisoning)
+  //   "confirmWithPatch": false, // v2 (not yet implemented)
+  //   "maxConfirmations": 10     // v2 bound
+  // }
 }

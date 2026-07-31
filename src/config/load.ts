@@ -19,6 +19,17 @@ import { toolMap } from "../core/tools.js";
 
 export const CONFIG_DIRNAME = ".expo-code-review";
 
+/** Stack config for a scope load (where `stack` is schema-rejected and absent). */
+const STACK_CONFIG_DEFAULTS: LoadedConfig["stack"] = {
+  enabled: false,
+  maxDepth: 4,
+  maxPrs: 8,
+  maxFilesPerPr: 100,
+  requireSameAuthor: true,
+  confirmWithPatch: false,
+  maxConfirmations: 10,
+};
+
 /** Default OpenCode tool toggles for a reviewer: read the repo, never mutate it. */
 const DEFAULT_AGENT_TOOLS = toolMap(["read", "grep", "glob", "list"]);
 
@@ -46,10 +57,11 @@ export interface LoadConfigOptions {
 }
 
 /** Parsed config with the centrally-locked keys optional (scope configs omit them). */
-type ParsedConfig = Omit<RawReviewConfig, "auth" | "breakGlass" | "commentTag"> & {
+type ParsedConfig = Omit<RawReviewConfig, "auth" | "breakGlass" | "commentTag" | "stack"> & {
   auth?: RawReviewConfig["auth"];
   breakGlass?: RawReviewConfig["breakGlass"];
   commentTag?: RawReviewConfig["commentTag"];
+  stack?: RawReviewConfig["stack"];
 };
 
 export function hasConfig(repoRoot: string, options: LoadConfigOptions = {}): boolean {
@@ -174,6 +186,10 @@ async function loadConfigDir(
     commentTag: parsed.commentTag ?? "expo-ai-code-reviewer",
     auth: normalizeAuth(parsed.auth),
     review: parsed.review,
+    // Root-only: the scope schema rejects `stack`, so parsed.stack is absent for a
+    // scope config and the defaults stand in (unused — the command layer reads the
+    // ROOT config's stack values to drive the walk).
+    stack: parsed.stack ?? STACK_CONFIG_DEFAULTS,
   };
   return { config, raw: rawObject };
 }

@@ -6,6 +6,7 @@ import {
   runGrowableQueue,
   decisionAfterVerification,
   reconcileSummary,
+  reconcileRequalifiedSummary,
   isAuthError,
   formatUsageSummary,
   renderUsageMarkdown,
@@ -149,6 +150,16 @@ test("reconcileSummary: prepends a caveat when some findings remain", () => {
   const out = reconcileSummary("Three critical issues: a, b, c.", 2);
   expect(out).toContain("some findings were removed"); // honest caveat
   expect(out).toContain("Three critical issues: a, b, c."); // original prose kept below
+});
+
+test("reconcileRequalifiedSummary: never claims removal — findings are still listed", () => {
+  // The decision-changed-without-count-drop reconcile (requalification softening):
+  // the note must say the findings stopped blocking, not that they were removed.
+  const out = reconcileRequalifiedSummary("One issue: missing test.");
+  expect(out).toContain("requalified as addressed in stacked PRs");
+  expect(out).toContain("still listed below");
+  expect(out).not.toContain("removed");
+  expect(out).toContain("One issue: missing test."); // original prose kept below
 });
 
 test("decisionAfterVerification: re-derives after drops", () => {
