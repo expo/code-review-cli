@@ -81,6 +81,38 @@ test("init --token-env rewires both review workflows to the named secret", async
   );
 });
 
+// bun's spyOn(process.stdout, "write") misses writes made from other modules, so
+// capture by swapping the method directly.
+async function captureStdout(run: () => Promise<void>): Promise<string> {
+  const original = process.stdout.write;
+  const chunks: string[] = [];
+  process.stdout.write = ((chunk: unknown) => {
+    chunks.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    await run();
+  } finally {
+    process.stdout.write = original;
+  }
+  return chunks.join("");
+}
+
+test("init --token-env prints the config.jsonc auth edit as a next step", async () => {
+  await freshRepo();
+  const out = await captureStdout(() => initCommand(["--token-env", "CLAUDE_CODE_OAUTH_TOKEN"]));
+  // The scaffolded config.jsonc still declares OPENAI_API_KEY, so without this
+  // step CI's verify-config fails and the user has no pointer to why.
+  expect(out).toContain("config.jsonc at this credential");
+  expect(out).toContain("refuses to review until the config names `CLAUDE_CODE_OAUTH_TOKEN`");
+});
+
+test("init without --token-env prints no config-edit step", async () => {
+  await freshRepo();
+  const out = await captureStdout(() => initCommand([]));
+  expect(out).not.toContain("verify-config");
+});
+
 test("init without --token-env keeps the workflow templates byte-identical", async () => {
   const root = await freshRepo();
   await initCommand([]);

@@ -171,21 +171,28 @@ async function scaffold(argv: string[]): Promise<void> {
   }
 
   reportFiles(created, skipped);
+  const names = tokenEnvs.map((name) => `\`${name}\``).join(" + ");
+  const steps = [
+    `Customize ${CONFIG_DIRNAME}/agents/*.md (and shared.md, coordinator.md) for this repo.`,
+    // --token-env only rewires the workflows; the scaffolded config.jsonc still
+    // declares OPENAI_API_KEY, and CI's `ecr verify-config` refuses to review
+    // until the config's tokenEnv set matches the workflow's expected set.
+    ...(tokenEnvs.join(",") !== DEFAULT_TOKEN_ENV
+      ? [
+          `Point ${CONFIG_DIRNAME}/config.jsonc at ${tokenEnvs.length > 1 ? "these credentials" : "this credential"}: set \`auth\` (and \`model\`) per the file's comments — CI's \`ecr verify-config\` refuses to review until the config names ${names}.`,
+        ]
+      : []),
+    "Configure a model provider in OpenCode (or set REVIEWER_MODEL).",
+    "Run `ecr doctor`, then `ecr review`.",
+    withWorkflow
+      ? `Add the ${names} repo secret${tokenEnvs.length > 1 ? "s" : ""} referenced by the workflow, then add an \`ai-review\` label to a PR.`
+      : "(No CI workflow written — re-run without `--no-workflow` to add it.)",
+    monorepo
+      ? `Add per-team scopes with \`ecr init --scope <dir>\` (see ${CONFIG_DIRNAME}/${ROUTING_FILENAME}).`
+      : "Monorepo? Run `ecr init --monorepo` to add a routing manifest.",
+  ];
   process.stdout.write(
-    [
-      "",
-      "Next steps:",
-      `  1. Customize ${CONFIG_DIRNAME}/agents/*.md (and shared.md, coordinator.md) for this repo.`,
-      "  2. Configure a model provider in OpenCode (or set REVIEWER_MODEL).",
-      "  3. Run `ecr doctor`, then `ecr review`.",
-      withWorkflow
-        ? `  4. Add the ${tokenEnvs.map((name) => `\`${name}\``).join(" + ")} repo secret${tokenEnvs.length > 1 ? "s" : ""} referenced by the workflow, then add an \`ai-review\` label to a PR.`
-        : "  4. (No CI workflow written — re-run without `--no-workflow` to add it.)",
-      monorepo
-        ? `  5. Add per-team scopes with \`ecr init --scope <dir>\` (see ${CONFIG_DIRNAME}/${ROUTING_FILENAME}).`
-        : `  5. Monorepo? Run \`ecr init --monorepo\` to add a routing manifest.`,
-      "",
-    ].join("\n"),
+    ["", "Next steps:", ...steps.map((step, index) => `  ${index + 1}. ${step}`), ""].join("\n"),
   );
 }
 

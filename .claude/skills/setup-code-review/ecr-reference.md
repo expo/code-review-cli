@@ -24,7 +24,9 @@ Invoke via `npx @expo/code-review-cli <cmd>` (or `ecr <cmd>` when installed).
   `OPENAI_API_KEY`). Rewrites the two review workflows: the `ECR_EXPECTED_TOKEN_ENV` fallback
   becomes the (comma-joined) list, and one `<name>: ${{ secrets.<name> }}` line is forwarded per
   name. Refuses non-UPPER_SNAKE_CASE names and well-known unrelated secrets (`GH_TOKEN`, …).
-  Root scaffold only (errors with `--scope` or `--no-workflow`).
+  Root scaffold only (errors with `--scope` or `--no-workflow`). Does NOT touch the scaffolded
+  `config.jsonc` (it still declares `OPENAI_API_KEY`) — init prints the required `auth` edit as
+  a next step, and CI's `verify-config` fails until config and workflow name the same set.
 - `--force` — overwrite existing files (default: skip + report).
 
 **`ecr setup-auth [--yes]`** — guided credential setup for local runs; prints `export` lines.
