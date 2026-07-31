@@ -107,6 +107,22 @@ export function parseVerdict(text: string): Verdict {
   return VerdictSchema.parse(extractJsonObject(text));
 }
 
+/**
+ * A stack verifier's verdict on whether a later stacked PR's patch actually
+ * addresses an absence-style finding (v2 patch confirmation). Fails toward
+ * blocking: anything but a clear `addressed: true` strips the requalification.
+ */
+// @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — addressed !== true keeps the finding blocking
+export const StackVerdictSchema = z.object({
+  addressed: z.boolean(),
+  reason: z.string().default(""),
+});
+export type StackVerdict = z.infer<typeof StackVerdictSchema>;
+
+export function parseStackVerdict(text: string): StackVerdict {
+  return StackVerdictSchema.parse(extractJsonObject(text));
+}
+
 /** Shape each sub-reviewer must emit. */
 export const ReviewerOutputSchema = z.object({
   findings: z.array(FindingSchema).default([]),

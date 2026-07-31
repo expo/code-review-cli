@@ -22,6 +22,7 @@ import {
   CLAUDE_CODE_ENGINE,
   CROSS_CUTTING_AGENT,
   promptAndParse,
+  STACK_VERIFIER_AGENT,
   startOpencode,
 } from "./opencode.js";
 import type { OpencodeHandle, TokenUsage } from "./opencode.js";
@@ -42,6 +43,8 @@ import {
 } from "./prompts.js";
 import { fingerprintFinding, isOverallRiskHandoff, parseReviewerOutput } from "./schema.js";
 import type { CoordinatorOutput, Finding } from "./schema.js";
+import { buildManifestMembership, manifestKey, normalizeManifestPath } from "./stack.js";
+import { confirmStackRequalifications, patchConfirmer } from "./stack-confirm.js";
 import { sortFindings } from "./render.js";
 import { appendStepSummary } from "./step-summary.js";
 import { errorMessage, sleep } from "./util.js";
@@ -79,6 +82,15 @@ export interface ReviewRunOptions {
    * head-controlled). Absent → the manifest fetch is skipped entirely (a no-op).
    */
   stack?: StackWalkOptions;
+  /**
+   * v2 patch confirmation. When set (and a stack walk ran), each requalification that
+   * survives deterministic grounding is confirmed against the addressing PR's actual
+   * patch before it is believed; anything not clearly addressed returns to blocking.
+   * Presence gates the confirmation (from the trusted-base `stack.confirmWithPatch`);
+   * `maxConfirmations` caps the fan-out — overflow candidates are stripped.
+   */
+  // @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — gated by confirmWithPatch so v2 ships dark until flipped
+  stackConfirm?: { maxConfirmations: number };
 }
 
 /**
@@ -887,6 +899,11 @@ export async function runReview(
     // load-bearing verify → ground → suppress → reconcile order.
     // @ref LLP 0010#grounding-and-the-decision [constrained-by] — must run after verify and before suppress; a stripped requalification means the finding stays fully blocking
     if (output.findings.length > 0) {
+      // The decision entering this block (post-verify, pre-requalification softening)
+      // is the ceiling both grounding and confirmation re-derive against: confirmation
+      // returns findings to blocking, so re-running decisionAfterRequalification over
+      // the post-confirmation set re-hardens up to this value, never past it.
+      const decisionBeforeRequalification = output.decision;
       const grounding = groundStackRequalification(
         output.findings,
         stackManifest,
@@ -894,17 +911,49 @@ export async function runReview(
         progress,
       );
       requalificationStrips.push(...grounding.stripped);
+      let grounded = grounding.findings;
+      // v2 patch confirmation (gated by stack.confirmWithPatch): for the requalifications
+      // that survived grounding, read the addressing PR's actual patch and strip any not
+      // clearly addressed. Fail toward blocking on any fetch/verify error or timeout.
+      // @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — runs right after grounding, before the decision is re-derived; never materializes the patch
+      if (
+        options.stackConfirm &&
+        stackManifest &&
+        grounded.some((finding) => finding.requalifiedBy)
+      ) {
+        progress("Confirming stacked-PR requalifications against their patches…");
+        const confirmation = await confirmStackRequalifications(
+          grounded,
+          options.stackConfirm.maxConfirmations,
+          patchConfirmer(handle, source),
+          progress,
+        );
+        grounded = confirmation.findings;
+        requalificationStrips.push(...confirmation.strippedFindings);
+        agentCosts[STACK_VERIFIER_AGENT] = confirmation.cost;
+        trackTokens(STACK_VERIFIER_AGENT, confirmation.tokens);
+        trackModel(
+          STACK_VERIFIER_AGENT,
+          config.agents[0]?.model ?? config.coordinator.model,
+          confirmation.model,
+        );
+        if (confirmation.stripped > 0) {
+          progress(
+            `Stack confirmation returned ${confirmation.stripped} requalified finding(s) to blocking.`,
+          );
+        }
+      }
       output = {
         ...output,
-        findings: grounding.findings,
-        // decisionAfterGrounding only re-derives when a requalification SURVIVED:
-        // with none, the coordinator's decision must stand untouched — an
-        // unconditional decisionAfterRequalification here would soften every
-        // non-critical request_changes on every run, stack feature or not.
-        // Criticals never carry requalifiedBy (grounding strips it), so the later
-        // decisionAfterRequalification call in the suppression block cannot
+        findings: grounded,
+        // decisionAfterGrounding only re-derives when a requalification SURVIVED
+        // grounding + confirmation: with none, the coordinator's decision must stand
+        // untouched — an unconditional decisionAfterRequalification here would
+        // soften every non-critical request_changes on every run, stack feature or
+        // not. Criticals never carry requalifiedBy (grounding strips it), so the
+        // later decisionAfterRequalification call in the suppression block cannot
         // re-escalate past this softened decision.
-        decision: decisionAfterGrounding(output.decision, grounding.findings),
+        decision: decisionAfterGrounding(decisionBeforeRequalification, grounded),
       };
     }
 
@@ -1141,29 +1190,6 @@ export function buildPreCoordinationFileLocks(
     }
   }
   return locked;
-}
-
-/** Repo-root-relative normalization for exact manifest membership: strip a leading
- * `./` or `/`, trim. No substrings, no basenames — the unsound-matching critique. */
-function normalizeManifestPath(file: string): string {
-  return file
-    .trim()
-    .replace(/^\.\/+/, "")
-    .replace(/^\/+/, "");
-}
-
-function manifestKey(prNumber: number, file: string): string {
-  return `${prNumber} ${normalizeManifestPath(file)}`;
-}
-
-function buildManifestMembership(manifest: StackManifest): Set<string> {
-  const members = new Set<string>();
-  for (const pr of manifest.upstackPRs) {
-    for (const file of pr.files) {
-      members.add(manifestKey(pr.number, file));
-    }
-  }
-  return members;
 }
 
 // @ref LLP 0010#grounding-and-the-decision [implements] — deterministic zero-LLM floor over data ecr fetched itself; strips forged/hallucinated/protected requalifications even with a prompt-injected coordinator

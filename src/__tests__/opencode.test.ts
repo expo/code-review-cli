@@ -12,6 +12,7 @@ import {
   buildOpencodeConfig,
   resolveEngineDispatch,
   resolveOpencodeCli,
+  STACK_VERIFIER_AGENT,
 } from "../core/opencode.js";
 import type { OpencodeHandle } from "../core/opencode.js";
 import type { ClaudeCodeHandle } from "../core/claude-code.js";
@@ -337,6 +338,16 @@ test("an upstream-alias auth entry synthesizes a provider block with exactly the
   expect(Object.keys(alias!.models)).toEqual(["gpt-5.5-pro"]);
   // The real "openai" provider is NOT synthesized — the oauth credential owns it.
   expect(opencode.provider?.openai).toBeUndefined();
+});
+
+test("buildOpencodeConfig registers the no-tools stack verifier (empty tool list)", () => {
+  const opencode = buildOpencodeConfig(configWith({})) as {
+    agent: Record<string, { tools: Record<string, boolean> }>;
+  };
+  const stackVerifier = opencode.agent[STACK_VERIFIER_AGENT];
+  expect(stackVerifier).toBeDefined();
+  // Every tool disabled — the patch is inlined, so it must never read the disk.
+  expect(Object.values(stackVerifier!.tools).every((enabled) => enabled === false)).toBe(true);
 });
 
 test("no upstream aliases ⇒ no provider key in the OpenCode config at all", () => {

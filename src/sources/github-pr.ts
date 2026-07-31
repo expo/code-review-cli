@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { resolveTrustedTool, run } from "../core/exec.js";
 import { parseUnifiedDiff } from "../core/diff.js";
+import { normalizeManifestPath } from "../core/stack.js";
 import { removeEscapingSymlinks, scrubAmbientRuntimeConfig } from "../core/scrub.js";
 import type { DiffEntry, ReviewMetadata } from "../core/schema.js";
 import type { PreparedReadRoot, ReviewSource, StackManifest, StackWalkOptions } from "./source.js";
@@ -320,6 +321,56 @@ export class GitHubPRSource implements ReviewSource {
         (baseBranch) => this.fetchOpenChildren(gh, repo, baseBranch),
         (prNumber) => this.fetchChildFiles(gh, repo, prNumber, options.maxFilesPerPr),
       );
+    } catch {
+      return null;
+    }
+  }
+
+  // @ref LLP 0010#patch-level-confirmation-v2 [implements] — fetch ONLY the cited file's patch, match by the same normalization grounding uses; the untrusted filename is filtered in JS, never spliced into a jq program
+  /**
+   * The unified-diff patch a stacked child PR (`prNumber`) applied to `file`, or `null`
+   * when the file isn't in that PR (or on any error — fail-open toward blocking). The
+   * files endpoint's `.patch` fragment is inlined by the caller and never written to
+   * disk. The untrusted `file` is matched against each entry's filename in JS (same
+   * normalization as grounding), NOT passed into the jq program, so it can't inject.
+   */
+  async getStackFilePatchAsync(prNumber: number, file: string): Promise<string | null> {
+    const repo = this.options.repo;
+    if (!repo) {
+      return null;
+    }
+    try {
+      const gh = await resolveTrustedTool("gh");
+      const { stdout } = await run(
+        gh,
+        [
+          "api",
+          // --method GET is mandatory once a -f field is present (else gh POSTs);
+          // 100/page is the fetchAllComments pagination convention.
+          "--method",
+          "GET",
+          `repos/${repo}/pulls/${prNumber}/files`,
+          "-f",
+          "per_page=100",
+          "--paginate",
+          "--jq",
+          ".[] | {filename, patch}",
+        ],
+        { cwd: this.options.cwd },
+      );
+      const want = normalizeManifestPath(file);
+      for (const line of stdout.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+        const raw = JSON.parse(trimmed) as { filename?: string; patch?: string };
+        if (raw.filename && normalizeManifestPath(raw.filename) === want) {
+          // A file with no textual patch (binary/rename-only) can't confirm a fix.
+          return typeof raw.patch === "string" ? raw.patch : null;
+        }
+      }
+      return null;
     } catch {
       return null;
     }

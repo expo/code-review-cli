@@ -105,7 +105,7 @@
   //   "maxPrs": 8,               // children per level to follow
   //   "maxFilesPerPr": 100,      // per-child file-list cap
   //   "requireSameAuthor": true, // only children by this PR's author (anti-poisoning)
-  //   "confirmWithPatch": false, // v2 (not yet implemented)
-  //   "maxConfirmations": 10     // v2 bound
+  //   "confirmWithPatch": false, // v2: confirm each requalification against the addressing PR's patch
+  //   "maxConfirmations": 10     // v2: max patch confirmations per run (overflow is stripped)
   // }
 }

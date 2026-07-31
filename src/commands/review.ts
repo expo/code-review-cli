@@ -8,7 +8,7 @@ import { runReview } from "../core/review.js";
 import { LocalGitSource } from "../sources/local-git.js";
 import { GitHubPRSource } from "../sources/github-pr.js";
 import type { ReviewSource } from "../sources/source.js";
-import { memoizeSource, stackWalkFromConfig } from "../sources/source.js";
+import { memoizeSource, stackConfirmFromConfig, stackWalkFromConfig } from "../sources/source.js";
 import { TerminalReporter } from "../reporters/terminal.js";
 import { GitHubReporter } from "../reporters/github.js";
 
@@ -258,6 +258,10 @@ export async function reviewCommand(argv: string[]): Promise<void> {
           // pr guard here keeps that invariant local.
           stack:
             args.stackAware && args.pr != null ? stackWalkFromConfig(rootConfig.stack) : undefined,
+          stackConfirm:
+            args.stackAware && args.pr != null
+              ? stackConfirmFromConfig(rootConfig.stack)
+              : undefined,
           onProgress: (message) => process.stderr.write(`${message}\n`),
         });
         await new TerminalReporter({ json: args.json, noFail: args.noFail }).report(review);
@@ -314,6 +318,8 @@ export async function reviewCommand(argv: string[]): Promise<void> {
       // Explicit --stack-aware only (see the scope branch); validateArgs already
       // rejected --stack-aware without --pr.
       stack: args.stackAware && args.pr != null ? stackWalkFromConfig(config.stack) : undefined,
+      stackConfirm:
+        args.stackAware && args.pr != null ? stackConfirmFromConfig(config.stack) : undefined,
       onProgress: (message) => process.stderr.write(`${message}\n`),
     });
 

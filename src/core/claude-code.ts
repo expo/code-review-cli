@@ -11,6 +11,7 @@ import {
   AgentTimeoutError,
   CLAUDE_CODE_ENGINE,
   CROSS_CUTTING_AGENT,
+  STACK_VERIFIER_AGENT,
   VERIFIER_AGENT,
   withTransientRetry,
 } from "./opencode.js";
@@ -206,6 +207,8 @@ export function buildEngineMap(
   const shared = config.agents[0]?.model ?? config.coordinator.model;
   modelOf[CROSS_CUTTING_AGENT] = shared;
   modelOf[VERIFIER_AGENT] = shared;
+  // @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — the id MUST live in modelOf/engineOf or a claude-routed run dispatches against an undefined handle and crashes
+  modelOf[STACK_VERIFIER_AGENT] = shared;
   modelOf["coordinator"] = config.coordinator.model;
   const engineOf: Record<string, Engine> = {};
   for (const [id, model] of Object.entries(modelOf)) {
@@ -850,6 +853,9 @@ export async function startClaudeCode(config: LoadedConfig): Promise<ClaudeCodeH
   // consolidates findings and needs no repo tools.
   tools[CROSS_CUTTING_AGENT] = ["read", "grep"];
   tools[VERIFIER_AGENT] = ["read", "grep"];
+  // No tools: the addressing PR's patch is inlined into the task, so the stack
+  // verifier never reads the disk (mirrors the coordinator's empty list).
+  tools[STACK_VERIFIER_AGENT] = [];
   tools["coordinator"] = [];
   const defaultModel = config.agents[0]?.model ?? config.coordinator.model;
 

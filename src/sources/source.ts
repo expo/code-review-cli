@@ -35,6 +35,16 @@ export function stackWalkFromConfig(stack: StackWalkOptions): StackWalkOptions {
   };
 }
 
+/** The v2 confirmation cap, or undefined when confirmWithPatch is off. Callers apply
+ * the on/off gate (ci: trusted-base `enabled`; review: `--stack-aware`) around this. */
+// @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — confirmWithPatch is the v2 gate; off (default) → grounding is the floor and no patch is ever fetched
+export function stackConfirmFromConfig(stack: {
+  confirmWithPatch: boolean;
+  maxConfirmations: number;
+}): { maxConfirmations: number } | undefined {
+  return stack.confirmWithPatch ? { maxConfirmations: stack.maxConfirmations } : undefined;
+}
+
 /**
  * A Source is where the diff comes from. CI and local mode differ only in which
  * Source (and Reporter) is wired into the otherwise-identical review core.
@@ -51,6 +61,14 @@ export interface ReviewSource {
    */
   // @ref LLP 0010#the-upstack-manifest [constrained-by] — fail-open: any failure returns null, never throws, so a broken walk leaves the review exactly as if the feature were off
   getStackContextAsync?(options: StackWalkOptions): Promise<StackManifest | null>;
+  /**
+   * Optionally fetch just the unified-diff patch a stacked child PR applied to ONE
+   * file (v2 patch confirmation). Returns `null` when the file isn't in that PR or on
+   * any error — fail-open, exactly like getStackContextAsync, so the caller strips the
+   * requalification (finding stays blocking). Omitted by sources with no stack concept.
+   */
+  // @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — fail-open null: a fetch failure strips the requalification rather than believing it
+  getStackFilePatchAsync?(prNumber: number, file: string): Promise<string | null>;
   /**
    * Optionally materialize the exact tree the review should READ from and return its
    * directory + a cleanup. The review core chdirs into it while running the agents
@@ -93,6 +111,7 @@ export function memoizeSource(source: ReviewSource): ReviewSource & { dispose():
   let realHandle: PreparedReadRoot | null = null;
 
   const stackFn = source.getStackContextAsync;
+  const patchFn = source.getStackFilePatchAsync;
   return {
     getMetadata: () => (metadataPromise ??= source.getMetadata()),
     getChangedFiles: () => (changedPromise ??= source.getChangedFiles()),
@@ -103,6 +122,15 @@ export function memoizeSource(source: ReviewSource): ReviewSource & { dispose():
       ? {
           getStackContextAsync: (options: StackWalkOptions) =>
             (stackPromise ??= stackFn.call(source, options)),
+        }
+      : {}),
+    // Passed straight through: v2 confirmation dedupes by (prNumber, file) within a run
+    // and the fetch is cheap, so it needs no cross-scope memo — only the conditional
+    // exposure that keeps a stack-less source a structural no-op.
+    ...(patchFn
+      ? {
+          getStackFilePatchAsync: (prNumber: number, file: string) =>
+            patchFn.call(source, prNumber, file),
         }
       : {}),
     prepareReadRootAsync: async () => {

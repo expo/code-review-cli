@@ -27,7 +27,7 @@ import type { LinkContext, ScopeReviewResult } from "../core/render.js";
 import type { CoordinatorOutput } from "../core/schema.js";
 import { runReview } from "../core/review.js";
 import { GitHubPRSource } from "../sources/github-pr.js";
-import { memoizeSource, stackWalkFromConfig } from "../sources/source.js";
+import { memoizeSource, stackConfirmFromConfig, stackWalkFromConfig } from "../sources/source.js";
 import type { PreparedReadRoot, ReviewSource, StackWalkOptions } from "../sources/source.js";
 import { GitHubReporter } from "../reporters/github.js";
 
@@ -317,6 +317,16 @@ function resolveStackWalk(
   return stack.enabled && !noStackAware ? stackWalkFromConfig(stack) : undefined;
 }
 
+// @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — v2 rides the same trusted-base gate as the walk, plus stack.confirmWithPatch (default false, so it ships dark)
+/** Resolve the v2 patch-confirmation cap when the walk is on AND confirmWithPatch is
+ * set in the trusted-base config, else undefined (v2 off → grounding is the floor). */
+function resolveStackConfirm(
+  stack: LoadedConfig["stack"],
+  noStackAware: boolean,
+): { maxConfirmations: number } | undefined {
+  return stack.enabled && !noStackAware ? stackConfirmFromConfig(stack) : undefined;
+}
+
 // @ref LLP 0007#ecr-ci-the-trusted-root-run [constrained-by] — run logs anchor at the workspace, never the removed-on-exit trusted root
 /**
  * Run-log + patch-workspace anchor: ALWAYS the workspace checkout, never the
@@ -399,6 +409,7 @@ async function runLegacyCi(
       route,
       contextText,
       stack: resolveStackWalk(config.stack, noStackAware),
+      stackConfirm: resolveStackConfirm(config.stack, noStackAware),
       runsDir: workspaceRunsDir(cwd),
       onProgress: (message) => process.stderr.write(`${message}\n`),
     });
@@ -603,6 +614,7 @@ async function runRoutedCi(
   // One PR has one stack: resolve the walk once from the ROOT (trusted-base) config
   // and share it across every scope. The source memoizes the actual fetch.
   const stackWalk = resolveStackWalk(rootConfig.stack, noStackAware);
+  const stackConfirm = resolveStackConfirm(rootConfig.stack, noStackAware);
 
   const results: ScopeReviewResult[] = [];
   for (const scope of active) {
@@ -632,6 +644,7 @@ async function runRoutedCi(
         includePaths: scope.files,
         contextText,
         stack: stackWalk,
+        stackConfirm,
         passesBudgetMs: budget,
         runsDir: workspaceRunsDir(cwd),
         onProgress: (message) => process.stderr.write(`[${scope.name}] ${message}\n`),

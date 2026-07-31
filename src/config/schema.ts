@@ -142,8 +142,9 @@ export const ReviewConfigSchema = z.object({
       // closes cross-author poisoning (a push-access colleague opening a child PR on
       // the victim's branch). Set false from the trusted base for genuine team stacks.
       requireSameAuthor: z.boolean().default(true),
-      // v2 (not yet implemented): confirm each requalification against the addressing
-      // PR's actual patch before believing it. maxConfirmations bounds that cost.
+      // v2: confirm each requalification against the addressing PR's actual patch
+      // before believing it (a no-tools LLM reads the inlined patch). Default false so
+      // v2 ships dark until flipped; maxConfirmations bounds that cost.
       confirmWithPatch: z.boolean().default(false),
       maxConfirmations: z.number().int().positive().default(10),
     })
