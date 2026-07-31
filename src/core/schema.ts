@@ -65,6 +65,25 @@ export const FindingSchema = z.object({
 });
 export type Finding = z.infer<typeof FindingSchema>;
 
+/**
+ * Title of the internal "overall PR risk" handoff finding. The cross-cutting
+ * reviewer (or the always-run security reviewer on a PR small enough to skip the
+ * cross-cutting pass) rides the ordinary finding channel to hand the coordinator
+ * a whole-PR risk assessment — see the "Overall PR risk handoff" section in
+ * `templates/shared.md`. It is prompt-level metadata, never a defect.
+ */
+// @ref LLP 0009#prompt-rules-for-adopters [implements] — the deterministic strip that makes the handoff independent of policy.includeSuggestions
+export const OVERALL_PR_RISK_TITLE = "__overall_pr_risk__";
+
+/**
+ * Is this the internal risk handoff rather than a real finding? Matched on the
+ * exact title the prompt specifies. Reported findings must never include it: it
+ * would surface to PR authors as a nonsense bullet, and it is not a defect.
+ */
+export function isOverallRiskHandoff(finding: Finding): boolean {
+  return finding.title.trim() === OVERALL_PR_RISK_TITLE;
+}
+
 /** A verifier's verdict on whether a finding is real (adversarial refute pass). */
 export const VerdictSchema = z.object({
   verified: z.boolean(),
