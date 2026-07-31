@@ -1,7 +1,9 @@
+// @ref LLP 0009#config-and-prompt-templates — routing: scope order and cross-file guardrails
 {
   "$schema": "https://unpkg.com/@expo/code-review-cli/schema/routing.json",
 
   // Central guardrails every scope inherits and cannot override.
+  // @ref LLP 0009#config-and-prompt-templates [constrained-by] — "security" here is an agent id; renaming agents/security.md orphans it
   "defaults": {
     // Besides the root config.jsonc, this is the ONLY place credentials may be
     // declared. To lock them here instead, add an "auth" block (mode / provider /
@@ -21,6 +23,7 @@
   // "budget": { "totalPassesMinutes": 55, "minScopeMinutes": 5 },
 
   // Ordered; the LAST matching scope wins per changed file. Keep a '**/*' catch-all first.
+  // @ref LLP 0009#config-and-prompt-templates [constrained-by] — last-match-wins; nothing validates order
   "scopes": [
     { "name": "default", "paths": ["**/*"], "config": "." }
   ]

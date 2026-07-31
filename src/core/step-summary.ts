@@ -1,3 +1,4 @@
+// @ref LLP 0002#run-log-and-observability-sinks [implements] — swallows append errors; observability must never break a review
 import { appendFile } from "node:fs/promises";
 
 /**

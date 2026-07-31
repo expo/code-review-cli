@@ -1,3 +1,4 @@
+// @ref LLP 0007#ecr-review-local-trust-and-flag-rules — local runs: the person at the terminal is the trust principal, even with --pr
 import { loadReviewConfig, loadScopeConfig } from "../config/load.js";
 import { loadRoutingManifest, resolveScopes, scopedCommentTag } from "../config/routing.js";
 import { repoRoot, resolveRepo } from "../core/exec.js";
@@ -225,6 +226,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
           // reconcile paths always target the same marker, and the bare aggregate
           // marker is never used here. (Per-scope commentTag overrides are
           // rejected by the scope schema for exactly this reason.)
+          // @ref LLP 0007#ecr-review-local-trust-and-flag-rules [constrained-by] — must match ci.ts's derivation; the scope schema ban on commentTag is what keeps them aligned
           const tag = scopedCommentTag(rootConfig.commentTag, args.scope);
           const reporter = new GitHubReporter({
             prNumber: args.pr,
@@ -301,6 +303,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
   }
 }
 
+// @ref LLP 0007#ecr-review-local-trust-and-flag-rules [implements] — mutually exclusive flags rejected outright, never silently ignored
 /** Reject flag combinations that don't make sense together. */
 function validateArgs(args: ReviewArgs): void {
   if (args.pr != null && (args.base || args.head || args.staged)) {

@@ -1,3 +1,4 @@
+// @ref LLP 0004#noise-filtering [implements] — pre-agent signal gate; impure (reads cwd/disk), swallows read errors to null
 import { mkdir, open, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -59,6 +60,7 @@ export async function filterNoise(
   return { kept, filtered };
 }
 
+// @ref LLP 0004#noise-filtering [constrained-by] — marker checks are header-scoped only; whole-file scan self-filters this module
 async function noiseReason(
   entry: DiffEntry,
   options: NoiseOptions,
@@ -105,6 +107,7 @@ async function noiseReason(
 /** How many leading lines of a file count as its (generation) header. */
 const HEADER_LINES = 5;
 
+// @ref LLP 0004#the-mini-glob-dialect [constrained-by] — no sentinel bytes: a NUL sentinel once made this file classify as binary to git
 /** Minimal glob: supports `**` (crosses `/`) and `*` (within a segment). */
 export function matchesIgnore(filePath: string, pattern: string): boolean {
   // Translate the glob to a regex in a single pass, escaping metacharacters
@@ -172,6 +175,7 @@ export interface PatchWorkspaceFile {
   changedLines: number;
 }
 
+// @ref LLP 0004#chunk-sizing-signal [implements] — sole size metric for chunk packing; the packing policy itself lives in review.ts
 /** Count added + removed lines in a unified-diff patch (ignores +++/--- headers). */
 export function countChangedLines(patch: string): number {
   let count = 0;
@@ -191,6 +195,7 @@ export interface PatchWorkspace {
   files: PatchWorkspaceFile[];
 }
 
+// @ref LLP 0004#patch-workspace [implements] — filenames sanitized against traversal/collisions from untrusted diff paths
 /**
  * Write one patch file per changed file plus a shared manifest, all inside the
  * repo (so the OpenCode read tool can reach them). Agents are pointed at these

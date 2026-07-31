@@ -1,3 +1,4 @@
+// @ref LLP 0003#subprocess-spawning-rules [implements] — the only sanctioned child-process spawn path in the codebase
 import { execFile, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -129,6 +130,7 @@ function installChildCleanup(): void {
  * child launched detached forms its own process group, we signal the whole group,
  * and a grace timer escalates to SIGKILL.
  */
+// @ref LLP 0003#subprocess-spawning-rules [implements] — own timeout/kill enforcement (process-group kill, SIGKILL escalation) instead of spawn's native timeout, which can't reach a grandchild
 function runWithInput(
   command: string,
   args: string[],
@@ -280,6 +282,7 @@ const trustedToolResolutions = new Map<string, Promise<string>>();
  * git/gh keep operating on their target tree. Throws (not null) so callers that
  * assume a working git/gh fail loudly rather than silently spawning nothing.
  */
+// @ref LLP 0003#subprocess-spawning-rules [implements] — trusted absolute-path resolution plus in-tree refusal (pathInside) for git/gh, mirroring resolveClaudeCli/resolveOpencodeCli
 export function resolveTrustedTool(name: "git" | "gh"): Promise<string> {
   let resolution = trustedToolResolutions.get(name);
   if (!resolution) {
@@ -342,6 +345,7 @@ export async function repoRoot(cwd?: string): Promise<string | null> {
   }
 }
 
+// @ref LLP 0003#subprocess-spawning-rules [implements] — resolves from tmpdir(), never the process's own (possibly PR-tree) cwd, so a Windows cwd-search hijack can't find an in-tree shim
 /** Absolute path of an executable on PATH (first match), or null if unresolved. */
 export async function resolveOnPath(command: string): Promise<string | null> {
   // SECURITY: run the lookup from a trusted directory, never the inherited cwd.

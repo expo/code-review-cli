@@ -1,3 +1,4 @@
+// @ref LLP 0007#doctor-and-setup-auth — derives a plan from auth config, then guides local credential acquisition
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import os from "node:os";
@@ -82,6 +83,7 @@ export function opencodeAuthJsonPath(env: NodeJS.ProcessEnv = process.env): stri
   return path.join(dataHome, "opencode", "auth.json");
 }
 
+// @ref LLP 0007#doctor-and-setup-auth [constrained-by] — refresh tokens are single-use; they never leave OpenCode's store
 /**
  * The stored ChatGPT sign-in's ACCESS token, if OpenCode has a live one. The
  * refresh token deliberately never leaves OpenCode's store: refresh tokens are
@@ -122,6 +124,7 @@ async function confirm(question: string, skip: boolean): Promise<boolean> {
   }
 }
 
+// @ref LLP 0007#doctor-and-setup-auth [constrained-by] — shell metacharacters in tokens never expand
 /** The line to paste into a shell config. Single-quoted: tokens never contain '. */
 export function exportLine(tokenEnv: string, value: string): string {
   return `export ${tokenEnv}='${value}'`;

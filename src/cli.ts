@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ref LLP 0007#command-dispatch-and-conventions — argv dispatch only; no execution logic lives here
 import { ciCommand } from "./commands/ci.js";
 import { dismissCommand } from "./commands/dismiss.js";
 import { doctorCommand } from "./commands/doctor.js";
@@ -32,6 +33,7 @@ async function main(): Promise<void> {
     return;
   }
 
+  // @ref LLP 0007#command-dispatch-and-conventions [implements] — default-to-review also swallows leading-flag typos; new global flags must not collide with review flags
   // No subcommand (or a leading flag) defaults to `review`.
   if (!sub || sub.startsWith("-")) {
     await reviewCommand(process.argv.slice(2));

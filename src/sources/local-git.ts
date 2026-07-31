@@ -1,3 +1,4 @@
+// @ref LLP 0008#local-git-source — no network; diff base is merge-base(defaultBranch, HEAD), not the branch tip
 import { git, resolveTrustedTool, run } from "../core/exec.js";
 import { parseUnifiedDiff } from "../core/diff.js";
 import type { DiffEntry, ReviewMetadata } from "../core/schema.js";
@@ -48,6 +49,7 @@ export class LocalGitSource implements ReviewSource {
     return "main";
   }
 
+  // @ref LLP 0008#local-git-source [implements] — merge-base(default, HEAD), not the branch tip: reviews only the current branch's own changes, excluding commits merged into default after divergence
   private async resolveBase(): Promise<string> {
     if (this.resolvedBase) {
       return this.resolvedBase;
@@ -99,6 +101,7 @@ export class LocalGitSource implements ReviewSource {
    * Synthesize add-diffs for untracked files without mutating the index. Uses
    * `git diff --no-index` (which exits 1 when files differ, hence check: false).
    */
+  // @ref LLP 0008#local-git-source [implements] — no-index diff against /dev/null avoids mutating the index; -z listing and the -- separator guard against newline- and dash-prefixed filenames
   private async untrackedDiffs(): Promise<string> {
     // -z: null-terminated output so filenames containing newlines parse correctly.
     const listing = await git(["ls-files", "-z", "--others", "--exclude-standard"], this.cwd);

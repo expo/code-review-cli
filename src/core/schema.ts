@@ -1,3 +1,4 @@
+// @ref LLP 0005#finding-identity-fingerprints
 import { createHash } from "node:crypto";
 
 import { z } from "zod";
@@ -115,6 +116,7 @@ export interface DismissalRecord {
  * this we fall back to the title). */
 const MIN_FP_EVIDENCE_LEN = 12;
 
+// @ref LLP 0005#finding-identity-fingerprints [implements] — keys on evidence (v2) not the LLM-written title; excludes line number
 /**
  * Stable identifier for a finding — dedupes across re-reviews and is the key for
  * dismissals. Excludes the line number (which shifts as a PR grows). Keys on the
@@ -131,6 +133,7 @@ export function fingerprintFinding(finding: Finding): string {
   return createHash("sha1").update(normalized).digest("hex").slice(0, 12);
 }
 
+// @ref LLP 0005#finding-identity-fingerprints [implements] — default scope passes null so pre-routing dismissals still resolve (risk 9)
 /**
  * Namespace a finding's fingerprint by scope so cross-scope dismissals never
  * collide. The DEFAULT scope (config '.') passes `null` and keeps the plain

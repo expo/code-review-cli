@@ -17,6 +17,7 @@ export function errorMessage(error: unknown): string {
  * error messages pass through, since they are the actionable ones the fail-fast design
  * means to surface. Every call site still writes the FULL reason to the job's stderr.
  */
+// @ref LLP 0002#run-log-and-observability-sinks [implements] — subprocess argv/stderr must never leak into PR-facing comments
 export function publicFailureReason(error: unknown): string {
   const message = errorMessage(error);
   if (/^Command (failed|output exceeded)\b/.test(message)) {

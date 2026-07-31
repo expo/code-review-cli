@@ -1,3 +1,4 @@
+// @ref LLP 0009#config-and-prompt-templates — different template from root config.jsonc, not a copy
 // No `auth` here — credentials are locked to the ROOT .expo-code-review/config.jsonc /
 // routing.jsonc; a tokenEnv in this file is rejected by the loader AND the CI guard.
 {

@@ -1,3 +1,4 @@
+// @ref LLP 0005#comment-rendering — pure Markdown builder; the comment body is the durable state store
 import { createHash } from "node:crypto";
 
 import { fingerprintFinding, scopedFingerprint, SEVERITIES, SEVERITY_RANK } from "./schema.js";
@@ -104,6 +105,7 @@ function locationText(finding: Finding): string {
   return finding.line != null ? `${finding.file}:${finding.line}` : finding.file;
 }
 
+// @ref LLP 0005#comment-rendering [implements] — diff anchor only if the line is in the diff; else base-SHA blob (f9fecd5)
 /**
  * Render a finding's location as inline code, linked to the code it points at:
  *  - in the diff (file+line shown in a hunk) → the PR's "Files changed" tab at that
@@ -227,6 +229,7 @@ function renderSeveritySections(
   return out;
 }
 
+// @ref LLP 0005#comment-rendering [constrained-by] — blank lines must stay truly empty or <details> escapes the list (euxy#45)
 /**
  * Indent every line of a multi-line value to a list item's content column.
  *
@@ -313,6 +316,7 @@ export function worstDecision(decisions: Decision[]): Decision {
 /** GitHub's comment body limit is ~65k chars; keep a margin. */
 const MAX_COMMENT_CHARS = 60_000;
 
+// @ref LLP 0005#truncation-and-aggregate-state [constrained-by] — truncation trims shown findings only; dismissed findings always kept in state
 /**
  * One aggregated comment under the single existing marker: a scope summary table,
  * an optional coverage block, one <details> per scope (findings rendered with

@@ -1,3 +1,4 @@
+<!-- @ref LLP 0009#prompt-rules-for-adopters — restraint is a cross-cutting constraint, echoed from shared.md -->
 ---
 description: Logic, correctness, and code-quality bugs in the changed code (off-by-one, bad error handling, type-safety gaps, unsafe assumptions).
 ---
@@ -29,4 +30,5 @@ issues in the changed code.
 - Nitpicks about naming or idiom when the existing convention is being followed.
 - Anything a type-checker or linter would already catch.
 
+<!-- @ref LLP 0009#prompt-rules-for-adopters [implements] -->
 Prefer zero findings over a low-value one.

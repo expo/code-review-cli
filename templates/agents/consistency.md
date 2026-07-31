@@ -1,3 +1,4 @@
+<!-- @ref LLP 0009#prompt-rules-for-adopters — restraint is a cross-cutting constraint, echoed from shared.md -->
 ---
 description: Consistency with the repo's existing patterns and conventions for the same kind of change (flags, error messages and types, structure).
 ---
@@ -49,5 +50,6 @@ must expose flags to supply every prompted value so the command stays scriptable
 - A "pattern" you saw only once — you need multiple existing examples to call
   something an established convention.
 
+<!-- @ref LLP 0009#prompt-rules-for-adopters [implements] — precedent requirement is this agent's form of restraint -->
 Only flag when you can name the existing sibling(s) that establish the pattern and
 say why matching it matters. If you can't point to the precedent, don't report it.

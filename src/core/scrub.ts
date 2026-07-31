@@ -1,3 +1,4 @@
+// @ref LLP 0001#read-root-scrubbing [implements] — strips ambient config + escaping symlinks before the model runtime roots here
 import { readdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 
@@ -31,6 +32,7 @@ export const AMBIENT_RUNTIME_CONFIG_NAMES = new Set([
   ".cursorrules",
 ]);
 
+// @ref LLP 0001#read-root-scrubbing [constrained-by] — .git skipped here for a different reason than node_modules is skipped below
 /** Names never descended into (and never scrubbed as a unit — `.git` is the worktree link). */
 const SKIP_DIRS = new Set([".git", "node_modules"]);
 
@@ -45,6 +47,7 @@ export function isAmbientRuntimeConfig(name: string): boolean {
  * extracted archive) — never on the user's checkout. Returns the repo-relative
  * paths removed so callers can log them.
  */
+// @ref LLP 0001#read-root-scrubbing [implements] — closes the fork-reachable code-execution path (601b19a)
 export async function scrubAmbientRuntimeConfig(root: string): Promise<string[]> {
   const removed: string[] = [];
   const walk = async (dir: string): Promise<void> => {
@@ -87,6 +90,7 @@ export async function scrubAmbientRuntimeConfig(root: string): Promise<string[]>
  * Must only ever run on a tree ECR created and will delete. Returns the
  * repo-relative paths removed so callers can log them.
  */
+// @ref LLP 0001#read-root-scrubbing [implements] — out-of-tree/broken/cyclic symlinks removed fail-closed
 export async function removeEscapingSymlinks(root: string): Promise<string[]> {
   // realpath the boundary itself: tmpdir-based roots are often behind symlinks
   // (macOS /var -> /private/var), and containment must compare resolved paths.

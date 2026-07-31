@@ -30,6 +30,7 @@
     "lint": "oxlint src",
     "fmt": "oxfmt --threads=1 src",
     "fmt:check": "oxfmt --threads=1 --check src",
+    "llp:check": "./ref-check",
     "dev": "bun run src/cli.ts",
     "test:unit": "bun test",
     "release": "bash scripts/release.sh",

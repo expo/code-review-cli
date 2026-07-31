@@ -1,3 +1,5 @@
+// @ref LLP 0003#opencode-server-lifecycle [implements] — OpenCode server startup, CLI/SDK pinning, model preflight
+// @ref LLP 0003#retry-taxonomy [implements] — stall/timeout/backoff handling for OpenCode passes
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -24,6 +26,7 @@ export const CLAUDE_CODE_ENGINE = "claude-code" as const;
  * claude handle) or its `.claude` field (any run that also drives OpenCode). Pure
  * and side-effect-free so the seam's dispatch is unit-testable without spawning.
  */
+// @ref LLP 0003#two-engines-per-agent-dispatch [implements] — dynamic-import seam that reaches claude-code.ts at runtime, avoiding a static import cycle
 export function resolveEngineDispatch(
   handle: OpencodeHandle,
   agent: string,
@@ -292,6 +295,7 @@ export async function resolveOpencodeCli(): Promise<string | null> {
   return cliPath;
 }
 
+// @ref LLP 0003#opencode-server-lifecycle [constrained-by] — port 0 avoids clobbering a dev's already-running opencode session; the SDK's own bare launch("opencode") spawn is a knowingly accepted POSIX-only residual, not to be silently "fixed" into an absolute-path reimplementation
 /** Start an in-process OpenCode server with the given inline config. */
 export async function startOpencode(config: unknown): Promise<OpencodeHandle> {
   // Make our pinned CLI win over any global install (see bundledOpencodeBinDir).
@@ -468,6 +472,7 @@ export function formatUnknownModels(
   );
 }
 
+// @ref LLP 0003#opencode-server-lifecycle [implements] — fail once before any pass runs; distinguishes credential-refused from model-not-found (see UnknownModel.reason)
 /**
  * Fail fast when a configured model can't be resolved, BEFORE any pass runs. Never
  * blocks the run on its own failure: if the providers endpoint can't be read (an
@@ -543,6 +548,7 @@ const STALL_MS = 4 * 60 * 1000;
 // fire, and get none of this protection. Half the cap, with a floor that leaves room
 // for a slow first token.
 const MIN_STALL_MS = 30 * 1000;
+// @ref LLP 0003#retry-taxonomy [constrained-by] — watchdog window capped at half the pass's own maxWaitMs so it can never outlast the deadline it protects
 /** Exported for tests. */
 export function stallWindowMs(maxWaitMs: number): number {
   return Math.min(STALL_MS, Math.max(MIN_STALL_MS, Math.floor(maxWaitMs / 2)));

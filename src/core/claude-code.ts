@@ -1,3 +1,5 @@
+// @ref LLP 0003#claude-code-cli-containment [implements] — argv/env hardening for the claude -p subprocess
+// @ref LLP 0003#two-engines-per-agent-dispatch [implements] — anthropic/* routing and the per-agent engine map
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -81,6 +83,7 @@ const READ_TOOL_MAP: Record<string, "Read" | "Grep" | "Glob"> = {
   glob: "Glob",
 };
 const ALL_READ_TOOLS = ["Read", "Grep", "Glob"] as const;
+// @ref LLP 0003#claude-code-cli-containment [implements] — deny enumeration (not allow-only) because an empty/absent --allowedTools list default-ALLOWS reads; verified against claude 2.1.212, revisit on every CLI version bump
 /**
  * Tools never available to a review pass, whatever the role. A DENY enumeration is
  * the only workable containment: permission rules cannot fail closed here — reads
@@ -163,6 +166,7 @@ export type Engine = "opencode" | "claude-code";
  * served by the CLI; the retired anthropic-via-OpenCode x-api-key path no longer
  * exists (the CLI accepts an API key too).
  */
+// @ref LLP 0003#two-engines-per-agent-dispatch [implements] — engine choice is a pure function of the model id's provider prefix, no run-level auth-mode switch
 export function engineForModel(model: string): Engine {
   const slash = model.indexOf("/");
   const provider = slash > 0 ? model.slice(0, slash) : model;
@@ -440,6 +444,7 @@ export function usageLimitResetMs(errorText: string): number | null {
  * reset time instead. The interpolated reset epoch is a long digit run with no
  * internal word boundary, so it can't spuriously match `\b429\b`/`\b50x\b`.
  */
+// @ref LLP 0003#retry-taxonomy [constrained-by] — message text deliberately avoids matching isTransientApiError's regex so a subscription cap fails fast rather than retrying
 export function usageLimitMessage(errorText: string): string {
   const resetMs = usageLimitResetMs(errorText);
   const when = resetMs ? new Date(resetMs).toISOString() : "later";
@@ -754,6 +759,7 @@ export function claudeTokenCredential(
   return { value, kind: value.startsWith("sk-ant-oat") ? "oauth" : "api-key" };
 }
 
+// @ref LLP 0003#credential-resolution-and-forwarding [implements] — re-runs checkAuthEntry at the forwarding site because REVIEWER_MODEL bypasses prepareAuth/checkProviderAuth entirely
 /** Start the Claude Code engine: resolve the CLI and build the subscription env. */
 export async function startClaudeCode(config: LoadedConfig): Promise<ClaudeCodeHandle> {
   const cliPath = await resolveOnPath("claude");

@@ -1,0 +1,108 @@
+# LLP 0007: CLI Commands and CI Orchestration
+
+**Type:** Explainer
+**Status:** Active
+**Systems:** CLI, CI, Security
+**Author:** Philippe Loulidi / Claude
+**Date:** 2026-07-30
+**Related:** [LLP 0001 Trust Model and Security Principles](0001-trust-model.principles.md), [LLP 0006 Config Schema, Loading, and Monorepo Routing](0006-config-schema-loading-routing.explainer.md), [LLP 0008 Review Sources and Reporters](0008-sources-and-reporters.explainer.md), [LLP 0009 Adopting ecr: Templates, Scaffolded CI Workflows, and Prompt Rules](0009-adoption-templates-and-ci-workflows.guide.md)
+
+The command layer (`src/cli.ts`, `src/commands/*.ts`) is thin by design: it parses argv, assembles a `ReviewOptions`, and hands the actual multi-agent execution to `runReview` (LLP 0002). This doc records the decisions that live *only* in the command layer — where the trust boundary between "you at a terminal" and "a PR in CI" is drawn, why flag combinations are rejected instead of merged, and why the CI path fails closed. The code says what each command does; this says why it refuses the shortcuts.
+
+## Command Dispatch and Conventions
+
+`cli.ts` is argv dispatch and nothing else. With no subcommand, or an `argv[2]` that starts with `-`, it defaults to `ecr review` [observed: `src/cli.ts:38-41`, `if (!sub || sub.startsWith("-")) { await reviewCommand(...) }`]. That default is a real trade-off: it makes `ecr --pr 5` a review invocation, so a leading-flag typo silently routes into `reviewCommand` rather than the unknown-command error. The constraint that falls out of it — any new *global* flag must not collide with a `review` flag name — is worth stating because dispatch will not catch the collision for you.
+
+Two conventions hold across every command file, both [observed: `AGENTS.md` Conventions, verified across command files]:
+
+- Commands set `process.exitCode` explicitly and never call `process.exit()`. Exit is a value the command reports, not a control-flow jump, so `finally` cleanup (source disposal, trusted-root removal) always runs.
+- Every subprocess spawn goes through `src/core/exec.ts` (`execFile` with argument arrays, never a shell string), and every binary invoked by name (`opencode`, `claude`, `gh`, `git`) is resolved to a trusted absolute path first, never a bare name searched on `PATH` from a possibly-untrusted cwd. The one deliberate exception is `setup-auth`'s two interactive `spawnSync` logins (`claude setup-token`, `opencode auth login`), which need `stdio: "inherit"` for the browser flow — see [doctor and setup-auth](#doctor-and-setup-auth). It is the explicit exception to "always exec.ts", not an accidental bypass.
+
+`review`, `ci`, and `dismiss` all `chdir` to the resolved repo root before doing work, because the OpenCode server roots itself at `process.cwd()`; running from the repo root is what lets agents read the whole checkout and lets diff paths resolve correctly [observed: `src/commands/review.ts:167-172` comment; same pattern `src/commands/ci.ts:127-129`, `src/commands/dismiss.ts:82-85`].
+
+## ecr review: Local Trust and Flag Rules
+
+`ecr review` is the human-at-a-terminal entry point, and its defining decision is that the *person running it is the trust principal*. Config always loads from your local checkout, even with `--pr`: the PR head is materialized only as read content (scrubbed of ambient runtime config), never as policy [observed: `src/commands/review.ts:47-48` USAGE, "Config always loads from YOUR checkout in local runs — you are the trust principal here"]. This is the mirror image of `ecr ci`, and the split is the whole point — the same tool is safe locally *because* it is a different trust model in CI.
+
+Flag exclusivity is rejected outright, never silently resolved, because silently ignoring one side of a combination discards the diff range the user actually asked for [observed: `src/commands/review.ts:306-327` `validateArgs`]:
+
+- `--pr` cannot combine with `--base`/`--head`/`--staged` (a PR is reviewed by its diff, not a local ref range).
+- `--staged` (index vs HEAD) is mutually exclusive with `--base`/`--head` [observed: commit `47fa178`, "passing them together silently discarded the range the user asked for"].
+- `--repo`/`--post` only make sense with `--pr`.
+- `--scope` and `--config-dir` are mutually exclusive.
+
+`--scope --post` posts under the derived marker `<rootTag>:<scope>`, taken from the ROOT config's tag via `scopedCommentTag(rootConfig.commentTag, scope)` [observed: `src/commands/review.ts:230`]. This is not a local convenience — it must match `ecr ci`'s per-scope derivation exactly, so a standalone local scope post and CI's per-scope post/clear/reconcile paths always target the identical comment. The schema ban on scope-level `commentTag` overrides (LLP 0006) is the only thing keeping the two derivations from ever diverging; relaxing that schema rule would silently break marker consistency between local and CI posts.
+
+## ecr ci: The Trusted-Root Run
+
+`ecr ci` runs inside GitHub Actions with credentials, reading content authored by whoever opened the PR (including a fork PR reachable through the not-fork-restricted `issue_comment` `/review` workflow). Its structure is dictated by that threat model (LLP 0001).
+
+**All reviewer configuration loads from the PR's immutable BASE commit, never the head.** `config.jsonc`, `routing.jsonc`, prompts, models, and the auth mapping are materialized from the base commit via the GitHub API, so a PR cannot edit the reviewer that evaluates it; config changes activate only after merge [observed: commit `601b19a`; `src/commands/ci.ts:162-181` `prepareTrustedConfigRootAsync`; `CI_USAGE` `src/commands/ci.ts:61-68`].
+
+**It fails CLOSED.** If the base commit cannot be materialized, `ci` posts one terminal "this change was **not** reviewed" comment and stops — it never falls back to reading the checkout, because that fallback is exactly how a head checkout would smuggle config in [observed: `src/commands/ci.ts:149-152` comment, `166-180` catch → `postTerminalFailureNote` → `return`]. That terminal comment always uses the HARDCODED default tag `expo-ai-code-reviewer` and break-glass marker `/skip-review`, never the repo's configured ones, because the config that could customize them is precisely what failed to load [observed: `src/commands/ci.ts:231-251`]. A repo with a custom tag gets a fresh comment rather than an in-place upsert — the accepted degraded case.
+
+**It never fails the PR's checks.** A reviewer error degrades to a posted failure comment, not a non-zero process exit [observed: `AGENTS.md`; `src/commands/ci.ts:354-373` legacy catch posts a summary; `src/commands/ci.ts:571-576` per-scope catch builds a `failureReview` placeholder instead of aborting the fan-out]. PR-facing comment text uses `publicFailureReason(error)`, not the raw `errorMessage`, so the credential and internal detail never leak into a comment (LLP 0002) [observed: `src/commands/ci.ts:176,365,575`].
+
+`--unsafe-config-from-head` is a deliberate escape hatch that reverses this model, loading config from the checkout. It is never scaffolded by `ecr init`, always prints a loud `⚠ SECURITY` warning, and is scheduled for removal on a minor version boundary [observed: `src/commands/ci.ts:85-91` `CI_USAGE`, `155-162` warning].
+
+One directory subtlety is load-bearing: the run-log / patch-workspace directory (`workspaceRunsDir`) anchors at the persistent workspace checkout, never the temporary trusted config root, because the workflow uploads `.expo-code-review/.runs/reviews.jsonl` from the workspace as an artifact and the trusted root is `cleanup()`'d before the job ends [observed: `src/commands/ci.ts:269-277`; commit `601b19a`]. Conflating the two directories would break the artifact upload.
+
+## Trigger Policy and Break-Glass
+
+Whether a PR gets reviewed at all is a config-not-YAML decision. The trigger policy (`skipLabel` / `label` / `all`) lives in `config.jsonc`'s `review.*` block, not in per-repo workflow YAML, because labels are write-gated to maintainers while `config.jsonc` historically could be read from the PR ref — keeping the skip decision immune to a PR author editing config to dodge review [observed: commit `1e9aea2`].
+
+Label matching is exact-string, never substring: `ai-review:skip` must not satisfy an `ai-review` opt-in check. `shouldReview` compares whole label names (and a `label:<agent>` prefix variant), a fix for an earlier `join()`+substring form [observed: commit `1e9aea2`; `src/commands/ci.ts:690-706` `shouldReview`; test `src/__tests__/ci-trigger.test.ts`]. Labels are re-fetched live via `gh pr view` rather than trusted from the possibly-stale event payload, and a fetch failure returns `[]` so a label-read hiccup can never silently SKIP a PR that should be reviewed — the default leans toward reviewing [observed: `src/commands/ci.ts:648-652,653-681`].
+
+A manual `/review` (the `--force` flag, or `GITHUB_EVENT_NAME === "issue_comment"`, which only reaches `ci` through the comment-command workflow) bypasses ONLY the trigger gate. Break-glass and the auth lock are separate checks that still apply [observed: `src/commands/ci.ts:716-721` `shouldBypassTriggerGate`, `730-747` `passesTriggerGate`; commit `69b841c`].
+
+Break-glass is checked exactly once per CI run, on the root/aggregate comment marker, before any scope fan-out begins — not per-scope [observed: `src/commands/ci.ts:490-508`]. One check keeps the GitHub API calls down (rate-limit hygiene) and keeps the opt-out semantics repo-wide rather than per-team.
+
+## Routed CI Fan-Out
+
+When `routing.jsonc` exists, `ci` fans out internally: it assigns each changed file to exactly one scope (last-match-wins), reviews each active scope over only its files sequentially, and renders one aggregated comment (or one per scope). The routing model itself is LLP 0006; the decisions here are about how the *command* orchestrates it. With no `routing.jsonc`, dispatch falls to `runLegacyCi` and behavior is byte-identical to single-config mode [observed: `AGENTS.md`; `src/commands/ci.ts:193-200,279-282`].
+
+The gating and identity rules are all "root config wins":
+
+- The ROOT config's `review` trigger block gates the whole routed run — scope configs never widen or narrow whether the PR is reviewed [observed: `src/commands/ci.ts:443-454`].
+- When `manifest.defaults.commentTag` diverges from the root `config.jsonc`'s tag, the ROOT tag wins and a warning is printed, so the existing comment's history and dismissals carry over instead of stranding under a fresh marker [observed: `src/commands/ci.ts:409-414`].
+- Every id in `manifest.defaults.enforceAgents` must exist in the ROOT agent roster (the source of truth); a missing one is a loud, non-blocking skip of the whole run, never a silent no-op [observed: `src/commands/ci.ts:416-425`].
+
+Two rules protect against the fan-out silently losing or mis-timing work:
+
+- The passes budget divides across active scopes with a per-scope floor (`minScopeMinutes`). Scopes run sequentially, so N × floor is real wall-clock time; when the floor forces the total past `totalPassesMinutes`, the floor is kept and a loud warning is emitted, not a hard failure [observed: `src/commands/ci.ts:527-539`; commit `08026ea`].
+- A partial `--scopes` re-run in aggregate ("single") mode is authoritative ONLY for the named scopes: it merges the other scopes' prior results out of the existing aggregate comment's stored state, so re-running one scope does not wipe the rest from the PR [observed: `src/commands/ci.ts:590-608`]. Mode-switch cleanup (deleting the other comment mode's stale comments) runs once on a full run but is skipped entirely for a partial run, which must never touch other scopes' live comments [observed: `src/commands/ci.ts:609-617,637-643`].
+
+A scope whose config directory does not exist at the TRUSTED base commit — i.e. it is new in this very PR — is reviewed with the ROOT config instead of failing the whole run; the scope's own (PR-authored, untrusted-for-this-run) config activates only after merge [observed: `src/commands/ci.ts:541-559` `hasScopeConfig` fallback; commit `601b19a`; test `src/__tests__/trust-separation.test.ts`]. The known cost: a scope that is genuinely misconfigured (missing `config.jsonc` by mistake) is indistinguishable from an intentionally-new one — both fall back to the root config with a stderr note, never a hard CI failure.
+
+A malformed `routing.jsonc` is a loud, NON-blocking stderr error that returns quietly, never a silent fallback to legacy single-config and never a crash [observed: `src/commands/ci.ts:183-191`]. In the job log this can superficially resemble a clean "no routing.jsonc" no-op, since `ci` never fails checks either way — the distinguishing signal is the stderr line, not the exit code.
+
+## verify-config: The Config Guard
+
+`ecr verify-config` is the CI trust guard that runs *before* the loaders are trusted, so it deliberately does not use them. It discovers configs via a plain recursive filesystem walk — NOT `git ls-files` and NOT `routing.jsonc`'s scope list — because a staged-but-unreferenced or untracked config directory carrying a rogue `auth` block can hide from git's index but not from an on-disk sweep [observed: `src/commands/verify-config.ts:58-63`; test `refuses an UNREFERENCED nested config dir carrying auth` in `src/__tests__/verify-config.test.ts`]. It parses every file with the real comment-aware JSONC parser (`stripJsonComments`/`stripTrailingCommas`) rather than regex-scraping, and fails closed — any parse error is itself a finding [observed: `src/commands/verify-config.ts:157-162`].
+
+The rules it enforces:
+
+- Root-locked keys (`auth`, `breakGlass`, `commentTag`) are refused in any non-root config [observed: `src/commands/verify-config.ts:176-193`]. This is the independent filesystem-sweep layer of a three-layer invariant (schema, loader, and this sweep) — it does not assume the schema or loader already ran, which is the point of it existing separately (LLP 0001).
+- A `tokenEnv` may be declared in only ONE root-owned file. Multiple entries in one `auth` block are fine (multi-provider), but splitting declarations across two root files leaves no single honored source and lets a stale/staged second file smuggle a credential [observed: `src/commands/verify-config.ts:196-213`].
+- With `ECR_EXPECTED_TOKEN_ENV` set, the declared `tokenEnv` set must equal it EXACTLY, as a set. Adding an extra credential name is refused exactly like repointing an existing one — a PR must not add, drop, or repoint credentials, not merely stay a superset [observed: `src/commands/verify-config.ts:227-249`].
+
+The sweep ignores `ECR_CONFIG_DIR` on purpose: it always scans the entire repo. That env var changes which config the *loaders* honor, but `verify-config` is a security check, not a loader, so the two are intentionally decoupled [observed: `src/commands/verify-config.ts:278-286`]. One coupling worth naming: `CONFIG_FILENAMES` [observed: `src/commands/verify-config.ts:56`; `src/config/load.ts:86`] must mirror the filenames in `config/load.ts`; a new config file type added there without mirroring here becomes invisible to the sweep entirely — a fail-*open* gap despite the guard's overall fail-closed design.
+
+## doctor and setup-auth
+
+`ecr doctor` is a preflight that must never disagree with a real run. Its `resolveEngines` folds in every ROUTED SCOPE's agent and coordinator models, not just the root config's, because a scope can select an `anthropic/…` model even when the root config is OpenCode-only — without folding scopes in, doctor would report success while skipping the Claude CLI/login checks that scope's review actually needs [observed: `src/commands/doctor.ts:75-108` `resolveEngines`; test in `src/__tests__/doctor.test.ts`]. A scope config that fails to load is silently skipped here and surfaced later by a separate per-scope validation block — hoisting that try/catch out would make `resolveEngines` throw and abort the whole doctor run instead of degrading per-scope [observed: `src/commands/doctor.ts:98-106`].
+
+doctor resolves auth the way real reviews do: a `routing.jsonc` `defaults.auth` OVERRIDES the root config's auth entirely (not merges), so the credential checks use the overridden value [observed: `src/commands/doctor.ts:165-174`]. And it mirrors `startClaudeCode`'s exact credential condition — an active `claude` subscription login OR a token value — so its verdict never reports `ok` where a real review would fail, nor `fail` where one would succeed; a missing credential is a hard `line(false)`, not a `warn()` (which never flips the exit code) [observed: `src/commands/doctor.ts:318-322`].
+
+`ecr setup-auth` derives a plan from the repo's auth config via a pure `planFromAuth`, then guides local credential acquisition. Its decisions:
+
+- It hands out only ACCESS tokens; the refresh token never leaves OpenCode's store, because OpenCode's refresh tokens are SINGLE-USE (rotation) and OpenCode is their sole legitimate consumer — a copy in a shell config or CI secret dies on the next rotation and can take the whole sign-in down with it [observed: `src/commands/setup-auth.ts:87-93`].
+- The exported shell line single-quotes the token value so a token containing shell metacharacters (`$HOME`, `!`) is never expanded when sourced [observed: `src/commands/setup-auth.ts:127-131`; test in `src/__tests__/setup-auth.test.ts`].
+- `anthropic` auth is always satisfied by the Claude Code CLI subscription-login flow regardless of the declared `mode` (oauth vs api-key) — mode is irrelevant for that provider [observed: `src/commands/setup-auth.ts:50-59`].
+- The two interactive logins run via `spawnSync` with `stdio: "inherit"` and `cwd: os.tmpdir()` — the tmpdir cwd keeps a possibly-untrusted checkout from becoming the login subprocess's working directory, and the `inherit` stdio is why these two calls cannot be converted to `exec.ts`'s capturing `run()` [observed: `src/commands/setup-auth.ts:200-203,256-259`].
+
+## init and dismiss
+
+`ecr init` scaffolds `.expo-code-review/` and optionally the CI workflow files (LLP 0009). With `--scope`, it derives and validates the routing-scope entry (kebab-case name, config path) BEFORE creating any files on disk, specifically to stop a path-traversal `--scope ../../outside` from orphaning files outside the repo and to stop a bad-but-valid-looking name from making `routing.jsonc` unparsable, which would silently stop every future review [observed: `src/commands/init.ts:184-205`]. `appendScopeEntry` inserts the entry via manual bracket/string/comment-aware text scanning, not a JSON parse+stringify round-trip, so it preserves the user's comments and formatting; it is idempotent, and it places the separating comma after the last entry's real content, never inside a trailing `//` or `/* */` comment [observed: `src/commands/init.ts` `appendScopeEntry`].
+
+`ecr dismiss` / `ecr undismiss` mutate only DISPLAY state. Dismissing a finding never re-runs the review — it moves the finding into a collapsed "Dismissed on this PR" section and the dismissal persists across future re-reviews [observed: `src/commands/dismiss.ts:13-15` USAGE; `applyDismissal` at `src/commands/dismiss.ts:98`]. Finding ids are sanitized to hex with `arg.replace(/[^a-f0-9]/g, "")`, which silently *mangles* a malformed id rather than rejecting it: a typo does not error, it just becomes a different (probably non-matching) id that reports as "unmatched" later [observed: `src/commands/dismiss.ts:49`]. There is no dedicated test for dismiss's argument parsing, so this behavior is easy to regress unnoticed.

@@ -1,3 +1,4 @@
+// @ref LLP 0008#github-reporter-identity — the reporter's core problem: which PR comment is ours; identity is proven by author + marker, never marker alone
 import { writeFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -59,6 +60,7 @@ export interface IssueComment {
  * cannot be confirmed, so NOTHING is treated as ours (fail closed). Pure; exported for
  * tests.
  */
+// @ref LLP 0008#github-reporter-identity [constrained-by] — marker-only matching would let a forged comment (from the untrusted PR author) carry forged dismissal state forward; author+marker is what makes identity unspoofable
 export function selectOwnComments(
   comments: IssueComment[],
   marker: string,
@@ -123,6 +125,7 @@ export class GitHubReporter implements Reporter {
     return selectOwnComments(comments, this.marker, ownLogin);
   }
 
+  // @ref LLP 0008#comment-lifecycle [constrained-by] — gates on author_association (OWNER/MEMBER/COLLABORATOR), not on posting the marker string, so only a maintainer can skip review
   async checkBreakGlass(): Promise<boolean> {
     const comments = await this.fetchAllComments();
     return comments.some(
@@ -235,6 +238,7 @@ export class GitHubReporter implements Reporter {
    * Add or remove per-PR finding dismissals in the reviewer's comment and re-render
    * it in place — no re-review needed (the comment embeds the full review state).
    */
+  // @ref LLP 0008#comment-lifecycle [implements] — validates added fingerprints against the CURRENT review's valid set, scope-aware (scoped fingerprints for an aggregate comment, plain otherwise), rather than trusting caller-supplied ids
   async applyDismissal(
     add: string[],
     remove: string[],
@@ -302,6 +306,7 @@ export class GitHubReporter implements Reporter {
    * a recent `/skip-review` can otherwise fall outside a single 100-comment window,
    * causing duplicate comments and missed break-glass).
    */
+  // @ref LLP 0008#comment-lifecycle [constrained-by] — the issue-comments endpoint ignores sort/direction and returns oldest-first; pagination must reach the end or the newest comment (ours, or a recent break-glass) can fall outside the window
   private async fetchAllComments(): Promise<IssueComment[]> {
     const all: IssueComment[] = [];
     const gh = await resolveTrustedTool("gh");
@@ -342,6 +347,7 @@ export class GitHubReporter implements Reporter {
    * otherwise create it. Comments come back oldest-first, so the LAST marked one
    * is the newest and is the keeper.
    */
+  // @ref LLP 0008#comment-lifecycle [implements] — converges to one live comment: patches the newest own-marker comment and deletes older duplicates, never touching a look-alike from someone else
   private async upsertComment(body: string): Promise<void> {
     // Update/clean up only comments WE authored, never a look-alike posted by
     // someone else (see selectOwnComments) — otherwise the newest forged marker

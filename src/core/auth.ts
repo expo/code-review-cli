@@ -1,3 +1,4 @@
+// @ref LLP 0003#credential-resolution-and-forwarding [implements] — deny-list, cross-provider guard, isolated OAuth staging, and the forwarding-site recheck for Claude Code
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -191,6 +192,7 @@ export function checkOauthTokenShape(
   return ok;
 }
 
+// @ref LLP 0003#credential-resolution-and-forwarding [implements] — two deny checks: FORBIDDEN_TOKEN_ENVS refuses well-known unrelated secrets; the cross-provider ownership guard refuses a non-anthropic entry naming an ANTHROPIC_TOKEN_ENVS var
 /**
  * Decide whether ONE configured credential is usable, WITHOUT mutating the
  * environment. See checkProviderAuth for the all-entries wrapper.
@@ -462,6 +464,7 @@ export function jwtExpiryMs(token: string): number | null {
  *   setup-token style bearers), far-future expiry so OpenCode never tries to
  *   refresh a credential that has no refresh half.
  */
+// @ref LLP 0003#credential-resolution-and-forwarding [implements] — JWT access tokens are used as-is and never refreshed; opaque tokens are stored with expires:0 for the codex refresh flow, only safe when this run is the token's sole consumer (refresh tokens are single-use)
 export function oauthAuthJsonEntry(
   provider: string,
   token: string,
@@ -488,6 +491,7 @@ export function oauthAuthJsonEntry(
  *   per-provider shapes). Isolated so it never touches the developer's real
  *   auth.json.
  */
+// @ref LLP 0003#credential-resolution-and-forwarding [implements] — stages all OAuth credentials into one isolated auth.json under a temp XDG_DATA_HOME; anthropic never passes through this path (its credential goes straight into startClaudeCode's child env)
 export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
   const noop: PreparedAuth = { cleanup: async () => {} };
 

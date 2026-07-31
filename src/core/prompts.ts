@@ -1,3 +1,4 @@
+// @ref LLP 0004#prompt-assembly-and-sanitization [implements] — text-level choke point for untrusted PR content; every builder is pure, no I/O
 import type { LoadedAgent, LoadedConfig } from "../config/schema.js";
 import type { Finding, ReviewMetadata } from "./schema.js";
 import type { FilteredFile, PatchWorkspaceFile } from "./noise.js";
@@ -43,6 +44,7 @@ function filteredSection(filtered: FilteredFile[]): string[] {
 // oxlint-disable-next-line no-control-regex -- intentional: strip control chars from untrusted text
 const CONTROL_CHARS = new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]", "g");
 
+// @ref LLP 0004#prompt-assembly-and-sanitization [constrained-by] — token-oriented; the diff body itself is never sanitized, only its path label
 /**
  * Neutralize prompt-boundary constructs in author-controlled text so a PR title
  * or body can't break out of the surrounding prompt structure.
@@ -287,6 +289,7 @@ export function buildCrossCuttingTask(
   ].join("\n");
 }
 
+// @ref LLP 0004#prompt-assembly-and-sanitization [constrained-by] — deliberately not wrapped in withShared, so it stays maximally distrustful
 /**
  * Adversarial verifier: given ONE finding, decide whether it's real by reading the
  * actual source. Deliberately NOT wrapped in shared rules (it emits a verdict, not
@@ -407,6 +410,7 @@ export function buildCoordinatorSystem(config: LoadedConfig): string {
   return withShared(config, config.coordinator.promptText);
 }
 
+// @ref LLP 0004#prompt-assembly-and-sanitization [constrained-by] — fence literals coupled by exact string to sanitizeUntrusted's token regex
 /** The coordinator task: sanitized metadata + each reviewer's raw findings. */
 export function buildCoordinatorTask(
   metadata: ReviewMetadata,

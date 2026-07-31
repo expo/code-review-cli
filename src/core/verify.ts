@@ -1,3 +1,5 @@
+// @ref LLP 0005#evidence-grounding-escalate-never-hard-drop
+// @ref LLP 0005#verifier-confinement-and-fail-open
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -24,6 +26,7 @@ export interface VerificationResult {
   model?: string;
 }
 
+// @ref LLP 0005#evidence-grounding-escalate-never-hard-drop [implements] — exact-substring is a good positive but poor negative signal (33a970a revert)
 /**
  * Break `evidence` into normalized, substantive fragments for fuzzy matching:
  * split on newlines AND ellipses (the model often elides with `…`/`...`), strip
@@ -65,6 +68,7 @@ export function matchEvidence(evidence: string, content: string): "present" | "a
   return fragments.some((fragment) => normContent.includes(fragment)) ? "present" : "absent";
 }
 
+// @ref LLP 0005#verifier-confinement-and-fail-open [implements] — pathInside gate: out-of-tree reads (and their present/absent verdict) refused
 /** Read the cited file and grade the evidence against it (see matchEvidence). */
 async function evidencePresence(
   finding: Finding,
@@ -90,6 +94,7 @@ async function evidencePresence(
   return matchEvidence(finding.evidence ?? "", content);
 }
 
+// @ref LLP 0005#verifier-confinement-and-fail-open [constrained-by] — fails open: a verify error/timeout keeps the finding, never drops it
 /**
  * Guard against hallucinated findings before they're surfaced, WITHOUT silently
  * dropping real ones on an imperfect quote:

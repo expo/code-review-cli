@@ -1,3 +1,4 @@
+// @ref LLP 0003#retry-taxonomy [implements] — rate-limit evidence: explicit 429 log lines are hard signal; stall + recent evidence means wait, not retry
 import { open } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -52,6 +53,7 @@ const EVIDENCE_WINDOW_MS = 5 * 60 * 1000;
  * is the signal the stall path consults. Fails soft everywhere: a missing or
  * unreadable log yields "no evidence", never an error.
  */
+// @ref LLP 0003#retry-taxonomy [implements] — fails soft (missing/unreadable log = no evidence, never an error); scans only ERROR lines so a chatty INFO "retry" mention doesn't count
 export class RateLimitWatch {
   /** Total rate-limit ERROR lines seen this run. */
   events = 0;

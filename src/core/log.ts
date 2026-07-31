@@ -1,3 +1,4 @@
+// @ref LLP 0002#run-log-and-observability-sinks [implements] — one JSON line per run for cost/latency auditability
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
@@ -13,6 +14,7 @@ export interface RunLogRecord {
   // secrets that might appear in author-controlled text. Findings below may quote
   // changed source lines, but only content the review already publishes verbatim
   // in the PR comment — never the surrounding title/body text.
+  // @ref LLP 0002#run-log-and-observability-sinks [constrained-by] — PR title/body excluded to avoid persisting secrets
   metadata: Pick<ReviewMetadata, "baseRef" | "headRef">;
   reviewedFiles: string[];
   filteredFiles: FilteredFile[];

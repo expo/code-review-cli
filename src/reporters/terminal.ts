@@ -1,3 +1,4 @@
+// @ref LLP 0008#terminal-reporter — stdout carries the report (progress/logging goes to stderr) and the decision maps to a process exit code for pre-push/pre-commit gating
 import { decisionExitCode, decisionLabel, groupBySeverity, sortFindings } from "../core/render.js";
 import { SEVERITIES } from "../core/schema.js";
 import type { CoordinatorOutput, Finding, Severity } from "../core/schema.js";
@@ -33,6 +34,7 @@ export class TerminalReporter implements Reporter {
   private readonly color: boolean;
 
   constructor(private readonly options: TerminalReporterOptions = {}) {
+    // @ref LLP 0008#terminal-reporter [constrained-by] — TTY-gated, not just "not --json": coloring based on !json alone would corrupt piped/redirected output with ANSI codes
     this.color = !options.json && Boolean(process.stdout.isTTY);
   }
 
