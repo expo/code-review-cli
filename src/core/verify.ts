@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { pathInside } from "./exec.js";
 import type { Finding } from "./schema.js";
 import { parseVerdict } from "./schema.js";
 import { addTokenUsage, promptAndParse, VERIFIER_AGENT } from "./opencode.js";
@@ -69,9 +70,20 @@ async function evidencePresence(
   finding: Finding,
   cwd: string,
 ): Promise<"present" | "absent" | "unknown"> {
+  // finding.file is an unconstrained, LLM-authored string produced over untrusted PR
+  // content, so a prompt-injected finding could point it at a host secret. path.resolve
+  // IGNORES cwd when finding.file is already absolute (e.g. ~/.claude/.credentials.json),
+  // and `..` segments escape upward — either would make this raw readFile reach outside
+  // the reviewed tree with the host user's privileges, and the present/absent grading
+  // would leak a content-oracle back into the review. Confine the read to cwd (the
+  // materialized PR-head tree); anything outside is uncheckable, never read.
+  const resolved = path.resolve(cwd, finding.file);
+  if (!pathInside(resolved, cwd)) {
+    return "unknown";
+  }
   let content: string;
   try {
-    content = await readFile(path.resolve(cwd, finding.file), "utf8");
+    content = await readFile(resolved, "utf8");
   } catch {
     return "unknown";
   }

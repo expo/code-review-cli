@@ -1,4 +1,4 @@
-import { git, run } from "../core/exec.js";
+import { git, resolveTrustedTool, run } from "../core/exec.js";
 import { parseUnifiedDiff } from "../core/diff.js";
 import type { DiffEntry, ReviewMetadata } from "../core/schema.js";
 import type { ReviewSource } from "./source.js";
@@ -107,7 +107,8 @@ export class LocalGitSource implements ReviewSource {
     const chunks: string[] = [];
     for (const file of files) {
       // `--` so a filename beginning with `-` can't be read as a git option.
-      const { stdout } = await run("git", ["diff", "--no-index", "--", "/dev/null", file], {
+      const gitPath = await resolveTrustedTool("git");
+      const { stdout } = await run(gitPath, ["diff", "--no-index", "--", "/dev/null", file], {
         cwd: this.cwd,
         check: false,
       });

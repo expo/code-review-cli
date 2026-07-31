@@ -1,9 +1,13 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, mkdir, writeFile, stat } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, symlink, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { isAmbientRuntimeConfig, scrubAmbientRuntimeConfig } from "../core/scrub.js";
+import {
+  isAmbientRuntimeConfig,
+  removeEscapingSymlinks,
+  scrubAmbientRuntimeConfig,
+} from "../core/scrub.js";
 import { isCommitOid } from "../sources/github-pr.js";
 import { hasScopeConfig } from "../config/load.js";
 import { resolveReadRoot } from "../core/review.js";
@@ -108,6 +112,78 @@ test("isAmbientRuntimeConfig: exact names, .env prefix family, nothing else", ()
   ]) {
     expect(isAmbientRuntimeConfig(name)).toBe(false);
   }
+});
+
+// ---------------------------------------------------------------------------
+// symlink sweep: a PR-committed link cannot read outside the materialized tree
+// ---------------------------------------------------------------------------
+
+const isLink = async (p: string): Promise<boolean> =>
+  lstat(p).then(
+    (s) => s.isSymbolicLink(),
+    () => false,
+  );
+
+test("removeEscapingSymlinks strips out-of-tree and broken links, keeps in-tree ones", async () => {
+  // A sibling directory OUTSIDE the tree stands in for the host filesystem
+  // (~/.claude/.credentials.json in the real attack).
+  const parent = await mkdtemp(path.join(tmpdir(), "ecr-symlink-test-"));
+  const root = path.join(parent, "tree");
+  const outside = path.join(parent, "outside");
+  await mkdir(root, { recursive: true });
+  await mkdir(outside, { recursive: true });
+  await writeFile(path.join(outside, "secret.txt"), "credential", "utf8");
+  await mkdir(path.join(root, "docs"), { recursive: true });
+  await mkdir(path.join(root, "node_modules/dep"), { recursive: true });
+  await writeFile(path.join(root, "target.txt"), "in-tree", "utf8");
+
+  // Escaping: absolute, relative, nested under node_modules, and a chain whose
+  // FIRST hop is in-tree but whose final target is not.
+  await symlink(path.join(outside, "secret.txt"), path.join(root, "abs-escape"));
+  await symlink("../outside/secret.txt", path.join(root, "docs/rel-escape"));
+  await symlink(path.join(outside, "secret.txt"), path.join(root, "node_modules/dep/escape"));
+  await symlink("abs-escape", path.join(root, "chain-escape"));
+  // Broken link (fail closed) and legitimate in-tree links (direct + chained).
+  await symlink(path.join(root, "missing.txt"), path.join(root, "broken"));
+  await symlink("target.txt", path.join(root, "in-tree-alias"));
+  await symlink("in-tree-alias", path.join(root, "in-tree-chain"));
+
+  const removed = await removeEscapingSymlinks(root);
+
+  for (const gone of [
+    "abs-escape",
+    path.join("docs", "rel-escape"),
+    path.join("node_modules", "dep", "escape"),
+    "chain-escape",
+    "broken",
+  ]) {
+    expect(removed).toContain(gone);
+    expect(await isLink(path.join(root, gone))).toBe(false);
+  }
+  // In-tree links survive and still resolve; regular files are untouched.
+  expect(removed).not.toContain("in-tree-alias");
+  expect(removed).not.toContain("in-tree-chain");
+  expect(await isLink(path.join(root, "in-tree-alias"))).toBe(true);
+  expect(await readFile(path.join(root, "in-tree-chain"), "utf8")).toBe("in-tree");
+  expect(await readFile(path.join(root, "target.txt"), "utf8")).toBe("in-tree");
+  // The out-of-tree target itself is never touched — only the links to it.
+  expect(await readFile(path.join(outside, "secret.txt"), "utf8")).toBe("credential");
+});
+
+test("removeEscapingSymlinks keeps an in-tree directory link without descending it", async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "ecr-symlink-test-"));
+  const root = path.join(parent, "tree");
+  await mkdir(path.join(root, "real-dir"), { recursive: true });
+  await writeFile(path.join(root, "real-dir/file.txt"), "x", "utf8");
+  // In-tree directory alias, plus a self-cycle that must not hang the walk.
+  await symlink(path.join(root, "real-dir"), path.join(root, "dir-alias"));
+  await symlink(path.join(root, "cycle"), path.join(root, "cycle"));
+
+  const removed = await removeEscapingSymlinks(root);
+
+  expect(removed).toEqual(["cycle"]); // self-cycle is unresolvable -> fail closed
+  expect(await isLink(path.join(root, "dir-alias"))).toBe(true);
+  expect(await readFile(path.join(root, "dir-alias/file.txt"), "utf8")).toBe("x");
 });
 
 // ---------------------------------------------------------------------------

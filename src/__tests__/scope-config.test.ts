@@ -363,3 +363,23 @@ test("legacy single-object auth still parses (one normalized entry)", async () =
     { provider: "openai", mode: "api-key", tokenEnv: "OPENAI_API_KEY" },
   ]);
 });
+
+test("anthropic auth entries pass through both shapes (mode defaults to api-key, irrelevant to the engine)", async () => {
+  const mapRoot = await makeRoot(
+    `{ "auth": { "providers": {
+        "anthropic": { "tokenEnv": "CLAUDE_CODE_OAUTH_TOKEN" }
+    } } }`,
+  );
+  expect((await loadReviewConfig(mapRoot)).auth).toEqual([
+    {
+      provider: "anthropic",
+      mode: "api-key",
+      tokenEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+      upstream: undefined,
+    },
+  ]);
+  const legacyRoot = await makeRoot('{ "auth": { "provider": "anthropic" } }');
+  expect((await loadReviewConfig(legacyRoot)).auth).toEqual([
+    { provider: "anthropic", mode: "api-key", tokenEnv: undefined },
+  ]);
+});

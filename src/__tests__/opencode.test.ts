@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import path from "node:path";
 
 import {
   isTransientApiError,
@@ -9,8 +10,43 @@ import {
   findUnknownModels,
   formatUnknownModels,
   buildOpencodeConfig,
+  resolveEngineDispatch,
+  resolveOpencodeCli,
 } from "../core/opencode.js";
+import type { OpencodeHandle } from "../core/opencode.js";
+import type { ClaudeCodeHandle } from "../core/claude-code.js";
 import type { LoadedConfig } from "../config/schema.js";
+
+test("resolveEngineDispatch: per-agent router picks the right engine and claude handle", () => {
+  const claudeSentinel = { engine: "claude-code" } as ClaudeCodeHandle;
+  // Carrier is the opencode handle of a MIXED run: engineOf routes per agent, and a
+  // claude-routed agent resolves to the carrier's `.claude` handle.
+  const carrier = {
+    engine: undefined,
+    engineOf: (a: string) => (a === "x" ? "claude-code" : "opencode"),
+    claude: claudeSentinel,
+  } as unknown as OpencodeHandle;
+  expect(resolveEngineDispatch(carrier, "x")).toEqual({
+    engine: "claude-code",
+    claudeHandle: claudeSentinel,
+  });
+  expect(resolveEngineDispatch(carrier, "y")).toEqual({ engine: "opencode" });
+
+  // Claude-ONLY run: the carrier IS the claude handle, so a claude-routed agent
+  // resolves to the carrier itself, not a `.claude` field.
+  const claudeCarrier = {
+    engine: "claude-code",
+    engineOf: () => "claude-code" as const,
+  } as unknown as OpencodeHandle;
+  expect(resolveEngineDispatch(claudeCarrier, "any")).toEqual({
+    engine: "claude-code",
+    claudeHandle: claudeCarrier,
+  });
+
+  // No router, no engine → the opencode default.
+  const plain = {} as OpencodeHandle;
+  expect(resolveEngineDispatch(plain, "any")).toEqual({ engine: "opencode" });
+});
 
 /** Minimal LoadedConfig for buildOpencodeConfig tests. */
 function configWith(overrides: {
@@ -245,15 +281,13 @@ test("a refused credential blames the credential, not the model id", () => {
     provider: "anthropic",
     tokenEnv: "ANTHROPIC_OAUTH_API_KEY",
   });
-  // The credential is usually FINE: anthropic oauth is a dead path in OpenCode
-  // (no anthropic OAuth support; Anthropic prohibits subscription tokens in
-  // third-party tools), so that must be stated BEFORE "your token is wrong" —
-  // naming the token first sent us to re-issue two perfectly good ones.
+  // The credential is usually FINE — that must be stated before "your token is
+  // wrong" (naming the token first sent us to re-issue two perfectly good ones).
+  // No anthropic-specific advice anymore: anthropic models never reach the
+  // OpenCode preflight (they route to the Claude Code engine), so the generic
+  // wrong-mode guidance is all that remains.
   expect(text).toContain("credential itself is often FINE");
-  expect(text.indexOf("cannot work through OpenCode")).toBeLessThan(
-    text.indexOf("wrong for the mode"),
-  );
-  expect(text).toContain('"mode": "api-key"');
+  expect(text).toContain("wrong for the mode");
   expect(text).toContain("ANTHROPIC_OAUTH_API_KEY");
   // …and it must NOT read as "your model id is wrong", which is the wrong hunt.
   expect(text).not.toContain("no such model");
@@ -321,4 +355,16 @@ test("an unknown upstream falls back to the openai-compatible SDK", () => {
     provider?: Record<string, { npm: string }>;
   };
   expect(opencode.provider?.proxyprov?.npm).toBe("@ai-sdk/openai-compatible");
+});
+
+test("resolveOpencodeCli: resolves the bundled shim to an absolute path, never a bare `opencode`", async () => {
+  const cli = await resolveOpencodeCli();
+  // opencode-ai is a dependency, so the bundled shim resolves in this repo.
+  expect(cli).not.toBeNull();
+  expect(path.isAbsolute(cli!)).toBe(true);
+  expect(path.basename(cli!)).toBe("opencode");
+  // The shim from OUR dependency tree (node_modules/.bin), resolved relative to the
+  // module rather than cwd — so a PR-committed `opencode` at the reviewed cwd can never
+  // be what a doctor/setup-auth spawn picks up. Reverting to a bare "opencode" fails here.
+  expect(cli).toContain(`${path.sep}.bin${path.sep}`);
 });

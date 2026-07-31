@@ -15,7 +15,7 @@ const cfg = (auth: unknown): LoadedConfig =>
   ({ auth: Array.isArray(auth) ? auth : [auth] }) as unknown as LoadedConfig;
 
 test("checkProviderAuth: api-key is ready when the configured tokenEnv is set", () => {
-  const r = checkProviderAuth(cfg({ mode: "api-key", provider: "anthropic", tokenEnv: "MY_KEY" }), {
+  const r = checkProviderAuth(cfg({ mode: "api-key", provider: "google", tokenEnv: "MY_KEY" }), {
     MY_KEY: "sk-xxx",
   });
   expect(r.ok).toBe(true);
@@ -29,23 +29,22 @@ test("checkProviderAuth: api-key is ready via the provider key env when no token
 });
 
 test("checkProviderAuth: api-key fails fast when no credential is set anywhere", () => {
-  const r = checkProviderAuth(
-    cfg({ mode: "api-key", provider: "anthropic", tokenEnv: "MY_KEY" }),
-    {},
-  );
+  const r = checkProviderAuth(cfg({ mode: "api-key", provider: "google", tokenEnv: "MY_KEY" }), {});
   expect(r.ok).toBe(false);
   expect(r.detail).toMatch(/MY_KEY/);
 });
 
 test("checkProviderAuth: oauth requires the token env to be set", () => {
+  // A generic (non-anthropic) provider exercises the oauth branch — anthropic is
+  // served by the CLI and takes its own branch regardless of mode.
   expect(
-    checkProviderAuth(cfg({ mode: "oauth", provider: "anthropic", tokenEnv: "OAUTH" }), {}).ok,
+    checkProviderAuth(cfg({ mode: "oauth", provider: "google", tokenEnv: "OAUTH" }), {}).ok,
   ).toBe(false);
   expect(
-    checkProviderAuth(cfg({ mode: "oauth", provider: "anthropic", tokenEnv: "OAUTH" }), {
+    checkProviderAuth(cfg({ mode: "oauth", provider: "google", tokenEnv: "OAUTH" }), {
       // Must be a realistically-shaped token: the value is now validated too (see
       // checkOauthTokenShape), so a stub like "tok" fails as truncated.
-      OAUTH: `sk-ant-oat01-${"x".repeat(90)}`,
+      OAUTH: `oauth-token-${"x".repeat(90)}`,
     }).ok,
   ).toBe(true);
 });
@@ -107,6 +106,178 @@ test("prepareAuth: REVIEWER_MODEL override skips provider auth entirely (no thro
     } else {
       process.env.REVIEWER_MODEL = prev;
     }
+  }
+});
+
+// ---- anthropic (always served by the Claude Code CLI) ----
+
+test("checkProviderAuth: anthropic is ready with its tokenEnv set to an Anthropic token", () => {
+  const r = checkProviderAuth(
+    cfg({ mode: "api-key", provider: "anthropic", tokenEnv: "CLAUDE_CODE_OAUTH_TOKEN" }),
+    { CLAUDE_CODE_OAUTH_TOKEN: `sk-ant-oat01-${"x".repeat(95)}` },
+  );
+  expect(r.ok).toBe(true);
+  expect(r.detail).toContain("token env CLAUDE_CODE_OAUTH_TOKEN is set");
+});
+
+test("checkProviderAuth: mode is irrelevant for anthropic — an oauth entry still hits the CLI path", () => {
+  // Mode "oauth" would normally require a token-shape check, but anthropic is served
+  // by the CLI regardless of mode: it takes the anthropic branch, not the oauth one.
+  const r = checkProviderAuth(
+    cfg({ mode: "oauth", provider: "anthropic", tokenEnv: "CLAUDE_CODE_OAUTH_TOKEN" }),
+    { CLAUDE_CODE_OAUTH_TOKEN: `sk-ant-oat01-${"x".repeat(95)}` },
+  );
+  expect(r.ok).toBe(true);
+  expect(r.detail).toContain("via the Claude Code CLI");
+});
+
+test("checkProviderAuth: an anthropic tokenEnv holding a non-Anthropic value is refused (exfil guard)", () => {
+  // A non-forbidden CI secret (e.g. SENTRY_AUTH_TOKEN) passes the FORBIDDEN and
+  // cross-provider guards, but its value would be shipped to api.anthropic.com — a
+  // value that can't authenticate there but can leak. Refuse on the value shape.
+  const r = checkProviderAuth(
+    cfg({ mode: "api-key", provider: "anthropic", tokenEnv: "SENTRY_AUTH_TOKEN" }),
+    { SENTRY_AUTH_TOKEN: "sntrys_deadbeefcafefeed" },
+  );
+  expect(r.ok).toBe(false);
+  expect(r.detail).toContain("does not hold an Anthropic credential");
+  // An Anthropic API key ("sk-ant-api…") in the same env is accepted (covers both
+  // oat OAuth and api-key shapes under one "sk-ant-" prefix).
+  const apiKey = checkProviderAuth(
+    cfg({ mode: "api-key", provider: "anthropic", tokenEnv: "ECR_CLAUDE_TOKEN" }),
+    { ECR_CLAUDE_TOKEN: `sk-ant-api03-${"y".repeat(95)}` },
+  );
+  expect(apiKey.ok).toBe(true);
+});
+
+test("checkProviderAuth: anthropic with no tokenEnv defers to the local `claude` login", () => {
+  const r = checkProviderAuth(cfg({ mode: "api-key", provider: "anthropic" }), {});
+  expect(r.ok).toBe(true);
+  expect(r.detail).toContain("local `claude` login");
+});
+
+test("checkProviderAuth: anthropic with a named-but-unset tokenEnv warns and falls back to the local login", () => {
+  const r = checkProviderAuth(
+    cfg({ mode: "api-key", provider: "anthropic", tokenEnv: "CLAUDE_CODE_OAUTH_TOKEN" }),
+    {},
+  );
+  // Not fatal: startClaudeCode falls back to the machine's `claude` login and
+  // fails fast itself when neither credential exists.
+  expect(r.ok).toBe(true);
+  expect(r.warning).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+  expect(r.warning).toContain("claude` login");
+});
+
+test("checkProviderAuth: FORBIDDEN + cross-provider guards still fire for an anthropic tokenEnv", () => {
+  const forbidden = checkProviderAuth(
+    cfg({ mode: "api-key", provider: "anthropic", tokenEnv: "GITHUB_TOKEN" }),
+    { GITHUB_TOKEN: "ghp_xxx" },
+  );
+  expect(forbidden.ok).toBe(false);
+  expect(forbidden.detail).toContain("non-provider secret");
+  const crossed = checkProviderAuth(
+    cfg({ mode: "api-key", provider: "anthropic", tokenEnv: "OPENAI_API_KEY" }),
+    { OPENAI_API_KEY: "sk-proj-xxx" },
+  );
+  expect(crossed.ok).toBe(false);
+  expect(crossed.detail).toContain("openai's");
+});
+
+// ---- Anthropic OAuth env is anthropic-owned (cross-provider guard) ----
+
+test("checkProviderAuth: a non-anthropic entry naming CLAUDE_CODE_OAUTH_TOKEN is refused", () => {
+  // The long-lived Claude Max/Team subscription token would otherwise be forwarded to
+  // a FOREIGN provider (here openai) as its bearer — it is neither in FORBIDDEN nor a
+  // PROVIDER_KEY_ENV value, so only the anthropic-owned guard catches it.
+  for (const tokenEnv of ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"]) {
+    const r = checkProviderAuth(cfg({ mode: "api-key", provider: "openai", tokenEnv }), {
+      [tokenEnv]: `sk-ant-oat01-${"x".repeat(95)}`,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain("anthropic's");
+  }
+});
+
+test("checkProviderAuth: an anthropic entry naming CLAUDE_CODE_OAUTH_TOKEN is still allowed", () => {
+  // The guard keys on OWNER≠provider, so anthropic's own use of its OAuth env passes.
+  const r = checkProviderAuth(
+    cfg({ mode: "oauth", provider: "anthropic", tokenEnv: "ANTHROPIC_AUTH_TOKEN" }),
+    { ANTHROPIC_AUTH_TOKEN: `sk-ant-oat01-${"x".repeat(95)}` },
+  );
+  expect(r.ok).toBe(true);
+});
+
+test("checkProviderAuth: an upstream=anthropic alias may name CLAUDE_CODE_OAUTH_TOKEN", () => {
+  // upstream is anthropic, so the owner matches the upstream and the token is not
+  // being sent to a foreign provider.
+  const r = checkProviderAuth(
+    cfg({
+      mode: "api-key",
+      provider: "myanthropic",
+      upstream: "anthropic",
+      tokenEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+    }),
+    { CLAUDE_CODE_OAUTH_TOKEN: `sk-ant-oat01-${"x".repeat(95)}` },
+  );
+  expect(r.ok).toBe(true);
+});
+
+// A config that routes every model to a provider, plus the auth block. Used to
+// exercise the provider-in-use scoping (the bare `cfg` helper has no models, so it
+// can't scope and considers every entry).
+const cfgWithModels = (models: string[], auth: unknown): LoadedConfig =>
+  ({
+    agents: models.map((model, i) => ({ id: `a${i}`, model })),
+    coordinator: { model: models[0] },
+    auth: Array.isArray(auth) ? auth : [auth],
+  }) as unknown as LoadedConfig;
+
+test("checkProviderAuth: the shipped openai default does NOT block an all-anthropic config (claude-login fallback)", () => {
+  // The migration the task cares about: switch every model to anthropic/… but leave
+  // (or omit → default) the openai auth block. openai routes no model here, so its
+  // missing key must not fail the run — the Claude Code CLI's own login serves it.
+  const r = checkProviderAuth(
+    cfgWithModels(["anthropic/claude-opus-5"], { mode: "api-key", provider: "openai" }),
+    {}, // no OPENAI_API_KEY, no ANTHROPIC_API_KEY, no claude token
+  );
+  expect(r.ok).toBe(true);
+  expect(r.detail).not.toContain("OPENAI_API_KEY");
+});
+
+test("checkProviderAuth: an entry for an IN-USE provider is still enforced", () => {
+  // Scoping must not become a blanket bypass: openai routes a model here, so its
+  // missing credential still fails fast.
+  const r = checkProviderAuth(
+    cfgWithModels(["openai/gpt-5.5"], { mode: "api-key", provider: "openai" }),
+    {},
+  );
+  expect(r.ok).toBe(false);
+  expect(r.detail).toContain("openai");
+});
+
+test("prepareAuth: does not forward a dead unused-provider api-key into its key env", async () => {
+  // An entry for a provider no model uses must not have its tokenEnv copied into the
+  // provider key env — checkProviderAuth skips its guard, so forwarding would
+  // reintroduce the secret-forwarding the guard prevents.
+  const hadOpenai = process.env.OPENAI_API_KEY;
+  const hadCustom = process.env.CUSTOM_OPENAI;
+  delete process.env.OPENAI_API_KEY;
+  process.env.CUSTOM_OPENAI = "sk-should-not-be-forwarded";
+  try {
+    const prepared = await prepareAuth(
+      cfgWithModels(["anthropic/claude-opus-5"], {
+        mode: "api-key",
+        provider: "openai",
+        tokenEnv: "CUSTOM_OPENAI",
+      }),
+    );
+    expect(process.env.OPENAI_API_KEY).toBeUndefined();
+    await prepared.cleanup();
+  } finally {
+    if (hadOpenai === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = hadOpenai;
+    if (hadCustom === undefined) delete process.env.CUSTOM_OPENAI;
+    else process.env.CUSTOM_OPENAI = hadCustom;
   }
 });
 
@@ -210,12 +381,14 @@ test("prepareAuth writes provider-shaped oauth entries into one isolated auth.js
   const prevXdg = process.env.XDG_DATA_HOME;
   delete process.env.REVIEWER_MODEL;
   process.env.ECR_TEST_CODEX = "refresh-token-".padEnd(60, "r");
-  process.env.ECR_TEST_ANT = `sk-ant-oat01-${"x".repeat(95)}`;
+  process.env.ECR_TEST_GOOG = `oauth-access-${"x".repeat(90)}`;
   try {
     const prepared = await prepareAuth(
       cfg([
         { mode: "oauth", provider: "openai", tokenEnv: "ECR_TEST_CODEX" },
-        { mode: "oauth", provider: "anthropic", tokenEnv: "ECR_TEST_ANT" },
+        // A non-openai oauth provider (anthropic is claude-engine-only and never
+        // written to auth.json, so use another provider to cover the access shape).
+        { mode: "oauth", provider: "google", tokenEnv: "ECR_TEST_GOOG" },
       ]),
     );
     const written = JSON.parse(
@@ -230,14 +403,14 @@ test("prepareAuth writes provider-shaped oauth entries into one isolated auth.js
       refresh: process.env.ECR_TEST_CODEX,
       expires: 0,
     });
-    // anthropic-style: the token IS the access credential, far-future expiry.
-    expect(written.anthropic.access).toBe(process.env.ECR_TEST_ANT);
-    expect(written.anthropic.refresh).toBe("");
-    expect(written.anthropic.expires).toBeGreaterThan(Date.now());
+    // other providers: the token IS the access credential, far-future expiry.
+    expect(written.google.access).toBe(process.env.ECR_TEST_GOOG);
+    expect(written.google.refresh).toBe("");
+    expect(written.google.expires).toBeGreaterThan(Date.now());
     await prepared.cleanup();
   } finally {
     delete process.env.ECR_TEST_CODEX;
-    delete process.env.ECR_TEST_ANT;
+    delete process.env.ECR_TEST_GOOG;
     if (prevModel === undefined) {
       delete process.env.REVIEWER_MODEL;
     } else {
@@ -286,16 +459,20 @@ test("prepareAuth: an upstream alias does not clobber the provider key env", asy
   }
 });
 
-test("checkProviderAuth rejects a malformed oauth token end to end", () => {
-  const r = checkProviderAuth(cfg({ mode: "oauth", provider: "anthropic", tokenEnv: "OAUTH" }), {
+test("checkProviderAuth rejects a malformed anthropic token end to end (exfil guard)", () => {
+  // A mangled paste (leading "sk-" dropped) no longer starts with "sk-ant-", so the
+  // anthropic branch's exfil guard refuses it before a run — same "rejected up front"
+  // guarantee as before, via the value-shape check the CLI path uses. (The mangled-
+  // paste "missing sk-" heuristic itself is unit-tested via checkOauthTokenShape.)
+  const r = checkProviderAuth(cfg({ mode: "api-key", provider: "anthropic", tokenEnv: "OAUTH" }), {
     OAUTH: "ant-oat01-" + "x".repeat(90),
   });
   expect(r.ok).toBe(false);
-  expect(r.detail).toContain('missing its leading "sk-"');
+  expect(r.detail).toContain("does not hold an Anthropic credential");
 });
 
-test("checkProviderAuth accepts a well-formed oauth token", () => {
-  const r = checkProviderAuth(cfg({ mode: "oauth", provider: "anthropic", tokenEnv: "OAUTH" }), {
+test("checkProviderAuth accepts a well-formed anthropic token", () => {
+  const r = checkProviderAuth(cfg({ mode: "api-key", provider: "anthropic", tokenEnv: "OAUTH" }), {
     OAUTH: OAUTH,
   });
   expect(r.ok).toBe(true);

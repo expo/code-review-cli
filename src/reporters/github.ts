@@ -2,7 +2,7 @@ import { writeFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { run } from "../core/exec.js";
+import { resolveTrustedTool, run } from "../core/exec.js";
 import { parseUnifiedDiff } from "../core/diff.js";
 import {
   buildDiffLineIndex,
@@ -38,10 +38,38 @@ export interface GitHubReporterOptions {
 
 const MAINTAINER_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
-interface IssueComment {
+export interface IssueComment {
   id: number;
   body?: string;
   author_association?: string;
+  /** The comment's author. GitHub sets this from the authenticated identity; it
+   * cannot be forged, so it — not the public body marker — is the identity signal. */
+  user?: { login?: string };
+}
+
+/**
+ * The reviewer's OWN marker comments, oldest-first: carrying the marker AND authored
+ * by `ownLogin`. The body marker alone is not identity — it defaults to a hardcoded,
+ * public literal and is readable in the base-branch config, so anyone who can comment
+ * on the PR (the untrusted PR author included) could post a comment carrying it plus a
+ * forged embedded review state; a newest-marker-wins lookup would then adopt that
+ * state and carry its `dismissed` list forward, silently suppressing real findings.
+ * GitHub sets a comment's author from the authenticated identity and it cannot be
+ * spoofed, so matching on author closes that. When `ownLogin` is null the author
+ * cannot be confirmed, so NOTHING is treated as ours (fail closed). Pure; exported for
+ * tests.
+ */
+export function selectOwnComments(
+  comments: IssueComment[],
+  marker: string,
+  ownLogin: string | null,
+): IssueComment[] {
+  if (!ownLogin) {
+    return [];
+  }
+  return comments.filter(
+    (comment) => comment.body?.includes(marker) && comment.user?.login === ownLogin,
+  );
 }
 
 /**
@@ -51,9 +79,48 @@ interface IssueComment {
  */
 export class GitHubReporter implements Reporter {
   private readonly marker: string;
+  /** Memoized login of the account this reporter posts as (see resolveOwnLogin). */
+  private ownLoginResolution?: Promise<string | null>;
 
   constructor(private readonly options: GitHubReporterOptions) {
     this.marker = commentMarker(options.commentTag);
+  }
+
+  /**
+   * The login of the account this reporter comments as, so its own comment is
+   * recognized by AUTHOR (see selectOwnComments for why the body marker is not enough).
+   * Resolution: `gh api user` (a user/PAT token), else the scaffolded workflow's default
+   * GITHUB_TOKEN identity, `github-actions[bot]`, when running under Actions — an
+   * installation token can't read `/user`. Null when neither is available, which makes
+   * selectOwnComments treat no comment as ours (fail closed). Memoized: the identity is
+   * stable for the process, and every reporter method consults it.
+   */
+  private resolveOwnLogin(): Promise<string | null> {
+    this.ownLoginResolution ??= (async () => {
+      try {
+        const gh = await resolveTrustedTool("gh");
+        const { stdout } = await run(gh, ["api", "user", "--jq", ".login"], {
+          cwd: this.options.cwd,
+        });
+        const login = stdout.trim();
+        if (login) {
+          return login;
+        }
+      } catch {
+        // The default GITHUB_TOKEN is an installation token: `/user` returns 403.
+      }
+      return process.env.GITHUB_ACTIONS ? "github-actions[bot]" : null;
+    })();
+    return this.ownLoginResolution;
+  }
+
+  /** This reporter's own marker comments, author-verified (see selectOwnComments). */
+  private async ownComments(): Promise<IssueComment[]> {
+    const [comments, ownLogin] = await Promise.all([
+      this.fetchAllComments(),
+      this.resolveOwnLogin(),
+    ]);
+    return selectOwnComments(comments, this.marker, ownLogin);
   }
 
   async checkBreakGlass(): Promise<boolean> {
@@ -114,10 +181,9 @@ export class GitHubReporter implements Reporter {
    * reviewdog #1911 lesson).
    */
   async clear(): Promise<void> {
-    const marked = (await this.fetchAllComments()).filter((comment) =>
-      comment.body?.includes(this.marker),
-    );
-    for (const comment of marked) {
+    // Only ever delete comments WE authored — never touch a look-alike posted by
+    // someone else (see selectOwnComments).
+    for (const comment of await this.ownComments()) {
       await this.deleteComment(comment.id);
     }
   }
@@ -140,7 +206,8 @@ export class GitHubReporter implements Reporter {
     await Promise.all([
       (async () => {
         try {
-          const { stdout } = await run("gh", ["pr", "diff", ...prArgs], { cwd });
+          const gh = await resolveTrustedTool("gh");
+          const { stdout } = await run(gh, ["pr", "diff", ...prArgs], { cwd });
           link.diffLines = buildDiffLineIndex(parseUnifiedDiff(stdout));
         } catch {
           // leave diffLines unset → in-diff findings degrade to plain text
@@ -148,7 +215,8 @@ export class GitHubReporter implements Reporter {
       })(),
       (async () => {
         try {
-          const { stdout } = await run("gh", ["pr", "view", ...prArgs, "--json", "baseRefOid"], {
+          const gh = await resolveTrustedTool("gh");
+          const { stdout } = await run(gh, ["pr", "view", ...prArgs, "--json", "baseRefOid"], {
             cwd,
           });
           const oid = (JSON.parse(stdout) as { baseRefOid?: string }).baseRefOid;
@@ -215,12 +283,10 @@ export class GitHubReporter implements Reporter {
     return { dismissedCount: dismissed.length, matched, unmatched };
   }
 
-  /** Newest reviewer-tagged comment (id + body), or null if none posted yet. */
+  /** Newest comment WE authored carrying our marker (id + body), or null if none. */
   private async findExistingComment(): Promise<{ id: number; body: string } | null> {
-    const marked = (await this.fetchAllComments()).filter((comment) =>
-      comment.body?.includes(this.marker),
-    );
-    const keep = marked[marked.length - 1];
+    const own = await this.ownComments();
+    const keep = own[own.length - 1];
     return keep ? { id: keep.id, body: keep.body ?? "" } : null;
   }
 
@@ -238,9 +304,10 @@ export class GitHubReporter implements Reporter {
    */
   private async fetchAllComments(): Promise<IssueComment[]> {
     const all: IssueComment[] = [];
+    const gh = await resolveTrustedTool("gh");
     for (let page = 1; page <= GitHubReporter.MAX_COMMENT_PAGES; page++) {
       const { stdout } = await run(
-        "gh",
+        gh,
         [
           "api",
           "-X",
@@ -276,9 +343,10 @@ export class GitHubReporter implements Reporter {
    * is the newest and is the keeper.
    */
   private async upsertComment(body: string): Promise<void> {
-    const marked = (await this.fetchAllComments()).filter((comment) =>
-      comment.body?.includes(this.marker),
-    );
+    // Update/clean up only comments WE authored, never a look-alike posted by
+    // someone else (see selectOwnComments) — otherwise the newest forged marker
+    // comment would be adopted as "ours" and edited/patched in its place.
+    const marked = await this.ownComments();
 
     if (marked.length === 0) {
       await this.createComment(body);
@@ -308,9 +376,10 @@ export class GitHubReporter implements Reporter {
   }
 
   private async createComment(body: string): Promise<void> {
+    const gh = await resolveTrustedTool("gh");
     await this.withBodyFile(body, (jsonPath) =>
       run(
-        "gh",
+        gh,
         [
           "api",
           "-X",
@@ -325,9 +394,10 @@ export class GitHubReporter implements Reporter {
   }
 
   private async patchComment(commentId: number, body: string): Promise<void> {
+    const gh = await resolveTrustedTool("gh");
     await this.withBodyFile(body, (jsonPath) =>
       run(
-        "gh",
+        gh,
         [
           "api",
           "-X",
@@ -342,8 +412,9 @@ export class GitHubReporter implements Reporter {
   }
 
   private async deleteComment(commentId: number): Promise<void> {
+    const gh = await resolveTrustedTool("gh");
     await run(
-      "gh",
+      gh,
       ["api", "-X", "DELETE", `repos/${this.options.repo}/issues/comments/${commentId}`],
       { cwd: this.options.cwd },
     );

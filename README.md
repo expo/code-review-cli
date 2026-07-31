@@ -110,7 +110,7 @@ is a ready example to adapt.
 | `ecr init [--no-workflow] [--force]` | Scaffold `.expo-code-review/` (config, agents, prompts) + a CI workflow. |
 | `ecr init --monorepo` | …and add a `routing.jsonc` routing manifest (one default scope). |
 | `ecr init --scope <dir>` | Scaffold a per-team scope under `<dir>` and register it in the manifest. |
-| `ecr setup-auth [--yes]` | Walk through getting model credentials for local runs (ChatGPT sign-in and/or API keys), printing the `export` lines for your shell config. |
+| `ecr setup-auth [--yes]` | Walk through getting model credentials for local runs (ChatGPT/Claude sign-in and/or API keys), printing the `export` lines for your shell config. |
 | `ecr review [options]` | Review local changes and print an advisory review (default command). |
 | `ecr review --scope <name>` | Review only one routing scope over just that scope's changed files. |
 | `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
@@ -545,18 +545,36 @@ set in `config.auth` (credentials come from OpenCode):
     One caveat: OpenCode can't price alias models (they're config-declared), so
     pro passes report `$0` in the run log's cost column — token counts are
     correct, and the OpenAI project dashboard is the source of truth for spend.
-- **Anthropic / Claude (API key)** — set `auth.provider` to `"anthropic"`, point
-  `tokenEnv` at the env var holding a Console API key (e.g. `ANTHROPIC_API_KEY`),
-  and use `anthropic/...` model ids; the key is sent as `x-api-key`. Note that
-  Claude Pro/Max **subscription** tokens cannot be used here: Anthropic prohibits
-  them in third-party tools, and OpenCode has no Anthropic OAuth support — only an
-  API key works.
+- **Anthropic / Claude** — use `anthropic/...` model ids and every anthropic pass
+  runs through the **Claude Code CLI** (`claude -p --output-format json`), inferred
+  from the model. The credential is (in order) a `tokenEnv` you name, an ambient
+  `CLAUDE_CODE_OAUTH_TOKEN`, or your local `claude` login — an `auth` entry is
+  entirely optional. Run `claude setup-token` for a Max/Team subscription token
+  (forwarded as `CLAUDE_CODE_OAUTH_TOKEN`) or point `tokenEnv` at an Anthropic
+  Console API key (`sk-ant-api…`, forwarded as `ANTHROPIC_API_KEY`); the CLI reads
+  either. `ecr setup-auth` walks you through it. Each pass is trust-isolated and
+  read-only: it runs with `--safe-mode` (no `CLAUDE.md`/hooks/MCP/plugins),
+  `--strict-mcp-config`, `--permission-mode dontAsk`, and only the
+  `Read`/`Grep`/`Glob` tools — never `Bash`/`Edit`/`Write`/`WebFetch`/`WebSearch`.
+  The child env is an allowlist that omits ambient `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`
+  (only the configured credential is re-injected).
+  ```jsonc
+  // Optional — no anthropic entry at all falls back to your `claude` login.
+  "auth": { "providers": {
+    "anthropic": { "tokenEnv": "CLAUDE_CODE_OAUTH_TOKEN" }
+  } }
+  ```
 - **Another provider** — the current path is the `REVIEWER_MODEL`
   env override: `opencode auth login` once (pick the provider), then run with
   e.g. `REVIEWER_MODEL=google/gemini-3-pro`. It overrides every agent's model
-  and uses your OpenCode login, so no `auth` block is needed. *(Per-agent
-  provider mixing beyond the alias mechanism above is on the
-  [roadmap](./ROADMAP.md).)*
+  and uses your OpenCode login, so no `auth` block is needed.
+
+Engines are inferred **per agent** from that agent's resolved model alone: an
+`anthropic/…` agent runs through the Claude Code CLI while other agents run through
+OpenCode — in the SAME run. So an anthropic model may coexist with an `openai` (or
+any other) OpenCode provider, and each agent's `model` selects its engine.
+`REVIEWER_MODEL` still overrides every agent's model (and therefore every agent's
+engine), converging the whole run onto one engine.
 
 There is no shared fallback key; if a run fails for lack of credentials, authenticate
 a provider in OpenCode. `ecr doctor` diagnoses setup.
@@ -570,8 +588,11 @@ rediscovering one fixable thing, then reports N coverage gaps. So before any pas
   model, with nothing pointing at the credential. A truncated value, surrounding
   whitespace, or a token that can't work for the configured `auth.mode` is rejected
   by name.
-- **Configured model ids are checked against the running server**, so a typo or an id
-  the provider doesn't have is reported once, up front, with the close matches.
+- **Configured model ids for OpenCode-routed providers are checked against the running
+  server**, so a typo or an id the provider doesn't have is reported once, up front,
+  with the close matches. `anthropic/…` (Claude Code) model ids aren't checked up
+  front — Claude validates them per-request, so a typo there surfaces as a per-pass
+  error instead.
 - **`ecr doctor` reports the `opencode` version actually in use** and warns when a
   different one is first on your `PATH` — runs use the version this package pins.
 

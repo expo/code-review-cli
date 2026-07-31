@@ -1,0 +1,866 @@
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import type { LoadedConfig } from "../config/schema.js";
+import { checkAuthEntry } from "./auth.js";
+import { pathInside, resolveOnPath, run } from "./exec.js";
+import {
+  addTokenUsage,
+  AgentTimeoutError,
+  CLAUDE_CODE_ENGINE,
+  CROSS_CUTTING_AGENT,
+  VERIFIER_AGENT,
+  withTransientRetry,
+} from "./opencode.js";
+import type { OpencodeHandle, PromptResult, TokenUsage } from "./opencode.js";
+import { RateLimitWatch } from "./throttle.js";
+
+/**
+ * The Claude Code CLI review engine. Runs each pass as a single `claude -p
+ * --output-format json` subprocess on the user's Claude Max/Team subscription,
+ * bypassing OpenCode entirely (which cannot use Anthropic subscription OAuth).
+ * The seam functions in opencode.ts dispatch here on `handle.engine`.
+ *
+ * Per-agent `temperature` is NOT supported: the `claude` CLI exposes no
+ * temperature flag, so any configured temperature is dropped (surfaced once per run
+ * via claudeTemperatureNote so the divergence is visible).
+ */
+export interface ClaudeCodeHandle extends OpencodeHandle {
+  engine: "claude-code";
+  /** agent id → configured model id (mirrors buildOpencodeConfig's model map). */
+  models: Record<string, string>;
+  /**
+   * agent id → the OpenCode tool names that role may use (mirrors buildOpencodeConfig's
+   * per-agent tool maps): reviewers get their configured tools, cross-cutting/verifier
+   * get read+grep (Glob withheld), the coordinator gets none. buildClaudeArgs scopes
+   * the read-capable subset to the tree.
+   */
+  tools: Record<string, readonly string[]>;
+  /** Default model for cross-cutting/verifier (config.agents[0].model). */
+  defaultModel: string;
+  /** Absolute `claude` binary (PATH lookup). */
+  cliPath: string;
+  /** Child-process env built from an allowlist that omits ANTHROPIC_API_KEY/AUTH_TOKEN;
+   *  the resolved Claude credential is re-injected here — CLAUDE_CODE_OAUTH_TOKEN for a
+   *  subscription token, ANTHROPIC_API_KEY for a Console key (the CLI reads either). */
+  childEnv: NodeJS.ProcessEnv;
+}
+
+/** Prompt args, structurally shared with promptAgent/promptAndParse in opencode.ts. */
+export interface ClaudePromptArgs {
+  agent: string;
+  system: string;
+  text: string;
+  title: string;
+  onActivity?: (line: string) => void;
+  maxWaitMs?: number;
+  maxToolCalls?: number;
+  finalizeOnTimeout?: boolean;
+}
+
+/** Coarse per-pass wander bound; the review's own maxWaitMs is the real ceiling. */
+const CLAUDE_MAX_TURNS = 60;
+/** Fallback per-pass ceiling when a caller passes no maxWaitMs. */
+const DEFAULT_MAX_WAIT_MS = 8 * 60 * 1000;
+/**
+ * A stateless `claude -p` pass emits no incremental tool lines to the caller, so a
+ * long pass would look hung. Emit a "still working" heartbeat this often (matching
+ * opencode.ts's HEARTBEAT_MS) to keep the progress signal alive.
+ */
+const CLAUDE_HEARTBEAT_MS = 45_000;
+
+/**
+ * OpenCode read-tool name → Claude Code tool name. These three are the only tools
+ * this engine ever grants; write/exec/net tools are always denied (review is
+ * read-only). `list` has no scoped Claude equivalent (Glob covers discovery) and is
+ * ignored.
+ */
+const READ_TOOL_MAP: Record<string, "Read" | "Grep" | "Glob"> = {
+  read: "Read",
+  grep: "Grep",
+  glob: "Glob",
+};
+const ALL_READ_TOOLS = ["Read", "Grep", "Glob"] as const;
+/**
+ * Tools never available to a review pass, whatever the role. A DENY enumeration is
+ * the only workable containment: permission rules cannot fail closed here — reads
+ * inside the workspace are default-ALLOWED even when an allow list is present but
+ * unmatched, and a `*` deny breaks tool calling outright (both verified against
+ * claude 2.1.212). The residual risk — a FUTURE CLI version shipping a new
+ * read-capable tool this list doesn't name — is bounded by pinning the CLI version
+ * (the scaffolded workflow installs an exact @anthropic-ai/claude-code version;
+ * bump it deliberately and revisit this list). Unknown names are ignored by the
+ * CLI, so denying tools that don't exist in a given version is harmless.
+ */
+const ALWAYS_DENIED_TOOLS = [
+  "Bash",
+  "Edit",
+  "Write",
+  "NotebookEdit",
+  "NotebookRead",
+  "WebFetch",
+  "WebSearch",
+  "Task",
+  "TodoWrite",
+  "BashOutput",
+  "KillShell",
+  "ExitPlanMode",
+];
+
+/**
+ * Env vars forwarded to the `claude` child — what a CLI needs to run (PATH,
+ * locale, tmp, proxies, its own config dir) and nothing else. See startClaudeCode
+ * for why this is an allowlist.
+ */
+const CHILD_ENV_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TERM",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_STATE_HOME",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "CLAUDE_CONFIG_DIR",
+  // Windows equivalents of the above.
+  "SYSTEMROOT",
+  "SYSTEMDRIVE",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROGRAMFILES",
+  "COMSPEC",
+  "PATHEXT",
+];
+
+const MISSING_CLI_MESSAGE =
+  "The `claude` CLI is not installed. Install Claude Code (npm i -g " +
+  "@anthropic-ai/claude-code) and run `claude setup-token` on a Max/Team " +
+  "subscription, then `ecr doctor`.";
+
+export type Engine = "opencode" | "claude-code";
+
+/**
+ * Infer ONE agent's engine from its resolved model alone: an `anthropic/…` model
+ * runs through the Claude Code CLI, any other provider through OpenCode. The engine
+ * is a pure function of the model id — no auth, no run-level state — so a single run
+ * may drive BOTH engines at once (per agent, by model). ALL anthropic models are
+ * served by the CLI; the retired anthropic-via-OpenCode x-api-key path no longer
+ * exists (the CLI accepts an API key too).
+ */
+export function engineForModel(model: string): Engine {
+  const slash = model.indexOf("/");
+  const provider = slash > 0 ? model.slice(0, slash) : model;
+  return provider === "anthropic" ? CLAUDE_CODE_ENGINE : "opencode";
+}
+
+/**
+ * Map every dispatchable agent id → its engine + model: each reviewer id, plus the
+ * fixed cross-cutting / verifier / coordinator roles. This modelOf is the single
+ * source for which model backs each id — startClaudeCode (below) consumes it directly
+ * instead of rebuilding it, and buildOpencodeConfig (opencode.ts) folds the same ids
+ * into its richer per-role agent records. The per-model inference converges to one
+ * engine automatically when every model is identical (e.g. under REVIEWER_MODEL), so
+ * no run-level convergence code is needed.
+ *
+ * `agents` scopes the reviewer ids to a specific run's SELECTED agents (an explicit
+ * `--agents` subset); it defaults to the full roster. usesOpencode/usesClaude then
+ * report only the engines that run actually drives, so a subset whose passes never
+ * touch Claude doesn't force startClaudeCode (missing CLI/token) for nothing. The
+ * fixed roles always run, so the verifier/cross-cutting shared model and the
+ * coordinator model stay on the FULL roster (config.agents[0] / coordinator) — those
+ * passes use them regardless of which reviewers were selected.
+ */
+export function buildEngineMap(
+  config: LoadedConfig,
+  agents: readonly LoadedConfig["agents"][number][] = config.agents,
+): {
+  engineOf: Record<string, Engine>;
+  modelOf: Record<string, string>;
+  usesOpencode: boolean;
+  usesClaude: boolean;
+} {
+  const modelOf: Record<string, string> = {};
+  for (const agent of agents) {
+    modelOf[agent.id] = agent.model;
+  }
+  const shared = config.agents[0]?.model ?? config.coordinator.model;
+  modelOf[CROSS_CUTTING_AGENT] = shared;
+  modelOf[VERIFIER_AGENT] = shared;
+  modelOf["coordinator"] = config.coordinator.model;
+  const engineOf: Record<string, Engine> = {};
+  for (const [id, model] of Object.entries(modelOf)) {
+    engineOf[id] = engineForModel(model);
+  }
+  const engines = new Set(Object.values(engineOf));
+  return {
+    engineOf,
+    modelOf,
+    usesOpencode: engines.has("opencode"),
+    usesClaude: engines.has(CLAUDE_CODE_ENGINE),
+  };
+}
+
+/** Strip a leading `provider/` segment for the CLI's `--model` flag. */
+export function claudeModelId(configModel: string): string {
+  const slash = configModel.indexOf("/");
+  return slash >= 0 ? configModel.slice(slash + 1) : configModel;
+}
+
+/**
+ * Whether a configured model id and the model that actually answered are the same
+ * family, ignoring a trailing dated suffix (`claude-haiku-4-5-20251001` matches
+ * `claude-haiku-4-5` / `anthropic/claude-haiku-4-5`). A plain fallback within the
+ * family reports the CONFIGURED id (no spurious substitution note); a real swap to
+ * a different family reports the actual id so the substitution surfaces.
+ */
+export function claudeModelMatches(requested: string, actualKey: string): boolean {
+  const normalize = (id: string): string => claudeModelId(id).replace(/-\d{8}$/, "");
+  return normalize(requested) === normalize(actualKey);
+}
+
+/**
+ * The read-only, trust-isolated, subscription-forced argv (minus the leading
+ * binary). Task text is fed on stdin, not here. NOT `--bare` (bare mode ignores
+ * CLAUDE_CODE_OAUTH_TOKEN/keychain OAuth); `--safe-mode` disables
+ * CLAUDE.md/hooks/MCP/plugins while KEEPING OAuth.
+ *
+ * The granted read tools vary by role (see the `tools` option): a reviewer gets its
+ * configured read/grep/glob, the cross-file and verifier passes get read+grep only
+ * (Glob withheld — directory crawling is what made them wander), and the coordinator
+ * plus the no-tools fallback get none. Whatever the role, every GRANTED read tool is
+ * path-scoped to the review tree (`//<cwd>/**`, Claude Code's absolute-path rule)
+ * with `dontAsk` denying any call that matches no allow rule. This narrows the
+ * prompt-injection exfil path for DIRECT out-of-tree reads: untrusted PR content is
+ * the review input and findings are posted as PR comments, so any unscoped
+ * read-capable tool (a bare `Grep` no less than a bare `Read`) would let an injected
+ * instruction read `~/.claude/.credentials.json` (the subscription token this engine
+ * authenticates with), `/proc/self/environ`, `.env*`, or SSH keys and emit them into
+ * a finding. Verified empirically against the installed CLI: in-tree Read/Grep
+ * succeed, out-of-tree Read/Grep/Glob (`/etc`, `~/.zshrc`) are denied by the
+ * unmatched-rule denial; a withheld read tool is denied BY NAME because an EMPTY
+ * allow list default-allows reads. NO scoped deny rules: `Read(//**)` would deny the
+ * tree itself (paths resolve to absolute), and `Read(~/**)` denies the whole tree
+ * whenever the repo lives under the home directory — the common case.
+ *
+ * This is NOT, by itself, a boundary against a symlink committed inside the PR-head
+ * tree (e.g. `docs/notes.md -> ~/.claude/.credentials.json`): the permission rule
+ * matches the literal path ARGUMENT, which is in-tree, but Read/Grep then follow the
+ * symlink via fs and return the out-of-tree target's contents. That gap is closed
+ * UPSTREAM of this argv, where there is still a filesystem to preflight: read-root
+ * materialization strips symlinks that resolve outside the tree
+ * (removeEscapingSymlinks in scrub.ts, run by prepareReadRootAsync). Runs whose read
+ * root is the user's own checkout (local diffs) don't get the sweep — the user is
+ * the trust principal for their own tree's symlinks.
+ */
+export function buildClaudeArgs(opts: {
+  model: string;
+  system: string;
+  cwd: string;
+  /**
+   * OpenCode tool names this pass may use (read/grep/glob honored and scoped to the
+   * tree; write/exec/net and unknown names ignored). Undefined = the three read
+   * tools (back-compat default). An EMPTY array denies every read tool: an absent
+   * `--allowedTools` list default-ALLOWS reads (verified against claude 2.1.212), so
+   * the coordinator and the no-tools fallback must deny Read/Grep/Glob by NAME, not
+   * by omission.
+   */
+  tools?: readonly string[];
+  maxTurns?: number;
+}): string[] {
+  // Permission rules are gitignore-style with forward slashes; a Windows cwd
+  // (`C:\Users\dev\repo`) must be normalized or every rule silently matches
+  // nothing and dontAsk denies all reads.
+  const scopeRoot = opts.cwd.replace(/\\/g, "/");
+  const scope = (tool: string): string => `${tool}(/${scopeRoot}/**)`;
+  const requested = opts.tools ?? ["read", "grep", "glob"];
+  const enabled = ALL_READ_TOOLS.filter((claudeName) =>
+    requested.some((name) => READ_TOOL_MAP[name] === claudeName),
+  );
+  // Read tools NOT granted are denied by name (see the `tools` doc above) — the
+  // scoped allow rules alone don't deny them when the allow list is empty.
+  const deniedReadTools = ALL_READ_TOOLS.filter((tool) => !enabled.includes(tool));
+  return [
+    "-p",
+    "--output-format",
+    "json",
+    "--model",
+    opts.model,
+    "--append-system-prompt",
+    opts.system,
+    ...(enabled.length > 0 ? ["--allowedTools", ...enabled.map(scope)] : []),
+    "--disallowedTools",
+    ...deniedReadTools,
+    ...ALWAYS_DENIED_TOOLS,
+    "--permission-mode",
+    "dontAsk",
+    "--strict-mcp-config",
+    "--safe-mode",
+    "--max-turns",
+    String(opts.maxTurns ?? CLAUDE_MAX_TURNS),
+  ];
+}
+
+export interface ClaudeResult {
+  text: string;
+  cost: number;
+  tokens: TokenUsage;
+  /** modelUsage key → output tokens, for picking the model that actually answered. */
+  modelOutputTokens: Record<string, number>;
+  isError: boolean;
+  errorText: string;
+}
+
+/**
+ * The model that actually answered, out of the result's modelUsage keys. The CLI
+ * also bills its own internal helper calls there (a haiku entry appears alongside
+ * the main model, often FIRST — key order is meaningless), so prefer the key
+ * matching the requested family and fall back to the largest output-token count
+ * (the main model dominates output; helpers emit a trickle).
+ */
+export function pickAnsweringModel(
+  requested: string,
+  modelOutputTokens: Record<string, number>,
+): string | undefined {
+  const keys = Object.keys(modelOutputTokens);
+  const familyMatch = keys.find((key) => claudeModelMatches(requested, key));
+  if (familyMatch) {
+    return familyMatch;
+  }
+  return keys.sort((a, b) => (modelOutputTokens[b] ?? 0) - (modelOutputTokens[a] ?? 0))[0];
+}
+
+/**
+ * Parse the `--output-format json` result object. Keys off `is_error` / a parse
+ * failure, NOT `subtype` — `subtype` stays `"success"` on some API errors.
+ */
+export function parseClaudeResult(stdout: string): ClaudeResult {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(stdout) as Record<string, unknown>;
+  } catch {
+    return {
+      text: "",
+      cost: 0,
+      tokens: {},
+      modelOutputTokens: {},
+      isError: true,
+      errorText: stdout.trim(),
+    };
+  }
+  const usage = (parsed.usage ?? {}) as Record<string, unknown>;
+  const num = (value: unknown): number | undefined =>
+    typeof value === "number" ? value : undefined;
+  const tokens: TokenUsage = {
+    input: num(usage.input_tokens),
+    output: num(usage.output_tokens),
+    cache: {
+      write: num(usage.cache_creation_input_tokens),
+      read: num(usage.cache_read_input_tokens),
+    },
+  };
+  const modelUsage = (parsed.modelUsage ?? {}) as Record<string, unknown>;
+  const modelOutputTokens: Record<string, number> = {};
+  for (const [key, value] of Object.entries(modelUsage)) {
+    modelOutputTokens[key] = num((value as Record<string, unknown> | null)?.outputTokens) ?? 0;
+  }
+  const result = typeof parsed.result === "string" ? parsed.result : "";
+  const isError = parsed.is_error === true;
+  return {
+    text: result,
+    cost: num(parsed.total_cost_usd) ?? 0,
+    tokens,
+    modelOutputTokens,
+    isError,
+    errorText: isError ? result || stdout.trim() : "",
+  };
+}
+
+/** Classify a Claude Code failure so the caller can pick backoff vs. hard fail. */
+export function classifyClaudeError(
+  errorText: string,
+  apiStatus?: number,
+): "rate-limit" | "auth" | "usage-limit" | "other" {
+  if (apiStatus === 401 || apiStatus === 403) {
+    return "auth";
+  }
+  if (apiStatus === 429) {
+    return "rate-limit";
+  }
+  if (/authentication_failed|oauth_org_not_allowed|invalid.?api.?key|\b401\b/i.test(errorText)) {
+    return "auth";
+  }
+  if (/usage limit reached/i.test(errorText)) {
+    return "usage-limit";
+  }
+  if (/\b429\b|rate.?limit|too many requests|overloaded|quota/i.test(errorText)) {
+    return "rate-limit";
+  }
+  return "other";
+}
+
+/**
+ * The reset epoch (ms) a `usage limit reached|<epoch>` message carries, or null.
+ * Parsed defensively — the trailing `|<epoch>` is folklore, in seconds or ms.
+ */
+export function usageLimitResetMs(errorText: string): number | null {
+  const match = /\|\s*(\d{6,})/.exec(errorText);
+  if (!match) {
+    return null;
+  }
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  // A 10-digit value is epoch seconds; a 13-digit is already ms.
+  return value < 1e12 ? value * 1000 : value;
+}
+
+/**
+ * The thrown-error text for a usage-limit hit. Deliberately phrased so
+ * isTransientApiError MISSES it — no "rate limit"/"429"/"too many requests"/
+ * "overloaded" — because a subscription usage cap resets hours later, not in
+ * seconds: without this it matched the 429 pattern and burned the whole
+ * RATE_LIMIT_BACKOFF schedule on three doomed retries. Failing fast surfaces the
+ * reset time instead. The interpolated reset epoch is a long digit run with no
+ * internal word boundary, so it can't spuriously match `\b429\b`/`\b50x\b`.
+ */
+export function usageLimitMessage(errorText: string): string {
+  const resetMs = usageLimitResetMs(errorText);
+  const when = resetMs ? new Date(resetMs).toISOString() : "later";
+  return (
+    `Claude Code usage limit reached; resets ${when}. This is a subscription usage cap, ` +
+    `not a transient throttle — retrying will not clear it. (${errorText})`
+  );
+}
+
+/** Agent/coordinator default temperatures (mirrors load.ts resolveTemp fallbacks). */
+const DEFAULT_AGENT_TEMPERATURE = 0.1;
+const DEFAULT_COORDINATOR_TEMPERATURE = 0;
+
+/**
+ * A one-time run note when a config sets a NON-default temperature under the
+ * claude-code engine: the `claude` CLI exposes no temperature flag, so every
+ * configured temperature is silently dropped. Only non-default values are flagged (a
+ * config left on the default never expected an effect), so a plain setup stays quiet.
+ * Returns null when there is nothing to surface.
+ */
+export function claudeTemperatureNote(
+  config: LoadedConfig,
+  engineOf: Record<string, Engine>,
+): string | null {
+  // Only CLAUDE-ROUTED passes drop their temperature; in a mixed run an
+  // OpenCode-routed agent's tuned temperature IS honored and must not be flagged.
+  const tuned =
+    config.agents.some(
+      (agent) =>
+        engineOf[agent.id] === CLAUDE_CODE_ENGINE &&
+        agent.temperature !== DEFAULT_AGENT_TEMPERATURE,
+    ) ||
+    (engineOf["coordinator"] === CLAUDE_CODE_ENGINE &&
+      config.coordinator.temperature !== DEFAULT_COORDINATOR_TEMPERATURE);
+  return tuned
+    ? "temperature settings are not supported by the claude-code engine and were ignored " +
+        "(for the claude-routed passes)"
+    : null;
+}
+
+/**
+ * One prompt → text/cost/tokens/model, as a single `claude -p` subprocess (the
+ * Claude analogue of OpenCode's promptAgent; no sessions/polling).
+ */
+export async function runClaudePrompt(
+  handle: ClaudeCodeHandle,
+  args: ClaudePromptArgs,
+): Promise<PromptResult> {
+  const maxWaitMs = args.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
+  const configuredModel = handle.models[args.agent] ?? handle.defaultModel;
+  // Per-role tools mirror buildOpencodeConfig (reviewers → configured set;
+  // cross-cutting/verifier → read+grep; coordinator → none). maxToolCalls:0 is
+  // review.ts's no-tools-fallback tripwire — deny every tool for that pass.
+  const configuredTools = handle.tools[args.agent] ?? ["read", "grep", "glob"];
+  const tools = args.maxToolCalls === 0 ? [] : configuredTools;
+  // A soft tool-call ceiling doubles as the CLI's per-pass turn bound (the closest
+  // stateless analogue of OpenCode's mid-run tool-call cap).
+  const maxTurns =
+    args.maxToolCalls != null && args.maxToolCalls > 0 ? args.maxToolCalls : undefined;
+  // A stateless `claude -p` pass streams nothing back, so emit a heartbeat while it
+  // runs or a long pass looks hung (cleared in finally, whatever the outcome).
+  const heartbeatStart = Date.now();
+  const heartbeat = args.onActivity
+    ? setInterval(() => {
+        args.onActivity?.(
+          `still working… ${Math.round((Date.now() - heartbeatStart) / 1000)}s elapsed`,
+        );
+      }, CLAUDE_HEARTBEAT_MS)
+    : undefined;
+  heartbeat?.unref?.();
+  let result;
+  try {
+    result = await run(
+      handle.cliPath,
+      buildClaudeArgs({
+        model: claudeModelId(configuredModel),
+        system: args.system,
+        cwd: process.cwd(),
+        tools,
+        maxTurns,
+      }),
+      {
+        input: args.text,
+        env: handle.childEnv,
+        cwd: process.cwd(),
+        timeout: maxWaitMs,
+        check: false,
+      },
+    );
+  } finally {
+    if (heartbeat) {
+      clearInterval(heartbeat);
+    }
+  }
+
+  // Our own deadline fired and killed the child. A killed child can't wrap up,
+  // so there is no finalize salvage here.
+  if (result.timedOut) {
+    throw new AgentTimeoutError(args.agent, Math.round(maxWaitMs / 60000), 0, undefined, "time");
+  }
+  // A non-timeout signal is a crash (SIGSEGV, OOM SIGKILL, external kill), not a
+  // timeout — surface it as a hard error rather than the subdivide/retry path.
+  if (result.signal) {
+    throw new Error(
+      `Claude Code was killed by signal ${result.signal}: ${result.stderr.trim() || "(no output)"}`,
+    );
+  }
+  // Truncated output can't be parsed as JSON; report the cause plainly instead of
+  // letting it fall through as a generic parse failure.
+  if (result.overflowed) {
+    throw new Error("claude output exceeded the 64MB buffer and was truncated");
+  }
+
+  const parsed = parseClaudeResult(result.stdout);
+  if (parsed.isError) {
+    const kind = classifyClaudeError(parsed.errorText);
+    if (kind === "rate-limit" || kind === "usage-limit") {
+      handle.rateLimit.note();
+      if (kind === "usage-limit") {
+        // Non-transient by construction (see usageLimitMessage): fail fast with the
+        // reset time instead of retrying a cap that won't clear for hours.
+        throw new Error(usageLimitMessage(parsed.errorText));
+      }
+      throw new Error(`Claude Code rate limit hit. (${parsed.errorText})`);
+    }
+    if (kind === "auth") {
+      // Non-transient (see isTransientApiError): must propagate, not retry.
+      throw new Error(
+        `Claude Code authentication failed (${parsed.errorText}). Re-mint with ` +
+          "`claude setup-token`, set CLAUDE_CODE_OAUTH_TOKEN, and check `claude auth status` / " +
+          "`ecr doctor`.",
+      );
+    }
+    throw new Error(
+      parsed.errorText ||
+        `claude exited with code ${result.code}: ${
+          result.stderr.trim() || result.stdout.trim() || "(no output)"
+        }`,
+    );
+  }
+
+  const answered = pickAnsweringModel(configuredModel, parsed.modelOutputTokens);
+  const model = answered
+    ? claudeModelMatches(configuredModel, answered)
+      ? configuredModel
+      : `anthropic/${answered}`
+    : configuredModel;
+  return { text: parsed.text, cost: parsed.cost, sessionID: "", tokens: parsed.tokens, model };
+}
+
+/**
+ * The claude analogue of opencode.ts's CORRECTIVE. NOT shared: that one says
+ * "your previous reply could not be parsed", which is true in OpenCode's
+ * same-session follow-up but false here — each `claude -p` invocation is a fresh
+ * stateless process with no previous reply to reference.
+ */
+const CLAUDE_CORRECTIVE =
+  "\n\nIMPORTANT: reply with ONLY the single JSON object described above — no prose, " +
+  "no code fences, no partial output.";
+
+/**
+ * Prompt via the Claude Code CLI and parse the reply, mirroring OpenCode's
+ * promptAndParse: transient retry on the first call, then one corrective re-run
+ * (a fresh process — the diff is inlined, so re-read is a cache hit).
+ */
+export async function claudeCodePromptAndParse<T>(
+  handle: ClaudeCodeHandle,
+  args: ClaudePromptArgs,
+  parse: (text: string) => T,
+): Promise<{ value: T; cost: number; truncated: boolean; tokens: TokenUsage; model?: string }> {
+  let cost = 0;
+  let model: string | undefined;
+  const tokens: TokenUsage = {};
+  const record = (result: PromptResult): void => {
+    cost += result.cost;
+    addTokenUsage(tokens, result.tokens);
+    model = result.model ?? model;
+  };
+
+  const first = await withTransientRetry(`Agent "${args.agent}"`, args.onActivity, () =>
+    runClaudePrompt(handle, args),
+  );
+  record(first);
+  try {
+    return { value: parse(first.text), cost, truncated: false, tokens, model };
+  } catch {
+    const retry = await runClaudePrompt(handle, { ...args, text: args.text + CLAUDE_CORRECTIVE });
+    record(retry);
+    try {
+      return { value: parse(retry.text), cost, truncated: false, tokens, model };
+    } catch (finalError) {
+      throw new Error(
+        `Agent "${args.agent}" did not return parseable JSON after retries: ${
+          finalError instanceof Error ? finalError.message : String(finalError)
+        }`,
+      );
+    }
+  }
+}
+
+/**
+ * Preflight: the CLI must exist, and every configured model must be an Anthropic
+ * id — a non-anthropic provider prefix (e.g. a leftover `openai/gpt-…` agent or
+ * coordinator frontmatter) would otherwise fail every pass routed to it at
+ * request time. Model-id validity within Anthropic is left to per-call
+ * `is_error` (Claude validates at request time).
+ */
+export async function assertClaudeModels(
+  handle: ClaudeCodeHandle,
+  models: string[],
+): Promise<void> {
+  const foreign = [...new Set(models)].filter((model) => {
+    const slash = model.indexOf("/");
+    return slash > 0 && model.slice(0, slash) !== "anthropic";
+  });
+  if (foreign.length > 0) {
+    throw new Error(
+      `The claude-code engine can only run anthropic/… models, but the config resolves ` +
+        `to: ${foreign.join(", ")}. Point every agent AND the coordinator (frontmatter in ` +
+        `coordinator.md) at anthropic/… model ids.`,
+    );
+  }
+  const { code } = await run(handle.cliPath, ["--version"], {
+    env: handle.childEnv,
+    check: false,
+  });
+  if (code !== 0) {
+    throw new Error(MISSING_CLI_MESSAGE);
+  }
+}
+
+/** A `claude auth status --text` line that indicates a usable Max/Team login. */
+const SUBSCRIPTION_STATUS_RE = /max|team|subscription|logged in/i;
+
+/**
+ * Resolve the host `claude` binary the way this engine trusts it: a PATH lookup from
+ * a trusted cwd (resolveOnPath, never the inherited one) and a refusal of any binary
+ * that resolves INSIDE the current tree. Null when unresolved or in-tree.
+ *
+ * Every `claude` spawn goes through a resolved-and-checked absolute path, never a
+ * bare name: the process may have chdir'd into an untrusted PR-head tree (a review)
+ * and doctor/setup-auth may run inside a cloned untrusted repo, so a bare name lets a
+ * PR-committed `claude` shim win the lookup and run with ambient secrets in its env.
+ * startClaudeCode keeps its own inline resolution (it needs to distinguish "missing"
+ * from "in-tree" for its error messages); the read-only callers use this.
+ */
+export async function resolveClaudeCli(): Promise<string | null> {
+  const cliPath = await resolveOnPath("claude");
+  if (!cliPath || pathInside(cliPath, process.cwd())) {
+    return null;
+  }
+  return cliPath;
+}
+
+/**
+ * Whether a Claude Max/Team subscription login is active locally. Shared by
+ * startClaudeCode, `ecr doctor`, and `ecr setup-auth` so they agree on the
+ * load-bearing regex.
+ *
+ * SECURITY: this may run AFTER the process has chdir'd into the untrusted PR-head
+ * tree (startClaudeCode calls it mid-run), and doctor/setup-auth may themselves run
+ * inside a cloned untrusted repo. So it must never spawn a BARE `claude` with the
+ * inherited cwd — on Windows (and some PATH setups) that resolves the current
+ * directory first, letting a PR-committed `claude` shim run with ambient secrets in
+ * its env. startClaudeCode passes the CLI it already resolved and pathInside-checked
+ * plus its allowlisted childEnv; doctor/setup-auth pass nothing and get the same
+ * trusted resolution internally. Either way the probe runs from tmpdir(), never cwd.
+ */
+export async function claudeSubscriptionActive(
+  cli: { cliPath?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<boolean> {
+  const cliPath = cli.cliPath ?? (await resolveClaudeCli());
+  if (!cliPath) {
+    return false;
+  }
+  const status = await run(cliPath, ["auth", "status", "--text"], {
+    check: false,
+    cwd: tmpdir(),
+    env: cli.env,
+  });
+  return status.code === 0 && SUBSCRIPTION_STATUS_RE.test(status.stdout);
+}
+
+/** A forwardable Claude credential and how the CLI takes it. */
+export interface ClaudeCredential {
+  value: string;
+  /** "oauth" ⇒ CLAUDE_CODE_OAUTH_TOKEN; "api-key" ⇒ ANTHROPIC_API_KEY (the CLI reads either). */
+  kind: "oauth" | "api-key";
+}
+
+/**
+ * The forwardable Claude credential for the anthropic auth entry, or undefined.
+ * Resolution order: the entry's tokenEnv value when set, else an ambient
+ * CLAUDE_CODE_OAUTH_TOKEN (the var `ecr setup-auth`/`claude setup-token` export and
+ * the child-env allowlist otherwise drops), else undefined (the local `claude` login
+ * covers the run). Ambient ANTHROPIC_API_KEY is deliberately NOT consulted unless it
+ * is the configured tokenEnv — config wins over ambient env.
+ *
+ * The value is classified by shape: an "sk-ant-oat…" subscription OAuth token is
+ * forwarded as CLAUDE_CODE_OAUTH_TOKEN; any other value (an "sk-ant-api…" Console
+ * key) as ANTHROPIC_API_KEY. Shared by startClaudeCode (what it forwards) and `ecr
+ * doctor` (what it reports) so the fail-fast check and the doctor verdict never drift.
+ */
+export function claudeTokenCredential(
+  entry: { tokenEnv?: string } | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): ClaudeCredential | undefined {
+  const value = (entry?.tokenEnv ? env[entry.tokenEnv] : undefined) ?? env.CLAUDE_CODE_OAUTH_TOKEN;
+  if (!value) {
+    return undefined;
+  }
+  return { value, kind: value.startsWith("sk-ant-oat") ? "oauth" : "api-key" };
+}
+
+/** Start the Claude Code engine: resolve the CLI and build the subscription env. */
+export async function startClaudeCode(config: LoadedConfig): Promise<ClaudeCodeHandle> {
+  const cliPath = await resolveOnPath("claude");
+  if (!cliPath) {
+    throw new Error(MISSING_CLI_MESSAGE);
+  }
+  // SECURITY backstop to resolveOnPath's trusted-cwd lookup: by the time this runs
+  // the process is chdir'd into the untrusted PR-head tree, and executing a binary
+  // that lives INSIDE that tree would hand the reviewed PR arbitrary code execution
+  // with the engine credential in its environment. Never run an in-tree `claude`.
+  if (pathInside(cliPath, process.cwd())) {
+    throw new Error(
+      `refusing to run a \`claude\` binary found inside the reviewed tree (${cliPath}) — ` +
+        `install Claude Code on the host (npm i -g @anthropic-ai/claude-code).`,
+    );
+  }
+
+  // The child env is an ALLOWLIST, never a copy of process.env: the review runs
+  // over untrusted PR content, so ambient secrets (GH_TOKEN, CI tokens…) must not
+  // exist in the child's environment at all — and Anthropic's documented
+  // precedence lets ANTHROPIC_API_KEY/AUTH_TOKEN override the subscription OAuth,
+  // so leaving them out also forces the subscription. Never log values.
+  const childEnv: NodeJS.ProcessEnv = {};
+  for (const name of CHILD_ENV_ALLOWLIST) {
+    if (process.env[name] !== undefined) {
+      childEnv[name] = process.env[name];
+    }
+  }
+  const entry = config.auth.find((auth) => auth.provider === "anthropic");
+  if (entry) {
+    // Re-run the deny-list AT THE FORWARDING SITE: prepareAuth/checkProviderAuth
+    // are bypassed entirely under REVIEWER_MODEL, and this is the one code path
+    // that still forwards a config-named secret in that case. Without this, a
+    // config could point tokenEnv at GITHUB_TOKEN (FORBIDDEN_TOKEN_ENVS) or a
+    // non-anthropic provider's key and ship it to Anthropic as the bearer.
+    const readiness = checkAuthEntry(entry);
+    if (!readiness.ok) {
+      throw new Error(readiness.detail);
+    }
+  }
+  // Forward the resolved credential: the configured tokenEnv's value, or an ambient
+  // CLAUDE_CODE_OAUTH_TOKEN when no anthropic entry names one (the var the allowlist
+  // otherwise drops, so without this the token `ecr setup-auth` tells users to export
+  // is a no-op and a headless run still fails). An "sk-ant-oat…" subscription token
+  // goes in as CLAUDE_CODE_OAUTH_TOKEN; an Anthropic API key as ANTHROPIC_API_KEY —
+  // the CLI reads either, and setting one never sets the other. See
+  // claudeTokenCredential — doctor mirrors it.
+  const credential = claudeTokenCredential(entry);
+  if (credential) {
+    if (credential.kind === "oauth") {
+      childEnv.CLAUDE_CODE_OAUTH_TOKEN = credential.value;
+    } else {
+      childEnv.ANTHROPIC_API_KEY = credential.value;
+    }
+  }
+
+  // Fail fast with the fix in hand, before spending any pass budget: with no
+  // credential of any kind AND no local `claude` login, every pass would fail
+  // identically.
+  if (
+    !childEnv.CLAUDE_CODE_OAUTH_TOKEN &&
+    !childEnv.ANTHROPIC_API_KEY &&
+    !(await claudeSubscriptionActive({ cliPath, env: childEnv }))
+  ) {
+    throw new Error(
+      "No Claude credential found: " +
+        (entry?.tokenEnv
+          ? `token env "${entry.tokenEnv}" is not set and no \`claude\` login is active. `
+          : "no `claude` login is active. ") +
+        "Run `claude setup-token` (Max/Team) and export the token, or log in with `claude`.",
+    );
+  }
+
+  // The id→model map is exactly buildEngineMap's modelOf (same reviewer ids plus the
+  // fixed cross-cutting / verifier / coordinator roles and their fallback), so derive
+  // it there rather than re-deriving it here — one source for which model backs each id.
+  const { modelOf: models } = buildEngineMap(config);
+  const tools: Record<string, readonly string[]> = {};
+  for (const agent of config.agents) {
+    // A reviewer's configured tool map → the OpenCode tool names it enables
+    // (buildClaudeArgs keeps only the read-capable subset and scopes it).
+    tools[agent.id] = Object.entries(agent.tools)
+      .filter(([, enabled]) => enabled)
+      .map(([name]) => name);
+  }
+  // Mirror buildOpencodeConfig's fixed roles: the cross-file and verifier passes get
+  // read+grep (Glob withheld — crawling is what made them wander); the coordinator
+  // consolidates findings and needs no repo tools.
+  tools[CROSS_CUTTING_AGENT] = ["read", "grep"];
+  tools[VERIFIER_AGENT] = ["read", "grep"];
+  tools["coordinator"] = [];
+  const defaultModel = config.agents[0]?.model ?? config.coordinator.model;
+
+  return {
+    client: undefined,
+    url: "",
+    close: () => {},
+    // NOT the default watch file: that is the host's real OpenCode log, which this
+    // engine never writes — stale 429s from unrelated OpenCode use would be counted
+    // as evidence for this run. A nonexistent path keeps check() at zero; evidence
+    // for this engine arrives via note() in runClaudePrompt.
+    rateLimit: new RateLimitWatch(path.join(tmpdir(), `ecr-claude-${process.pid}-norate.log`)),
+    engine: CLAUDE_CODE_ENGINE,
+    models,
+    tools,
+    defaultModel,
+    cliPath,
+    childEnv,
+  };
+}

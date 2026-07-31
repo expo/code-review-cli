@@ -119,3 +119,67 @@ test("unreadable file is unknown, never dropped", async () => {
   const res = await verifyFindings(handle, [f], "/");
   expect(res.kept.map((x) => x.title)).toEqual(["missing-file"]);
 });
+
+// ---- path confinement: an LLM-authored finding.file must never read outside cwd ----
+
+test("finding.file outside cwd is never read (treated as unknown, no LLM escalation)", async () => {
+  // The out-of-tree file EXISTS and its content would NOT match the evidence, so the
+  // pre-fix code would read it, grade the quote `absent`, and escalate to the LLM
+  // verifier. Confining the read to cwd means the file is never opened: the finding is
+  // graded `unknown` and kept WITHOUT any verify call — which is the observable signal
+  // that the raw readFile did not reach the out-of-tree (credential-shaped) path.
+  const outside = mkdtempSync(path.join(tmpdir(), "ecr-verify-outside-"));
+  const secret = path.join(outside, "credentials.ts");
+  writeFileSync(secret, FILE_CONTENT);
+  try {
+    const escalations: string[] = [];
+    const res = await verifyFindings(
+      handle,
+      [
+        finding({
+          title: "traversal",
+          file: secret, // absolute path OUTSIDE the review cwd
+          evidence: "const item = next++; // not in that file",
+        }),
+      ],
+      dir, // cwd is the in-tree review root, not "/"
+      (message) => escalations.push(message),
+    );
+    expect(res.kept.map((f) => f.title)).toEqual(["traversal"]);
+    expect(escalations.some((m) => /verify:/.test(m))).toBe(false);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("in-tree absent evidence still escalates (confinement control)", async () => {
+  // Same absent evidence, but the file is INSIDE cwd: it is read, graded `absent`, and
+  // escalated — proving the mechanism runs and the difference above is the confinement.
+  const escalations: string[] = [];
+  const res = await verifyFindings(
+    handle,
+    [finding({ title: "in-tree", file, evidence: "const item = next++; // not in file" })],
+    dir,
+    (message) => escalations.push(message),
+  );
+  expect(res.kept.map((f) => f.title)).toEqual(["in-tree"]);
+  expect(escalations.some((m) => m.includes("could not verify"))).toBe(true);
+});
+
+test("finding.file with a `..` escape is confined (unknown, no LLM escalation)", async () => {
+  const escalations: string[] = [];
+  const res = await verifyFindings(
+    handle,
+    [
+      finding({
+        title: "dotdot",
+        file: "../../../../etc/hosts",
+        evidence: "const item = next++; // not in that file",
+      }),
+    ],
+    dir,
+    (message) => escalations.push(message),
+  );
+  expect(res.kept.map((f) => f.title)).toEqual(["dotdot"]);
+  expect(escalations.some((m) => /verify:/.test(m))).toBe(false);
+});

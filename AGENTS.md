@@ -42,7 +42,10 @@ verifies their findings, and posts one updating PR comment.
   pair: a CLI older than the SDK rejects model ids the SDK accepts. Exact pins stop an
   `npx` install in CI from floating one ahead of the other, and `startOpencode`
   prepends our own `node_modules/.bin` to `PATH` so a machine's global install can't
-  shadow the pinned one. `ecr doctor` prints the version actually in use.
+  shadow the pinned one. `ecr doctor` prints the version actually in use. (The SDK's
+  spawn is a bare `launch("opencode")`; on POSIX — the supported platform — the cwd is
+  never searched, so a PR-committed shim can't hijack it. The direct-spawn `opencode`
+  callers we own, `ecr doctor`/`ecr setup-auth`, are hardened via `resolveOpencodeCli`.)
 - **Fail fast and name the fix for setup errors.** A bad model id or credential hits
   every pass identically, so it must throw once, before any pass runs, with the fix in
   the message (`assertModelsResolvable`, `checkOauthTokenShape`) — never as N

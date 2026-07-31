@@ -172,9 +172,14 @@ export function extractJsonObject(text: string): unknown {
     }
   }
   throw new Error(
-    `Could not extract JSON from model response: ${
-      lastError instanceof Error ? lastError.message : String(lastError)
-    }`,
+    lastError === undefined
+      ? // No candidate was even tried: the response held no {...} block at all —
+        // empty output, or prose/pseudo-tool-call text with no JSON in it.
+        `Could not extract JSON from model response: no JSON object found in ` +
+          `${text.trim() === "" ? "an EMPTY response" : `a ${text.length}-char response with no {...}`}`
+      : `Could not extract JSON from model response: ${
+          lastError instanceof Error ? lastError.message : String(lastError)
+        }`,
   );
 }
 

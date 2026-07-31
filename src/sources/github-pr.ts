@@ -2,9 +2,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { run } from "../core/exec.js";
+import { resolveTrustedTool, run } from "../core/exec.js";
 import { parseUnifiedDiff } from "../core/diff.js";
-import { scrubAmbientRuntimeConfig } from "../core/scrub.js";
+import { removeEscapingSymlinks, scrubAmbientRuntimeConfig } from "../core/scrub.js";
 import type { DiffEntry, ReviewMetadata } from "../core/schema.js";
 import type { PreparedReadRoot, ReviewSource } from "./source.js";
 
@@ -52,8 +52,9 @@ export class GitHubPRSource implements ReviewSource {
   }
 
   private async fetchMetadata(): Promise<ReviewMetadata> {
+    const gh = await resolveTrustedTool("gh");
     const { stdout } = await run(
-      "gh",
+      gh,
       [
         "pr",
         "view",
@@ -86,8 +87,9 @@ export class GitHubPRSource implements ReviewSource {
   }
 
   async getChangedFiles(): Promise<DiffEntry[]> {
+    const gh = await resolveTrustedTool("gh");
     const { stdout } = await run(
-      "gh",
+      gh,
       ["pr", "diff", String(this.options.prNumber), ...this.repoArgs()],
       { cwd: this.options.cwd },
     );
@@ -108,10 +110,11 @@ export class GitHubPRSource implements ReviewSource {
     }
     const cwd = this.options.cwd;
     const url = `https://github.com/${this.options.repo}.git`;
+    const gitPath = await resolveTrustedTool("git");
     let parent: string | undefined;
     try {
       await run(
-        "git",
+        gitPath,
         [...GH_CREDENTIAL_HELPER_ARGS, "fetch", "--no-tags", "--depth=1", url, ref],
         { cwd },
       );
@@ -120,13 +123,13 @@ export class GitHubPRSource implements ReviewSource {
       // Check out the OID (not FETCH_HEAD): if the ref moved between the API call
       // and this fetch, the OID is absent and this fails instead of silently
       // materializing a different tree than the one the diff was fetched for.
-      await run("git", ["worktree", "add", "--detach", dir, oid], { cwd });
+      await run(gitPath, ["worktree", "add", "--detach", dir, oid], { cwd });
       const removeParent = parent;
       return {
         dir,
         cleanup: async () => {
           try {
-            await run("git", ["worktree", "remove", "--force", dir], { cwd });
+            await run(gitPath, ["worktree", "remove", "--force", dir], { cwd });
           } catch {
             // best effort — fall through to removing the temp dir
           }
@@ -152,6 +155,9 @@ export class GitHubPRSource implements ReviewSource {
    * OpenCode server is started with this directory as its project root, and
    * anything it discovers there is attacker-controlled PR content executing or
    * injecting inside a process that holds the model credential and GH_TOKEN.
+   * Out-of-tree symlinks are stripped in the same pass: read tools are scoped by
+   * the literal path argument but follow symlinks underneath, so a PR-committed
+   * link escaping the tree would otherwise read arbitrary host files.
    *
    * Returns null only when no owner/repo is configured (a local `--pr` run
    * without --repo, where the current checkout is an acceptable read root).
@@ -173,6 +179,7 @@ export class GitHubPRSource implements ReviewSource {
     );
     try {
       await scrubAmbientRuntimeConfig(root.dir);
+      await removeEscapingSymlinks(root.dir);
     } catch (error) {
       // A half-scrubbed tree must never become the runtime's project root.
       await root.cleanup().catch(() => {});

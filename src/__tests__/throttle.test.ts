@@ -70,6 +70,17 @@ test("a stall WITHOUT evidence keeps the wedged-retry behavior", () => {
   expect(stallAction(1, 20 * MIN, false)).toBe("soft-land");
 });
 
+test("note() records evidence for an engine with no log file (Claude Code)", () => {
+  const watch = new RateLimitWatch("/nonexistent/opencode.log");
+  expect(watch.events).toBe(0);
+  expect(watch.recentlyLimited()).toBe(false);
+  watch.note();
+  expect(watch.events).toBe(1);
+  expect(watch.recentlyLimited()).toBe(true);
+  watch.note(2);
+  expect(watch.events).toBe(3);
+});
+
 test("rate-limit errors are recognized for the slower backoff schedule", () => {
   expect(isRateLimitError(new Error("HTTP 429 Too Many Requests"))).toBe(true);
   expect(isRateLimitError(new Error("Rate limit reached for requests"))).toBe(true);

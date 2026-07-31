@@ -18,8 +18,8 @@ import {
   formatOwnerTable,
 } from "../config/routing.js";
 import type { LoadedConfig, RoutingManifest } from "../config/schema.js";
-import { repoRoot, run } from "../core/exec.js";
-import { errorMessage } from "../core/util.js";
+import { repoRoot, resolveTrustedTool, run } from "../core/exec.js";
+import { errorMessage, publicFailureReason } from "../core/util.js";
 import { buildDiffLineIndex } from "../core/render.js";
 import type { LinkContext, ScopeReviewResult } from "../core/render.js";
 import type { CoordinatorOutput } from "../core/schema.js";
@@ -171,7 +171,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
         repo,
         prNumber,
         cwd,
-        `it could not load trusted configuration from the PR's base commit (${reason}). ` +
+        `it could not load trusted configuration from the PR's base commit (${publicFailureReason(error)}). ` +
           `This usually means the runner has no git checkout or no usable GH_TOKEN; re-run once fixed`,
       );
       return;
@@ -357,7 +357,7 @@ async function runLegacyCi(
       await reporter.report({
         decision: "approve_with_comments",
         findings: [],
-        summary: `⚠️ The AI reviewer failed to run, so this change was **not** reviewed:\n\n> ${reason}`,
+        summary: `⚠️ The AI reviewer failed to run, so this change was **not** reviewed:\n\n> ${publicFailureReason(error)}`,
         incomplete: [],
       });
     } catch (postError) {
@@ -563,9 +563,10 @@ async function runRoutedCi(
         onProgress: (message) => process.stderr.write(`[${scope.name}] ${message}\n`),
       });
     } catch (error) {
-      const reason = errorMessage(error);
-      process.stderr.write(`CI reviewer: [${scope.name}] failed (non-blocking): ${reason}\n`);
-      review = failureReview(scope.name, reason);
+      process.stderr.write(
+        `CI reviewer: [${scope.name}] failed (non-blocking): ${errorMessage(error)}\n`,
+      );
+      review = failureReview(scope.name, publicFailureReason(error));
     }
     results.push({ scope: scope.name, isDefault, review });
   }
@@ -645,8 +646,9 @@ async function runRoutedCi(
  */
 async function fetchPrLabels(repo: string, prNumber: number, cwd: string): Promise<string[]> {
   try {
+    const gh = await resolveTrustedTool("gh");
     const { stdout } = await run(
-      "gh",
+      gh,
       [
         "pr",
         "view",

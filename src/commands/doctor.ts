@@ -15,12 +15,28 @@ import {
 import readline from "node:readline/promises";
 
 import type { LoadedScopeConfig } from "../config/load.js";
-import type { RoutingManifest } from "../config/schema.js";
+import type { LoadedConfig, RoutingManifest } from "../config/schema.js";
 import { setupAuthCommand } from "./setup-auth.js";
 import { checkProviderAuth } from "../core/auth.js";
-import { opencodeBinSource } from "../core/opencode.js";
-import { git, onPath, repoRoot, run } from "../core/exec.js";
+import {
+  claudeSubscriptionActive,
+  claudeTokenCredential,
+  engineForModel,
+  resolveClaudeCli,
+} from "../core/claude-code.js";
+import type { Engine } from "../core/claude-code.js";
+import { CLAUDE_CODE_ENGINE, opencodeBinSource } from "../core/opencode.js";
+import {
+  git,
+  onPath,
+  pathInside,
+  repoRoot,
+  resolveOnPath,
+  resolveTrustedTool,
+  run,
+} from "../core/exec.js";
 import { errorMessage } from "../core/util.js";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 const USAGE = `ecr doctor — check environment, config, and credentials
@@ -28,27 +44,65 @@ const USAGE = `ecr doctor — check environment, config, and credentials
 Usage:
   ecr doctor [--list-scopes]
 
-Verifies: opencode + git (+ gh for \`ecr ci\`) on PATH, .expo-code-review/ config is
-valid, agent prompts resolve, and the configured model's token env is set. When a
-routing.jsonc is present, also validates every scope, the auth singleton, scope
-ownership over tracked files, and comment-tag uniqueness.
+Verifies: the engines the config's models actually use — opencode on PATH for
+non-anthropic models, and for anthropic models the \`claude\` CLI plus a usable
+Claude credential (subscription login or token env) — plus git (+ gh for
+\`ecr ci\`), that .expo-code-review/ config is valid, agent prompts resolve, and
+the configured model's token env is set. When a routing.jsonc is present, also
+validates every scope, the auth singleton, scope ownership over tracked files,
+and comment-tag uniqueness.
 
 Options:
   --list-scopes   Print the routing scope table (name, dir, paths, agents, tag)
 `;
 
 /**
- * `opencode --version`, run from `binDir` if given (so the bundled CLI can be asked
- * directly) or from PATH otherwise. Null when it can't be determined — a version we
- * can't read is worth staying quiet about, not failing over.
+ * `<cliPath> --version`, run from tmpdir() (never the inherited, possibly untrusted
+ * cwd). `cliPath` is an already-resolved absolute path — doctor may run inside a cloned
+ * untrusted repo, so the binary is resolved-and-checked before it reaches here, never a
+ * bare `opencode`. Null when it can't be determined — a version we can't read is worth
+ * staying quiet about, not failing over.
  */
-async function opencodeVersion(binDir: string | null): Promise<string | null> {
-  const command = binDir ? path.join(binDir, "opencode") : "opencode";
-  const { stdout, code } = await run(command, ["--version"], { check: false });
+async function opencodeVersion(cliPath: string): Promise<string | null> {
+  const { stdout, code } = await run(cliPath, ["--version"], { check: false, cwd: tmpdir() });
   if (code !== 0) {
     return null;
   }
   return stdout.trim().split("\n")[0]?.trim() || null;
+}
+
+/**
+ * The engines this repo actually drives, mirroring how real reviews resolve them:
+ * engineForModel over every ROOT agent + coordinator model, PLUS every loaded scope
+ * config's agents + coordinator. A routed scope can select an anthropic/… model while
+ * the root config is OpenCode-only, so without folding scopes in doctor would report
+ * success without ever checking the Claude CLI/login the scoped review needs. A scope
+ * that fails to load is skipped here — the scope-validation block reports it with the
+ * full error. Exported for tests.
+ */
+export async function resolveEngines(
+  root: string,
+  rootConfig: LoadedConfig,
+  manifest: RoutingManifest | null,
+): Promise<Set<Engine>> {
+  const engines = new Set<Engine>();
+  const add = (config: LoadedConfig): void => {
+    for (const agent of config.agents) {
+      engines.add(engineForModel(agent.model));
+    }
+    engines.add(engineForModel(config.coordinator.model));
+  };
+  add(rootConfig);
+  if (manifest) {
+    for (const scope of manifest.scopes) {
+      try {
+        add(await loadScopeConfig(root, scope, manifest, rootConfig));
+      } catch {
+        // Malformed scope config: reported by the scope-validation block below.
+      }
+    }
+  }
+  return engines;
 }
 
 /** Preflight checks so a broken setup surfaces clearly instead of silently no-opping. */
@@ -89,36 +143,79 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
     );
   }
 
+  // Peek at the config to resolve the engine BEFORE the opencode checks: a
+  // claude-code-only repo never touches OpenCode, and a missing `opencode` CLI
+  // must not fail its doctor run. Load errors are swallowed here — the config
+  // block below reports them properly and defaults the engine to OpenCode.
+  let rootConfig: Awaited<ReturnType<typeof loadReviewConfig>> | undefined;
+  if (hasConfig(root)) {
+    try {
+      rootConfig = await loadReviewConfig(root);
+    } catch {
+      // reported by the config block below
+    }
+  }
+  // Engines actually in use by this config: run engineForModel over every agent
+  // model + the coordinator model, ACROSS the root config AND every routed scope.
+  // Both blocks below may fire in one run (a mixed config drives OpenCode and the
+  // Claude Code CLI at once).
+  let engines = new Set<Engine>(["opencode"]);
+  // Auth as real reviews resolve it (loadScopeConfig/`ecr ci`): a routing.jsonc
+  // `defaults.auth` OVERRIDES the root config's auth, so the Claude credential
+  // checks below must use the overridden value or a monorepo whose manifest swaps
+  // the anthropic entry gets the wrong checks here. (The engine set is model-only.)
+  let resolvedAuth = rootConfig?.auth ?? [];
+  if (rootConfig) {
+    try {
+      const manifest = await loadRoutingManifest(root);
+      resolvedAuth = loadAuthFromRoot(rootConfig, manifest);
+      engines = await resolveEngines(root, rootConfig, manifest);
+    } catch {
+      // malformed manifest/auth: reported by the blocks below; keep the opencode default
+      engines = new Set(["opencode"]);
+    }
+  }
+
   // The SDK spawns a bare `opencode`, so the version that actually runs is a PATH
   // lookup. Report which one wins and whether it matches the version this package
   // pins: a stale global install against a newer SDK rejects model ids the SDK
   // considers valid (`ProviderModelNotFoundError`), which is otherwise a baffling
   // failure that only reproduces on one machine. `startOpencode` prepends our own
   // bin dir so the pinned one wins at runtime — this just makes the drift visible.
-  const bin = opencodeBinSource();
-  const opencodeInstalled = (await onPath("opencode")) || bin.pinned;
-  line(
-    opencodeInstalled,
-    opencodeInstalled
-      ? "opencode CLI available"
-      : "opencode CLI NOT found (install `opencode-ai`, or add node_modules/.bin to PATH)",
-  );
-  if (opencodeInstalled) {
-    const pinnedVersion = bin.pinned ? await opencodeVersion(bin.dir!) : null;
-    const pathVersion = await opencodeVersion(null);
-    if (pinnedVersion) {
-      line(true, `opencode ${pinnedVersion} (bundled with this reviewer; used at runtime)`);
-      if (pathVersion && pathVersion !== pinnedVersion) {
+  if (!engines.has("opencode")) {
+    info("OpenCode is not used by this config (claude-code engine) — skipping its checks");
+  } else {
+    const bin = opencodeBinSource();
+    const opencodeInstalled = (await onPath("opencode")) || bin.pinned;
+    line(
+      opencodeInstalled,
+      opencodeInstalled
+        ? "opencode CLI available"
+        : "opencode CLI NOT found (install `opencode-ai`, or add node_modules/.bin to PATH)",
+    );
+    if (opencodeInstalled) {
+      const pinnedVersion = bin.dir ? await opencodeVersion(path.join(bin.dir, "opencode")) : null;
+      // PATH's `opencode`, resolved from a trusted cwd (resolveOnPath) with an in-tree
+      // refusal: doctor may run in a cloned untrusted repo, so this drift probe must
+      // never execute a bare name against the inherited cwd (a committed shim would win
+      // on Windows). onPath above only tests existence — this is the executed one.
+      const pathCli = await resolveOnPath("opencode");
+      const pathVersion =
+        pathCli && !pathInside(pathCli, process.cwd()) ? await opencodeVersion(pathCli) : null;
+      if (pinnedVersion) {
+        line(true, `opencode ${pinnedVersion} (bundled with this reviewer; used at runtime)`);
+        if (pathVersion && pathVersion !== pinnedVersion) {
+          warn(
+            `a different opencode ${pathVersion} is first on your PATH — runs use the bundled ${pinnedVersion}, ` +
+              `but other tooling (and \`opencode\` by hand) will use ${pathVersion}`,
+          );
+        }
+      } else if (pathVersion) {
         warn(
-          `a different opencode ${pathVersion} is first on your PATH — runs use the bundled ${pinnedVersion}, ` +
-            `but other tooling (and \`opencode\` by hand) will use ${pathVersion}`,
+          `using opencode ${pathVersion} from PATH — this reviewer's own \`opencode-ai\` dependency could not be ` +
+            `resolved, so the CLI and SDK versions can drift (a stale CLI rejects model ids the SDK accepts)`,
         );
       }
-    } else if (pathVersion) {
-      warn(
-        `using opencode ${pathVersion} from PATH — this reviewer's own \`opencode-ai\` dependency could not be ` +
-          `resolved, so the CLI and SDK versions can drift (a stale CLI rejects model ids the SDK accepts)`,
-      );
     }
   }
 
@@ -129,7 +226,10 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
   if (await onPath("gh")) {
     let authed = false;
     try {
-      await run("gh", ["auth", "status"], { cwd: root });
+      // resolveTrustedTool refuses an in-tree `gh` (throws) — caught here and treated
+      // as "found but not authenticated", keeping this probe informational, not fatal.
+      const gh = await resolveTrustedTool("gh");
+      await run(gh, ["auth", "status"], { cwd: root });
       authed = true;
     } catch {
       authed = false;
@@ -143,12 +243,13 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
     info("gh CLI not on PATH — only needed for `ecr ci` (posting PR comments)");
   }
 
-  let rootConfig;
   if (!hasConfig(root)) {
     line(false, `no ${".expo-code-review"}/config.jsonc (run \`ecr init\`)`);
   } else {
     try {
-      rootConfig = await loadReviewConfig(root);
+      // Reuse the engine-detection peek above; re-load only if that failed so
+      // the error surfaces here with full reporting.
+      rootConfig ??= await loadReviewConfig(root);
       line(
         true,
         `config valid: ${rootConfig.agents.length} agent(s) [${rootConfig.agents.map((a) => a.id).join(", ")}], coordinator model ${rootConfig.coordinator.model}`,
@@ -158,6 +259,11 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
         "all agent prompt files resolved and non-empty",
       );
 
+      // Set when the Claude Code engine has no usable credential. checkProviderAuth
+      // (below) returns ok:true for every anthropic shape (login fallback), so this
+      // is the only signal that flips the exit code and offers the setup-auth fix.
+      let claudeCredentialMissing = false;
+
       const readiness = checkProviderAuth(rootConfig);
       line(readiness.ok, `auth: ${readiness.detail}`);
       // A suspicious-but-not-provably-broken credential: worth saying, never a failure
@@ -165,9 +271,61 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
       if (readiness.warning) {
         warn(`auth: ${readiness.warning}`);
       }
+
+      // Claude Code engine: the `opencode` block above is not load-bearing for
+      // these configs, so check the `claude` CLI + subscription login instead.
+      try {
+        if (engines.has(CLAUDE_CODE_ENGINE)) {
+          // Resolve to a trusted absolute path (and refuse an in-tree binary), never a
+          // bare `claude`: doctor may run inside a cloned untrusted repo, so a
+          // PR-committed shim must not be the thing we probe. Same resolution the
+          // review engine uses.
+          const claudeCliPath = await resolveClaudeCli();
+          line(
+            Boolean(claudeCliPath),
+            claudeCliPath
+              ? "claude CLI available (Claude Code engine)"
+              : "claude CLI NOT found (npm i -g @anthropic-ai/claude-code, then `claude setup-token`)",
+          );
+          if (claudeCliPath) {
+            const version = await run(claudeCliPath, ["--version"], {
+              check: false,
+              cwd: tmpdir(),
+            });
+            if (version.code === 0) {
+              line(true, `claude ${version.stdout.trim().split("\n")[0]?.trim()}`);
+            }
+            // Mirror startClaudeCode's credential condition EXACTLY so doctor fails
+            // iff a review would: a run needs an active `claude` subscription login OR
+            // a token value (the configured tokenEnv, else an ambient
+            // CLAUDE_CODE_OAUTH_TOKEN). warn() never flips the exit code, so a missing
+            // credential must be a line(false) here, not a ⚠.
+            const claudeEntry = resolvedAuth.find((a) => a.provider === "anthropic");
+            const hasTokenCredential = Boolean(claudeTokenCredential(claudeEntry));
+            const subscriptionActive = await claudeSubscriptionActive({ cliPath: claudeCliPath });
+            if (subscriptionActive) {
+              info("subscription login: Claude Max/Team account");
+            } else if (hasTokenCredential) {
+              const src = claudeEntry?.tokenEnv ?? "CLAUDE_CODE_OAUTH_TOKEN";
+              info(
+                `Claude credential: token env ${src} supplies the OAuth token (no active \`claude\` subscription login)`,
+              );
+            } else {
+              claudeCredentialMissing = true;
+              line(
+                false,
+                "no Claude credential: no active `claude` subscription login and no token env " +
+                  "value set — run `ecr setup-auth` (or `claude setup-token`)",
+              );
+            }
+          }
+        }
+      } catch (error) {
+        line(false, `auth engine: ${errorMessage(error)}`);
+      }
       // A missing credential has a guided fix — offer it right here when someone is
       // at the terminal, rather than making them find the command in the README.
-      if (!readiness.ok) {
+      if (!readiness.ok || claudeCredentialMissing) {
         if (process.stdin.isTTY && process.stdout.isTTY) {
           const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
           let runIt = false;

@@ -4,9 +4,52 @@ import path from "node:path";
 import { createOpencode } from "@opencode-ai/sdk";
 
 import type { LoadedConfig } from "../config/schema.js";
+// Type-only: erased at compile time, so it creates NO runtime import cycle. The
+// Claude engine is reached at runtime via dynamic import() in the dispatch
+// branches below; claude-code.ts statically imports the shared helpers here.
+import type { ClaudeCodeHandle, Engine } from "./claude-code.js";
+import { pathInside, resolveOnPath } from "./exec.js";
 import { RateLimitWatch } from "./throttle.js";
 import { toolMap } from "./tools.js";
 import { errorMessage, sleep } from "./util.js";
+
+/** Discriminant for the Claude Code CLI engine (see core/claude-code.ts). */
+export const CLAUDE_CODE_ENGINE = "claude-code" as const;
+
+/**
+ * Resolve which engine an agent's pass dispatches to, and (when claude) which
+ * claude handle to run it against. The per-agent router (engineOf) wins; absent it
+ * the carrier's own single `engine` decides. When the pass is claude-routed the
+ * claude handle is the carrier itself (a claude-only run, where the carrier IS the
+ * claude handle) or its `.claude` field (any run that also drives OpenCode). Pure
+ * and side-effect-free so the seam's dispatch is unit-testable without spawning.
+ */
+export function resolveEngineDispatch(
+  handle: OpencodeHandle,
+  agent: string,
+): { engine: "opencode" } | { engine: "claude-code"; claudeHandle: ClaudeCodeHandle } {
+  const engine = handle.engineOf?.(agent) ?? handle.engine ?? "opencode";
+  if (engine !== CLAUDE_CODE_ENGINE) {
+    return { engine };
+  }
+  // A claude-only run: the carrier itself IS the claude handle. Cast is safe (and
+  // still needed) because `handle` is typed OpencodeHandle here regardless.
+  if (handle.engine === CLAUDE_CODE_ENGINE) {
+    return { engine, claudeHandle: handle as ClaudeCodeHandle };
+  }
+  // Mixed run: engineOf routed this agent to claude-code, so the carrier's `.claude`
+  // field must be set. If it isn't, that's an invariant violation in how the handle
+  // was assembled, not a runtime fluke — fail loudly here instead of letting a bad
+  // cast smuggle `undefined` past the type checker and crash deep inside
+  // runClaudePrompt with no clue what went wrong.
+  if (!handle.claude) {
+    throw new Error(
+      `Agent "${agent}" is routed to the claude-code engine but this handle has no ` +
+        `.claude carrier — the handle was assembled inconsistently.`,
+    );
+  }
+  return { engine, claudeHandle: handle.claude };
+}
 
 export interface OpencodeHandle {
   client: any;
@@ -14,6 +57,16 @@ export interface OpencodeHandle {
   close: () => void;
   /** Rate-limit evidence from this server's own log (see core/throttle.ts). */
   rateLimit: RateLimitWatch;
+  /** Which review engine this handle drives. undefined ⇒ the OpenCode engine
+   * (default); "claude-code" ⇒ the Claude Code CLI engine, a superset handle
+   * (see ClaudeCodeHandle) that the seam functions dispatch to. */
+  engine?: Engine;
+  /** Present on the carrier when the run ALSO drives the Claude Code engine: the
+   * real claude handle, used by the per-agent dispatch below when engineOf routes an
+   * agent to claude-code and the carrier itself is the opencode handle. */
+  claude?: ClaudeCodeHandle;
+  /** Per-agent engine router; undefined ⇒ single-engine run keyed by `engine`. */
+  engineOf?: (agent: string) => Engine;
 }
 
 /** Token usage as reported on an OpenCode assistant message's `info.tokens`. */
@@ -210,11 +263,51 @@ export function opencodeBinSource(): { dir: string | null; pinned: boolean } {
   return { dir, pinned: dir !== null };
 }
 
+/**
+ * Resolve the `opencode` binary the way we trust it: OUR bundled shim when the
+ * dependency resolves, else a PATH lookup from a trusted cwd (resolveOnPath, never
+ * the inherited one) with a refusal of any binary that resolves INSIDE the current
+ * tree. Null when unresolved or in-tree.
+ *
+ * `ecr doctor`/`ecr setup-auth` may run inside a cloned untrusted repo, so a bare
+ * `opencode` handed to execFile/spawn resolves against the inherited cwd — and Windows
+ * checks the current directory before PATH, letting a PR-committed `opencode` shim run
+ * with ambient secrets in its env. Every opencode spawn in those commands goes through
+ * this, mirroring resolveClaudeCli for the `claude` binary.
+ */
+export async function resolveOpencodeCli(): Promise<string | null> {
+  const bundled = bundledOpencodeBinDir();
+  if (bundled) {
+    // Our own dependency tree (require.resolve is relative to THIS module, not cwd), so
+    // it's trusted by construction — and NO in-tree refusal here: ecr's node_modules
+    // commonly sits under cwd when run from its own repo, which pathInside would then
+    // wrongly reject.
+    return path.join(bundled, "opencode");
+  }
+  // PATH fallback: resolved from a trusted cwd, and refused if it lands in-tree.
+  const cliPath = await resolveOnPath("opencode");
+  if (!cliPath || pathInside(cliPath, process.cwd())) {
+    return null;
+  }
+  return cliPath;
+}
+
 /** Start an in-process OpenCode server with the given inline config. */
 export async function startOpencode(config: unknown): Promise<OpencodeHandle> {
   // Make our pinned CLI win over any global install (see bundledOpencodeBinDir).
   // The SDK takes no `env`, so PATH is the only lever; it spreads `process.env` at
   // spawn time, so setting it here reaches the child.
+  //
+  // SECURITY residual (accepted, POSIX-only deployment): the SDK spawns a BARE
+  // `opencode` (cross-spawn `launch("opencode")`), which on Windows resolves the name
+  // against the current directory before PATH — during a review the cwd is the
+  // untrusted PR-head tree, so a PR-committed `opencode.exe` at its root could run in
+  // its place. We deliberately do NOT reimplement the SDK's server bootstrap to inject
+  // an absolute path here: on POSIX (the supported platform) `execvp` never searches
+  // the cwd, so the hijack cannot fire, and forking the launch would mean silently
+  // maintaining our own copy of it against SDK drift. The direct-spawn `opencode`
+  // callers we own (`ecr doctor`/`ecr setup-auth`) are still hardened via
+  // resolveOpencodeCli. Revisit if Windows becomes a supported target.
   const binDir = bundledOpencodeBinDir();
   if (binDir) {
     process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
@@ -345,28 +438,20 @@ export function formatUnknownModels(
     // Do NOT blame the token alone: the most common causes have nothing to do with
     // the credential's validity (see below). An earlier version of this message sent
     // us to re-issue two perfectly good tokens.
-    const oauth = auth?.mode === "oauth";
-    const deadOauth = oauth && provider === "anthropic";
+    // No anthropic special case here anymore: anthropic models never reach the
+    // OpenCode preflight (engineForModel routes every anthropic/… id to the Claude
+    // Code engine), so this message only ever names non-anthropic providers.
     return (
       `The OpenCode server does not offer the "${provider}" provider, even though this run ` +
       `supplied a ${auth?.mode ?? "configured"} credential for it. OpenCode drops a provider whose ` +
       `credential it could not use, which makes every ${provider} model look nonexistent: ` +
       `${refused.map((entry) => entry.model).join(", ")}.\n` +
       `The credential itself is often FINE. Check these in order:\n` +
-      (deadOauth
-        ? `  1. anthropic OAuth cannot work through OpenCode at all. Anthropic does not permit ` +
-          `Pro/Max subscription tokens in third-party tools, and OpenCode (since 1.3.0) ships no ` +
-          `anthropic OAuth support — an oauth credential never registers the provider, no matter ` +
-          `how valid the token is. Switch auth in .expo-code-review/config.jsonc to ` +
-          `{ "mode": "api-key", "provider": "anthropic", "tokenEnv": "ANTHROPIC_API_KEY" } with a ` +
-          `Console API key, or run with REVIEWER_MODEL set to a model you are logged into ` +
-          `(e.g. REVIEWER_MODEL=openai/gpt-5.5).\n`
-        : "") +
       (tokenEnv
-        ? `  ${deadOauth ? "2" : "1"}. The credential is wrong for the mode. ` +
+        ? `  1. The credential is wrong for the mode. ` +
           `auth.mode "api-key" expects a plain API key for ${provider}; an OAuth/subscription ` +
           `token is not an API key. A truncated or half-pasted ${tokenEnv} fails the same way.\n`
-        : `  ${deadOauth ? "2" : "1"}. The credential is wrong for the configured auth.mode.\n`) +
+        : `  1. The credential is wrong for the configured auth.mode.\n`) +
       `Providers the server does offer: ${refused[0]!.suggestions.join(", ") || "(none)"}.`
     );
   }
@@ -394,6 +479,10 @@ export async function assertModelsResolvable(
   models: string[],
   auths?: Array<{ mode: string; provider: string; tokenEnv?: string }>,
 ): Promise<void> {
+  if (handle.engine === CLAUDE_CODE_ENGINE) {
+    const { assertClaudeModels } = await import("./claude-code.js");
+    return assertClaudeModels(handle as ClaudeCodeHandle, models);
+  }
   let available: ProviderModels;
   try {
     available = await fetchProviderModels(handle);
@@ -651,6 +740,14 @@ export async function promptAgent(
     finalizeOnTimeout?: boolean;
   },
 ): Promise<PromptResult> {
+  // A Claude handle never runs OpenCode's session/polling machinery: consumers
+  // use promptAndParse, but guard here too so a direct call can't run this code
+  // against a Claude handle. Dispatch is per-agent (see resolveEngineDispatch).
+  const dispatch = resolveEngineDispatch(handle, args.agent);
+  if (dispatch.engine === CLAUDE_CODE_ENGINE) {
+    const { runClaudePrompt } = await import("./claude-code.js");
+    return runClaudePrompt(dispatch.claudeHandle, args);
+  }
   const maxWaitMs = args.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
   // ONE deadline for the whole pass, shared by the first attempt and any stall
   // retry, so retrying a wedged request can never push the pass past its declared
@@ -799,7 +896,7 @@ export async function promptAgent(
   }
 }
 
-const CORRECTIVE =
+export const CORRECTIVE =
   "\n\nIMPORTANT: your previous reply could not be parsed. Reply with ONLY the single " +
   "JSON object described above — no prose, no code fences, no partial output.";
 
@@ -863,7 +960,7 @@ export function isTransientApiError(error: unknown): boolean {
  * drop the whole pass with no retry, reported as a coverage gap. Non-transient
  * errors (incl. AgentTimeoutError) propagate immediately.
  */
-async function withTransientRetry<T>(
+export async function withTransientRetry<T>(
   label: string,
   onActivity: ((line: string) => void) | undefined,
   fn: () => Promise<T>,
@@ -912,6 +1009,11 @@ export async function promptAndParse<T>(
   },
   parse: (text: string) => T,
 ): Promise<{ value: T; cost: number; truncated: boolean; tokens: TokenUsage; model?: string }> {
+  const dispatch = resolveEngineDispatch(handle, args.agent);
+  if (dispatch.engine === CLAUDE_CODE_ENGINE) {
+    const { claudeCodePromptAndParse } = await import("./claude-code.js");
+    return claudeCodePromptAndParse(dispatch.claudeHandle, args, parse);
+  }
   let cost = 0;
   let truncated = false;
   let model: string | undefined;

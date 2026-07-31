@@ -13,11 +13,19 @@ import {
   AgentTimeoutError,
   assertModelsResolvable,
   buildOpencodeConfig,
+  CLAUDE_CODE_ENGINE,
   CROSS_CUTTING_AGENT,
   promptAndParse,
   startOpencode,
 } from "./opencode.js";
 import type { OpencodeHandle, TokenUsage } from "./opencode.js";
+import {
+  buildEngineMap,
+  claudeTemperatureNote,
+  claudeTokenCredential,
+  startClaudeCode,
+} from "./claude-code.js";
+import type { ClaudeCodeHandle } from "./claude-code.js";
 import { routeAgents } from "./router.js";
 import {
   buildCrossCuttingSystem,
@@ -82,18 +90,38 @@ function makeRunId(): string {
  * thin wrappers that supply a Source and render the result.
  */
 /**
- * Max concurrent reviewer calls: an explicit config value wins; otherwise 3 when a
- * subscription (oauth) credential is configured, else 6. One ChatGPT account
- * handles six parallel streams poorly — requests get parked server-side (the
- * stall signature seen on eas-cli#4084), and several PRs may be reviewing on the
- * same credential at once — so subscription runs trade a little wall-clock for a
- * lot of reliability. Exported for tests.
+ * Max concurrent reviewer calls: an explicit config value wins; otherwise 3 when the
+ * run leans on a subscription credential, else 6. One subscription account handles
+ * six parallel streams poorly — requests get parked server-side (the stall signature
+ * seen on eas-cli#4084), and several PRs may be reviewing on the same credential at
+ * once — so subscription runs trade a little wall-clock for a lot of reliability.
+ *
+ * A subscription run is any of: an oauth (ChatGPT/Codex) entry; OR the Claude Code
+ * engine being in use (an `anthropic/…` model) on an OAUTH credential — a subscription
+ * token OR the local `claude` login fallback (no forwardable token). An anthropic
+ * credential that classifies as an API KEY is metered per-request and does NOT force
+ * the cap. Exported for tests.
  */
-export function effectiveConcurrency(config: LoadedConfig): number {
+export function effectiveConcurrency(
+  config: LoadedConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
   if (config.chunk.concurrency) {
     return config.chunk.concurrency;
   }
-  return config.auth.some((entry) => entry.mode === "oauth") ? 3 : 6;
+  if (config.auth.some((entry) => entry.mode === "oauth")) {
+    return 3;
+  }
+  if (buildEngineMap(config).usesClaude) {
+    const entry = config.auth.find((auth) => auth.provider === "anthropic");
+    const credential = claudeTokenCredential(entry, env);
+    // No forwardable token ⇒ the `claude` login (a subscription) covers the run; an
+    // "sk-ant-oat…" token is a subscription too. Either caps; an API key does not.
+    if (!credential || credential.kind === "oauth") {
+      return 3;
+    }
+  }
+  return 6;
 }
 
 export async function runReview(
@@ -167,6 +195,22 @@ export async function runReview(
   // with a base-SHA checkout the fallback tree is pre-PR content, and silently
   // reviewing/verifying that drops real findings — while a local run falls back to
   // the user's own checkout with a warning.
+  // Resolve each agent's engine BEFORE prepareAuth/readRoot, so the per-engine
+  // startup below can't leak the readRoot worktree or a temp auth dir holding a
+  // live credential (buildEngineMap only inspects config, so nothing needs cleanup
+  // yet at this point). Nothing throws here anymore — one run may drive BOTH the
+  // Claude Code CLI engine and OpenCode at once, inferred per agent from its model.
+  //
+  // Scope the engine set to the SELECTED agents so a run whose passes never touch
+  // Claude doesn't start (and fail on a missing CLI/token for) the Claude Code
+  // engine. An explicit `--agents` subset is known here; routing picks from the full
+  // roster later (its router needs an engine up first), so a routed/all run keeps
+  // the full roster and can drive either engine.
+  const { engineOf, modelOf, usesOpencode, usesClaude } = buildEngineMap(
+    config,
+    explicitAgents ?? config.agents,
+  );
+
   const originalCwd = process.cwd();
   const readRoot = await resolveReadRoot(source, options.mode, progress);
 
@@ -192,10 +236,22 @@ export async function runReview(
     process.chdir(readRoot.dir);
   }
 
-  progress("Starting OpenCode server…");
-  let handle: OpencodeHandle | null = null;
+  const starting = [
+    usesClaude ? "Claude Code engine" : null,
+    usesOpencode ? "OpenCode server" : null,
+  ]
+    .filter(Boolean)
+    .join(" + ");
+  progress(`Starting ${starting}…`);
+
+  // Start each engine the run actually uses. OpenCode first so a claude failure can
+  // close it. Two separate try blocks keep the precise per-engine error messages.
+  let opencodeHandle: OpencodeHandle | null = null;
+  let claudeHandle: ClaudeCodeHandle | null = null;
   try {
-    handle = await startOpencode(buildOpencodeConfig(config));
+    if (usesOpencode) {
+      opencodeHandle = await startOpencode(buildOpencodeConfig(config));
+    }
   } catch (error) {
     await auth.cleanup();
     await restoreCwd();
@@ -204,16 +260,76 @@ export async function runReview(
         `model credentials are configured (\`ecr doctor\` checks both).\n${errorMessage(error)}`,
     );
   }
-
-  // Preflight: a model id the server can't resolve would otherwise fail EVERY pass
-  // identically — N indistinguishable coverage gaps, after spending the run's budget
-  // discovering the same fixable thing N times. Throw once, up front, naming the fix.
   try {
-    await assertModelsResolvable(
-      handle,
-      [...config.agents.map((agent) => agent.model), config.coordinator.model],
-      config.auth,
+    if (usesClaude) {
+      claudeHandle = await startClaudeCode(config);
+    }
+  } catch (error) {
+    opencodeHandle?.close();
+    await auth.cleanup();
+    await restoreCwd();
+    throw new Error(
+      `Failed to start the Claude Code engine. Ensure the \`claude\` CLI is installed and ` +
+        `logged into a Max/Team subscription (\`ecr doctor\` checks both).\n${errorMessage(error)}`,
     );
+  }
+
+  // Build the single carrier handle so every downstream `handle` call is unchanged;
+  // per-agent dispatch happens inside via engineOf. When OpenCode is in use the
+  // carrier is the opencode handle (claude reached via `.claude`); a claude-only run
+  // uses the claude handle itself as the carrier (engineOf maps every id → claude).
+  const engineFn = (agent: string): "opencode" | "claude-code" => engineOf[agent] ?? "opencode";
+  let handle: OpencodeHandle;
+  if (opencodeHandle) {
+    handle = opencodeHandle;
+    handle.claude = claudeHandle ?? undefined;
+    handle.engineOf = engineFn;
+    const closeOpencode = opencodeHandle.close;
+    handle.close = (): void => {
+      closeOpencode();
+      claudeHandle?.close(); // claude close is a noop, but keep the composition explicit
+    };
+  } else {
+    handle = claudeHandle!; // claude-only: the carrier is the claude handle itself
+    handle.engineOf = engineFn;
+  }
+
+  // The claude-code engine has no temperature control (the CLI exposes no flag), so
+  // surface a tuned-but-ignored temperature once, here, instead of letting the config
+  // divergence pass silently. Applies whenever any pass is claude-routed.
+  if (usesClaude) {
+    const note = claudeTemperatureNote(config, engineOf);
+    if (note) {
+      progress(`Note: ${note}`);
+    }
+  }
+
+  // Preflight: a model id an engine can't resolve would otherwise fail EVERY pass
+  // routed to it identically — N indistinguishable coverage gaps, after spending the
+  // run's budget rediscovering the same fixable thing. Throw once, up front, naming
+  // the fix. Split per engine so each engine only ever sees its own model subset: the
+  // OpenCode server never receives an anthropic-claude id (unknown-provider error) and
+  // assertClaudeModels never receives a non-anthropic id (its foreign-id throw).
+  const modelsFor = (eng: "opencode" | "claude-code"): string[] => [
+    ...new Set(
+      Object.keys(engineOf)
+        .filter((id) => engineOf[id] === eng)
+        .map((id) => modelOf[id]!),
+    ),
+  ];
+  try {
+    if (opencodeHandle) {
+      const models = modelsFor("opencode");
+      if (models.length > 0) {
+        await assertModelsResolvable(opencodeHandle, models, config.auth);
+      }
+    }
+    if (claudeHandle) {
+      const models = modelsFor("claude-code");
+      if (models.length > 0) {
+        await assertModelsResolvable(claudeHandle, models, config.auth);
+      }
+    }
   } catch (error) {
     handle.close();
     await auth.cleanup();
@@ -242,6 +358,10 @@ export async function runReview(
   // log, reported in the log line, and surfaced as a coverage note when it happens.
   const agentModels: Record<string, string> = {};
   const substituted = new Set<string>();
+  // The buckets whose model was substituted, so the coverage note can name each
+  // one's OWN engine (a mixed run may substitute on either side, for different
+  // reasons — a CLI usage-limit downgrade vs. OpenCode's silent default fallback).
+  const substitutedBuckets = new Set<string>();
   const trackModel = (bucket: string, configured: string, actual?: string): void => {
     if (!actual) {
       return;
@@ -249,6 +369,7 @@ export async function runReview(
     agentModels[bucket] = actual;
     if (configured && actual !== configured) {
       substituted.add(`${bucket}: configured ${configured}, ran ${actual}`);
+      substitutedBuckets.add(bucket);
     }
   };
 
@@ -260,7 +381,7 @@ export async function runReview(
     let selectedAgents = explicitAgents ?? config.agents;
     if (!explicitAgents && options.route) {
       progress("Routing: selecting relevant agents…");
-      const routed = await routeAgents(handle!, config, workspace.files);
+      const routed = await routeAgents(handle, config, workspace.files);
       selectedAgents = routed.agents;
       progress(
         routed.routed
@@ -474,7 +595,7 @@ export async function runReview(
       const minutes = Math.round(task.maxWaitMs / 60000);
       try {
         const { value, cost, truncated, tokens, model } = await promptAndParse(
-          handle!,
+          handle,
           {
             agent: task.bucket,
             system: task.system,
@@ -607,11 +728,27 @@ export async function runReview(
       for (const line of substituted) {
         progress(`  ⚠ model substituted — ${line}`);
       }
+      const subEngines = new Set(
+        [...substitutedBuckets].map((bucket) => engineOf[bucket] ?? "opencode"),
+      );
+      const why: string[] = [];
+      if (subEngines.has(CLAUDE_CODE_ENGINE)) {
+        why.push(
+          "The Claude Code CLI answered with a different model than configured (usage-limit " +
+            "downgrades do this on a subscription), so these findings may come from a weaker " +
+            "model than intended — check the configured model ids and the subscription's limits.",
+        );
+      }
+      if (subEngines.has("opencode")) {
+        why.push(
+          "OpenCode silently falls back to a default model when the configured id is empty or " +
+            "unusable, so these findings may come from a different (possibly much weaker) model " +
+            "than intended — check the agents' `model`, `coordinator.model`, REVIEWER_MODEL, and the provider credential.",
+        );
+      }
       incomplete.push(
         `Some passes did not run on the configured model (${[...substituted].join("; ")}). ` +
-          `OpenCode silently falls back to a default model when the configured id is empty or ` +
-          `unusable, so these findings may come from a different (possibly much weaker) model ` +
-          `than intended — check the agents' \`model\`, \`coordinator.model\`, REVIEWER_MODEL, and the provider credential.`,
+          why.join(" "),
       );
     }
 
@@ -682,7 +819,7 @@ export async function runReview(
     let verifierDropped: { finding: Finding; reason: string }[] = [];
     if (output.findings.length > 0) {
       progress("Verifying findings…");
-      const verification = await verifyFindings(handle!, output.findings, process.cwd(), progress);
+      const verification = await verifyFindings(handle, output.findings, process.cwd(), progress);
       agentCosts["verifier"] = verification.cost;
       trackTokens("verifier", verification.tokens);
       // Mirrors buildOpencodeConfig, which gives the verifier the first agent's model.
@@ -730,11 +867,23 @@ export async function runReview(
     // Surface provider throttling as a fact about the run: passes already waited or
     // backed off, but the operator should still SEE that it happened (a run that
     // was rate-limited is slower and may carry partial passes — that's the cause).
-    await handle!.rateLimit.check();
-    if (handle!.rateLimit.events > 0) {
+    // Sum both engines' watches; name a cause only for an engine whose watch fired
+    // (claude events arrive via note() in runClaudePrompt; opencode via its server log).
+    await opencodeHandle?.rateLimit.check();
+    const rlOpencode = opencodeHandle?.rateLimit.events ?? 0;
+    const rlClaude = claudeHandle?.rateLimit.events ?? 0;
+    const rlTotal = rlOpencode + rlClaude;
+    if (rlTotal > 0) {
+      const causes: string[] = [];
+      if (rlClaude > 0) {
+        causes.push("subscription rate/usage limits reported by the Claude Code CLI");
+      }
+      if (rlOpencode > 0) {
+        causes.push("429s in the OpenCode server log");
+      }
       progress(
-        `  ⚠ provider rate-limited this run ${handle!.rateLimit.events} time(s) ` +
-          `(429s in the OpenCode server log) — passes waited it out rather than failing`,
+        `  ⚠ provider rate-limited this run ${rlTotal} time(s) (${causes.join("; ")}) ` +
+          `— passes waited it out rather than failing`,
       );
     }
 
@@ -763,7 +912,12 @@ export async function runReview(
       agentFindings,
       coverageNotes,
       verifierDropped,
-      ...(handle!.rateLimit.events > 0 ? { rateLimitEvents: handle!.rateLimit.events } : {}),
+      ...(rlTotal > 0
+        ? {
+            rateLimitEvents: rlTotal,
+            rateLimitByEngine: { opencode: rlOpencode, claudeCode: rlClaude },
+          }
+        : {}),
       durationMs: Date.now() - started,
       decision: output.decision,
       findingCount: output.findings.length,
@@ -787,7 +941,7 @@ export async function runReview(
     });
     throw error;
   } finally {
-    handle?.close();
+    handle.close();
     await auth.cleanup();
     await restoreCwd();
   }
