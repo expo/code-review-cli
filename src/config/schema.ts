@@ -1,3 +1,7 @@
+// @ref LLP 0006#root-vs-scope-config — schema for root vs. scope-overridable config keys
+// @ref LLP 0006#auth-config-shapes — auth union schema (legacy single credential + per-provider map)
+// @ref LLP 0006#routing-manifest — routing.jsonc manifest schema (scopes, budgets, traversal guard)
+// @ref LLP 0006#budgets-and-chunking-defaults — chunk/budget default values and re-tuning heuristics
 import path from "node:path";
 
 import { z } from "zod";
@@ -70,6 +74,7 @@ export const ReviewConfigSchema = z.object({
   // Union order matters: the map form must be tried FIRST — the legacy object's keys
   // all have defaults, so a non-strict legacy parse would accept (and gut) a
   // { providers } object by stripping the unknown key.
+  // @ref LLP 0006#auth-config-shapes [constrained-by] — map-first order is load-bearing; reordering silently guts multi-provider auth
   auth: z
     .union([
       z.object({
@@ -133,6 +138,7 @@ export const RoutingScopeSchema = z.object({
    * routing.jsonc is read from the PR-head checkout, so this field is
    * PR-controllable input: absolute paths and `..` traversal are rejected so a
    * scope config can never resolve outside the repo. */
+  // @ref LLP 0006#routing-manifest [implements] — traversal guard; load.ts re-checks at runtime (defense in depth)
   config: z
     .string()
     .min(1)
@@ -170,6 +176,7 @@ export const RoutingManifestSchema = z
          * chain still fires the default when the key is absent, which would make
          * `defaults.auth` a phantom `{mode:'api-key',provider:'openai'}` for every
          * manifest that omits auth and silently override the root config's real auth. */
+        // @ref LLP 0006#routing-manifest [constrained-by] — zod v4 default().optional() trap; unwrap avoids a phantom auth stub
         auth: ReviewConfigSchema.shape.auth.unwrap().optional(),
         /** Agent ids injected into every scope with alwaysRun, from the ROOT roster. */
         enforceAgents: z.array(z.string()).default([]),
@@ -221,6 +228,7 @@ export type RoutingDefaults = RoutingManifest["defaults"];
  * standalone `ecr review --scope --post` always target the same marker — an
  * honored per-scope tag would let the two halves strand each other's comments.
  */
+// @ref LLP 0006#root-vs-scope-config [implements] — one of three enforcement layers; z.never fails at parse, not runtime
 export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
   auth: true,
   breakGlass: true,

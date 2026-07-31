@@ -1,3 +1,7 @@
+// @ref LLP 0006#loading-and-the-config-dir-escape-hatch — shared root/scope loader; ECR_CONFIG_DIR escape hatch
+// @ref LLP 0006#model-resolution — REVIEWER_MODEL env override resolution
+// @ref LLP 0006#auth-config-shapes — auth normalization (normalizeAuth, tokenEnvMismatch, loadAuthFromRoot)
+// @ref LLP 0006#root-vs-scope-config — scope config loading, commentTag derivation, enforceAgents injection
 import { readdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -103,6 +107,7 @@ async function loadConfigDir(
   // agent and the coordinator then ran on whatever OpenCode picked by default, so a
   // config saying `anthropic/claude-sonnet-5` reviewed with something else entirely and
   // nothing anywhere said so. Trim too: a stray newline is the same class of accident.
+  // @ref LLP 0006#model-resolution [constrained-by] — never ??; GitHub Actions passes an unset var as empty string, not undefined
   const override = process.env.REVIEWER_MODEL?.trim() || undefined;
   const defaultModel = override ?? parsed.model;
   const resolveModel = (frontmatterModel?: string): string =>
@@ -256,6 +261,7 @@ export interface LoadedScopeConfig extends LoadedConfig {
  * with the root config; the scope config activates after merge) instead of
  * failing the run on exactly the PR that introduces the scope.
  */
+// @ref LLP 0006#loading-and-the-config-dir-escape-hatch [implements] — deliberately bypasses ECR_CONFIG_DIR; scope subtrees stay repo-root-relative
 export function hasScopeConfig(root: string, scope: RoutingScope): boolean {
   if (scope.config === ".") {
     return true;
@@ -303,6 +309,7 @@ export async function loadScopeConfig(
     commentTag = manifest.defaults.commentTag;
   }
 
+  // @ref LLP 0006#root-vs-scope-config [implements] — ROOT enforced agent always wins a same-id scope agent (risk 11)
   // Inject the enforced agents from the ROOT roster with alwaysRun, replacing any
   // same-id agent the scope defines (the enforced one wins — risk 11).
   const agents: LoadedAgent[] = base.agents.map((agent) => ({ ...agent }));

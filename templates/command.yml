@@ -1,3 +1,4 @@
+# @ref LLP 0009#workflow-security-posture — issue_comment is not fork-restricted; runs with full secrets regardless of PR origin
 name: AI code review (command)
 
 # On-demand, ONE-SHOT reviewer triggered by a PR comment (maintainers only):
@@ -31,6 +32,7 @@ concurrency:
 jobs:
   command:
     # Only PR comments starting with /review, from a maintainer.
+    # @ref LLP 0009#workflow-security-posture [implements] — gate controls who triggers, not what code runs
     if: >-
       github.event.issue.pull_request != null &&
       startsWith(github.event.comment.body, '/review') &&
@@ -43,6 +45,7 @@ jobs:
     # A reviewer failure must never fail the PR's checks.
     continue-on-error: true
     steps:
+      # @ref LLP 0009#workflow-security-posture [implements] — comment body only via env:; agent ids sanitized before reaching argv
       - name: Parse command
         id: cmd
         env:
@@ -118,6 +121,7 @@ jobs:
       # JSON-escaped key, or stage an unreferenced scope config with its own auth.
       # This is layer 2; layer 1 is the runtime ECR_EXPECTED_TOKEN_ENV lock in `ecr ci`.
       # Runs after Set up Node so the guard runs the SAME $ECR_VERSION `ecr ci` will.
+      # @ref LLP 0009#guard-step-ordering-and-job-budgets [implements] — same $ECR_VERSION feeds guard and review
       - name: Guard config tokenEnv (root + routing + all scopes)
         if: steps.cmd.outputs.run == 'true'
         env:

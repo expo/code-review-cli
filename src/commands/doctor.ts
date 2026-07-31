@@ -1,3 +1,4 @@
+// @ref LLP 0007#doctor-and-setup-auth — a preflight that must never disagree with a real run
 import {
   loadReviewConfig,
   loadScopeConfig,
@@ -71,6 +72,7 @@ async function opencodeVersion(cliPath: string): Promise<string | null> {
   return stdout.trim().split("\n")[0]?.trim() || null;
 }
 
+// @ref LLP 0007#doctor-and-setup-auth [implements] — folds routed scopes' models in; silently skips unloadable scope configs by design
 /**
  * The engines this repo actually drives, mirroring how real reviews resolve them:
  * engineForModel over every ROOT agent + coordinator model, PLUS every loaded scope
@@ -295,6 +297,7 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
             if (version.code === 0) {
               line(true, `claude ${version.stdout.trim().split("\n")[0]?.trim()}`);
             }
+            // @ref LLP 0007#doctor-and-setup-auth [constrained-by] — mirrors startClaudeCode's condition exactly; warn() never flips the exit code
             // Mirror startClaudeCode's credential condition EXACTLY so doctor fails
             // iff a review would: a run needs an active `claude` subscription login OR
             // a token value (the configured tokenEnv, else an ambient

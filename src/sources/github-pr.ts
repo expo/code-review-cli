@@ -1,3 +1,4 @@
+// @ref LLP 0008#pr-head-materialization — PR HEAD is materialized as a detached worktree pinned to the immutable head OID, never a branch/ref name
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,6 +17,7 @@ export interface GitHubPRSourceOptions {
 }
 
 /** A full 40-hex-char commit OID — the only ref form passed to security-sensitive git calls. */
+// @ref LLP 0008#pr-head-materialization [constrained-by] — the single gate: only a full 40-hex OID reaches git worktree add/fetch, closing the TOCTOU race and blocking ref/argument injection at once
 export function isCommitOid(value: string | undefined): value is string {
   return typeof value === "string" && /^[0-9a-f]{40}$/i.test(value);
 }
@@ -164,6 +166,7 @@ export class GitHubPRSource implements ReviewSource {
    * Materialization FAILURES throw — the caller decides per mode whether that is
    * fatal (CI: fail closed) or a soft fallback (local: the user's own checkout).
    */
+  // @ref LLP 0008#pr-head-materialization [implements] — a half-scrubbed tree must never be returned; a scrub failure tears down the worktree and rethrows instead of handing back a partial scrub
   async prepareReadRootAsync(): Promise<PreparedReadRoot | null> {
     if (!this.options.repo) {
       // Without an explicit owner/repo we can't build the fetch URL safely.
@@ -194,6 +197,7 @@ export class GitHubPRSource implements ReviewSource {
    * change the reviewer that evaluates it (config changes activate on merge).
    * Failures throw — `ecr ci` must fail closed, never fall back to the checkout.
    */
+  // @ref LLP 0008#the-trusted-base-root [implements] — materializes the PR BASE (not HEAD) as a separate, unscrubbed worktree; a PR cannot change the reviewer that evaluates it
   async prepareTrustedConfigRootAsync(): Promise<PreparedReadRoot> {
     const metadata = await this.getMetadata();
     if (!isCommitOid(metadata.baseOid)) {

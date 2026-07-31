@@ -1,3 +1,4 @@
+// @ref LLP 0007#verify-config-the-config-guard — the CI trust guard that runs before the loaders are trusted, so it deliberately does not use them
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -54,6 +55,7 @@ interface ConfigFacts {
 
 const CONFIG_FILENAMES = new Set(["config.jsonc", "config.json", ROUTING_FILENAME]);
 
+// @ref LLP 0007#verify-config-the-config-guard [implements] — on-disk sweep, not git index, not the manifest; CONFIG_FILENAMES must mirror load.ts
 /**
  * Discover every config the CLI could ever read via a plain recursive walk (not
  * `git ls-files`): a PR can't hide an unreferenced/untracked config dir from an
@@ -222,6 +224,7 @@ export async function verifyConfig(
     seen.add(occurrence.value);
   }
 
+  // @ref LLP 0007#verify-config-the-config-guard [implements] — exact set equality; adding a credential is refused like repointing one
   // With an expectation set, the declared names must equal the expected SET
   // exactly (comma-separated; order-insensitive). A missing name is as much a
   // finding as an extra one — a PR must not add, drop, or repoint credentials.

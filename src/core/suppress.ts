@@ -1,3 +1,4 @@
+// @ref LLP 0005#inline-suppression-backstop — deterministic backstop for expo-code-review-ignore; used to be prompt-only
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -10,6 +11,7 @@ export interface SuppressionResult {
   suppressed: Finding[];
 }
 
+// @ref LLP 0005#inline-suppression-backstop [constrained-by] — critical/secrets findings are never suppressed this way
 /**
  * Deterministic backstop for the inline `expo-code-review-ignore` directive (which
  * was previously prompt-only, i.e. honored only if the model chose to). Drops a

@@ -20,6 +20,20 @@ verifies their findings, and posts one updating PR comment.
   sync with the code (config options, workflow steps, auth defaults).
 - `src/__tests__/` — `bun test` unit tests, one file per module.
 
+## LLP
+
+- Design docs live in `llp/`; LLP 0000 is the root — read it first for
+  orientation.
+- Before changing an area, read the LLPs that cover it.
+- Implementing a non-obvious decision an LLP documents? Add a ref:
+  `// @ref LLP NNNN#anchor — short gloss`.
+- Update the LLP or the ref in the same commit as the design/code change that
+  makes it stale — don't let them drift apart.
+- Code that contradicts its referenced LLP is a signal: flag the conflict,
+  don't silently "fix" either side.
+- `./ref-check` (`bun run llp:check`) validates refs and metadata; CI runs it
+  on every push and PR.
+
 ## Conventions
 
 - TypeScript, ESM with NodeNext resolution: relative imports use the `.js`

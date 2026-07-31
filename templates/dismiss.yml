@@ -1,3 +1,4 @@
+# @ref LLP 0009#guard-step-ordering-and-job-budgets — no model call, so no model secret and a 10-minute cap
 name: AI code review (dismiss)
 
 # Maintainer PR-comment command to hide/restore a reviewer finding on this PR:
@@ -33,9 +34,11 @@ jobs:
       (startsWith(github.event.comment.body, '/dismiss') || startsWith(github.event.comment.body, '/undismiss')) &&
       contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
+    # @ref LLP 0009#guard-step-ordering-and-job-budgets [constrained-by] — no review budget to cover; capped low regardless
     timeout-minutes: 10
     continue-on-error: true
     steps:
+      # @ref LLP 0009#workflow-security-posture [implements] — ids restricted to fingerprint alphabet; reason trimmed, newlines stripped
       - name: Parse command
         id: cmd
         env:
@@ -96,6 +99,7 @@ jobs:
           # the post step doesn't error trying to save an empty cache.
           package-manager-cache: false
 
+      # @ref LLP 0009#guard-step-ordering-and-job-budgets [explains] — GH_TOKEN only, no OPENAI_API_KEY or model credential
       - name: Apply dismissal
         if: steps.cmd.outputs.run == 'true'
         env:

@@ -1,3 +1,4 @@
+// @ref LLP 0009#config-and-prompt-templates — root config: agent roster by filename, phase-1 defaults, auth
 {
   // Default model for every agent. Override per-agent via frontmatter in the
   // agent's markdown, or at runtime with the REVIEWER_MODEL env var
@@ -10,6 +11,7 @@
   // reserved filenames. Per-agent overrides go in each file's YAML frontmatter,
   // e.g. `---\nmodel: openai/gpt-5.5-pro\n---`.
 
+  // @ref LLP 0009#config-and-prompt-templates [implements] — suggestions off by default, not a schema limit
   "policy": {
     // Phase 1: keep signal high by surfacing only critical/warning.
     "includeSuggestions": false

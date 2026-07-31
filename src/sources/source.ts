@@ -1,3 +1,4 @@
+// @ref LLP 0008#the-reviewsource-contract — three-valued prepareReadRootAsync (handle/null/throw); memoizeSource shares one materialization across scopes
 import type { DiffEntry, ReviewMetadata } from "../core/schema.js";
 
 /**
@@ -23,6 +24,7 @@ export interface ReviewSource {
    * the review core fails closed on it in CI mode and falls back softly only in
    * local mode, where the user's own checkout is an acceptable read root.
    */
+  // @ref LLP 0008#the-reviewsource-contract [constrained-by] — null and throw are not interchangeable: null is safe fall-through, throw is real failure the caller must interpret per mode
   prepareReadRootAsync?(): Promise<PreparedReadRoot | null>;
 }
 
@@ -40,6 +42,7 @@ export interface PreparedReadRoot {
  * prepareReadRootAsync hands each run a handle whose cleanup() is a no-op; the real
  * cleanup is deferred to dispose(), which must be called once after the last scope.
  */
+// @ref LLP 0008#the-reviewsource-contract [implements] — one fetch/worktree shared across N scope runs; dispose() must run once, after the last scope, not per call
 export function memoizeSource(source: ReviewSource): ReviewSource & { dispose(): Promise<void> } {
   let metadataPromise: Promise<ReviewMetadata> | undefined;
   let changedPromise: Promise<DiffEntry[]> | undefined;

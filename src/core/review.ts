@@ -1,3 +1,4 @@
+// @ref LLP 0002#pipeline-stages [implements] — the mode-agnostic pipeline core owning budgets, coverage, and logging
 import path from "node:path";
 
 import type { LoadedAgent, LoadedConfig } from "../config/schema.js";
@@ -102,6 +103,7 @@ function makeRunId(): string {
  * credential that classifies as an API KEY is metered per-request and does NOT force
  * the cap. Exported for tests.
  */
+// @ref LLP 0002#concurrency-and-budgets [implements] — compound oauth/API-key detection is load-bearing, not simplifiable
 export function effectiveConcurrency(
   config: LoadedConfig,
   env: NodeJS.ProcessEnv = process.env,
@@ -473,6 +475,7 @@ export async function runReview(
     // whole-diff no-tools fallback with, and "elastic budget" would have quietly
     // reintroduced the coverage gap it exists to prevent. Sized for the finalize
     // soft-landing plus one FALLBACK_TIMEOUT_MS pass.
+    // @ref LLP 0002#the-cross-cutting-pass [constrained-by] — not a trimmable margin; funds the whole-diff fallback on timeout
     const CROSS_CUTTING_RESERVE_MS = FALLBACK_TIMEOUT_MS + 4 * 60 * 1000;
     // Floor: never LESS generous than one chunk pass. On a run whose window is already
     // small (many active scopes dividing the budget) this can exceed what's left, but
@@ -815,6 +818,7 @@ export async function runReview(
     // Guard against hallucinated findings before surfacing: quote-ground every
     // finding against the real file, and adversarially verify criticals. This is
     // what stops a confident but wrong critical from shipping.
+    // @ref LLP 0002#post-coordination-order [constrained-by] — verify must run before suppress; order is load-bearing
     const findingCountBeforeChecks = output.findings.length;
     let verifierDropped: { finding: Finding; reason: string }[] = [];
     if (output.findings.length > 0) {
@@ -975,6 +979,7 @@ export function applyReviewPolicy(
  * Merges + de-dupes (by fingerprint), applies the same policy, and picks a
  * conservative decision (never a clean approve when there are findings).
  */
+// @ref LLP 0002#coordinator-and-degraded-decisions [implements] — coordinator failure must never discard already-collected findings
 function fallbackConsolidation(
   agentFindings: Record<string, Finding[]>,
   policy: LoadedConfig["policy"],
@@ -1170,6 +1175,7 @@ const QUEUE_IDLE_POLL_MS = 100;
  * running (a running worker might yet enqueue more), so dynamically-added work is
  * never lost. `fn` receives the item and an `enqueue` callback.
  */
+// @ref LLP 0002#timeouts-stalls-and-subdivision [implements] — terminates on active===0, not queue-empty, so growth mid-drain isn't lost
 export async function runGrowableQueue<T>(
   initial: T[],
   limit: number,
