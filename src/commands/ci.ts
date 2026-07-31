@@ -21,6 +21,7 @@ import {
 import type { LoadedConfig, RoutingManifest } from "../config/schema.js";
 import { repoRoot, resolveTrustedTool, run } from "../core/exec.js";
 import { errorMessage, publicFailureReason } from "../core/util.js";
+import { readContextFile } from "../core/context-file.js";
 import { buildDiffLineIndex } from "../core/render.js";
 import type { LinkContext, ScopeReviewResult } from "../core/render.js";
 import type { CoordinatorOutput } from "../core/schema.js";
@@ -89,6 +90,8 @@ Options:
                        prompts, model, auth mapping) that evaluates itself.
                        Never scaffolded; prints a security warning; will be
                        removed on a scheduled minor boundary.
+  --context-file <p>   Inject <p>'s UTF-8 text into reviewer prompts as UNTRUSTED
+                       external context (missing/oversized file: warn, continue)
   --comment <mode>     Override manifest comment mode: single | per-scope
   --force              Manual override: review even if the trigger policy (label
                        trigger / ai-review:skip) would skip. Break-glass and the
@@ -113,8 +116,10 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
   // --config-dir wins, else resolveConfigDir falls back to ECR_CONFIG_DIR, else
   // the default .expo-code-review/. Applies to config.jsonc AND routing.jsonc.
   let configDir: string | undefined;
+  let contextFile: string | undefined;
   try {
     configDir = parseValueFlag(argv, "--config-dir");
+    contextFile = parseValueFlag(argv, "--context-file");
   } catch (error) {
     process.stderr.write(`${errorMessage(error)}\n\n${CI_USAGE}`);
     process.exitCode = 2;
@@ -129,6 +134,29 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
     process.chdir(root);
   }
   const cwd = process.cwd();
+
+  // @ref LLP 0007#ecr-ci-the-trusted-root-run [implements] — --context-file degrades to no-context on read error; never fails checks
+  // Read the context file ONCE (routed CI runs runReview per scope; reading inside
+  // would re-read it N times). CI WARNS and continues on any read error: a broken
+  // Atlantis-provided plan file must never turn the PR's check red.
+  let contextText: string | undefined;
+  if (contextFile) {
+    try {
+      contextText = await readContextFile(contextFile);
+    } catch (error) {
+      process.stderr.write(
+        `CI reviewer: --context-file unusable, continuing without it: ${errorMessage(error)}\n`,
+      );
+    }
+    // Empty/whitespace-only plan file (e.g. Atlantis wrote nothing): warn and
+    // continue with no context — never fail the check on it.
+    if (contextText != null && !contextText.trim()) {
+      process.stderr.write(
+        `CI reviewer: --context-file ${contextFile} is empty; continuing without context.\n`,
+      );
+      contextText = undefined;
+    }
+  }
 
   const repo = process.env.GITHUB_REPOSITORY;
   const prNumber = await resolvePrNumber();
@@ -196,6 +224,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
         route,
         bypassTriggerGate,
         configDir,
+        contextText,
       });
       return;
     }
@@ -208,6 +237,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
         commentOverride,
         bypassTriggerGate,
         configDir,
+        contextText,
       });
     } catch (error) {
       // Fan-out failures stay non-blocking (single-writer property is the point).
@@ -264,6 +294,7 @@ interface CiRunOptions {
   commentOverride?: "single" | "per-scope" | undefined;
   bypassTriggerGate: boolean;
   configDir: string | undefined;
+  contextText: string | undefined;
 }
 
 // @ref LLP 0007#ecr-ci-the-trusted-root-run [constrained-by] — run logs anchor at the workspace, never the removed-on-exit trusted root
@@ -288,7 +319,7 @@ async function runLegacyCi(
   configRoot: string,
   options: CiRunOptions,
 ): Promise<void> {
-  const { agents, route, bypassTriggerGate, configDir } = options;
+  const { agents, route, bypassTriggerGate, configDir, contextText } = options;
   let config;
   try {
     config = await loadReviewConfig(configRoot, { configDir });
@@ -346,6 +377,7 @@ async function runLegacyCi(
       mode: "ci",
       agents,
       route,
+      contextText,
       runsDir: workspaceRunsDir(cwd),
       onProgress: (message) => process.stderr.write(`${message}\n`),
     });
@@ -394,7 +426,15 @@ async function runRoutedCi(
   configRoot: string,
   options: CiRunOptions,
 ): Promise<void> {
-  const { agents, route, scopesFilter, commentOverride, bypassTriggerGate, configDir } = options;
+  const {
+    agents,
+    route,
+    scopesFilter,
+    commentOverride,
+    bypassTriggerGate,
+    configDir,
+    contextText,
+  } = options;
   // The root config + manifest follow the override; scope configs stay
   // relative to the TRUSTED root (loadScopeConfig reads
   // <configRoot>/<scope.config>/.expo-code-review).
@@ -564,6 +604,7 @@ async function runRoutedCi(
         agents,
         route,
         includePaths: scope.files,
+        contextText,
         passesBudgetMs: budget,
         runsDir: workspaceRunsDir(cwd),
         onProgress: (message) => process.stderr.write(`[${scope.name}] ${message}\n`),
