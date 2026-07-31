@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { open } from "node:fs/promises";
 
 // @ref LLP 0007#ecr-ci-the-trusted-root-run [constrained-by] — a missing/oversized context file WARNs and continues in ci; never fails checks
 /**
@@ -9,17 +9,36 @@ import { readFile, stat } from "node:fs/promises";
  */
 export const MAX_CONTEXT_FILE_BYTES = 1_048_576; // 1 MiB
 
+const READ_CHUNK_BYTES = 65_536;
+
 /**
  * Read an external context file as UTF-8 text. Throws on a missing/unreadable path
  * or one over MAX_CONTEXT_FILE_BYTES — the command layer decides whether that is
- * fatal (`ecr review`) or a warn-and-continue (`ecr ci`). Invalid UTF-8 is read
- * lossily (replacement chars); control chars are stripped later by
- * sanitizeUntrusted. No truncation here — the returned text is byte-bounded only.
+ * fatal (`ecr review`) or a warn-and-continue (`ecr ci`). The ceiling is enforced
+ * DURING the read, not by a stat beforehand: special files (`/dev/zero`, proc
+ * entries) report a small or zero size but read without end, and a regular file
+ * can grow between a stat and the read. Invalid UTF-8 decodes lossily
+ * (replacement chars); control chars are stripped later by sanitizeUntrusted.
  */
 export async function readContextFile(filePath: string): Promise<string> {
-  const info = await stat(filePath);
-  if (info.size > MAX_CONTEXT_FILE_BYTES) {
-    throw new Error(`context file too large (> 1 MiB): ${filePath}`);
+  const handle = await open(filePath, "r");
+  try {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+      const chunk = Buffer.alloc(READ_CHUNK_BYTES);
+      const { bytesRead } = await handle.read(chunk, 0, READ_CHUNK_BYTES);
+      if (bytesRead === 0) {
+        break;
+      }
+      total += bytesRead;
+      if (total > MAX_CONTEXT_FILE_BYTES) {
+        throw new Error(`context file too large (> 1 MiB): ${filePath}`);
+      }
+      chunks.push(chunk.subarray(0, bytesRead));
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  } finally {
+    await handle.close();
   }
-  return readFile(filePath, "utf8");
 }

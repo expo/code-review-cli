@@ -36,3 +36,9 @@ test("readContextFile throws over the byte ceiling", async () => {
   await writeFile(file, "x".repeat(MAX_CONTEXT_FILE_BYTES + 1));
   await expect(readContextFile(file)).rejects.toThrow(/too large/);
 });
+
+test("readContextFile bounds special files that stat as small but read without end", async () => {
+  // /dev/zero reports size 0; a stat-based check would pass it and the read
+  // would then grow until OOM. The in-read ceiling must throw instead.
+  await expect(readContextFile("/dev/zero")).rejects.toThrow(/too large/);
+});
