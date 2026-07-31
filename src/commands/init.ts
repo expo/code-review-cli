@@ -459,6 +459,7 @@ async function copyTemplate(
  * the model credential(s). Refuses names the runtime would refuse anyway
  * (FORBIDDEN_TOKEN_ENVS) so a bad choice fails here, not at review time.
  */
+// @ref LLP 0007#init-and-dismiss [implements] — validated before any file is written; no half scaffold
 export function parseTokenEnvs(value: string | undefined): string[] {
   if (value == null) {
     return [DEFAULT_TOKEN_ENV];
@@ -488,6 +489,7 @@ export function parseTokenEnvs(value: string | undefined): string[] {
  * Throws when a template marker is missing (template drift must fail loudly, not
  * scaffold a workflow that silently keeps the OpenAI-only wiring).
  */
+// @ref LLP 0009#what-ecr-init-scaffolds [implements] — static credential mapping baked at init from a trusted flag, never resolved at run time
 export function substituteTokenEnv(raw: string, tokenEnvs: string[]): string {
   const joined = tokenEnvs.join(",");
   if (joined === DEFAULT_TOKEN_ENV) {
