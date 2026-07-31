@@ -1,3 +1,4 @@
+# @ref LLP 0009#workflow-security-posture — auto-review workflow; base-only checkout, npx-published engine
 name: AI code review
 
 on:
@@ -29,12 +30,14 @@ jobs:
     # Prefer to gate entirely here instead? Set config trigger to "label" and replace
     # the line below with, e.g.:
     #   if: contains(github.event.pull_request.labels.*.name, 'ai-review')
+    # @ref LLP 0009#guard-step-ordering-and-job-budgets [explains] — spin-up avoidance only; real policy is config.jsonc review.trigger
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'ai-review:skip') }}
     # Backstop so a stalled review fails fast instead of hanging. This is the ONE cap
     # with no soft landing (GitHub hard-kills the job and nothing is posted), so keep
     # margin over the worst-case internal chain: the passes budget
     # (budget.totalPassesMinutes, 55m — the cross-file pass expands to fill it) +
     # coordinator (10m) + verification + CI setup.
+    # @ref LLP 0009#guard-step-ordering-and-job-budgets [constrained-by] — the one cap with no soft landing
     timeout-minutes: 90
     # A reviewer failure must never fail the PR's checks.
     continue-on-error: true
@@ -48,6 +51,7 @@ jobs:
       # the only line. persist-credentials off — the CLI's own git fetches
       # authenticate through `gh` from GH_TOKEN, so the token never lands in
       # .git/config.
+      # @ref LLP 0009#workflow-security-posture [implements] — immutable base commit, never PR head/merge ref
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -79,6 +83,7 @@ jobs:
       # Only setup-node (runtime install) precedes it; running the PUBLISHED package
       # via npx is safe pre-review because npx fetches @expo/code-review-cli@$ECR_VERSION
       # from the registry — it never builds or executes the PR's code.
+      # @ref LLP 0009#guard-step-ordering-and-job-budgets [implements] — layer 2; layer 1 is ecr ci's own runtime check
       - name: Guard config tokenEnv (root + routing + all scopes)
         env:
           # (Comma-separated set for a multi-credential auth.providers config.)

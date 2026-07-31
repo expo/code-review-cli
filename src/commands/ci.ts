@@ -1,3 +1,4 @@
+// @ref LLP 0007#ecr-ci-the-trusted-root-run — fails CLOSED: trusted-root materialization failure never falls back to reading the checkout
 import { readFile } from "node:fs/promises";
 
 import path from "node:path";
@@ -144,6 +145,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
   const ghSource = new GitHubPRSource({ prNumber, repo, cwd });
   const source = memoizeSource(ghSource);
 
+  // @ref LLP 0007#ecr-ci-the-trusted-root-run [implements] — trusted base config; fail closed with one hardcoded-tag terminal comment
   // Trusted configuration root: review policy and reviewer config load from the
   // PR's immutable BASE commit, so the PR head is data, never policy. Fail CLOSED:
   // when the base can't be materialized, post the one terminal comment and stop —
@@ -264,6 +266,7 @@ interface CiRunOptions {
   configDir: string | undefined;
 }
 
+// @ref LLP 0007#ecr-ci-the-trusted-root-run [constrained-by] — run logs anchor at the workspace, never the removed-on-exit trusted root
 /**
  * Run-log + patch-workspace anchor: ALWAYS the workspace checkout, never the
  * (temporary, removed-on-exit) trusted config root — the workflow uploads
@@ -294,6 +297,7 @@ async function runLegacyCi(
     return;
   }
 
+  // @ref LLP 0007#verify-config-the-config-guard [implements] — runtime auth lock; the workflow bash sweep is only layer 2
   // Layer-1 auth lock (mirrors doctor): when the workflow pins the expected token
   // env var name, refuse to run if the config names anything else. The workflow's
   // bash guard is a text sweep (layer 2) and can't see through JSON escapes; this
@@ -307,6 +311,7 @@ async function runLegacyCi(
     }
   }
 
+  // @ref LLP 0007#trigger-policy-and-break-glass [implements] — exact-match labels; /review bypasses only the trigger gate
   // Config-driven trigger policy (.expo-code-review/config.jsonc → review): decide
   // whether this PR should be reviewed at all (bypassed by a manual /review).
   if (
@@ -378,6 +383,7 @@ function failureReview(scopeName: string, reason: string): CoordinatorOutput {
   };
 }
 
+// @ref LLP 0007#routed-ci-fan-out [implements] — root tag wins; sequential per-scope budgets; partial --scopes merges prior state
 /** The routing fan-out: one process, N scopes reviewed sequentially, one render. */
 async function runRoutedCi(
   source: ReviewSource & { dispose(): Promise<void> },

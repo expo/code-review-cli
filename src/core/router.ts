@@ -1,3 +1,4 @@
+// @ref LLP 0002#pipeline-stages [implements] — routing needs a live engine handle, so it runs after engine startup, not before
 import type { LoadedAgent, LoadedConfig } from "../config/schema.js";
 import type { PatchWorkspaceFile } from "./noise.js";
 import { promptAndParse } from "./opencode.js";

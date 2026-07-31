@@ -1,3 +1,4 @@
+// @ref LLP 0002#coordinator-and-degraded-decisions [implements] — single no-tools call; its 10-min cap adds to the serial chain, not parallel
 import type { LoadedConfig } from "../config/schema.js";
 import { promptAndParse } from "./opencode.js";
 import type { OpencodeHandle, TokenUsage } from "./opencode.js";

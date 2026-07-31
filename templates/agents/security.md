@@ -1,3 +1,4 @@
+<!-- @ref LLP 0009#workflow-security-posture — highest-stakes agent; author-association gates control who, not what -->
 ---
 description: Security and secrets. Injection, credential or secret leakage, unsafe shell/child-process use, missing validation at trust boundaries.
 alwaysRun: true
@@ -5,6 +6,7 @@ alwaysRun: true
 # reasoning, so it runs on the pro tier even though the other specialists use the
 # default model. Scoped to this one agent to limit the extra latency/rate-limit cost;
 # subdivide-on-timeout + the per-fetch deadline keep a slow pro pass from hanging.
+# @ref LLP 0009#config-and-prompt-templates [implements]
 model: openai/gpt-5.5-pro
 ---
 
@@ -36,6 +38,7 @@ the code. Flag:
   ref) and also exposes secrets or a write-scoped `GITHUB_TOKEN` in that job's
   environment is a secret-exfiltration RCE — the attacker controls build scripts,
   source, and install-time lifecycle hooks.
+<!-- @ref LLP 0009#workflow-security-posture [explains] — quoted verbatim in the guide's workflow security posture -->
 - **Trigger fork semantics.** `pull_request` from a fork runs with secrets
   withheld and a read-only token; `issue_comment`, `workflow_run`, and
   `pull_request_target` are **NOT** fork-restricted. An `author_association` /

@@ -1,3 +1,4 @@
+// @ref LLP 0004#unified-diff-parsing [implements] — feeds 3 differently-trusted callers: 2 sources, GitHub comment anchoring
 import type { DiffEntry } from "./schema.js";
 
 /**
@@ -38,6 +39,7 @@ export function parseUnifiedDiff(diffText: string): DiffEntry[] {
   return entries;
 }
 
+// @ref LLP 0004#unified-diff-parsing [implements] — binary flagged, not dropped; noise filtering is the sole exclusion point
 function patchToEntry(patch: string): DiffEntry | null {
   const lines = patch.split("\n");
   const header = lines[0] ?? "";

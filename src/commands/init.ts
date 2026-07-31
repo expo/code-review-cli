@@ -1,3 +1,4 @@
+// @ref LLP 0007#init-and-dismiss — scaffolds .expo-code-review/; --scope validates before any file lands on disk
 import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -202,6 +203,7 @@ async function scaffoldScope(argv: string[], scopeDirRaw: string): Promise<void>
     throw new Error(`no ${CONFIG_DIRNAME}/${ROUTING_FILENAME} — run \`ecr init --monorepo\` first`);
   }
 
+  // @ref LLP 0007#init-and-dismiss [implements] — traversal and unparsable-routing.jsonc prevented before any file lands
   // Derive the scope entry and validate it BEFORE creating any files: the name must
   // satisfy RoutingScopeSchema's kebab-case rule (derived by sanitizing the dir,
   // apps/Foo_Bar -> apps-foo-bar), and the config path is rejected when absolute or
@@ -300,6 +302,7 @@ async function scaffoldScope(argv: string[], scopeDirRaw: string): Promise<void>
   );
 }
 
+// @ref LLP 0007#init-and-dismiss [implements] — comment-preserving text surgery; idempotent; comma placement rules
 /**
  * Insert a scope entry before the closing ] of the "scopes" array in raw JSONC,
  * preserving comments/formatting. Returns the new text, the original text unchanged

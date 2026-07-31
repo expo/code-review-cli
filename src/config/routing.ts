@@ -1,3 +1,6 @@
+// @ref LLP 0006#routing-manifest — routing.jsonc parsing, scope resolution (last-match-wins), overlaps/unmatched
+// @ref LLP 0006#loading-and-the-config-dir-escape-hatch — routing.jsonc travels with config.jsonc via resolveConfigDir
+// @ref LLP 0006#budgets-and-chunking-defaults — per-scope budget split (scopePassesBudgetMs)
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -19,6 +22,7 @@ export const ROUTING_FILENAME = "routing.jsonc";
  * Scope `config` paths stay repo-root-relative (see `loadScopeConfig`): an
  * override relocates only the ROOT artifacts, never the scopes' own subtrees.
  */
+// @ref LLP 0006#loading-and-the-config-dir-escape-hatch [implements] — travels with config.jsonc; a real bug once let them split
 export async function loadRoutingManifest(
   root: string,
   options: { configDir?: string } = {},
@@ -55,6 +59,7 @@ export interface ScopeResolution {
 // silently miss root-level files (README.md, package.json). To give the double-star +
 // slash its conventional "zero or more directories" meaning, we also test the variant
 // with each such prefix removed, so the catch-all matches both `a.ts` and `src/b.ts`.
+// @ref LLP 0006#routing-manifest [constrained-by] — workaround for matchesIgnore's **-needs-a-slash limitation (LLP 0004 dialect)
 function patternVariants(pattern: string): string[] {
   const collapsed = pattern.replace(/\*\*\//g, "");
   return collapsed !== pattern && collapsed.length > 0 ? [pattern, collapsed] : [pattern];
@@ -73,6 +78,7 @@ function scopeMatches(paths: string[], file: string): boolean {
  * matchesIgnore (supports ** across / and * within a segment — the manifest
  * documents this dialect). Deterministic, no filesystem access.
  */
+// @ref LLP 0006#routing-manifest [implements] — last-match-wins (CODEOWNERS discipline); each file lands in exactly one scope
 export function resolveScopes(manifest: RoutingManifest, changedFiles: string[]): ScopeResolution {
   const buckets = new Map<string, string[]>();
   const unmatched: string[] = [];
@@ -129,6 +135,7 @@ export interface ScopeBudget {
  * starting — and `overshoot` flags that the run will exceed the total budget so
  * the caller can warn. Pure so the math is unit-testable.
  */
+// @ref LLP 0006#budgets-and-chunking-defaults [implements] — floor(total/active) clamped to a 5-min floor; overshoot flags the clamp
 export function scopePassesBudgetMs(
   totalMs: number,
   minMs: number,

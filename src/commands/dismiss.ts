@@ -1,3 +1,4 @@
+// @ref LLP 0007#init-and-dismiss [implements] — display-only mutation; dismissals persist across re-reviews, never re-run the review
 import { loadReviewConfig } from "../config/load.js";
 import { repoRoot, resolveRepo } from "../core/exec.js";
 import { errorMessage } from "../core/util.js";
@@ -43,6 +44,7 @@ function parseArgs(argv: string[]): DismissArgs {
         if (arg.startsWith("--")) {
           throw new Error(`Unknown argument: ${arg}`);
         }
+        // @ref LLP 0007#init-and-dismiss — a malformed id is silently mangled to hex, not rejected; it just becomes "unmatched" later
         // Bare arg = a finding id. Sanitize to the fingerprint alphabet.
         args.ids.push(arg.replace(/[^a-f0-9]/g, ""));
     }

@@ -1,0 +1,82 @@
+# LLP 0002: Review Engine Pipeline: Budgets, Fallbacks, and the Coordinator
+
+**Type:** Explainer
+**Status:** Active
+**Systems:** Engine
+**Author:** Philippe Loulidi / Claude
+**Date:** 2026-07-30
+**Related:** [LLP 0001](0001-trust-model.principles.md), [LLP 0003](0003-model-runtimes-and-credentials.explainer.md), [LLP 0004](0004-diff-noise-and-prompts.explainer.md), [LLP 0005](0005-verification-fingerprints-rendering.explainer.md)
+
+`runReview()` in `src/core/review.ts` is the mode-agnostic core: it turns a filtered diff into exactly one advisory `CoordinatorOutput`, and it owns every cross-cutting concern the CLI commands must not reimplement — concurrency policy, budget accounting across nested fallbacks, coverage-gap reporting, cost/token accounting, and run-log persistence. This doc records the decisions and invariants behind that pipeline, not the code. Where a claim comes from code it cites `review.ts:line` on commit `93aaf30` (the branch tip at survey time). Verification and suppression are their own later stages, detailed in [LLP 0005](0005-verification-fingerprints-rendering.explainer.md).
+
+## Pipeline Stages
+
+`runReview()` runs a fixed sequence: filter noise → resolve the read root (the trust boundary) → start the engines → preflight that every model id resolves → chunk the diff → run agent×chunk passes plus one cross-cutting pass through a growable bounded queue → coordinate → verify → suppress → reconcile the summary → log. The whole run's resource lifecycle — engine handles, auth material, cwd, and the read-root worktree — is released in a single `finally` (`review.ts:947-951`), so no partial-startup path leaks a server or a worktree.
+
+Two ordering decisions inside that lifecycle are load-bearing and easy to break by "cleaning up":
+
+- **`prepareAuth()` runs before the chdir into the read-root worktree** [observed] (`review.ts:217-239`). Auth does not depend on the working directory, so doing it after materializing the read root but before `process.chdir` means an auth failure only has the worktree itself to release — it can never leave `process.cwd()` pointed at a worktree the process still has to clean up.
+- **OpenCode starts before Claude Code** when both engines are in use [observed] (`review.ts:249-277`). They live in two separate `try` blocks so each keeps its own precise error message, and the ordering means a Claude Code startup failure's error path can still call `opencodeHandle?.close()` on the already-started OpenCode server (`review.ts:270`).
+
+The engine map is built from the **selected** agent subset, not the full roster [observed] (`review.ts:200-214`, commit `93aaf30`): a run whose passes never touch Claude does not preflight — and so cannot fail on — a missing Claude CLI or token. An explicit `--agents` subset is known before startup; routing (`routeAgents()` in `src/core/router.ts`) needs a live engine handle, so it runs after startup and keeps the full roster. The trust policy for the read root itself (fatal in CI, soft fallback locally) lives in [LLP 0001](0001-trust-model.principles.md); `resolveReadRoot()` is the guard.
+
+## Concurrency and Budgets
+
+`effectiveConcurrency()` caps reviewer concurrency at **3 when the run leans on a subscription credential, 6 otherwise, and an explicit config value always wins** [observed] (`review.ts:93-127`, doc comment citing the eas-cli#4084 stall signature). One subscription account handles six parallel streams poorly — requests get parked server-side — and several PRs may review on the same credential at once, so subscription runs trade a little wall-clock for a lot of reliability.
+
+The subscription test is deliberately compound and must not be simplified to a single flag [observed] (`review.ts:114-125`; tests at `src/__tests__/review-internals.test.ts:206-262`). It caps when: any auth entry is `oauth`; **or** the Claude Code engine is in use on an Anthropic credential that is OAuth-classified **or** has no forwardable token at all (the bare `claude` login fallback). An Anthropic credential that classifies as an API key is metered per request and explicitly does **not** cap. A naive "oauth present ⇒ cap" would wrongly throttle the API-key full-speed case.
+
+Tasks are scheduled longest-processing-time-first (`tasks.sort((a, b) => b.maxWaitMs - a.maxWaitMs)`, `review.ts:550`) so the long cross-cutting and large-chunk passes start early and don't dominate the tail of the makespan.
+
+The budgets form a strict nesting invariant: per-task caps (chunk 15m, subdivided floor 6m, fallback 4m) sit inside `PASSES_BUDGET_MS` (55m, `review.ts:458`), which together with the coordinator's 10-minute cap sits inside the CI job's `timeout-minutes: 90` (`templates/workflow.yml:41`, `.github/workflows/expo-code-review.yml:32`). The job timeout is the one hard kill with no soft landing. These caps were retuned together (20→30→50→90 min) rather than bumped in isolation, precisely to keep the worst-case serial chain of caps under the job timeout [observed] (ROADMAP.md "Speed knobs" 20→30 and "Extended caps" 30→50→90; commit `3aeb82b`).
+
+## Timeouts, Stalls, and Subdivision
+
+A pass that times out is never simply dropped. Because `promptAndParse` already retries internally (a same-session corrective, then a bounded fresh session), `runReview` deliberately does **not** wrap it in a second retry loop [observed] (`review.ts:592-596`); non-timeout errors are treated as genuine failures and recorded, not retried. A genuine `AgentTimeoutError` instead walks a fixed ladder [observed] (`review.ts:641-723`):
+
+1. **Subdivide** — a reviewer chunk with more than one file splits into two smaller file sets, each with a halved (floored) cap (`canSubdivide`, `childCap`, `review.ts:652-665`). This trades scope for convergence, which is the right trade for a per-file reviewer pass and the wrong one for the cross-cutting pass (see below), so subdivision is gated on `task.kind === "reviewer"`.
+2. **No-tools fallback** — if subdivision is exhausted or disallowed and enough budget remains, one fast pass reviews the inlined diff with tools forbidden, so it always returns (`review.ts:671-683`).
+3. **Reported gap** — only after that can't finish inside the budget is a coverage note pushed.
+
+A coverage gap is **never silent**: every branch that ends in unreviewed work pushes a note into `incomplete` [observed] (`review.ts:506-509` and each branch of the queue callback). The notes distinguish *why* the work was lost so they don't overstate it: a stalled pass (its model requests went silent) is called out separately from a genuine timeout, and names provider rate-limiting as the likely cause, because OpenCode retries 429s internally and throttling therefore reaches the caller as pure silence, not an error (`review.ts:694-708`; commits `188f852`, `14b32a0`). Auth/permission failures collapse into **one** shared, actionable note (`AUTH_FAILURE_NOTE`, deduped) instead of N generic per-pass lines, because the same rejected credential hits every pass identically [observed] (`review.ts:631-638`, `isAuthError` at `1104-1119`; commit `6019340`). `isAuthError` is a compound regex, not a substring match, specifically so it accepts "invalid x-api-key" while rejecting "429 Too Many Requests" — misclassifying one as the other routes to the wrong coverage note (`review.ts:1104-1119`; tests at `133-157`).
+
+All of this rides on `runGrowableQueue()`, whose termination check is **`active === 0`, not `queue.length === 0`** [observed] (`review.ts:1179-1210`). A worker that finds the queue empty must still poll and wait while any other worker is active, because that worker may be about to enqueue subdivided children; a plain queue-empty check reintroduces a race that drops dynamically-added work. Two tests guard this exact case ("processes items enqueued DURING the run" and the index-vs-element FP guard, `review-internals.test.ts:76-109`), and they also assert concurrency never exceeds the configured limit while the queue grows.
+
+## The Cross-Cutting Pass
+
+On a diff large enough to need more than one chunk, one combined cross-file pass looks for issues that span multiple changed files, covering every agent's concern at once. Whether it runs at all is gated by `chunked` (`chunks.length > 1`, `review.ts:403-404, 532`) — a diff that fits in a single chunk already gives every reviewer call every changed file, so a separate cross-file pass would be redundant. This is a decision, not an oversight, and "always run the cross-cutting pass" is not a safe assumption when touching chunking thresholds.
+
+The pass gets an **elastic** time budget — whatever remains of the passes window minus `CROSS_CUTTING_RESERVE_MS` — instead of a fixed per-pass cap [observed] (`review.ts:460-501`; commit `3aeb82b`). It is never subdivided by file halves, because a left-half/right-half interaction is invisible to both halves: splitting silently deletes exactly the coverage the pass exists to provide while still reporting success. Since it cannot trade scope for convergence, it is instead given the room to finish.
+
+`CROSS_CUTTING_RESERVE_MS` is not a trimmable safety margin (`review.ts:467-479`). It is sized to fund the pass's own salvage path — the finalize soft-landing plus one `FALLBACK_TIMEOUT_MS` no-tools pass over the whole diff. If the reserve were removed and the pass expanded into the entire remaining window, a timeout there would leave nothing to run the whole-diff fallback with, silently reintroducing the very coverage gap the elastic design exists to prevent. Its tool-call ceiling scales with file count (`CROSS_CUTTING_TOOL_CALLS_PER_FILE`, `review.ts:490-504`) rather than being fixed, because under a large elastic time budget a fixed tool-call cap would become the binding constraint and the extra time couldn't be used. Tool calls here are for tracing callers outside the diff; the changed files' diffs are inlined, so they are not spent fetching the diff.
+
+## Coordinator and Degraded Decisions
+
+`coordinate()` (`src/core/coordinator.ts`) is a single LLM call with **no repo tools** — a text-only re-judgment over already-collected findings that dedupes, re-judges severity, and decides the verdict [observed] (`coordinator.ts:21-28`). Its 10-minute cap is a backstop, not a working budget, since it usually finishes fast; it runs after all reviewer passes, so it adds to the worst-case serial chain rather than running in parallel with it, which is why the cap and the passes budget must together fit inside the job timeout.
+
+The degraded paths keep a failed run honest:
+
+- **Coordinator failure never discards findings.** If `coordinate()` throws, `fallbackConsolidation()` merges and dedupes the agents' findings by fingerprint and picks a conservative decision — `request_changes` on any critical, else `approve_with_comments`, never a clean approve when findings exist [observed] (`review.ts:800-809`, `978-1009`).
+- **`applyReviewPolicy` runs identically on both paths** — the coordinator's normal output and the local fallback both pass through the same policy (drop suggestions unless opted in, sort by severity, cap by `maxFindings`, downgrade `approve_with_comments`→`approve` when nothing remains), so enforcement can't diverge between the happy and degraded paths [observed] (`review.ts:792` and `998-1008`).
+- **Any failed/timed-out pass forces the decision off a clean approve** — downgraded to `approve_with_comments` at minimum, independent of what the coordinator decided [observed] (`review.ts:810-815`).
+- **An all-failed run sets `couldNotComplete`.** When every pass fails or times out, the run is never rendered as a normal decision string; the flag overrides presentation so the comment header can't read "Approve with comments" over a review that reviewed nothing [observed] (`review.ts:764-777`; commit `188f852`, euxy#8).
+
+## Post-Coordination Order
+
+The order **verify → suppress → reconcile-summary is load-bearing** [observed] (`review.ts:818-869`). `findingCountBeforeChecks` is captured before either step (`review.ts:822`); verification runs first (`verifyFindings`, `826`); inline `expo-code-review-ignore` suppression runs strictly **after** verification (`applyInlineIgnores`, `847-861`); and the decision is re-derived after each drop via `decisionAfterVerification`.
+
+The summary is reconciled **only if the finding count actually dropped across both steps combined** (`removedAfterChecks > 0`, `review.ts:866-869`), and it is reconciled **without a second LLM call** (`reconcileSummary`, `1041-1050`): the summary is fully replaced when nothing remains, otherwise prepended with an honest caveat, so the coordinator's prose — written against the pre-check finding set — can never be read as contradicting the accurate findings list shown below it. Reordering these steps or skipping the count-delta check would let stale summary text reference findings that verification or suppression already removed. Both verify and suppress re-read files via `process.cwd()`, which is the chdir'd read root; details of that trust dependency and the verification stage itself live in [LLP 0005](0005-verification-fingerprints-rendering.explainer.md).
+
+## Model Substitution and Rate-Limit Evidence
+
+Every pass reports the model that **actually** answered it, not the one configured, in the job log, the step-summary table, and the run log [observed] (`review.ts:355-376`, `727-756`, `894-903`). This exists because OpenCode silently substitutes a default model whenever an agent's model id is empty or unusable, and a run can therefore review on a different (weaker or free-tier) model and look completely normal — which is exactly what happened for weeks behind an empty `REVIEWER_MODEL` (commit `43b31a4`: "reviews silently ran on opencode's free gateway model for weeks"). A substitution goes to progress output, the coverage notes, and the run log, and the note names each substituted bucket's **own** engine, because a mixed run can substitute on either side for different reasons — a Claude Code CLI usage-limit downgrade versus OpenCode's silent default fallback (`review.ts:734-755`).
+
+Rate-limit evidence is tracked per engine separately and surfaced with the cause that actually fired [observed] (`review.ts:871-892`): OpenCode's server-log 429s and the Claude Code CLI's own reported subscription rate/usage limits are counted independently, and the warning names only the engine whose watch fired. Provider throttling is surfaced as a fact about the run even though passes already waited it out, because a rate-limited run is slower and may carry partial passes — the operator should see the cause.
+
+## Run Log and Observability Sinks
+
+`writeRunLog()` (`src/core/log.ts`) appends one JSON line per run — cost, tokens (run-wide and per bucket), findings, coverage notes, decision — so runs are auditable and cost/latency measurable later. The record deliberately excludes PR title and body text, keeping only `baseRef`/`headRef`, to avoid persisting secrets that might appear in author-controlled text [observed] (`log.ts:13-18`). Findings may quote changed source lines, but only content the review already publishes verbatim in the PR comment.
+
+Observability must never break a review, so both output sinks swallow their own errors: `safeLog` wraps `writeRunLog` and discards any write error [observed] (`review.ts:1269-1275`), and `appendStepSummary` is a no-op outside Actions and swallows append failures [observed] (`step-summary.ts:9-19`). A consequence worth stating: a missing or corrupt run-log entry is therefore **not** an error signal — the log's presence or absence proves nothing about whether the review succeeded.
+
+Finally, `publicFailureReason()` (`src/core/util.ts`) is the only failure text allowed into PR-facing comments [observed] (`util.ts:20-27`; used in `src/commands/ci.ts:176,365,575`). `run()` throws errors of the form `"Command failed: <cmd> <argv>\n<stderr>"`, which embed a subprocess's full command line, its stderr, and absolute runner paths — CI-internal detail of no use to a PR author and exactly what must not leak into an attacker-visible artifact. Those shapes collapse to a generic pointer at the workflow log; the tool's own argv/path-free messages pass through, since they are the actionable ones the fail-fast design means to surface. Every call site still writes the full reason to the job's stderr.
