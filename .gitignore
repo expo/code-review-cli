@@ -6,3 +6,6 @@ build/
 
 # npm pack output
 *.tgz
+
+# Claude Code local worktrees
+.claude/worktrees/
