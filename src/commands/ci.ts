@@ -595,18 +595,23 @@ async function runRoutedCi(
       // the other scopes' previous results out of the existing aggregate comment's
       // state so re-running one scope doesn't silently discard the rest.
       const prior = (await aggregate.readState())?.scopes ?? [];
-      const byName = new Map(results.map((result) => [result.scope, result]));
-      for (const previous of prior) {
-        if (!scopesFilter.includes(previous.scope) && !byName.has(previous.scope)) {
-          byName.set(previous.scope, previous);
-        }
-      }
-      // Manifest order; scopes no longer in the manifest drop out.
-      finalResults = manifest.scopes
-        .map((scope) => byName.get(scope.name))
-        .filter((entry): entry is ScopeReviewResult => entry != null);
+      finalResults = mergePartialAggregate(
+        results,
+        prior,
+        scopesFilter,
+        manifest.scopes.map((scope) => scope.name),
+      );
     }
-    await aggregate.reportAggregate(finalResults, resolution.unmatched);
+    if (finalResults.length === 0) {
+      // No scope has anything to report (no changed file matched any scope, and no
+      // prior scope results carry over): a review of nothing is not a review, so
+      // post nothing and delete a stale aggregate comment from an earlier run
+      // instead of leaving it up. The unmatched-files warning stays in the job log.
+      // @ref LLP 0007#routed-ci-fan-out — zero active scopes → no comment
+      await aggregate.clear();
+    } else {
+      await aggregate.reportAggregate(finalResults, resolution.unmatched);
+    }
     // Clean up any per-scope comments from a previous per-scope run. A partial run
     // only ever touches the named scopes' comments.
     for (const scope of manifest.scopes) {
@@ -616,7 +621,9 @@ async function runRoutedCi(
       await reporterFor(scopedCommentTag(rootTag, scope.name)).clear();
     }
     process.stderr.write(
-      `CI reviewer: posted aggregate review for ${finalResults.length} scope(s).\n`,
+      finalResults.length === 0
+        ? "CI reviewer: no scope matched the changed files; nothing posted.\n"
+        : `CI reviewer: posted aggregate review for ${finalResults.length} scope(s).\n`,
     );
   } else {
     for (const scope of manifest.scopes) {
@@ -643,6 +650,29 @@ async function runRoutedCi(
     }
     process.stderr.write("CI reviewer: posted per-scope reviews.\n");
   }
+}
+
+/**
+ * Merge a partial run's fresh results (--scopes) with the prior aggregate
+ * comment's stored state, in manifest order. Fresh results win for their scope;
+ * scopes outside the filter keep their previous result; scopes no longer in the
+ * manifest drop out. Pure so it's unit-testable.
+ */
+export function mergePartialAggregate(
+  results: ScopeReviewResult[],
+  prior: ScopeReviewResult[],
+  scopesFilter: string[],
+  manifestScopeNames: string[],
+): ScopeReviewResult[] {
+  const byName = new Map(results.map((result) => [result.scope, result]));
+  for (const previous of prior) {
+    if (!scopesFilter.includes(previous.scope) && !byName.has(previous.scope)) {
+      byName.set(previous.scope, previous);
+    }
+  }
+  return manifestScopeNames
+    .map((name) => byName.get(name))
+    .filter((entry): entry is ScopeReviewResult => entry != null);
 }
 
 /**
