@@ -63,6 +63,9 @@ export interface ReviewRunOptions {
    * workspace checkout explicitly.
    */
   runsDir?: string;
+  /** Already-read, byte-capped external context text (untrusted); injected into the
+   * reviewer + cross-cutting prompts. Read once in the command layer. */
+  contextText?: string;
 }
 
 /**
@@ -562,10 +565,14 @@ export async function runReview(
     const buildTaskText = (task: ReviewTask): string => {
       const base =
         task.kind === "cross-cutting"
-          ? buildCrossCuttingTask(task.files, selectedAgents, filtered, {
-              noTools: task.fallback,
-            })
-          : buildReviewerTask(task.files, workspace.files, filtered);
+          ? buildCrossCuttingTask(
+              task.files,
+              selectedAgents,
+              filtered,
+              { noTools: task.fallback },
+              options.contextText,
+            )
+          : buildReviewerTask(task.files, workspace.files, filtered, options.contextText);
       return task.fallback ? `${base}\n\n${NO_TOOLS_INSTRUCTION}` : base;
     };
     const filesLabel = (files: PatchWorkspaceFile[]): string =>
