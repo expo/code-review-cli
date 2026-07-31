@@ -100,8 +100,14 @@ Enter a worktree (branch e.g. `<repo>-code-review-setup`). Then:
 1. **Scaffold with the real CLI — never hand-create the tree**:
    `npx @expo/code-review-cli init` (add `--monorepo` if scoping; then
    `npx @expo/code-review-cli init --scope <dir>` per scope; `--no-workflow` only if
-   the repo can't take a GitHub workflow). The scaffold gives correct file shapes,
-   workflows, and `.gitignore` entries; your job is to REWRITE the contents.
+   the repo can't take a GitHub workflow). Pass `--token-env <name[,name…]>` from the
+   Phase 3 auth decision when it is not `OPENAI_API_KEY` (e.g.
+   `--token-env CLAUDE_CODE_OAUTH_TOKEN`): it bakes the tokenEnv into the scaffolded
+   workflows' env — without it CI never receives the secret and the review job fails.
+   (If the installed CLI predates `--token-env`, edit both review workflows by hand:
+   the `ECR_EXPECTED_TOKEN_ENV` fallback and the `secrets.*` credential line.) The
+   scaffold gives correct file shapes, workflows, and `.gitignore` entries; your job
+   is to REWRITE the contents.
 2. **Write root `config.jsonc`** per the Phase 3 decisions: `model`, `auth` (root-only,
    exact shapes from reference §4), `review.trigger`/`label`, `noise.additionalIgnores`
    for this repo's generated paths, `chunk` overrides only if discovery justifies them.
@@ -126,10 +132,11 @@ Enter a worktree (branch e.g. `<repo>-code-review-setup`). Then:
    - Monorepo: `routing.jsonc` — broad scopes first, specific last, `**/*` catch-all,
      `defaults.enforceAgents: ["security"]`, `defaults.auth` as the lock.
    - Parallel writers touch disjoint files, so no per-agent worktrees needed.
-4. **CI wiring**: keep the scaffolded workflows; list for the user the repo
-   secrets/variables to set (reference §4: the tokenEnv secret, and repo variable
-   `ECR_EXPECTED_TOKEN_ENV` when not `OPENAI_API_KEY`). Suggest CODEOWNERS lines:
-   `/.expo-code-review/routing.jsonc @infra` and per-scope dirs to their teams.
+4. **CI wiring**: keep the scaffolded workflows (already wired to the chosen
+   tokenEnv via `--token-env`); the one remaining manual step is creating the repo
+   secret(s) named by the tokenEnv — list them for the user (reference §4). Suggest
+   CODEOWNERS lines: `/.expo-code-review/routing.jsonc @infra` and per-scope dirs to
+   their teams.
 
 ## Phase 5 — Verify (checker, separate agent)
 

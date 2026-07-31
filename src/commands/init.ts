@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { CONFIG_DIRNAME } from "../config/load.js";
 import { ROUTING_FILENAME } from "../config/routing.js";
 import { RoutingScopeSchema, type RoutingScope } from "../config/schema.js";
+import { FORBIDDEN_TOKEN_ENVS } from "../core/auth.js";
 import { repoRoot } from "../core/exec.js";
 import { errorMessage } from "../core/util.js";
 
@@ -24,9 +25,15 @@ Options:
   --scope <dir>   Scaffold <dir>/.expo-code-review/ (no auth) + add a scope entry
   --no-workflow   Skip writing the CI workflows (review, command, and dismiss
                   under .github/workflows/)
+  --token-env <name[,name…]>
+                  Env var(s) holding the model credential (default OPENAI_API_KEY,
+                  e.g. CLAUDE_CODE_OAUTH_TOKEN). The scaffolded workflows forward
+                  the matching repo secret(s) and expect this tokenEnv
   --force         Overwrite existing files
   -h, --help      Show this help
 `;
+
+const DEFAULT_TOKEN_ENV = "OPENAI_API_KEY";
 
 export async function initCommand(argv: string[]): Promise<void> {
   if (argv.includes("-h") || argv.includes("--help")) {
@@ -36,6 +43,11 @@ export async function initCommand(argv: string[]): Promise<void> {
   try {
     const scopeDir = parseValue(argv, "--scope");
     if (scopeDir != null) {
+      if (parseValue(argv, "--token-env") != null) {
+        throw new Error(
+          "--token-env applies to the root scaffold's workflows; drop it from `--scope`",
+        );
+      }
       await scaffoldScope(argv, scopeDir);
     } else {
       await scaffold(argv);
@@ -54,6 +66,11 @@ async function scaffold(argv: string[]): Promise<void> {
   // back-compat.
   const withWorkflow = !argv.includes("--no-workflow");
   const monorepo = argv.includes("--monorepo");
+  // Validate before any file is written so a bad flag can't leave a half scaffold.
+  const tokenEnvs = parseTokenEnvs(parseValue(argv, "--token-env"));
+  if (!withWorkflow && parseValue(argv, "--token-env") != null) {
+    throw new Error("--token-env customizes the CI workflows; drop it or remove --no-workflow");
+  }
 
   const root = (await repoRoot()) ?? process.cwd();
   const configDir = path.join(root, CONFIG_DIRNAME);
@@ -121,21 +138,26 @@ async function scaffold(argv: string[]): Promise<void> {
     await mkdir(workflowDir, { recursive: true });
     // The auto (pull_request) workflow, plus the two issue_comment command
     // workflows: `/review` (on-demand one-shot) and `/dismiss` (hide a finding).
-    await copyInto(
+    // The two review-running workflows get the tokenEnv substituted so the
+    // credential mapping stays STATIC in the committed YAML (the auth lock relies
+    // on that); dismiss.yml runs no model and needs no credential.
+    await copyTemplate(
       path.join(TEMPLATES_DIR, "workflow.yml"),
       path.join(workflowDir, "expo-code-review.yml"),
       force,
       created,
       skipped,
       root,
+      (raw) => substituteTokenEnv(raw, tokenEnvs),
     );
-    await copyInto(
+    await copyTemplate(
       path.join(TEMPLATES_DIR, "command.yml"),
       path.join(workflowDir, "expo-code-review-command.yml"),
       force,
       created,
       skipped,
       root,
+      (raw) => substituteTokenEnv(raw, tokenEnvs),
     );
     await copyInto(
       path.join(TEMPLATES_DIR, "dismiss.yml"),
@@ -156,7 +178,7 @@ async function scaffold(argv: string[]): Promise<void> {
       "  2. Configure a model provider in OpenCode (or set REVIEWER_MODEL).",
       "  3. Run `ecr doctor`, then `ecr review`.",
       withWorkflow
-        ? "  4. Add the model-key secret referenced by the workflow, then add an `ai-review` label to a PR."
+        ? `  4. Add the ${tokenEnvs.map((name) => `\`${name}\``).join(" + ")} repo secret${tokenEnvs.length > 1 ? "s" : ""} referenced by the workflow, then add an \`ai-review\` label to a PR.`
         : "  4. (No CI workflow written — re-run without `--no-workflow` to add it.)",
       monorepo
         ? `  5. Add per-team scopes with \`ecr init --scope <dir>\` (see ${CONFIG_DIRNAME}/${ROUTING_FILENAME}).`
@@ -409,4 +431,81 @@ async function copyInto(
   const existed = existsSync(dest);
   await cp(src, dest, { recursive: true, force, errorOnExist: false });
   (existed && !force ? skipped : created).push(path.relative(root, dest));
+}
+
+/** Like copyInto for a single file, but pipes the content through `transform`. */
+async function copyTemplate(
+  src: string,
+  dest: string,
+  force: boolean,
+  created: string[],
+  skipped: string[],
+  root: string,
+  transform: (raw: string) => string,
+): Promise<void> {
+  if (existsSync(dest) && !force) {
+    skipped.push(path.relative(root, dest));
+    return;
+  }
+  await writeFile(dest, transform(await readFile(src, "utf8")), "utf8");
+  created.push(path.relative(root, dest));
+}
+
+/**
+ * Parse + validate `--token-env`: a comma-separated list of env var names holding
+ * the model credential(s). Refuses names the runtime would refuse anyway
+ * (FORBIDDEN_TOKEN_ENVS) so a bad choice fails here, not at review time.
+ */
+export function parseTokenEnvs(value: string | undefined): string[] {
+  if (value == null) {
+    return [DEFAULT_TOKEN_ENV];
+  }
+  const names = value.split(",").map((name) => name.trim());
+  if (names.some((name) => !/^[A-Z][A-Z0-9_]*$/.test(name))) {
+    throw new Error(`--token-env must be UPPER_SNAKE_CASE env var name(s), got "${value}"`);
+  }
+  for (const name of names) {
+    if (FORBIDDEN_TOKEN_ENVS.has(name)) {
+      throw new Error(
+        `--token-env ${name} is a well-known unrelated secret; the reviewer refuses it`,
+      );
+    }
+  }
+  if (new Set(names).size !== names.length) {
+    throw new Error(`--token-env has duplicate names: "${value}"`);
+  }
+  return names;
+}
+
+/**
+ * Rewrite a scaffolded review workflow for a non-default tokenEnv: the
+ * ECR_EXPECTED_TOKEN_ENV fallback and the forwarded credential secret(s). GitHub
+ * Actions never exposes a secret the YAML doesn't map explicitly, so without this
+ * a Claude/Codex setup would pass the auth lock but run with an empty credential.
+ * Throws when a template marker is missing (template drift must fail loudly, not
+ * scaffold a workflow that silently keeps the OpenAI-only wiring).
+ */
+export function substituteTokenEnv(raw: string, tokenEnvs: string[]): string {
+  const joined = tokenEnvs.join(",");
+  if (joined === DEFAULT_TOKEN_ENV) {
+    return raw;
+  }
+  const expectedFallback = `vars.ECR_EXPECTED_TOKEN_ENV || '${DEFAULT_TOKEN_ENV}'`;
+  const credentialBlock = [
+    "          # OpenAI API key — the env var named by auth.tokenEnv in config.jsonc.",
+    "          # Store it as a repo secret; a project-scoped key restricted to model",
+    "          # inference (with a spend limit) is all the reviewer needs.",
+    "          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}",
+  ].join("\n");
+  if (!raw.includes(expectedFallback) || !raw.includes(credentialBlock)) {
+    throw new Error("workflow template drifted: tokenEnv markers not found (report this bug)");
+  }
+  const replacement = [
+    `          # Model credential${tokenEnvs.length > 1 ? "s" : ""} — the env var${tokenEnvs.length > 1 ? "s" : ""} named by auth.tokenEnv in config.jsonc.`,
+    "          # Store each as a repo secret under the same name.",
+    ...tokenEnvs.map((name) => `          ${name}: \${{ secrets.${name} }}`),
+  ].join("\n");
+  return raw
+    .replaceAll(expectedFallback, `vars.ECR_EXPECTED_TOKEN_ENV || '${joined}'`)
+    .replace(credentialBlock, replacement);
 }

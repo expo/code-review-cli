@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { initCommand } from "../commands/init.js";
+import { initCommand, parseTokenEnvs, substituteTokenEnv } from "../commands/init.js";
 import { git } from "../core/exec.js";
 import { CONFIG_DIRNAME } from "../config/load.js";
 
@@ -60,6 +60,55 @@ test("init --no-workflow scaffolds no workflow files", async () => {
   const root = await freshRepo();
   await initCommand(["--no-workflow"]);
   expect(await exists(path.join(root, ".github", "workflows"))).toBe(false);
+});
+
+test("init --token-env rewires both review workflows to the named secret", async () => {
+  const root = await freshRepo();
+  await initCommand(["--token-env", "CLAUDE_CODE_OAUTH_TOKEN"]);
+
+  const workflows = path.join(root, ".github", "workflows");
+  for (const file of ["expo-code-review.yml", "expo-code-review-command.yml"]) {
+    const text = await readFile(path.join(workflows, file), "utf8");
+    expect(text).toContain("CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}");
+    expect(text).toContain("vars.ECR_EXPECTED_TOKEN_ENV || 'CLAUDE_CODE_OAUTH_TOKEN'");
+    // No OpenAI wiring may survive — a leftover fallback or secret line would
+    // re-open the "auth lock passes but the credential env is empty" gap.
+    expect(text).not.toContain("OPENAI_API_KEY");
+  }
+  // dismiss.yml runs no model: written, untouched.
+  expect(await readFile(path.join(workflows, "expo-code-review-dismiss.yml"), "utf8")).toBe(
+    await readFile(path.join(TEMPLATES_DIR, "dismiss.yml"), "utf8"),
+  );
+});
+
+test("init without --token-env keeps the workflow templates byte-identical", async () => {
+  const root = await freshRepo();
+  await initCommand([]);
+  expect(
+    await readFile(path.join(root, ".github", "workflows", "expo-code-review.yml"), "utf8"),
+  ).toBe(await readFile(path.join(TEMPLATES_DIR, "workflow.yml"), "utf8"));
+});
+
+test("substituteTokenEnv forwards every name of a multi-credential set", async () => {
+  const raw = await readFile(path.join(TEMPLATES_DIR, "command.yml"), "utf8");
+  const out = substituteTokenEnv(raw, ["CODEX_OAUTH_ACCESS_TOKEN", "OPENAI_API_KEY"]);
+  expect(out).toContain("vars.ECR_EXPECTED_TOKEN_ENV || 'CODEX_OAUTH_ACCESS_TOKEN,OPENAI_API_KEY'");
+  expect(out).toContain("CODEX_OAUTH_ACCESS_TOKEN: ${{ secrets.CODEX_OAUTH_ACCESS_TOKEN }}");
+  expect(out).toContain("OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}");
+});
+
+test("substituteTokenEnv fails loudly when the template markers drift", () => {
+  expect(() => substituteTokenEnv("jobs: {}", ["CLAUDE_CODE_OAUTH_TOKEN"])).toThrow(
+    /template drifted/,
+  );
+});
+
+test("parseTokenEnvs validates names and refuses well-known unrelated secrets", () => {
+  expect(parseTokenEnvs(undefined)).toEqual(["OPENAI_API_KEY"]);
+  expect(parseTokenEnvs("A_TOKEN, B_TOKEN")).toEqual(["A_TOKEN", "B_TOKEN"]);
+  expect(() => parseTokenEnvs("lower_case")).toThrow(/UPPER_SNAKE_CASE/);
+  expect(() => parseTokenEnvs("GH_TOKEN")).toThrow(/unrelated secret/);
+  expect(() => parseTokenEnvs("A_TOKEN,A_TOKEN")).toThrow(/duplicate/);
 });
 
 test("every `uses:` in templates/*.yml is pinned by 40-hex commit SHA with a version comment", async () => {

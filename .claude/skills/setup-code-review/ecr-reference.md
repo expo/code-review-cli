@@ -20,6 +20,11 @@ Invoke via `npx @expo/code-review-cli <cmd>` (or `ecr <cmd>` when installed).
   Mutually exclusive with the base scaffold.
 - `--no-workflow` — skip writing `.github/workflows/` (three files: `expo-code-review.yml`,
   `expo-code-review-command.yml`, `expo-code-review-dismiss.yml`). `--with-workflow` accepted as no-op.
+- `--token-env <name[,name…]>` — env var(s) holding the model credential (default
+  `OPENAI_API_KEY`). Rewrites the two review workflows: the `ECR_EXPECTED_TOKEN_ENV` fallback
+  becomes the (comma-joined) list, and one `<name>: ${{ secrets.<name> }}` line is forwarded per
+  name. Refuses non-UPPER_SNAKE_CASE names and well-known unrelated secrets (`GH_TOKEN`, …).
+  Root scaffold only (errors with `--scope` or `--no-workflow`).
 - `--force` — overwrite existing files (default: skip + report).
 
 **`ecr setup-auth [--yes]`** — guided credential setup for local runs; prints `export` lines.
@@ -146,10 +151,13 @@ ambient `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` omitted unless config-named (
 subscription precedence). `claude` binary refused if it resolves inside the reviewed tree.
 
 **CI secrets**: the scaffolded workflow forwards `GH_TOKEN=secrets.GITHUB_TOKEN`,
-`ECR_EXPECTED_TOKEN_ENV=vars.ECR_EXPECTED_TOKEN_ENV || 'OPENAI_API_KEY'`,
-`OPENAI_API_KEY=secrets.OPENAI_API_KEY`, `REVIEWER_MODEL=vars.REVIEWER_MODEL` (optional),
-`ECR_VERSION=vars.ECR_VERSION || 'latest'`. For Claude/other: set `ECR_EXPECTED_TOKEN_ENV`
-(repo variable) to your tokenEnv name (e.g. `CLAUDE_CODE_OAUTH_TOKEN`) and forward that secret.
+`ECR_EXPECTED_TOKEN_ENV=vars.ECR_EXPECTED_TOKEN_ENV || '<tokenEnv>'`,
+`<tokenEnv>=secrets.<tokenEnv>`, `REVIEWER_MODEL=vars.REVIEWER_MODEL` (optional),
+`ECR_VERSION=vars.ECR_VERSION || 'latest'`, where `<tokenEnv>` comes from `init --token-env`
+(default `OPENAI_API_KEY`). GitHub Actions only exposes secrets the YAML maps explicitly, so
+the tokenEnv must be baked into the workflow at init (or edited in by hand) — creating the
+secret alone is not enough. The repo variable `ECR_EXPECTED_TOKEN_ENV` still overrides the
+baked fallback. The only manual step left is creating the repo secret(s) named by the tokenEnv.
 
 ## 5. Monorepo `routing.jsonc` + scope scaffolding
 
