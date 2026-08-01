@@ -1,5 +1,5 @@
 import { test, expect, afterEach } from "bun:test";
-import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -144,6 +144,28 @@ test("init --token-env --force rewrites existing review workflows", async () => 
     expect(text).toContain("CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}");
     expect(text).not.toContain("OPENAI_API_KEY");
   }
+});
+
+test("init --token-env --force-workflows rewrites workflows but keeps customized config + prompts", async () => {
+  const root = await freshRepo();
+  await initCommand([]);
+  // Adopter tunes their config and an agent prompt after the first scaffold.
+  const configPath = path.join(root, CONFIG_DIRNAME, "config.jsonc");
+  const agentPath = path.join(root, CONFIG_DIRNAME, "agents", "security.md");
+  await writeFile(configPath, "// my tuned config\n", "utf8");
+  await writeFile(agentPath, "my tuned prompt\n", "utf8");
+
+  await initCommand(["--token-env", "CLAUDE_CODE_OAUTH_TOKEN", "--force-workflows"]);
+
+  // Workflows are rewritten for the new credential.
+  for (const file of ["expo-code-review.yml", "expo-code-review-command.yml"]) {
+    const text = await readFile(path.join(root, ".github", "workflows", file), "utf8");
+    expect(text).toContain("CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}");
+    expect(text).not.toContain("OPENAI_API_KEY");
+  }
+  // The adopter's tuned files survive untouched.
+  expect(await readFile(configPath, "utf8")).toBe("// my tuned config\n");
+  expect(await readFile(agentPath, "utf8")).toBe("my tuned prompt\n");
 });
 
 test("init --token-env prints the config.jsonc auth edit as a next step", async () => {

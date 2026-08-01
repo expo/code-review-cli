@@ -31,6 +31,10 @@ Options:
                   e.g. CLAUDE_CODE_OAUTH_TOKEN). The scaffolded workflows forward
                   the matching repo secret(s) and expect this tokenEnv
   --force         Overwrite existing files
+  --force-workflows
+                  Overwrite only the CI workflow files, keeping your customized
+                  config.jsonc, prompts, and agents/. Use this to re-run
+                  --token-env on an already-scaffolded repo.
   -h, --help      Show this help
 `;
 
@@ -62,6 +66,10 @@ export async function initCommand(argv: string[]): Promise<void> {
 /** Scaffold .expo-code-review/ (and optionally the CI workflow + routing manifest). */
 async function scaffold(argv: string[]): Promise<void> {
   const force = argv.includes("--force");
+  // Re-running --token-env on an adopted repo needs to rewrite the workflow YAML
+  // without clobbering the adopter's tuned prompts and auth config, so the
+  // workflow writes honor a narrower force that leaves everything else skipped.
+  const forceWorkflows = force || argv.includes("--force-workflows");
   // The CI workflow is scaffolded by default (most repos adopting this want it);
   // `--no-workflow` opts out. `--with-workflow` is still accepted as a no-op for
   // back-compat.
@@ -81,7 +89,7 @@ async function scaffold(argv: string[]): Promise<void> {
   // the flag would silently never reach CI while the next steps claim the
   // workflow references the new secret. Refuse before any file is written.
   // @ref LLP 0007#init-and-dismiss [implements] — validated before any file is written; no half scaffold
-  if (withWorkflow && tokenEnvs.join(",") !== DEFAULT_TOKEN_ENV && !force) {
+  if (withWorkflow && tokenEnvs.join(",") !== DEFAULT_TOKEN_ENV && !forceWorkflows) {
     const existing = ["expo-code-review.yml", "expo-code-review-command.yml"]
       .map((name) => path.join(".github", "workflows", name))
       .filter((rel) => existsSync(path.join(root, rel)));
@@ -89,8 +97,10 @@ async function scaffold(argv: string[]): Promise<void> {
       throw new Error(
         `--token-env cannot take effect: ${existing.join(" and ")} already ` +
           `exist${existing.length > 1 ? "" : "s"} and would be skipped, so CI would keep ` +
-          `forwarding the default secret. Re-run with --force to rewrite the workflows, ` +
-          `or edit their ECR_EXPECTED_TOKEN_ENV fallback and forwarded secret lines by hand.`,
+          `forwarding the default secret. Re-run with --force-workflows to rewrite just the ` +
+          `workflows (keeps your config.jsonc, prompts, and agents/), with --force to rewrite ` +
+          `everything, or edit their ECR_EXPECTED_TOKEN_ENV fallback and forwarded secret ` +
+          `lines by hand.`,
       );
     }
   }
@@ -165,7 +175,7 @@ async function scaffold(argv: string[]): Promise<void> {
     await copyTemplate(
       path.join(TEMPLATES_DIR, "workflow.yml"),
       path.join(workflowDir, "expo-code-review.yml"),
-      force,
+      forceWorkflows,
       created,
       skipped,
       root,
@@ -174,7 +184,7 @@ async function scaffold(argv: string[]): Promise<void> {
     await copyTemplate(
       path.join(TEMPLATES_DIR, "command.yml"),
       path.join(workflowDir, "expo-code-review-command.yml"),
-      force,
+      forceWorkflows,
       created,
       skipped,
       root,
@@ -183,7 +193,7 @@ async function scaffold(argv: string[]): Promise<void> {
     await copyInto(
       path.join(TEMPLATES_DIR, "dismiss.yml"),
       path.join(workflowDir, "expo-code-review-dismiss.yml"),
-      force,
+      forceWorkflows,
       created,
       skipped,
       root,
