@@ -143,7 +143,11 @@ Anthropic subscription/bearer envs (locked to provider `anthropic`): `CLAUDE_COD
 | **Other OpenCode provider** | omit auth | run `opencode auth login` + `REVIEWER_MODEL=<provider>/<model>` | e.g. `google/gemini-3-pro` |
 
 OAuth `openai` tokenEnv: an opaque value = refresh token (codex plugin mints access);
-a JWT = access token. `upstream` synthesizes an alias provider in OpenCode config.
+a JWT = access token. CI/shared secrets must hold the ACCESS token (`ecr setup-auth`
+extracts it; ~10-day lifetime, re-mint periodically), NEVER the refresh token — refresh
+tokens are single-use (rotation), so a shared static copy is spent by its first use and
+the whole sign-in dies with it. A refresh token is only safe where that run is its sole
+consumer. `upstream` synthesizes an alias provider in OpenCode config.
 
 **Claude subscription path**: token via `claude setup-token` (1-year OAuth) or active local
 `claude` login. Resolution: configured tokenEnv value → ambient `CLAUDE_CODE_OAUTH_TOKEN` → local
