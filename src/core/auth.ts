@@ -42,7 +42,7 @@ const ANTHROPIC_TOKEN_ENVS: Record<string, string> = {
  * minted for that provider, so we hard-refuse these well-known unrelated secrets.
  * Defense-in-depth alongside loading config only from the trusted base ref.
  */
-const FORBIDDEN_TOKEN_ENVS = new Set([
+export const FORBIDDEN_TOKEN_ENVS = new Set([
   "GITHUB_TOKEN",
   "GH_TOKEN",
   "ACTIONS_RUNTIME_TOKEN",
