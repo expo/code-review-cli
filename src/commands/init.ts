@@ -578,16 +578,43 @@ async function detectWorkflowTokenEnv(root: string): Promise<string | null> {
 }
 
 /**
- * Names of non-default model credentials a workflow forwards, read from its
- * `<NAME>: ${{ secrets.<...> }}` env lines. Skips the default and the known
- * non-model secrets (GH_TOKEN) so only a hand-wired model credential is returned.
+ * Slice the `Run AI review` step (its `env:` maps the model credential) out of a
+ * workflow file, so credential detection reads only the block the scaffold owns
+ * and not secrets a hand edit forwards to unrelated steps (a deploy step's AWS
+ * keys, an acknowledge step's GH_TOKEN, …). Steps sit at 6-space `- ` indent, so
+ * the step runs until the next such line or EOF. Returns "" when the step is
+ * absent (drifted or removed template).
+ */
+function runAiReviewStep(raw: string): string {
+  const start = raw.indexOf("- name: Run AI review");
+  if (start === -1) {
+    return "";
+  }
+  const rest = raw.slice(start);
+  const nextStep = rest.search(/\n {6}- /);
+  return nextStep === -1 ? rest : rest.slice(0, nextStep);
+}
+
+/**
+ * Names of the non-default model credential a workflow's `Run AI review` step
+ * forwards, read from its `<NAME>: ${{ secrets.<...> }}` env lines. Skips the
+ * default, the known non-model secrets (GH_TOKEN), and any FORBIDDEN_TOKEN_ENVS
+ * name — the runtime refuses those as a model credential, so surfacing one as a
+ * baked credential would produce a remediation (`--token-env <name>`) that either
+ * cannot pass parseTokenEnvs or would wire an unrelated secret to the provider.
+ * Scanning is scoped to the credential block the scaffold owns so a secret a hand
+ * edit forwards to another step is never mistaken for the model credential.
  */
 function forwardedModelCredentials(raw: string): string[] {
   const names: string[] = [];
   const re = /^\s*([A-Z][A-Z0-9_]*):\s*\$\{\{\s*secrets\.[A-Z][A-Z0-9_]*\s*\}\}/gm;
-  for (const match of raw.matchAll(re)) {
+  for (const match of runAiReviewStep(raw).matchAll(re)) {
     const name = match[1]!;
-    if (name === DEFAULT_TOKEN_ENV || NON_MODEL_FORWARDED_SECRETS.has(name)) {
+    if (
+      name === DEFAULT_TOKEN_ENV ||
+      NON_MODEL_FORWARDED_SECRETS.has(name) ||
+      FORBIDDEN_TOKEN_ENVS.has(name)
+    ) {
       continue;
     }
     if (!names.includes(name)) {
