@@ -105,6 +105,27 @@ async function scaffold(argv: string[]): Promise<void> {
     }
   }
 
+  // The reverse of the guard above: --force-workflows (or --force) always rewrites
+  // the review workflows from the pristine template, which forwards the default
+  // OPENAI_API_KEY unless --token-env names the credential again. An adopter who
+  // scaffolded with a non-default tokenEnv and later refreshes the workflow YAML
+  // without re-passing --token-env would silently lose the forwarded secret, and
+  // CI would keep passing the auth lock but run with an empty credential. Refuse
+  // before any file is written; naming --token-env again (or the default, to reset
+  // on purpose) is the explicit opt-in.
+  if (withWorkflow && forceWorkflows && parseValue(argv, "--token-env") == null) {
+    const baked = await detectWorkflowTokenEnv(root);
+    if (baked != null && baked !== DEFAULT_TOKEN_ENV) {
+      throw new Error(
+        `refusing to revert the CI credential wiring: the existing review workflows forward ` +
+          `${baked}, but this run has no --token-env, so rewriting them would restore the ` +
+          `default ${DEFAULT_TOKEN_ENV} and CI would run with an empty credential. Re-run with ` +
+          `--token-env ${baked} to keep the current credential, or --token-env ${DEFAULT_TOKEN_ENV} ` +
+          `to reset to OpenAI on purpose.`,
+      );
+    }
+  }
+
   // Create only the config dir; let copyInto create prompts/ so it reports
   // accurately as created vs skipped.
   await mkdir(configDir, { recursive: true });
@@ -516,6 +537,29 @@ export function parseTokenEnvs(value: string | undefined): string[] {
     throw new Error(`--token-env has duplicate names: "${value}"`);
   }
   return names;
+}
+
+/**
+ * Read the tokenEnv baked into an existing review workflow's
+ * `ECR_EXPECTED_TOKEN_ENV` fallback (`vars.ECR_EXPECTED_TOKEN_ENV || '<name>'`),
+ * or null when no review workflow exists or the marker is absent. Lets a
+ * --force-workflows run detect that it is about to overwrite a non-default
+ * credential wiring instead of silently reverting it to the default.
+ */
+async function detectWorkflowTokenEnv(root: string): Promise<string | null> {
+  for (const name of ["expo-code-review.yml", "expo-code-review-command.yml"]) {
+    const file = path.join(root, ".github", "workflows", name);
+    if (!existsSync(file)) {
+      continue;
+    }
+    const match = (await readFile(file, "utf8")).match(
+      /vars\.ECR_EXPECTED_TOKEN_ENV \|\| '([^']*)'/,
+    );
+    if (match) {
+      return match[1]!;
+    }
+  }
+  return null;
 }
 
 /**

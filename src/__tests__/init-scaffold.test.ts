@@ -168,6 +168,50 @@ test("init --token-env --force-workflows rewrites workflows but keeps customized
   expect(await readFile(agentPath, "utf8")).toBe("my tuned prompt\n");
 });
 
+test("init --force-workflows without --token-env refuses to revert a non-default credential", async () => {
+  const root = await freshRepo();
+  await initCommand(["--token-env", "CLAUDE_CODE_OAUTH_TOKEN"]);
+
+  // Refreshing the workflow YAML without re-passing --token-env would rewrite it
+  // from the pristine (OpenAI) template and silently drop the forwarded secret.
+  const err = await captureStderr(() => initCommand(["--force-workflows"]));
+  expect(process.exitCode).toBe(2);
+  process.exitCode = 0;
+  expect(err).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+  expect(err).toContain("--token-env");
+  // The workflow keeps its Claude wiring untouched — no silent reversion.
+  const text = await readFile(
+    path.join(root, ".github", "workflows", "expo-code-review.yml"),
+    "utf8",
+  );
+  expect(text).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+  expect(text).not.toContain("OPENAI_API_KEY");
+});
+
+test("init --force-workflows --token-env re-affirming the credential rewrites cleanly", async () => {
+  const root = await freshRepo();
+  await initCommand(["--token-env", "CLAUDE_CODE_OAUTH_TOKEN"]);
+  // Naming the credential again is the explicit opt-in; it must not refuse.
+  await initCommand(["--token-env", "CLAUDE_CODE_OAUTH_TOKEN", "--force-workflows"]);
+  const text = await readFile(
+    path.join(root, ".github", "workflows", "expo-code-review.yml"),
+    "utf8",
+  );
+  expect(text).toContain("CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}");
+  expect(text).not.toContain("OPENAI_API_KEY");
+});
+
+test("init --force-workflows without --token-env is fine on a default-credential repo", async () => {
+  const root = await freshRepo();
+  await initCommand([]);
+  // Default OPENAI_API_KEY wiring: nothing to revert, so no refusal.
+  await initCommand(["--force-workflows"]);
+  expect(process.exitCode ?? 0).toBe(0);
+  expect(
+    await readFile(path.join(root, ".github", "workflows", "expo-code-review.yml"), "utf8"),
+  ).toBe(await readFile(path.join(TEMPLATES_DIR, "workflow.yml"), "utf8"));
+});
+
 test("init --token-env prints the config.jsonc auth edit as a next step", async () => {
   await freshRepo();
   const out = await captureStdout(() => initCommand(["--token-env", "CLAUDE_CODE_OAUTH_TOKEN"]));

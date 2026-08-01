@@ -105,9 +105,13 @@ Enter a worktree (branch e.g. `<repo>-code-review-setup`). Then:
    `--token-env CLAUDE_CODE_OAUTH_TOKEN`): it bakes the tokenEnv into the scaffolded
    workflows' env — without it CI never receives the secret and the review job fails.
    (If the installed CLI predates `--token-env`, edit both review workflows by hand:
-   the `ECR_EXPECTED_TOKEN_ENV` fallback and the `secrets.*` credential line.) The
-   scaffold gives correct file shapes, workflows, and `.gitignore` entries; your job
-   is to REWRITE the contents.
+   the `ECR_EXPECTED_TOKEN_ENV` fallback and the `secrets.*` credential line.)
+   Re-configuring a repo that already has `.expo-code-review/` (Phase 0 case 2)? Pass
+   `--force-workflows` together with `--token-env` to rewrite just the workflow YAML
+   while keeping the tuned `config.jsonc`, prompts, and `agents/`; a bare
+   `--force-workflows` refuses rather than silently reverting a non-default credential
+   to `OPENAI_API_KEY`, and `--force` overwrites everything. The scaffold gives correct
+   file shapes, workflows, and `.gitignore` entries; your job is to REWRITE the contents.
 2. **Write root `config.jsonc`** per the Phase 3 decisions: `model`, `auth` (root-only,
    exact shapes from reference §4), `review.trigger`/`label`, `noise.additionalIgnores`
    for this repo's generated paths, `chunk` overrides only if discovery justifies them.

@@ -26,7 +26,14 @@ Invoke via `npx @expo/code-review-cli <cmd>` (or `ecr <cmd>` when installed).
   name. Refuses non-UPPER_SNAKE_CASE names and well-known unrelated secrets (`GH_TOKEN`, …).
   Root scaffold only (errors with `--scope` or `--no-workflow`). Does NOT touch the scaffolded
   `config.jsonc` (it still declares `OPENAI_API_KEY`) — init prints the required `auth` edit as
-  a next step, and CI's `verify-config` fails until config and workflow name the same set.
+  a next step, and CI's `verify-config` fails until config and workflow name the same set. On an
+  already-scaffolded repo the existing workflow files are skipped, so re-running `--token-env`
+  there refuses unless you also pass `--force-workflows` or `--force`.
+- `--force-workflows` — overwrite ONLY the CI workflow YAML, keeping your tuned `config.jsonc`,
+  prompts, and `agents/`. This is the surgical way to re-run `--token-env` on an already-scaffolded
+  repo (`--force` rewrites everything). Pass `--token-env` alongside it: a `--force-workflows` (or
+  `--force`) run with no `--token-env` refuses when the existing workflows name a non-default
+  credential, so it can't silently revert CI to `OPENAI_API_KEY`.
 - `--force` — overwrite existing files (default: skip + report).
 
 **`ecr setup-auth [--yes]`** — guided credential setup for local runs; prints `export` lines.
