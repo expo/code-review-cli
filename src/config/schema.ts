@@ -125,6 +125,38 @@ export const ReviewConfigSchema = z.object({
       skipLabel: z.string().default("ai-review:skip"),
     })
     .default({ trigger: "all", label: "ai-review", skipLabel: "ai-review:skip" }),
+  // Stack-aware requalification: walk the OPEN PRs stacked on top of this one and
+  // let the coordinator mark absence-style findings a later PR already addresses.
+  // ROOT-ONLY (one PR has one stack) and off by default — a suppression-adjacent
+  // feature earns trust with field data first. Under `ecr ci` it auto-enables from
+  // this trusted-base value; `ecr review --pr` needs an explicit --stack-aware.
+  // @ref LLP 0010#config-and-cli-surface [implements] — root-only + off-by-default; head config can never enable, widen, or disable it
+  stack: z
+    .object({
+      enabled: z.boolean().default(false),
+      maxDepth: z.number().int().positive().default(4),
+      // Children per level (per parent branch) the walk will follow.
+      maxPrs: z.number().int().positive().default(8),
+      maxFilesPerPr: z.number().int().positive().default(100),
+      // Only children whose author is the current PR's author enter the manifest —
+      // closes cross-author poisoning (a push-access colleague opening a child PR on
+      // the victim's branch). Set false from the trusted base for genuine team stacks.
+      requireSameAuthor: z.boolean().default(true),
+      // v2: confirm each requalification against the addressing PR's actual patch
+      // before believing it (a no-tools LLM reads the inlined patch). Default false so
+      // v2 ships dark until flipped; maxConfirmations bounds that cost.
+      confirmWithPatch: z.boolean().default(false),
+      maxConfirmations: z.number().int().positive().default(10),
+    })
+    .default({
+      enabled: false,
+      maxDepth: 4,
+      maxPrs: 8,
+      maxFilesPerPr: 100,
+      requireSameAuthor: true,
+      confirmWithPatch: false,
+      maxConfirmations: 10,
+    }),
 });
 export type RawReviewConfig = z.infer<typeof ReviewConfigSchema>;
 
@@ -233,6 +265,7 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
   auth: true,
   breakGlass: true,
   commentTag: true,
+  stack: true,
 }).extend({
   auth: z
     .never({ error: "auth is locked to the root config; remove it from this scope config" })
@@ -242,6 +275,12 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
     .never({
       error:
         "commentTag is locked: per-scope comment markers are derived as <rootTag>:<scope>; remove it from this scope config",
+    })
+    .optional(),
+  stack: z
+    .never({
+      error:
+        "stack is locked to the root config (one PR has one stack); remove it from this scope config",
     })
     .optional(),
 });
@@ -322,5 +361,15 @@ export interface LoadedConfig {
     trigger: "all" | "label";
     label: string;
     skipLabel: string;
+  };
+  /** Root-only stack-aware requalification settings (see ReviewConfigSchema.stack). */
+  stack: {
+    enabled: boolean;
+    maxDepth: number;
+    maxPrs: number;
+    maxFilesPerPr: number;
+    requireSameAuthor: boolean;
+    confirmWithPatch: boolean;
+    maxConfirmations: number;
   };
 }

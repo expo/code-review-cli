@@ -62,6 +62,18 @@ export const FindingSchema = z.object({
    * the finding is treated as hallucinated and dropped.
    */
   evidence: z.string().optional(),
+  /**
+   * Set by the coordinator (and then ground-checked, see groundStackRequalification)
+   * when a later, stacked-on-top PR already addresses this absence-style finding:
+   * `prNumber` + the EXACT upstack manifest `file` relied on + a one-line `reason`.
+   * A requalified finding is never dropped — it renders in its own section, is
+   * counted, and is only excluded from the blocking decision. Never part of the
+   * fingerprint, so dismissal identity is stable across re-reviews.
+   */
+  // @ref LLP 0010#requalification-schema-and-fingerprints [constrained-by] — annotate-only; excluded from fingerprintFinding so dismissal identity never lapses on requalification
+  requalifiedBy: z
+    .object({ prNumber: z.number().int(), file: z.string(), reason: z.string() })
+    .optional(),
 });
 export type Finding = z.infer<typeof FindingSchema>;
 
@@ -93,6 +105,22 @@ export type Verdict = z.infer<typeof VerdictSchema>;
 
 export function parseVerdict(text: string): Verdict {
   return VerdictSchema.parse(extractJsonObject(text));
+}
+
+/**
+ * A stack verifier's verdict on whether a later stacked PR's patch actually
+ * addresses an absence-style finding (v2 patch confirmation). Fails toward
+ * blocking: anything but a clear `addressed: true` strips the requalification.
+ */
+// @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — addressed !== true keeps the finding blocking
+export const StackVerdictSchema = z.object({
+  addressed: z.boolean(),
+  reason: z.string().default(""),
+});
+export type StackVerdict = z.infer<typeof StackVerdictSchema>;
+
+export function parseStackVerdict(text: string): StackVerdict {
+  return StackVerdictSchema.parse(extractJsonObject(text));
 }
 
 /** Shape each sub-reviewer must emit. */

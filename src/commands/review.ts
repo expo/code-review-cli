@@ -8,7 +8,7 @@ import { runReview } from "../core/review.js";
 import { LocalGitSource } from "../sources/local-git.js";
 import { GitHubPRSource } from "../sources/github-pr.js";
 import type { ReviewSource } from "../sources/source.js";
-import { memoizeSource } from "../sources/source.js";
+import { memoizeSource, stackConfirmFromConfig, stackWalkFromConfig } from "../sources/source.js";
 import { TerminalReporter } from "../reporters/terminal.js";
 import { GitHubReporter } from "../reporters/github.js";
 
@@ -40,6 +40,9 @@ Options:
                        (also ECR_CONFIG_DIR); can't combine with --scope
   --context-file <p>   inject <p>'s UTF-8 text into reviewer prompts as an
                        explicitly UNTRUSTED external-context block
+  --stack-aware        with --pr: walk the open PRs stacked on top and let the
+                       coordinator requalify absence-style findings a later PR
+                       already addresses (off by default; rejected without --pr)
   --json               emit machine-readable JSON on stdout
   --no-fail            always exit 0, even on request-changes
   -h, --help           show this help
@@ -65,6 +68,7 @@ interface ReviewArgs {
   scope?: string;
   configDir?: string;
   contextFile?: string;
+  stackAware: boolean;
   json: boolean;
   noFail: boolean;
   help: boolean;
@@ -82,6 +86,7 @@ function parseArgs(argv: string[]): ReviewArgs {
     staged: false,
     post: false,
     route: false,
+    stackAware: false,
     json: false,
     noFail: false,
     help: false,
@@ -130,6 +135,9 @@ function parseArgs(argv: string[]): ReviewArgs {
         break;
       case "--context-file":
         args.contextFile = requireValue(arg, argv[++i]);
+        break;
+      case "--stack-aware":
+        args.stackAware = true;
         break;
       case "--json":
         args.json = true;
@@ -244,6 +252,16 @@ export async function reviewCommand(argv: string[]): Promise<void> {
           route: args.route,
           includePaths: files,
           contextText,
+          // Explicit --stack-aware only: local config is not a trusted base, so the
+          // user typing the flag is the trust principal. Bounds come from the root
+          // config; validateArgs already rejected --stack-aware without --pr, and the
+          // pr guard here keeps that invariant local.
+          stack:
+            args.stackAware && args.pr != null ? stackWalkFromConfig(rootConfig.stack) : undefined,
+          stackConfirm:
+            args.stackAware && args.pr != null
+              ? stackConfirmFromConfig(rootConfig.stack)
+              : undefined,
           onProgress: (message) => process.stderr.write(`${message}\n`),
         });
         await new TerminalReporter({ json: args.json, noFail: args.noFail }).report(review);
@@ -297,6 +315,11 @@ export async function reviewCommand(argv: string[]): Promise<void> {
       agents: args.agents,
       route: args.route,
       contextText,
+      // Explicit --stack-aware only (see the scope branch); validateArgs already
+      // rejected --stack-aware without --pr.
+      stack: args.stackAware && args.pr != null ? stackWalkFromConfig(config.stack) : undefined,
+      stackConfirm:
+        args.stackAware && args.pr != null ? stackConfirmFromConfig(config.stack) : undefined,
       onProgress: (message) => process.stderr.write(`${message}\n`),
     });
 
@@ -345,6 +368,11 @@ function validateArgs(args: ReviewArgs): void {
   }
   if (args.pr == null && (args.repo || args.post)) {
     throw new Error("--repo/--post only apply together with --pr.");
+  }
+  // Same rule as --repo/--post: the stack walk needs a PR to walk from, so a bare
+  // --stack-aware would be silently ignored — reject it instead.
+  if (args.pr == null && args.stackAware) {
+    throw new Error("--stack-aware only applies together with --pr.");
   }
   // --staged diffs the index against HEAD, so --base/--head have no effect. Reject
   // the combination rather than silently ignoring the range the user asked for.

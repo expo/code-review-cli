@@ -2,6 +2,50 @@
 import type { DiffEntry, ReviewMetadata } from "../core/schema.js";
 
 /**
+ * The paths-only manifest of the OPEN pull requests stacked on top of this PR
+ * (they branch off its head). Fetched by a source, injected into the coordinator
+ * so an absence-style finding a later PR already addresses can be requalified.
+ * Everything in it is PR-author-controlled, so it is treated as untrusted data.
+ */
+// @ref LLP 0010#the-upstack-manifest [implements] — paths-only, author-controlled, fetched once per run
+export interface StackManifest {
+  upstackPRs: Array<{ number: number; title: string; authorLogin: string; files: string[] }>;
+  /** A per-PR file list hit its cap (maxFilesPerPr) — the manifest is a subset. */
+  truncated: boolean;
+}
+
+/** Bounds + gates for the upward stack walk. Resolved in the command layer from the
+ * trusted-base stack config; never head-controlled. Presence of this option (not a
+ * boolean) is what turns the walk on. */
+// @ref LLP 0010#bounded-guarded-upward-walk [constrained-by] — every field is a hard bound the walk must never exceed
+export interface StackWalkOptions {
+  maxDepth: number;
+  maxPrs: number;
+  maxFilesPerPr: number;
+  requireSameAuthor: boolean;
+}
+
+/** Pick the walk bounds out of a resolved stack config (drops enable/v2 fields). */
+export function stackWalkFromConfig(stack: StackWalkOptions): StackWalkOptions {
+  return {
+    maxDepth: stack.maxDepth,
+    maxPrs: stack.maxPrs,
+    maxFilesPerPr: stack.maxFilesPerPr,
+    requireSameAuthor: stack.requireSameAuthor,
+  };
+}
+
+/** The v2 confirmation cap, or undefined when confirmWithPatch is off. Callers apply
+ * the on/off gate (ci: trusted-base `enabled`; review: `--stack-aware`) around this. */
+// @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — confirmWithPatch is the v2 gate; off (default) → grounding is the floor and no patch is ever fetched
+export function stackConfirmFromConfig(stack: {
+  confirmWithPatch: boolean;
+  maxConfirmations: number;
+}): { maxConfirmations: number } | undefined {
+  return stack.confirmWithPatch ? { maxConfirmations: stack.maxConfirmations } : undefined;
+}
+
+/**
  * A Source is where the diff comes from. CI and local mode differ only in which
  * Source (and Reporter) is wired into the otherwise-identical review core.
  */
@@ -9,6 +53,22 @@ export interface ReviewSource {
   getMetadata(): Promise<ReviewMetadata>;
   /** Changed files as path + patch text per file. */
   getChangedFiles(): Promise<DiffEntry[]>;
+  /**
+   * Optionally walk the OPEN PRs stacked on top of this one and return a paths-only
+   * manifest. Any error, rate limit, non-stack PR, or empty result returns `null`
+   * (fail-open — a broken walk never blocks or changes a review). Omitted entirely
+   * by sources with no concept of a stack (LocalGitSource) → a structural no-op.
+   */
+  // @ref LLP 0010#the-upstack-manifest [constrained-by] — fail-open: any failure returns null, never throws, so a broken walk leaves the review exactly as if the feature were off
+  getStackContextAsync?(options: StackWalkOptions): Promise<StackManifest | null>;
+  /**
+   * Optionally fetch just the unified-diff patch a stacked child PR applied to ONE
+   * file (v2 patch confirmation). Returns `null` when the file isn't in that PR or on
+   * any error — fail-open, exactly like getStackContextAsync, so the caller strips the
+   * requalification (finding stays blocking). Omitted by sources with no stack concept.
+   */
+  // @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — fail-open null: a fetch failure strips the requalification rather than believing it
+  getStackFilePatchAsync?(prNumber: number, file: string): Promise<string | null>;
   /**
    * Optionally materialize the exact tree the review should READ from and return its
    * directory + a cleanup. The review core chdirs into it while running the agents
@@ -47,11 +107,32 @@ export function memoizeSource(source: ReviewSource): ReviewSource & { dispose():
   let metadataPromise: Promise<ReviewMetadata> | undefined;
   let changedPromise: Promise<DiffEntry[]> | undefined;
   let readRootPromise: Promise<PreparedReadRoot | null> | undefined;
+  let stackPromise: Promise<StackManifest | null> | undefined;
   let realHandle: PreparedReadRoot | null = null;
 
+  const stackFn = source.getStackContextAsync;
+  const patchFn = source.getStackFilePatchAsync;
   return {
     getMetadata: () => (metadataPromise ??= source.getMetadata()),
     getChangedFiles: () => (changedPromise ??= source.getChangedFiles()),
+    // One PR has one stack: fetch it once and share it across every scope's run
+    // (like getMetadata). Only exposed when the wrapped source can walk a stack, so
+    // an optional-chained call on a stack-less source stays a structural no-op.
+    ...(stackFn
+      ? {
+          getStackContextAsync: (options: StackWalkOptions) =>
+            (stackPromise ??= stackFn.call(source, options)),
+        }
+      : {}),
+    // Passed straight through: v2 confirmation dedupes by (prNumber, file) within a run
+    // and the fetch is cheap, so it needs no cross-scope memo — only the conditional
+    // exposure that keeps a stack-less source a structural no-op.
+    ...(patchFn
+      ? {
+          getStackFilePatchAsync: (prNumber: number, file: string) =>
+            patchFn.call(source, prNumber, file),
+        }
+      : {}),
     prepareReadRootAsync: async () => {
       readRootPromise ??= source.prepareReadRootAsync
         ? source.prepareReadRootAsync()

@@ -138,6 +138,13 @@ const CROSS_CUTTING_TOOLS = toolMap(["read", "grep"]);
 export const VERIFIER_AGENT = "verifier";
 const VERIFIER_TOOLS = toolMap(["read", "grep"]);
 
+// @ref LLP 0010#patch-level-confirmation-v2 [implements] — no-tools agent: the addressing PR's patch is INLINED, never read from disk, so there is no pathInside surface at all
+// Confirms a requalification by reading the addressing PR's INLINED patch (v2). It
+// gets NO tools: the patch is inlined into the task, so it must never read the disk
+// (the untrusted upstack tree is not even materialized) — an empty tool set makes
+// that structural, like the coordinator.
+export const STACK_VERIFIER_AGENT = "stack-verifier";
+
 /** Build the inline OpenCode config (agents + coordinator) from a repo config. */
 export function buildOpencodeConfig(config: LoadedConfig): Record<string, unknown> {
   const agent: Record<string, unknown> = {};
@@ -169,6 +176,17 @@ export function buildOpencodeConfig(config: LoadedConfig): Record<string, unknow
     prompt:
       "You verify code-review findings against the actual source. Follow the user message exactly and return only the requested JSON.",
     tools: VERIFIER_TOOLS,
+  };
+  agent[STACK_VERIFIER_AGENT] = {
+    description: "Confirms a requalification against the addressing PR's inlined patch.",
+    mode: "all",
+    model: config.agents[0]?.model ?? config.coordinator.model,
+    temperature: config.agents[0]?.temperature ?? 0.1,
+    prompt:
+      "You judge whether a later PR's patch actually addresses a code-review finding. Follow the user message exactly and return only the requested JSON.",
+    // No tools: the patch is inlined, so it must never read the disk (mirrors NO_TOOLS
+    // on the coordinator — see STACK_VERIFIER_AGENT).
+    tools: NO_TOOLS,
   };
   agent["coordinator"] = {
     description: "Consolidates specialist findings into one decision.",

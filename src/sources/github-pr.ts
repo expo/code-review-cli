@@ -5,9 +5,10 @@ import path from "node:path";
 
 import { resolveTrustedTool, run } from "../core/exec.js";
 import { parseUnifiedDiff } from "../core/diff.js";
+import { normalizeManifestPath } from "../core/stack.js";
 import { removeEscapingSymlinks, scrubAmbientRuntimeConfig } from "../core/scrub.js";
 import type { DiffEntry, ReviewMetadata } from "../core/schema.js";
-import type { PreparedReadRoot, ReviewSource } from "./source.js";
+import type { PreparedReadRoot, ReviewSource, StackManifest, StackWalkOptions } from "./source.js";
 
 export interface GitHubPRSourceOptions {
   prNumber: number;
@@ -20,6 +21,99 @@ export interface GitHubPRSourceOptions {
 // @ref LLP 0008#pr-head-materialization [constrained-by] — the single gate: only a full 40-hex OID reaches git worktree add/fetch, closing the TOCTOU race and blocking ref/argument injection at once
 export function isCommitOid(value: string | undefined): value is string {
   return typeof value === "string" && /^[0-9a-f]{40}$/i.test(value);
+}
+
+/** One open child PR as returned by the pulls-list endpoint, pre-parsed. */
+export interface StackChildPr {
+  number: number;
+  title: string;
+  authorLogin: string;
+  /** The child's own head branch — the base we recurse on to find ITS children. */
+  headRef: string;
+  /** head.repo.full_name === "owner/repo": a fork PR fails this and is dropped. */
+  sameRepo: boolean;
+}
+
+/** A child PR's file list plus whether it was capped at maxFilesPerPr. */
+export interface StackChildFiles {
+  files: string[];
+  truncated: boolean;
+}
+
+// @ref LLP 0010#bounded-guarded-upward-walk [implements] — every guard (same-repo, same-author, depth/width caps, cycle guard, fail-open) lives here as pure logic; the IO is injected so it is unit-testable without gh
+/**
+ * The bounded, guarded upward walk, factored pure over injected fetchers so it can be
+ * tested without gh. Level-by-level (BFS over head branches), it keeps only same-repo
+ * (and, when required, same-author) children, caps children per level at `maxPrs`,
+ * stops at `maxDepth`, and guards against branch cycles. ANY fetch error → `null`
+ * (fail-open); an empty result → `null` (nothing to inject).
+ */
+export async function walkUpstack(
+  rootHeadRef: string,
+  rootAuthor: string,
+  options: StackWalkOptions,
+  fetchChildren: (baseBranch: string) => Promise<StackChildPr[]>,
+  fetchFiles: (prNumber: number) => Promise<StackChildFiles>,
+): Promise<StackManifest | null> {
+  const upstackPRs: StackManifest["upstackPRs"] = [];
+  let truncated = false;
+  const visited = new Set<string>([rootHeadRef]);
+  let frontier = [rootHeadRef];
+  try {
+    for (let depth = 0; depth < options.maxDepth && frontier.length > 0; depth++) {
+      const next: string[] = [];
+      // maxPrs is a PER-LEVEL budget shared by every parent in the frontier, not a
+      // per-parent one — otherwise a branching (diamond) stack would widen each level
+      // to frontier.length × maxPrs and compound across depths, blowing the documented
+      // hard bound on walked PRs and gh calls.
+      let levelBudget = options.maxPrs;
+      for (const baseBranch of frontier) {
+        if (levelBudget <= 0) {
+          break;
+        }
+        const children = await fetchChildren(baseBranch);
+        const eligible = children
+          .filter((child) => child.sameRepo)
+          .filter((child) => !options.requireSameAuthor || child.authorLogin === rootAuthor)
+          .filter((child) => !visited.has(child.headRef))
+          .slice(0, levelBudget);
+        levelBudget -= eligible.length;
+        for (const child of eligible) {
+          visited.add(child.headRef);
+          const { files, truncated: capped } = await fetchFiles(child.number);
+          truncated = truncated || capped;
+          upstackPRs.push({
+            number: child.number,
+            title: child.title,
+            authorLogin: child.authorLogin,
+            files,
+          });
+          next.push(child.headRef);
+        }
+      }
+      frontier = next;
+    }
+  } catch {
+    return null;
+  }
+  return upstackPRs.length > 0 ? { upstackPRs, truncated } : null;
+}
+
+/**
+ * Parse the NDJSON `{filename}` lines from the child-PR files endpoint into a clean
+ * path list. Any name carrying a control character (a git path may legally contain
+ * a newline) is dropped outright: split on raw lines it would have forged an extra
+ * manifest entry, and no legitimate reviewable path needs control characters. A
+ * malformed line throws — the walk's fail-open catch turns that into "no manifest".
+ * Exported for tests.
+ */
+export function parseChildFileNdjson(stdout: string): string[] {
+  return stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => (JSON.parse(line) as { filename?: string }).filename ?? "")
+    .filter((name) => name.length > 0 && ![...name].some((char) => char.charCodeAt(0) < 0x20));
 }
 
 /**
@@ -189,6 +283,207 @@ export class GitHubPRSource implements ReviewSource {
       throw error;
     }
     return root;
+  }
+
+  // @ref LLP 0010#bounded-guarded-upward-walk [constrained-by] — the whole method is wrapped fail-open: no gh/parse error ever escapes as a throw, so a broken walk can never fail a check or block a finding
+  /**
+   * Walk the OPEN PRs stacked on top of this one and return a paths-only manifest.
+   * Fails open to `null` on ANY error (no repo, gh failure, rate limit, parse error,
+   * empty stack), so the review is exactly as if the feature were off.
+   */
+  async getStackContextAsync(options: StackWalkOptions): Promise<StackManifest | null> {
+    const repo = this.options.repo;
+    if (!repo) {
+      // Without an explicit owner/repo we can't query the pulls list safely.
+      return null;
+    }
+    try {
+      const gh = await resolveTrustedTool("gh");
+      const [metadata, anchors] = await Promise.all([
+        this.getMetadata(),
+        this.fetchPrTrustAnchors(gh, repo),
+      ]);
+      if (!metadata.headRef || !anchors.author) {
+        return null;
+      }
+      // A fork PR's headRefName is a branch of the FORK, not of the base repo. Using
+      // it as the pulls-list `base=` filter would match a same-named BASE-repo branch
+      // (a fork head called "main" would pull in every open PR targeting main), so
+      // unrelated PRs would enter the manifest. A cross-repo head has no base-repo
+      // branch to walk — there is no stack.
+      if (anchors.crossRepo) {
+        return null;
+      }
+      return await walkUpstack(
+        metadata.headRef,
+        anchors.author,
+        options,
+        (baseBranch) => this.fetchOpenChildren(gh, repo, baseBranch),
+        (prNumber) => this.fetchChildFiles(gh, repo, prNumber, options.maxFilesPerPr),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  // @ref LLP 0010#patch-level-confirmation-v2 [implements] — fetch ONLY the cited file's patch, match by the same normalization grounding uses; the untrusted filename is filtered in JS, never spliced into a jq program
+  /**
+   * The unified-diff patch a stacked child PR (`prNumber`) applied to `file`, or `null`
+   * when the file isn't in that PR (or on any error — fail-open toward blocking). The
+   * files endpoint's `.patch` fragment is inlined by the caller and never written to
+   * disk. The untrusted `file` is matched against each entry's filename in JS (same
+   * normalization as grounding), NOT passed into the jq program, so it can't inject.
+   */
+  async getStackFilePatchAsync(prNumber: number, file: string): Promise<string | null> {
+    const repo = this.options.repo;
+    if (!repo) {
+      return null;
+    }
+    try {
+      const gh = await resolveTrustedTool("gh");
+      const { stdout } = await run(
+        gh,
+        [
+          "api",
+          // --method GET is mandatory once a -f field is present (else gh POSTs);
+          // 100/page is the fetchAllComments pagination convention.
+          "--method",
+          "GET",
+          `repos/${repo}/pulls/${prNumber}/files`,
+          "-f",
+          "per_page=100",
+          "--paginate",
+          "--jq",
+          ".[] | {filename, patch}",
+        ],
+        { cwd: this.options.cwd },
+      );
+      const want = normalizeManifestPath(file);
+      for (const line of stdout.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+        const raw = JSON.parse(trimmed) as { filename?: string; patch?: string };
+        if (raw.filename && normalizeManifestPath(raw.filename) === want) {
+          // A file with no textual patch (binary/rename-only) can't confirm a fix.
+          return typeof raw.patch === "string" ? raw.patch : null;
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The current PR's author login (the same-author gate's trust anchor) and whether
+   * its head lives in another repository (a fork — see the cross-repo guard above).
+   */
+  private async fetchPrTrustAnchors(
+    gh: string,
+    repo: string,
+  ): Promise<{ author: string | null; crossRepo: boolean }> {
+    const { stdout } = await run(
+      gh,
+      [
+        "pr",
+        "view",
+        String(this.options.prNumber),
+        "--repo",
+        repo,
+        "--json",
+        "author,isCrossRepository",
+      ],
+      { cwd: this.options.cwd },
+    );
+    const raw = JSON.parse(stdout) as { author?: { login?: string }; isCrossRepository?: boolean };
+    const author = raw.author?.login?.trim();
+    return { author: author || null, crossRepo: raw.isCrossRepository === true };
+  }
+
+  /** Open PRs whose base branch is `baseBranch` (this PR's head, or a child's head). */
+  private async fetchOpenChildren(
+    gh: string,
+    repo: string,
+    baseBranch: string,
+  ): Promise<StackChildPr[]> {
+    // --method GET is mandatory (else gh POSTs); --paginate + a per-element --jq
+    // yields NDJSON that stays valid when gh concatenates pages.
+    const { stdout } = await run(
+      gh,
+      [
+        "api",
+        "--method",
+        "GET",
+        `repos/${repo}/pulls`,
+        "-f",
+        "state=open",
+        "-f",
+        `base=${baseBranch}`,
+        // Safety cap on pagination (100/page), same convention as fetchAllComments:
+        // fewer round-trips per level of the walk.
+        "-f",
+        "per_page=100",
+        "--paginate",
+        "--jq",
+        ".[] | {number, title, authorLogin: .user.login, headRef: .head.ref, headRepoFullName: .head.repo.full_name}",
+      ],
+      { cwd: this.options.cwd },
+    );
+    return stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const raw = JSON.parse(line) as {
+          number: number;
+          title?: string;
+          authorLogin?: string;
+          headRef?: string;
+          headRepoFullName?: string;
+        };
+        return {
+          number: raw.number,
+          title: raw.title ?? "",
+          authorLogin: raw.authorLogin ?? "",
+          headRef: raw.headRef ?? "",
+          sameRepo: raw.headRepoFullName === repo,
+        };
+      });
+  }
+
+  /** A child PR's changed paths, capped at `maxFiles` with a truncated marker. */
+  private async fetchChildFiles(
+    gh: string,
+    repo: string,
+    prNumber: number,
+    maxFiles: number,
+  ): Promise<StackChildFiles> {
+    const { stdout } = await run(
+      gh,
+      [
+        "api",
+        // --method GET is mandatory once a -f field is present (else gh POSTs).
+        "--method",
+        "GET",
+        `repos/${repo}/pulls/${prNumber}/files`,
+        // 100/page (fetchAllComments convention): a 3000-file child PR is ~30
+        // round-trips instead of ~100 at the REST default of 30/page.
+        "-f",
+        "per_page=100",
+        "--paginate",
+        "--jq",
+        // Objects, NOT raw strings (.[].filename): gh prints a raw string result
+        // one value per line, so a git path containing a newline would split into
+        // TWO manifest entries — one of them a forged membership the grounding
+        // check would then accept. NDJSON keeps the newline escaped.
+        ".[] | {filename}",
+      ],
+      { cwd: this.options.cwd },
+    );
+    const all = parseChildFileNdjson(stdout);
+    return { files: all.slice(0, maxFiles), truncated: all.length > maxFiles };
   }
 
   /**

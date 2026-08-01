@@ -2,7 +2,12 @@
 import path from "node:path";
 
 import type { LoadedAgent, LoadedConfig } from "../config/schema.js";
-import type { PreparedReadRoot, ReviewSource } from "../sources/source.js";
+import type {
+  PreparedReadRoot,
+  ReviewSource,
+  StackManifest,
+  StackWalkOptions,
+} from "../sources/source.js";
 import { prepareAuth } from "./auth.js";
 import { coordinate } from "./coordinator.js";
 import { writeRunLog } from "./log.js";
@@ -17,6 +22,7 @@ import {
   CLAUDE_CODE_ENGINE,
   CROSS_CUTTING_AGENT,
   promptAndParse,
+  STACK_VERIFIER_AGENT,
   startOpencode,
 } from "./opencode.js";
 import type { OpencodeHandle, TokenUsage } from "./opencode.js";
@@ -37,6 +43,8 @@ import {
 } from "./prompts.js";
 import { fingerprintFinding, isOverallRiskHandoff, parseReviewerOutput } from "./schema.js";
 import type { CoordinatorOutput, Finding } from "./schema.js";
+import { buildManifestMembership, manifestKey, normalizeManifestPath } from "./stack.js";
+import { confirmStackRequalifications, patchConfirmer } from "./stack-confirm.js";
 import { sortFindings } from "./render.js";
 import { appendStepSummary } from "./step-summary.js";
 import { errorMessage, sleep } from "./util.js";
@@ -66,6 +74,23 @@ export interface ReviewRunOptions {
   /** Already-read, byte-capped external context text (untrusted); injected into the
    * reviewer + cross-cutting prompts. Read once in the command layer. */
   contextText?: string;
+  /**
+   * When set, walk the OPEN PRs stacked on top of this one and inject a paths-only
+   * manifest into the COORDINATOR so absence-style findings a later stacked PR
+   * already addresses can be requalified. Presence turns the feature on; the bounds
+   * are resolved in the command layer from the trusted-base stack config (never
+   * head-controlled). Absent → the manifest fetch is skipped entirely (a no-op).
+   */
+  stack?: StackWalkOptions;
+  /**
+   * v2 patch confirmation. When set (and a stack walk ran), each requalification that
+   * survives deterministic grounding is confirmed against the addressing PR's actual
+   * patch before it is believed; anything not clearly addressed returns to blocking.
+   * Presence gates the confirmation (from the trusted-base `stack.confirmWithPatch`);
+   * `maxConfirmations` caps the fan-out — overflow candidates are stripped.
+   */
+  // @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — gated by confirmWithPatch so v2 ships dark until flipped
+  stackConfirm?: { maxConfirmations: number };
 }
 
 /**
@@ -147,9 +172,14 @@ export async function runReview(
     ? selectAgents(config.agents, options.agents)
     : null;
 
-  const [metadata, changedFiles] = await Promise.all([
+  const [metadata, changedFiles, stackManifest] = await Promise.all([
     source.getMetadata(),
     source.getChangedFiles(),
+    // Only walk when enabled AND the source can (LocalGitSource omits the method).
+    // The source itself fails open to null, so this never rejects the Promise.all.
+    options.stack && source.getStackContextAsync
+      ? source.getStackContextAsync(options.stack)
+      : Promise.resolve<StackManifest | null>(null),
   ]);
 
   // Scope isolation: when includePaths is set, this run only ever sees its own
@@ -767,6 +797,14 @@ export async function runReview(
     // user-facing coverage note, which is reserved for passes that didn't finish.
     const coverageNotes = [...new Set(incomplete)];
 
+    // Severity LOCK: capture which FILES carried a critical/secrets/security reviewer
+    // finding BEFORE the coordinator can lower or rewrite it. groundStackRequalification
+    // uses this so a coordinator steered into "downgrade critical→warning, then
+    // requalify" can't slip a real critical past the carve-out. Built here (after the
+    // fan-out populated agentFindings) whether or not the stack feature is on — cheap,
+    // and keeps the grounding call unconditional.
+    const preCoordinationFileLocks = buildPreCoordinationFileLocks(agentFindings);
+
     let output: CoordinatorOutput;
     if (completedPasses === 0) {
       // Nothing succeeded — do NOT let this render as a clean "approve".
@@ -792,7 +830,7 @@ export async function runReview(
           tokens: coordinatorTokens,
           truncated: coordinatorTruncated,
           model: coordinatorModel,
-        } = await coordinate(handle, config, metadata, agentFindings, coverageNotes);
+        } = await coordinate(handle, config, metadata, agentFindings, coverageNotes, stackManifest);
         agentCosts["coordinator"] = cost;
         trackTokens("coordinator", coordinatorTokens);
         trackModel("coordinator", config.coordinator.model, coordinatorModel);
@@ -827,7 +865,11 @@ export async function runReview(
     // what stops a confident but wrong critical from shipping.
     // @ref LLP 0002#post-coordination-order [constrained-by] — verify must run before suppress; order is load-bearing
     const findingCountBeforeChecks = output.findings.length;
+    const decisionBeforeChecks = output.decision;
     let verifierDropped: { finding: Finding; reason: string }[] = [];
+    // Stripped requalifications (finding + reason), persisted to the run log so the
+    // stack-aware decision trail is auditable after the fact — mirrors verifierDropped.
+    const requalificationStrips: { finding: Finding; reason: string }[] = [];
     if (output.findings.length > 0) {
       progress("Verifying findings…");
       const verification = await verifyFindings(handle, output.findings, process.cwd(), progress);
@@ -850,6 +892,71 @@ export async function runReview(
       }
     }
 
+    // Stack-aware requalification grounding (deterministic, zero LLM): strip any
+    // `requalifiedBy` the coordinator wrote that is forged, hallucinated, or touches a
+    // protected finding class, then re-derive the decision over the still-BLOCKING
+    // (non-requalified) subset. Runs between verify and suppress, preserving the
+    // load-bearing verify → ground → suppress → reconcile order.
+    // @ref LLP 0010#grounding-and-the-decision [constrained-by] — must run after verify and before suppress; a stripped requalification means the finding stays fully blocking
+    if (output.findings.length > 0) {
+      // The decision entering this block (post-verify, pre-requalification softening)
+      // is the ceiling both grounding and confirmation re-derive against: confirmation
+      // returns findings to blocking, so re-running decisionAfterRequalification over
+      // the post-confirmation set re-hardens up to this value, never past it.
+      const decisionBeforeRequalification = output.decision;
+      const grounding = groundStackRequalification(
+        output.findings,
+        stackManifest,
+        preCoordinationFileLocks,
+        progress,
+      );
+      requalificationStrips.push(...grounding.stripped);
+      let grounded = grounding.findings;
+      // v2 patch confirmation (gated by stack.confirmWithPatch): for the requalifications
+      // that survived grounding, read the addressing PR's actual patch and strip any not
+      // clearly addressed. Fail toward blocking on any fetch/verify error or timeout.
+      // @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — runs right after grounding, before the decision is re-derived; never materializes the patch
+      if (
+        options.stackConfirm &&
+        stackManifest &&
+        grounded.some((finding) => finding.requalifiedBy)
+      ) {
+        progress("Confirming stacked-PR requalifications against their patches…");
+        const confirmation = await confirmStackRequalifications(
+          grounded,
+          options.stackConfirm.maxConfirmations,
+          patchConfirmer(handle, source),
+          progress,
+        );
+        grounded = confirmation.findings;
+        requalificationStrips.push(...confirmation.strippedFindings);
+        agentCosts[STACK_VERIFIER_AGENT] = confirmation.cost;
+        trackTokens(STACK_VERIFIER_AGENT, confirmation.tokens);
+        trackModel(
+          STACK_VERIFIER_AGENT,
+          config.agents[0]?.model ?? config.coordinator.model,
+          confirmation.model,
+        );
+        if (confirmation.stripped > 0) {
+          progress(
+            `Stack confirmation returned ${confirmation.stripped} requalified finding(s) to blocking.`,
+          );
+        }
+      }
+      output = {
+        ...output,
+        findings: grounded,
+        // decisionAfterGrounding only re-derives when a requalification SURVIVED
+        // grounding + confirmation: with none, the coordinator's decision must stand
+        // untouched — an unconditional decisionAfterRequalification here would
+        // soften every non-critical request_changes on every run, stack feature or
+        // not. Criticals never carry requalifiedBy (grounding strips it), so the
+        // later decisionAfterRequalification call in the suppression block cannot
+        // re-escalate past this softened decision.
+        decision: decisionAfterGrounding(decisionBeforeRequalification, grounded),
+      };
+    }
+
     // Inline `expo-code-review-ignore` directives suppress non-critical findings.
     if (output.findings.length > 0) {
       const { kept, suppressed } = await applyInlineIgnores(
@@ -862,7 +969,12 @@ export async function runReview(
         output = {
           ...output,
           findings: kept,
-          decision: decisionAfterVerification(output.decision, kept),
+          // decisionAfterRequalification, NOT decisionAfterVerification: `kept` may
+          // still hold requalified (non-blocking) findings, and the decision must be
+          // re-derived over the BLOCKING subset — else suppressing the last blocking
+          // finding leaves a stale approve_with_comments. With no requalifications
+          // the two derivations are identical.
+          decision: decisionAfterRequalification(output.decision, kept),
         };
       }
     }
@@ -870,9 +982,14 @@ export async function runReview(
     // The coordinator's summary was written against the pre-check finding set, so if
     // verification/suppression removed anything it can now reference issues that are
     // no longer listed. Reconcile the summary so it never contradicts the findings.
+    // A decision change WITHOUT a count drop gets its own note: only requalification
+    // does that — every finding is still listed, so the "removed" wording of the
+    // count-drop note would be factually wrong there.
     const removedAfterChecks = findingCountBeforeChecks - output.findings.length;
     if (removedAfterChecks > 0) {
       output = { ...output, summary: reconcileSummary(output.summary, output.findings.length) };
+    } else if (output.decision !== decisionBeforeChecks) {
+      output = { ...output, summary: reconcileRequalifiedSummary(output.summary) };
     }
 
     // Surface provider throttling as a fact about the run: passes already waited or
@@ -923,6 +1040,7 @@ export async function runReview(
       agentFindings,
       coverageNotes,
       verifierDropped,
+      requalificationStrips,
       ...(rlTotal > 0
         ? {
             rateLimitEvents: rlTotal,
@@ -1046,6 +1164,132 @@ export function decisionAfterVerification(
 }
 
 /**
+ * The normalized FILES where any reviewer emitted a critical, `secrets`, or `security`
+ * finding PRE-coordination. This is the severity LOCK: no finding on such a file is
+ * requalifiable, no matter what the coordinator later assigns it. Keyed on the file
+ * alone — NOT a content fingerprint — because the coordinator legitimately
+ * re-categorizes and paraphrases findings, and a fingerprint over those mutable
+ * fields would let a downgraded-then-reworded critical dodge the lock. Over-locking
+ * a whole file only keeps findings blocking (the feature's fail direction).
+ * Exported for tests.
+ */
+// @ref LLP 0010#grounding-and-the-decision [implements] — pre-coordination file locks defeat downgrade-then-requalify
+export function buildPreCoordinationFileLocks(
+  agentFindings: Record<string, Finding[]>,
+): Set<string> {
+  const locked = new Set<string>();
+  for (const findings of Object.values(agentFindings)) {
+    for (const finding of findings) {
+      if (
+        finding.severity === "critical" ||
+        finding.category === "secrets" ||
+        finding.category === "security"
+      ) {
+        locked.add(normalizeManifestPath(finding.file));
+      }
+    }
+  }
+  return locked;
+}
+
+// @ref LLP 0010#grounding-and-the-decision [implements] — deterministic zero-LLM floor over data ecr fetched itself; strips forged/hallucinated/protected requalifications even with a prompt-injected coordinator
+/**
+ * Strip a finding's `requalifiedBy` (leaving the finding itself fully intact and
+ * blocking) when any of these hold — every check is over data the coordinator cannot
+ * influence:
+ *  - the cited `(prNumber, file)` is not an EXACT normalized member of the fetched
+ *    manifest (forged or hallucinated citation);
+ *  - the finding is `critical` severity, or category `secrets` or `security`;
+ *  - the finding's FILE carried a pre-coordination critical/secrets/security reviewer
+ *    finding (severity lock — keyed on the file, so a coordinator re-categorization
+ *    or paraphrase cannot dodge it).
+ * Returns the grounded findings plus every stripped requalification (finding +
+ * reason): a debug line covers the live stderr stream, and the caller persists the
+ * strips to the run log (mirroring verifierDropped) so a silent under-fire stays
+ * diagnosable after the run. Exported for tests.
+ */
+export function groundStackRequalification(
+  findings: Finding[],
+  manifest: StackManifest | null,
+  lockedFiles: Set<string>,
+  debug: (message: string) => void = () => {},
+): { findings: Finding[]; stripped: { finding: Finding; reason: string }[] } {
+  const members = manifest ? buildManifestMembership(manifest) : new Set<string>();
+  const stripped: { finding: Finding; reason: string }[] = [];
+  const grounded = findings.map((finding) => {
+    const requalified = finding.requalifiedBy;
+    if (!requalified) {
+      return finding;
+    }
+    const strip = (reason: string): Finding => {
+      debug(`Stack: stripped requalification on "${finding.file}" (${reason}).`);
+      const { requalifiedBy: _dropped, ...rest } = finding;
+      stripped.push({ finding: rest, reason });
+      return rest;
+    };
+    if (finding.severity === "critical") {
+      return strip("critical severity is never requalifiable");
+    }
+    if (finding.category === "secrets" || finding.category === "security") {
+      return strip(`${finding.category} category is never requalifiable`);
+    }
+    if (lockedFiles.has(normalizeManifestPath(finding.file))) {
+      return strip(
+        "a reviewer emitted a critical/secrets/security finding on this file (severity lock)",
+      );
+    }
+    if (!members.has(manifestKey(requalified.prNumber, requalified.file))) {
+      return strip(
+        `cited #${requalified.prNumber} "${requalified.file}" is not an exact manifest member`,
+      );
+    }
+    return finding;
+  });
+  return { findings: grounded, stripped };
+}
+
+/**
+ * Re-derive the decision after requalification over the still-BLOCKING (non-requalified)
+ * findings only — the parallel of decisionAfterVerification. Requalified findings stay
+ * shown and counted but never block: no blocking findings → approve; a request_changes
+ * with no blocking critical left → soften to approve_with_comments. Exported for tests.
+ */
+// @ref LLP 0010#grounding-and-the-decision [implements] — decision is computed over the active subset, so a requalified warning stops blocking but stays visible
+export function decisionAfterRequalification(
+  previous: CoordinatorOutput["decision"],
+  findings: Finding[],
+): CoordinatorOutput["decision"] {
+  const blocking = findings.filter((finding) => !finding.requalifiedBy);
+  if (blocking.length === 0) {
+    return "approve";
+  }
+  if (
+    previous === "request_changes" &&
+    !blocking.some((finding) => finding.severity === "critical")
+  ) {
+    return "approve_with_comments";
+  }
+  return previous;
+}
+
+/**
+ * The grounding block's decision step: re-derive ONLY when a requalification
+ * survived grounding. With none (the overwhelmingly common case — stack feature
+ * off, or every requalification stripped), the incoming decision stands untouched:
+ * re-deriving unconditionally would soften every non-critical request_changes on
+ * every run, silently overriding the coordinator's (and any adopter rubric's)
+ * decision policy. Exported for tests.
+ */
+export function decisionAfterGrounding(
+  previous: CoordinatorOutput["decision"],
+  findings: Finding[],
+): CoordinatorOutput["decision"] {
+  return findings.some((finding) => finding.requalifiedBy)
+    ? decisionAfterRequalification(previous, findings)
+    : previous;
+}
+
+/**
  * The coordinator writes its summary before findings are verified/suppressed, so a
  * post-coordination drop can leave the summary referencing issues no longer shown.
  * Reconcile without a second LLM call: if everything was removed, replace it;
@@ -1059,6 +1303,21 @@ export function reconcileSummary(summary: string, remaining: number): string {
   return (
     "_Note: some findings were removed by automated verification/suppression after " +
     "this summary was written, so it may mention issues no longer listed below._\n\n" +
+    summary
+  );
+}
+
+/**
+ * The decision-changed-without-removal reconcile: requalification softened the
+ * decision while keeping every finding listed, so the summary prose (written before
+ * grounding ran) can read stricter than the final decision. Nothing was removed —
+ * the note must not claim it was. Exported for tests.
+ */
+export function reconcileRequalifiedSummary(summary: string): string {
+  return (
+    "_Note: after this summary was written, some findings were requalified as " +
+    "addressed in stacked PRs — they are still listed below but no longer block, " +
+    "so the prose may read stricter than the final decision._\n\n" +
     summary
   );
 }

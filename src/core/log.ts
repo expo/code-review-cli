@@ -43,6 +43,9 @@ export interface RunLogRecord {
   agentFindings?: Record<string, Finding[]>;
   coverageNotes?: string[];
   verifierDropped?: { finding: Finding; reason: string }[];
+  /** Stack requalifications stripped by grounding/confirmation, with the strip reason
+   * — the stack-aware slice of the same trail (findings returned to blocking). */
+  requalificationStrips?: { finding: Finding; reason: string }[];
   durationMs: number;
   decision: CoordinatorOutput["decision"] | null;
   findingCount: number;

@@ -145,6 +145,10 @@ test("buildEngineMap: engine follows each agent's model, not auth", () => {
   // cross-cutting/verifier follow agents[0].model (anthropic → claude-code here).
   expect(map.engineOf["cross-cutting"]).toBe("claude-code");
   expect(map.engineOf["verifier"]).toBe("claude-code");
+  // The v2 stack verifier is registered like the verifier (shared default model), so a
+  // claude-routed run has a handle for it instead of crashing on an undefined agent id.
+  expect(map.modelOf["stack-verifier"]).toBe("anthropic/claude-opus-5");
+  expect(map.engineOf["stack-verifier"]).toBe("claude-code");
 });
 
 test("buildEngineMap: a selected subset scopes the engine set to the passes that run", () => {
