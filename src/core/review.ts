@@ -35,7 +35,7 @@ import {
   buildReviewerTask,
   NO_TOOLS_INSTRUCTION,
 } from "./prompts.js";
-import { fingerprintFinding, parseReviewerOutput } from "./schema.js";
+import { fingerprintFinding, isOverallRiskHandoff, parseReviewerOutput } from "./schema.js";
 import type { CoordinatorOutput, Finding } from "./schema.js";
 import { sortFindings } from "./render.js";
 import { appendStepSummary } from "./step-summary.js";
@@ -63,6 +63,9 @@ export interface ReviewRunOptions {
    * workspace checkout explicitly.
    */
   runsDir?: string;
+  /** Already-read, byte-capped external context text (untrusted); injected into the
+   * reviewer + cross-cutting prompts. Read once in the command layer. */
+  contextText?: string;
 }
 
 /**
@@ -562,10 +565,14 @@ export async function runReview(
     const buildTaskText = (task: ReviewTask): string => {
       const base =
         task.kind === "cross-cutting"
-          ? buildCrossCuttingTask(task.files, selectedAgents, filtered, {
-              noTools: task.fallback,
-            })
-          : buildReviewerTask(task.files, workspace.files, filtered);
+          ? buildCrossCuttingTask(
+              task.files,
+              selectedAgents,
+              filtered,
+              { noTools: task.fallback },
+              options.contextText,
+            )
+          : buildReviewerTask(task.files, workspace.files, filtered, options.contextText);
       return task.fallback ? `${base}\n\n${NO_TOOLS_INSTRUCTION}` : base;
     };
     const filesLabel = (files: PatchWorkspaceFile[]): string =>
@@ -952,16 +959,23 @@ export async function runReview(
 }
 
 /**
- * Policy backstop: drop suggestions unless opted in, cap by count (most severe
- * first), and downgrade approve_with_comments to approve when nothing remains.
+ * Policy backstop: strip the internal risk handoff, drop suggestions unless
+ * opted in, cap by count (most severe first), and downgrade
+ * approve_with_comments to approve when nothing remains.
  */
 export function applyReviewPolicy(
   output: CoordinatorOutput,
   policy: LoadedConfig["policy"],
 ): CoordinatorOutput {
-  let findings = policy.includeSuggestions
-    ? output.findings
-    : output.findings.filter((finding) => finding.severity !== "suggestion");
+  // Unconditional, and before the severity filter: the handoff is `suggestion`-
+  // severity, so `includeSuggestions: true` would otherwise publish it as a
+  // finding whenever the coordinator forgot to strip it. It is prompt-authored
+  // metadata for the coordinator's summary, never something an author should see.
+  // @ref LLP 0009#prompt-rules-for-adopters [implements] — code-level strip, not prompt-only
+  let findings = output.findings.filter((finding) => !isOverallRiskHandoff(finding));
+  if (!policy.includeSuggestions) {
+    findings = findings.filter((finding) => finding.severity !== "suggestion");
+  }
   findings = sortFindings(findings);
   if (policy.maxFindings != null) {
     findings = findings.slice(0, policy.maxFindings);

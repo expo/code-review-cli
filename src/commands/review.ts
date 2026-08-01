@@ -3,6 +3,7 @@ import { loadReviewConfig, loadScopeConfig } from "../config/load.js";
 import { loadRoutingManifest, resolveScopes, scopedCommentTag } from "../config/routing.js";
 import { repoRoot, resolveRepo } from "../core/exec.js";
 import { errorMessage } from "../core/util.js";
+import { readContextFile } from "../core/context-file.js";
 import { runReview } from "../core/review.js";
 import { LocalGitSource } from "../sources/local-git.js";
 import { GitHubPRSource } from "../sources/github-pr.js";
@@ -37,6 +38,8 @@ Options:
                        runs its config over just that scope's changed files
   --config-dir <dir>   load config from <dir> instead of .expo-code-review/
                        (also ECR_CONFIG_DIR); can't combine with --scope
+  --context-file <p>   inject <p>'s UTF-8 text into reviewer prompts as an
+                       explicitly UNTRUSTED external-context block
   --json               emit machine-readable JSON on stdout
   --no-fail            always exit 0, even on request-changes
   -h, --help           show this help
@@ -61,6 +64,7 @@ interface ReviewArgs {
   route: boolean;
   scope?: string;
   configDir?: string;
+  contextFile?: string;
   json: boolean;
   noFail: boolean;
   help: boolean;
@@ -124,6 +128,9 @@ function parseArgs(argv: string[]): ReviewArgs {
       case "--config-dir":
         args.configDir = requireValue(arg, argv[++i]);
         break;
+      case "--context-file":
+        args.contextFile = requireValue(arg, argv[++i]);
+        break;
       case "--json":
         args.json = true;
         break;
@@ -171,6 +178,29 @@ export async function reviewCommand(argv: string[]): Promise<void> {
     process.chdir(root);
   }
 
+  // @ref LLP 0007#ecr-review-local-trust-and-flag-rules [implements] — --context-file is orthogonal enrichment; local read errors fail loud (exit 2)
+  // Read the context file ONCE, in the command layer (routed review calls runReview
+  // per scope; reading inside would re-read the file N times). Local runs FAIL LOUD
+  // on a read error: the user typed the path, so a typo or oversized file is a
+  // mistake to surface, not to silently skip (unlike `ecr ci`, which warns and
+  // continues to keep the never-fail-checks invariant).
+  let contextText: string | undefined;
+  if (args.contextFile) {
+    try {
+      contextText = await readContextFile(args.contextFile);
+    } catch (error) {
+      process.stderr.write(`--context-file: ${errorMessage(error)}\n`);
+      process.exitCode = 2;
+      return;
+    }
+    // Empty/whitespace-only file: warn (a typo'd or unwritten path) but do not fail
+    // — there is simply no context to add.
+    if (!contextText.trim()) {
+      process.stderr.write(`--context-file: ${args.contextFile} is empty; no context added.\n`);
+      contextText = undefined;
+    }
+  }
+
   try {
     const cwd = process.cwd();
     const makeSource = (): ReviewSource =>
@@ -213,6 +243,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
           agents: args.agents,
           route: args.route,
           includePaths: files,
+          contextText,
           onProgress: (message) => process.stderr.write(`${message}\n`),
         });
         await new TerminalReporter({ json: args.json, noFail: args.noFail }).report(review);
@@ -265,6 +296,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
       mode: "local",
       agents: args.agents,
       route: args.route,
+      contextText,
       onProgress: (message) => process.stderr.write(`${message}\n`),
     });
 

@@ -1,0 +1,123 @@
+# @ref LLP 0009#atlantis-comment-triggered-template — issue_comment plan trigger; base-only checkout, comment body via env → --context-file
+name: AI code review (atlantis plan)
+
+# Runs the reviewer when Atlantis posts a `terraform plan` result on a PR, feeding
+# the plan output into the review as UNTRUSTED external context (`--context-file`).
+# This is an OPT-IN extra template — `ecr init` does NOT scaffold it. Copy it into
+# .github/workflows/ and set two repo variables:
+#   ATLANTIS_BOT_LOGIN   the Atlantis bot's comment author login (e.g. atlantis-app[bot])
+#   ATLANTIS_PLAN_MARKER optional; the plan-comment marker text (default 'Ran Plan for')
+
+on:
+  issue_comment:
+    types: [created]
+
+# Comment-only: read the repo, write PR comments (issue comments API).
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  # Published reviewer run via npx (override with repo variable ECR_VERSION; pin to a
+  # specific version to freeze it). Used for the guard AND the review so the engine
+  # that clears a config is the same engine that then reads it.
+  ECR_VERSION: ${{ vars.ECR_VERSION || 'latest' }}
+
+concurrency:
+  group: ai-code-review-atlantis-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  atlantis-plan:
+    # Gate on WHO commented, not on what the run does: only a comment from the
+    # Atlantis bot login, on a PR, whose body carries the plan marker. The login
+    # gate is the security boundary (bot comments are write-gated); the marker is a
+    # cheap filter and is operator-overridable via ATLANTIS_PLAN_MARKER, so it must
+    # not be the only gate. Templates are also overridable via
+    # --markdown-template-overrides-dir, which is exactly why the identity gate is on
+    # the bot login and not on the marker text.
+    # @ref LLP 0009#atlantis-comment-triggered-template [implements] — identity gate on the bot login; marker filter is operator-overridable
+    if: >-
+      github.event.issue.pull_request != null &&
+      github.event.comment.user.login == vars.ATLANTIS_BOT_LOGIN &&
+      contains(github.event.comment.body, vars.ATLANTIS_PLAN_MARKER || 'Ran Plan for')
+    runs-on: ubuntu-latest
+    # Keep margin over the worst-case internal chain (passes budget 55m + coordinator
+    # 10m + verification + setup), like the auto-review workflow's cap.
+    timeout-minutes: 90
+    # A reviewer failure must never fail the PR's checks.
+    continue-on-error: true
+    steps:
+      # The plan body is UNTRUSTED. Pass it in via env: (never inline ${{ }}) and
+      # write it to a file with printf so it can never inject shell; export the path
+      # for the review step. The reviewer reads it as --context-file (untrusted data).
+      # @ref LLP 0009#workflow-security-posture [implements] — comment body only via env:, never inline ${{ }}
+      - name: Write plan to a file
+        env:
+          COMMENT: ${{ github.event.comment.body }}
+        run: |
+          printf '%s' "$COMMENT" > "$RUNNER_TEMP/atlantis-plan.txt"
+          echo "PLAN_FILE=$RUNNER_TEMP/atlantis-plan.txt" >> "$GITHUB_ENV"
+
+      # SECURITY: `issue_comment` is NOT fork-restricted — it runs in the base-repo
+      # context with full secrets regardless of whether the PR is a fork. Check out
+      # ONLY the trusted base ref (the default branch) for the `.expo-code-review/`
+      # config, and never `gh pr checkout` the PR head. The engine is the PUBLISHED
+      # package via npx, not built from any checkout, so PR code never runs here.
+      - name: Checkout (base ref only — never the PR head)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          # The CLI's own git fetches authenticate through `gh` from GH_TOKEN, so the
+          # token never lands in .git/config.
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          # The reviewer runs via npx and never installs with a package manager, so
+          # disable setup-node's auto package-manager cache.
+          package-manager-cache: false
+
+      # SECURITY: the base-ref checkout includes every .expo-code-review/ config,
+      # whose auth.tokenEnv names the forwarded model credential. `ecr verify-config`
+      # sweeps every config and refuses unless tokenEnv appears exactly once, in a
+      # ROOT-owned file, equal to ECR_EXPECTED_TOKEN_ENV. This is layer 2; layer 1 is
+      # the runtime lock in `ecr ci`. Runs the SAME $ECR_VERSION `ecr ci` will.
+      # @ref LLP 0009#guard-step-ordering-and-job-budgets [implements] — same $ECR_VERSION feeds guard and review
+      - name: Guard config tokenEnv (root + routing + all scopes)
+        env:
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'OPENAI_API_KEY' }}
+        run: npx --yes -p "@expo/code-review-cli@$ECR_VERSION" ecr verify-config
+
+      # Running via `issue_comment` makes this a manual /review, which the CLI detects
+      # (GITHUB_EVENT_NAME=issue_comment) and treats as a trigger-gate bypass, and it
+      # resolves the PR from issue.number. The bypass affects ONLY the trigger gate;
+      # the config guard above, break-glass, and the auth lock still apply.
+      - name: Run AI review
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Layer-1 auth lock: keep in sync with the guard's EXPECTED.
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'OPENAI_API_KEY' }}
+          # OpenAI API key — the env var named by auth.tokenEnv in config.jsonc.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Optional: override the model for every agent (uses your OpenCode login).
+          REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}
+        run: |
+          # Build the flags as a bash array so the path never word-splits.
+          ARGS=(--context-file "$PLAN_FILE")
+          npx --yes -p "@expo/code-review-cli@$ECR_VERSION" ecr ci "${ARGS[@]}"
+
+      # Same ephemeral per-run log as the other workflows; issue.number IS the PR
+      # number in issue_comment context.
+      - name: Upload review run log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-run-log-pr${{ github.event.issue.number }}
+          path: .expo-code-review/.runs/reviews.jsonl
+          if-no-files-found: ignore
+          retention-days: 14

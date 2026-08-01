@@ -118,7 +118,9 @@ is a ready example to adapt.
 
 Extra flags for monorepos: `review`/`ci` `--config-dir <dir>` (load config from an
 alternate dir; also `ECR_CONFIG_DIR`), `ci --scopes a,b` (limit the fan-out to
-named scopes), `ci --comment single|per-scope` (override the manifest).
+named scopes), `ci --comment single|per-scope` (override the manifest). Both
+`review` and `ci` also take `--context-file <path>` (inject a file's text as
+untrusted external context; see below).
 
 (When developing this repo itself, use `bun run src/cli.ts <command>`.)
 
@@ -483,6 +485,32 @@ line: **comments = one-shot actions, labels = persistent configuration.**
 
 These workflows are comment-only (they never fail the PR's checks). The engine runs
 as the published package via `npx`, so no PR-controlled code is built.
+
+</details>
+
+<details>
+<summary><b>External context (--context-file)</b></summary>
+
+`ecr review --context-file <path>` and `ecr ci --context-file <path>` inject the
+file's UTF-8 text into the reviewer prompts as an explicitly UNTRUSTED external
+block (the reviewer is told to use it but never follow instructions in it). The
+main use is a CI-provided terraform plan. The text is sanitized like any untrusted
+prose and capped at 24k chars (head 16k + tail 8k, so a big plan keeps both its
+resource list and its `Plan: N to add…` summary); the read itself is bounded at
+1 MiB.
+
+Read errors differ by command on purpose. `ecr review` fails loud (exits 2) on a
+missing or oversized file, since you typed the path. `ecr ci` warns and continues
+with no context, because a CI run must never fail the PR's checks.
+
+### Atlantis terraform plans
+
+`templates/atlantis.yml` is an opt-in workflow (not scaffolded by `ecr init`) that
+runs the reviewer when Atlantis posts a `terraform plan` comment on a PR and feeds
+the plan into the review as `--context-file`. The plan comment body is treated as
+untrusted data throughout. Copy it into `.github/workflows/` and set two repo
+variables: `ATLANTIS_BOT_LOGIN` (the Atlantis bot's comment login, e.g.
+`atlantis-app[bot]`) and optionally `ATLANTIS_PLAN_MARKER`.
 
 </details>
 

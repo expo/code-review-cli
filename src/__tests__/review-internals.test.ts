@@ -65,6 +65,37 @@ test("applyReviewPolicy: drops suggestions, sorts by severity", () => {
   expect(result.findings.map((f) => f.severity)).toEqual(["critical", "warning"]);
 });
 
+test("applyReviewPolicy: strips the __overall_pr_risk__ handoff even with includeSuggestions", () => {
+  const out: CoordinatorOutput = {
+    decision: "request_changes",
+    findings: [
+      finding({ severity: "suggestion", title: "__overall_pr_risk__" }),
+      finding({ severity: "suggestion", title: "a real suggestion" }),
+      finding({ severity: "critical" }),
+    ],
+    summary: "s",
+    incomplete: [],
+  };
+  // includeSuggestions:true removes the severity backstop — the handoff must
+  // still never reach the PR comment, since it is prompt metadata, not a defect.
+  const result = applyReviewPolicy(out, { includeSuggestions: true });
+  expect(result.findings.map((f) => f.title)).toEqual(["T", "a real suggestion"]);
+});
+
+test("applyReviewPolicy: a lone risk handoff leaves no findings and approves", () => {
+  const result = applyReviewPolicy(
+    {
+      decision: "approve_with_comments",
+      findings: [finding({ severity: "suggestion", title: "  __overall_pr_risk__  " })],
+      summary: "s",
+      incomplete: [],
+    },
+    { includeSuggestions: true },
+  );
+  expect(result.findings).toEqual([]);
+  expect(result.decision).toBe("approve");
+});
+
 test("applyReviewPolicy: approve_with_comments + no findings → approve", () => {
   const result = applyReviewPolicy(
     { decision: "approve_with_comments", findings: [], summary: "", incomplete: [] },
