@@ -98,6 +98,54 @@ async function captureStdout(run: () => Promise<void>): Promise<string> {
   return chunks.join("");
 }
 
+async function captureStderr(run: () => Promise<void>): Promise<string> {
+  const original = process.stderr.write;
+  const chunks: string[] = [];
+  process.stderr.write = ((chunk: unknown) => {
+    chunks.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    await run();
+  } finally {
+    process.stderr.write = original;
+  }
+  return chunks.join("");
+}
+
+test("init --token-env refuses when review workflows already exist without --force", async () => {
+  const root = await freshRepo();
+  await initCommand([]);
+  // Wipe the config dir so we can also assert the refusal writes nothing at all.
+  await rm(path.join(root, CONFIG_DIRNAME), { recursive: true, force: true });
+
+  const err = await captureStderr(() => initCommand(["--token-env", "CLAUDE_CODE_OAUTH_TOKEN"]));
+  expect(process.exitCode).toBe(2);
+  process.exitCode = 0;
+  expect(err).toContain("expo-code-review.yml");
+  expect(err).toContain("--force");
+  // No half scaffold: refused before any file was written.
+  expect(await exists(path.join(root, CONFIG_DIRNAME))).toBe(false);
+  // The existing workflow keeps its old wiring untouched.
+  const text = await readFile(
+    path.join(root, ".github", "workflows", "expo-code-review.yml"),
+    "utf8",
+  );
+  expect(text).toContain("OPENAI_API_KEY");
+  expect(text).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
+});
+
+test("init --token-env --force rewrites existing review workflows", async () => {
+  const root = await freshRepo();
+  await initCommand([]);
+  await initCommand(["--token-env", "CLAUDE_CODE_OAUTH_TOKEN", "--force"]);
+  for (const file of ["expo-code-review.yml", "expo-code-review-command.yml"]) {
+    const text = await readFile(path.join(root, ".github", "workflows", file), "utf8");
+    expect(text).toContain("CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}");
+    expect(text).not.toContain("OPENAI_API_KEY");
+  }
+});
+
 test("init --token-env prints the config.jsonc auth edit as a next step", async () => {
   await freshRepo();
   const out = await captureStdout(() => initCommand(["--token-env", "CLAUDE_CODE_OAUTH_TOKEN"]));

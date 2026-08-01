@@ -75,6 +75,26 @@ async function scaffold(argv: string[]): Promise<void> {
 
   const root = (await repoRoot()) ?? process.cwd();
   const configDir = path.join(root, CONFIG_DIRNAME);
+
+  // A non-default --token-env only takes effect through the review workflows,
+  // but existing workflow files are skipped (not rewritten) without --force —
+  // the flag would silently never reach CI while the next steps claim the
+  // workflow references the new secret. Refuse before any file is written.
+  // @ref LLP 0007#init-and-dismiss [implements] — validated before any file is written; no half scaffold
+  if (withWorkflow && tokenEnvs.join(",") !== DEFAULT_TOKEN_ENV && !force) {
+    const existing = ["expo-code-review.yml", "expo-code-review-command.yml"]
+      .map((name) => path.join(".github", "workflows", name))
+      .filter((rel) => existsSync(path.join(root, rel)));
+    if (existing.length > 0) {
+      throw new Error(
+        `--token-env cannot take effect: ${existing.join(" and ")} already ` +
+          `exist${existing.length > 1 ? "" : "s"} and would be skipped, so CI would keep ` +
+          `forwarding the default secret. Re-run with --force to rewrite the workflows, ` +
+          `or edit their ECR_EXPECTED_TOKEN_ENV fallback and forwarded secret lines by hand.`,
+      );
+    }
+  }
+
   // Create only the config dir; let copyInto create prompts/ so it reports
   // accurately as created vs skipped.
   await mkdir(configDir, { recursive: true });
