@@ -31,10 +31,13 @@ Invoke via `npx @expo/code-review-cli <cmd>` (or `ecr <cmd>` when installed).
   there refuses unless you also pass `--force-workflows` or `--force`.
 - `--force-workflows` — overwrite ONLY the CI workflow YAML, keeping your tuned `config.jsonc`,
   prompts, and `agents/`. This is the surgical way to re-run `--token-env` on an already-scaffolded
-  repo (`--force` rewrites everything). Pass `--token-env` alongside it: a `--force-workflows` (or
-  `--force`) run with no `--token-env` refuses when the existing workflows name a non-default
-  credential, so it can't silently revert CI to `OPENAI_API_KEY`.
-- `--force` — overwrite existing files (default: skip + report).
+  repo (`--force` also rewrites the tuned files). Pass `--token-env` alongside either flag: a
+  `--force-workflows` or `--force` run with no `--token-env` refuses when the existing workflows
+  name a non-default credential, so neither flag can silently revert CI to `OPENAI_API_KEY`
+  (pass `--token-env OPENAI_API_KEY` to reset on purpose).
+- `--force` — overwrite existing files (default: skip + report). Subject to the same
+  no-`--token-env` refusal as `--force-workflows` above; it only overwrites unconditionally
+  when `--token-env` is supplied or the existing workflows still name the default credential.
 
 **`ecr setup-auth [--yes]`** — guided credential setup for local runs; prints `export` lines.
 `--yes` skips confirmation prompts (login itself still interactive). Routes by config:
