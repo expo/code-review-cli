@@ -116,6 +116,47 @@ export function parseChildFileNdjson(stdout: string): string[] {
     .filter((name) => name.length > 0 && ![...name].some((char) => char.charCodeAt(0) < 0x20));
 }
 
+/** Page size for the child-PR files endpoint (fetchAllComments convention). */
+export const CHILD_FILES_PER_PAGE = 100;
+
+/**
+ * Safety cap on pagination, same convention as the reporter's MAX_COMMENT_PAGES:
+ * 30 pages = 3000 files bounds a pathological child PR; virtually every real
+ * child PR exits far earlier via the maxFiles early stop below.
+ */
+export const MAX_CHILD_FILE_PAGES = 30;
+
+/**
+ * Collect a child PR's file pages, factored pure over an injected per-page fetcher
+ * (same pattern as walkUpstack) so the stop conditions are testable without gh.
+ * Stops at end-of-list, one entry past `maxFiles` (enough to know the list is
+ * truncated — never paginates a huge child PR to the end just to throw the tail
+ * away), or the hard page ceiling. Exported for tests.
+ */
+export async function collectChildFiles(
+  fetchPage: (page: number) => Promise<string>,
+  maxFiles: number,
+): Promise<StackChildFiles> {
+  const files: string[] = [];
+  let sawEnd = false;
+  for (let page = 1; page <= MAX_CHILD_FILE_PAGES && !sawEnd; page++) {
+    const stdout = await fetchPage(page);
+    // "Last page?" is decided on the RAW line count (jq emits exactly one NDJSON
+    // line per array element): parseChildFileNdjson drops control-char names, so
+    // deciding on its output would mistake a page with a dropped entry for the
+    // final page and silently skip the rest of the list.
+    const rawCount = stdout.split("\n").filter((line) => line.trim()).length;
+    files.push(...parseChildFileNdjson(stdout));
+    sawEnd = rawCount < CHILD_FILES_PER_PAGE;
+    if (files.length > maxFiles) {
+      break;
+    }
+  }
+  // Hitting the page ceiling without seeing the end of the list still marks the
+  // manifest as a subset — never claim completeness that wasn't observed.
+  return { files: files.slice(0, maxFiles), truncated: files.length > maxFiles || !sawEnd };
+}
+
 /**
  * Append gh as a git credential helper for a single command. The token comes from
  * GH_TOKEN via the credential-helper protocol — never argv, never `.git/config` —
@@ -453,37 +494,42 @@ export class GitHubPRSource implements ReviewSource {
       });
   }
 
-  /** A child PR's changed paths, capped at `maxFiles` with a truncated marker. */
+  /**
+   * A child PR's changed paths, capped at `maxFiles` with a truncated marker.
+   * Pages are fetched one by one (not `--paginate`, which would walk a large
+   * child PR's whole file list before the client-side cap applies) so pagination
+   * stops as soon as the cap is exceeded, and never past MAX_CHILD_FILE_PAGES.
+   */
   private async fetchChildFiles(
     gh: string,
     repo: string,
     prNumber: number,
     maxFiles: number,
   ): Promise<StackChildFiles> {
-    const { stdout } = await run(
-      gh,
-      [
-        "api",
-        // --method GET is mandatory once a -f field is present (else gh POSTs).
-        "--method",
-        "GET",
-        `repos/${repo}/pulls/${prNumber}/files`,
-        // 100/page (fetchAllComments convention): a 3000-file child PR is ~30
-        // round-trips instead of ~100 at the REST default of 30/page.
-        "-f",
-        "per_page=100",
-        "--paginate",
-        "--jq",
-        // Objects, NOT raw strings (.[].filename): gh prints a raw string result
-        // one value per line, so a git path containing a newline would split into
-        // TWO manifest entries — one of them a forged membership the grounding
-        // check would then accept. NDJSON keeps the newline escaped.
-        ".[] | {filename}",
-      ],
-      { cwd: this.options.cwd },
-    );
-    const all = parseChildFileNdjson(stdout);
-    return { files: all.slice(0, maxFiles), truncated: all.length > maxFiles };
+    return collectChildFiles(async (page) => {
+      const { stdout } = await run(
+        gh,
+        [
+          "api",
+          // --method GET is mandatory once a -f field is present (else gh POSTs).
+          "--method",
+          "GET",
+          `repos/${repo}/pulls/${prNumber}/files`,
+          "-f",
+          `per_page=${CHILD_FILES_PER_PAGE}`,
+          "-f",
+          `page=${page}`,
+          "--jq",
+          // Objects, NOT raw strings (.[].filename): gh prints a raw string result
+          // one value per line, so a git path containing a newline would split into
+          // TWO manifest entries — one of them a forged membership the grounding
+          // check would then accept. NDJSON keeps the newline escaped.
+          ".[] | {filename}",
+        ],
+        { cwd: this.options.cwd },
+      );
+      return stdout;
+    }, maxFiles);
   }
 
   /**
