@@ -30,3 +30,14 @@ export function publicFailureReason(error: unknown): string {
 export function normalizeCode(text: string): string {
   return text.replace(/\s+/g, " ").trim().toLowerCase();
 }
+
+/**
+ * Read an on/off env toggle (e.g. ECR_VERBOSE). Unset/empty is off; "0", "false",
+ * "no", "off" (any case) are off; anything else — including "1" and "true" — is on.
+ */
+export function envFlag(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  return !/^(0|false|no|off)$/i.test(value.trim());
+}

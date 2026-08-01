@@ -157,6 +157,7 @@ export async function verifyFindings(
             system: buildVerifierSystem(),
             text: buildVerifierTask(finding, { evidenceUngrounded: presence === "absent" }),
             title: `verify-${index}`,
+            onActivity: (line) => onProgress?.(`  verify-${index}: ${line}`),
             maxWaitMs: VERIFY_TIMEOUT_MS,
             finalizeOnTimeout: true,
           },

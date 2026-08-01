@@ -20,7 +20,7 @@ import {
 } from "../config/routing.js";
 import type { LoadedConfig, RoutingManifest } from "../config/schema.js";
 import { repoRoot, resolveTrustedTool, run } from "../core/exec.js";
-import { errorMessage, publicFailureReason } from "../core/util.js";
+import { envFlag, errorMessage, publicFailureReason } from "../core/util.js";
 import { readContextFile } from "../core/context-file.js";
 import { buildDiffLineIndex } from "../core/render.js";
 import type { LinkContext, ScopeReviewResult } from "../core/render.js";
@@ -98,6 +98,8 @@ Options:
   --force              Manual override: review even if the trigger policy (label
                        trigger / ai-review:skip) would skip. Break-glass and the
                        auth lock still apply. A /review comment command implies this.
+  --verbose            Stream each agent's full output (reasoning, reply text,
+                       tool inputs/outputs) into the job log (also ECR_VERBOSE=1)
   -h, --help           Show this help
 
 Env: GITHUB_REPOSITORY, GITHUB_EVENT_PATH/GITHUB_REF (PR number), GH_TOKEN,
@@ -118,6 +120,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
   // hatch forces it off for one run. Safe to expose: it only ever makes the review
   // more conservative (findings stay blocking).
   const noStackAware = argv.includes("--no-stack-aware");
+  const verbose = argv.includes("--verbose") || envFlag(process.env.ECR_VERBOSE);
   // The ROOT config dir escape hatch (mirrors `ecr review`): an explicit
   // --config-dir wins, else resolveConfigDir falls back to ECR_CONFIG_DIR, else
   // the default .expo-code-review/. Applies to config.jsonc AND routing.jsonc.
@@ -232,6 +235,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
         configDir,
         contextText,
         noStackAware,
+        verbose,
       });
       return;
     }
@@ -246,6 +250,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
         configDir,
         contextText,
         noStackAware,
+        verbose,
       });
     } catch (error) {
       // Fan-out failures stay non-blocking (single-writer property is the point).
@@ -305,6 +310,8 @@ interface CiRunOptions {
   contextText: string | undefined;
   /** --no-stack-aware: force stack-aware requalification off for this run. */
   noStackAware: boolean;
+  /** --verbose/ECR_VERBOSE: stream full agent output into the job log. */
+  verbose: boolean;
 }
 
 // @ref LLP 0010#config-and-cli-surface [implements] — under ci, stack-aware is gated by the trusted-base config; a stack walk failure only ever warns (source fails open), never a check failure
@@ -349,7 +356,8 @@ async function runLegacyCi(
   configRoot: string,
   options: CiRunOptions,
 ): Promise<void> {
-  const { agents, route, bypassTriggerGate, configDir, contextText, noStackAware } = options;
+  const { agents, route, bypassTriggerGate, configDir, contextText, noStackAware, verbose } =
+    options;
   let config;
   try {
     config = await loadReviewConfig(configRoot, { configDir });
@@ -411,6 +419,7 @@ async function runLegacyCi(
       stack: resolveStackWalk(config.stack, noStackAware),
       stackConfirm: resolveStackConfirm(config.stack, noStackAware),
       runsDir: workspaceRunsDir(cwd),
+      verbose,
       onProgress: (message) => process.stderr.write(`${message}\n`),
     });
     await reporter.report(review);
@@ -467,6 +476,7 @@ async function runRoutedCi(
     configDir,
     contextText,
     noStackAware,
+    verbose,
   } = options;
   // The root config + manifest follow the override; scope configs stay
   // relative to the TRUSTED root (loadScopeConfig reads
@@ -647,6 +657,7 @@ async function runRoutedCi(
         stackConfirm,
         passesBudgetMs: budget,
         runsDir: workspaceRunsDir(cwd),
+        verbose,
         onProgress: (message) => process.stderr.write(`[${scope.name}] ${message}\n`),
       });
     } catch (error) {

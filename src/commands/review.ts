@@ -2,7 +2,7 @@
 import { loadReviewConfig, loadScopeConfig } from "../config/load.js";
 import { loadRoutingManifest, resolveScopes, scopedCommentTag } from "../config/routing.js";
 import { repoRoot, resolveRepo } from "../core/exec.js";
-import { errorMessage } from "../core/util.js";
+import { envFlag, errorMessage } from "../core/util.js";
 import { readContextFile } from "../core/context-file.js";
 import { runReview } from "../core/review.js";
 import { LocalGitSource } from "../sources/local-git.js";
@@ -43,6 +43,9 @@ Options:
   --stack-aware        with --pr: walk the open PRs stacked on top and let the
                        coordinator requalify absence-style findings a later PR
                        already addresses (off by default; rejected without --pr)
+  --verbose            stream each agent's full output (reasoning, reply text,
+                       tool inputs/outputs) to stderr, as if it ran in OpenCode
+                       directly (also ECR_VERBOSE=1)
   --json               emit machine-readable JSON on stdout
   --no-fail            always exit 0, even on request-changes
   -h, --help           show this help
@@ -69,6 +72,7 @@ interface ReviewArgs {
   configDir?: string;
   contextFile?: string;
   stackAware: boolean;
+  verbose: boolean;
   json: boolean;
   noFail: boolean;
   help: boolean;
@@ -87,6 +91,7 @@ function parseArgs(argv: string[]): ReviewArgs {
     post: false,
     route: false,
     stackAware: false,
+    verbose: false,
     json: false,
     noFail: false,
     help: false,
@@ -138,6 +143,9 @@ function parseArgs(argv: string[]): ReviewArgs {
         break;
       case "--stack-aware":
         args.stackAware = true;
+        break;
+      case "--verbose":
+        args.verbose = true;
         break;
       case "--json":
         args.json = true;
@@ -262,6 +270,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
             args.stackAware && args.pr != null
               ? stackConfirmFromConfig(rootConfig.stack)
               : undefined,
+          verbose: args.verbose || envFlag(process.env.ECR_VERBOSE),
           onProgress: (message) => process.stderr.write(`${message}\n`),
         });
         await new TerminalReporter({ json: args.json, noFail: args.noFail }).report(review);
@@ -320,6 +329,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
       stack: args.stackAware && args.pr != null ? stackWalkFromConfig(config.stack) : undefined,
       stackConfirm:
         args.stackAware && args.pr != null ? stackConfirmFromConfig(config.stack) : undefined,
+      verbose: args.verbose || envFlag(process.env.ECR_VERBOSE),
       onProgress: (message) => process.stderr.write(`${message}\n`),
     });
 

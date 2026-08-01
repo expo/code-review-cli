@@ -589,6 +589,15 @@ export async function runClaudePrompt(
     );
   }
 
+  // Verbose: surface the full reply. A `claude -p` pass is a buffered subprocess
+  // (no session to poll), so unlike the OpenCode engine nothing can stream
+  // mid-pass — the complete output lands here, once, when the pass finishes.
+  if (handle.verbose && args.onActivity && parsed.text) {
+    for (const line of parsed.text.split("\n")) {
+      args.onActivity(`> ${line}`);
+    }
+  }
+
   const answered = pickAnsweringModel(configuredModel, parsed.modelOutputTokens);
   const model = answered
     ? claudeModelMatches(configuredModel, answered)

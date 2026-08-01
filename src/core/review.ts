@@ -55,6 +55,10 @@ export interface ReviewRunOptions {
   config: LoadedConfig;
   mode: "ci" | "local";
   onProgress?: (message: string) => void;
+  /** Stream each agent's full output (reasoning, reply text, tool inputs/outputs)
+   * through onProgress, as if the session ran in OpenCode directly. From the
+   * commands' --verbose flag / ECR_VERBOSE env. Default: compact tool lines only. */
+  verbose?: boolean;
   /** Run only these agent ids (by filename). Takes precedence over `route`. */
   agents?: string[];
   /** Let the router pick relevant agents from the diff (ignored if `agents` set). */
@@ -327,6 +331,15 @@ export async function runReview(
   } else {
     handle = claudeHandle!; // claude-only: the carrier is the claude handle itself
     handle.engineOf = engineFn;
+  }
+  // Set on BOTH handles, not just the carrier: claude-routed passes receive the
+  // `.claude` handle directly (resolveEngineDispatch), which would miss a flag set
+  // only on the carrier.
+  if (opencodeHandle) {
+    opencodeHandle.verbose = options.verbose ?? false;
+  }
+  if (claudeHandle) {
+    claudeHandle.verbose = options.verbose ?? false;
   }
 
   // The claude-code engine has no temperature control (the CLI exposes no flag), so
@@ -830,7 +843,17 @@ export async function runReview(
           tokens: coordinatorTokens,
           truncated: coordinatorTruncated,
           model: coordinatorModel,
-        } = await coordinate(handle, config, metadata, agentFindings, coverageNotes, stackManifest);
+        } = await coordinate(
+          handle,
+          config,
+          metadata,
+          agentFindings,
+          coverageNotes,
+          stackManifest,
+          {
+            onActivity: (line) => progress(`  coordinator: ${line}`),
+          },
+        );
         agentCosts["coordinator"] = cost;
         trackTokens("coordinator", coordinatorTokens);
         trackModel("coordinator", config.coordinator.model, coordinatorModel);

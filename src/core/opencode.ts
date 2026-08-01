@@ -60,6 +60,10 @@ export interface OpencodeHandle {
   close: () => void;
   /** Rate-limit evidence from this server's own log (see core/throttle.ts). */
   rateLimit: RateLimitWatch;
+  /** Stream full agent output (reasoning, reply text, tool inputs/outputs) through
+   * onActivity, as if the session ran in OpenCode directly. Set from the run's
+   * --verbose/ECR_VERBOSE toggle; undefined ⇒ the compact tool-title lines only. */
+  verbose?: boolean;
   /** Which review engine this handle drives. undefined ⇒ the OpenCode engine
    * (default); "claude-code" ⇒ the Claude Code CLI engine, a superset handle
    * (see ClaudeCodeHandle) that the seam functions dispatch to. */
@@ -1113,14 +1117,114 @@ interface RawMessage {
     providerID?: string;
     modelID?: string;
   };
-  parts?: Array<{
-    id?: string;
-    type?: string;
-    text?: string;
-    tool?: string;
-    callID?: string;
-    state?: { status?: string; title?: string };
-  }>;
+  parts?: VerbosePart[];
+}
+
+/**
+ * The slice of an OpenCode message part the verbose emitter reads (structurally
+ * compatible with the SDK's TextPart/ReasoningPart/ToolPart). Exported for tests.
+ */
+export interface VerbosePart {
+  id?: string;
+  type?: string;
+  text?: string;
+  /** Server-injected text (not model output) — never surfaced verbatim. */
+  synthetic?: boolean;
+  time?: { start?: number; end?: number };
+  tool?: string;
+  callID?: string;
+  state?: {
+    status?: string;
+    title?: string;
+    input?: unknown;
+    output?: string;
+    error?: string;
+  };
+}
+
+// Verbose mode surfaces tool RESULTS, which for a `read` can be a whole file —
+// cap each result so one big read can't swamp the job log. Inputs are small
+// (a path, a pattern) but still capped defensively. Reasoning/reply text is
+// model-generated (bounded by output tokens) and streams uncapped.
+const VERBOSE_TOOL_OUTPUT_LIMIT = 2_000;
+const VERBOSE_TOOL_INPUT_LIMIT = 600;
+
+function truncateForLog(text: string, limit: number): string {
+  return text.length > limit ? `${text.slice(0, limit)} …(+${text.length - limit} chars)` : text;
+}
+
+/**
+ * Stateful line producer for verbose mode: given the in-progress assistant
+ * message's parts (each poll), returns the NEW lines to surface since the last
+ * call — streamed reasoning/reply text (complete lines only, so 1s polls don't
+ * chop words), each tool call's input when it starts, and its output or error
+ * when it finishes. `flush` (the message completed) also emits any trailing
+ * partial line. Exported for tests.
+ */
+export function createVerboseEmitter(): (parts: VerbosePart[], flush: boolean) => string[] {
+  // part key → chars of its text already emitted.
+  const emittedText = new Map<string, number>();
+  // tool key → last status surfaced (each transition is reported once).
+  const toolStatuses = new Map<string, string>();
+
+  const pushLines = (lines: string[], chunk: string, prefix: string): void => {
+    for (const line of chunk.replace(/\n$/, "").split("\n")) {
+      lines.push(`${prefix}${line}`);
+    }
+  };
+
+  return (parts, flush) => {
+    const lines: string[] = [];
+    parts.forEach((part, index) => {
+      if ((part.type === "text" || part.type === "reasoning") && typeof part.text === "string") {
+        if (part.synthetic) {
+          return;
+        }
+        const key = part.id ?? `${part.type}#${index}`;
+        const offset = emittedText.get(key) ?? 0;
+        // A part with an end time is complete — emit everything; otherwise only
+        // up to the last newline, holding the partial tail for the next poll.
+        const ended = flush || part.time?.end != null;
+        const upTo = ended ? part.text.length : part.text.lastIndexOf("\n") + 1;
+        if (upTo > offset) {
+          pushLines(lines, part.text.slice(offset, upTo), part.type === "reasoning" ? "· " : "> ");
+          emittedText.set(key, upTo);
+        }
+        return;
+      }
+      if (part.type !== "tool") {
+        return;
+      }
+      const key = part.callID ?? part.id ?? `tool#${index}`;
+      const status = part.state?.status;
+      if (!status || status === "pending" || toolStatuses.get(key) === status) {
+        return;
+      }
+      const name = part.tool ?? "tool";
+      // First sighting past "pending": show the call with its input args. A call
+      // can jump straight to completed/error between polls, so this is not an
+      // "on running" branch — it fires once whatever the first seen status is.
+      if (!toolStatuses.has(key)) {
+        const input = part.state?.input === undefined ? "" : JSON.stringify(part.state.input);
+        const title = part.state?.title;
+        lines.push(
+          `→ ${name}${title ? `: ${title}` : ""}${
+            input && input !== "{}" ? ` ${truncateForLog(input, VERBOSE_TOOL_INPUT_LIMIT)}` : ""
+          }`,
+        );
+      }
+      if (status === "completed") {
+        const output = part.state?.output ?? "";
+        if (output) {
+          pushLines(lines, truncateForLog(output, VERBOSE_TOOL_OUTPUT_LIMIT), "  │ ");
+        }
+      } else if (status === "error") {
+        lines.push(`  ✗ ${name}: ${part.state?.error ?? "unknown error"}`);
+      }
+      toolStatuses.set(key, status);
+    });
+    return lines;
+  };
 }
 
 async function fetchMessages(handle: OpencodeHandle, sessionID: string): Promise<RawMessage[]> {
@@ -1196,6 +1300,9 @@ async function pollForCompletion(
     lastEmitAt = Date.now();
     opts.onActivity?.(line);
   };
+  // Verbose mode streams the full session (reasoning, reply text, tool
+  // inputs/outputs) instead of the compact one-line-per-tool default.
+  const verbose = handle.verbose && opts.onActivity ? createVerboseEmitter() : null;
   for (;;) {
     if (Date.now() > opts.deadline) {
       throw new DeadlineReached(lastCost, lastTokens);
@@ -1240,8 +1347,18 @@ async function pollForCompletion(
       lastProgressAt = Date.now();
     }
 
+    // Verbose: surface everything new since the last poll (reasoning/text lines,
+    // tool inputs and outputs). The emitter is stateful, so each line appears once.
+    if (verbose) {
+      for (const line of verbose(assistant.parts ?? [], false)) {
+        emit(line);
+      }
+    }
+
     // Track each distinct tool call once (for the tool-call cap) and, the first
     // time it starts, emit a live line so a long run shows what the agent is doing.
+    // In verbose mode the emitter above already reported the call (with its input),
+    // so only the counting happens here.
     for (const part of assistant.parts ?? []) {
       if (part?.type !== "tool") {
         continue;
@@ -1250,7 +1367,7 @@ async function pollForCompletion(
       const status = part.state?.status;
       if (key && status && status !== "pending" && !opts.reportedTools.has(key)) {
         opts.reportedTools.add(key);
-        if (opts.onActivity) {
+        if (opts.onActivity && !verbose) {
           const tool = part.tool ?? "tool";
           const title = part.state?.title;
           emit(title ? `${tool}: ${title}` : tool);
@@ -1266,6 +1383,12 @@ async function pollForCompletion(
     // A completed message ALWAYS wins — return it regardless of tool count; the
     // work is done, so there's nothing to finalize.
     if (assistant.info?.time?.completed != null) {
+      if (verbose) {
+        // Flush any trailing partial line and the final parts' tail.
+        for (const line of verbose(assistant.parts ?? [], true)) {
+          emit(line);
+        }
+      }
       const text = (assistant.parts ?? [])
         .filter((part) => part?.type === "text" && typeof part.text === "string")
         .map((part) => part.text as string)
