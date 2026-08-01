@@ -539,12 +539,24 @@ export function parseTokenEnvs(value: string | undefined): string[] {
   return names;
 }
 
+// Secrets that a review workflow forwards for reasons other than the model
+// credential, so a non-default name here is not a baked credential to preserve.
+const NON_MODEL_FORWARDED_SECRETS = new Set(["GH_TOKEN", "GITHUB_TOKEN"]);
+
 /**
- * Read the tokenEnv baked into an existing review workflow's
- * `ECR_EXPECTED_TOKEN_ENV` fallback (`vars.ECR_EXPECTED_TOKEN_ENV || '<name>'`),
- * or null when no review workflow exists or the marker is absent. Lets a
- * --force-workflows run detect that it is about to overwrite a non-default
- * credential wiring instead of silently reverting it to the default.
+ * Detect the non-default model credential an existing review workflow bakes in,
+ * so a --force-workflows run can refuse to silently revert it to the default
+ * instead of rewriting from the pristine (OpenAI) template. Reads two
+ * independent signals and returns whichever is non-default:
+ *   - the `ECR_EXPECTED_TOKEN_ENV` fallback (`vars.ECR_EXPECTED_TOKEN_ENV || '<name>'`),
+ *     the joined list init bakes for the auth lock; and
+ *   - the forwarded credential lines (`<NAME>: ${{ secrets.<NAME> }}`), which are
+ *     what actually exposes the secret to the job. A hand edit — or a repo-variable
+ *     lock (`vars.ECR_EXPECTED_TOKEN_ENV`) that leaves the YAML fallback at the
+ *     default — can change the forwarded line alone, so reading only the fallback
+ *     would miss the baked credential and revert it.
+ * Returns the credential value to re-pass via --token-env, or null when the
+ * workflows forward only the default (or none exist).
  */
 async function detectWorkflowTokenEnv(root: string): Promise<string | null> {
   for (const name of ["expo-code-review.yml", "expo-code-review-command.yml"]) {
@@ -552,14 +564,37 @@ async function detectWorkflowTokenEnv(root: string): Promise<string | null> {
     if (!existsSync(file)) {
       continue;
     }
-    const match = (await readFile(file, "utf8")).match(
-      /vars\.ECR_EXPECTED_TOKEN_ENV \|\| '([^']*)'/,
-    );
-    if (match) {
-      return match[1]!;
+    const raw = await readFile(file, "utf8");
+    const fallback = raw.match(/vars\.ECR_EXPECTED_TOKEN_ENV \|\| '([^']*)'/);
+    if (fallback && fallback[1] !== DEFAULT_TOKEN_ENV) {
+      return fallback[1]!;
+    }
+    const forwarded = forwardedModelCredentials(raw);
+    if (forwarded.length > 0) {
+      return forwarded.join(",");
     }
   }
   return null;
+}
+
+/**
+ * Names of non-default model credentials a workflow forwards, read from its
+ * `<NAME>: ${{ secrets.<...> }}` env lines. Skips the default and the known
+ * non-model secrets (GH_TOKEN) so only a hand-wired model credential is returned.
+ */
+function forwardedModelCredentials(raw: string): string[] {
+  const names: string[] = [];
+  const re = /^\s*([A-Z][A-Z0-9_]*):\s*\$\{\{\s*secrets\.[A-Z][A-Z0-9_]*\s*\}\}/gm;
+  for (const match of raw.matchAll(re)) {
+    const name = match[1]!;
+    if (name === DEFAULT_TOKEN_ENV || NON_MODEL_FORWARDED_SECRETS.has(name)) {
+      continue;
+    }
+    if (!names.includes(name)) {
+      names.push(name);
+    }
+  }
+  return names;
 }
 
 /**

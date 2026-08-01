@@ -201,6 +201,30 @@ test("init --force-workflows --token-env re-affirming the credential rewrites cl
   expect(text).not.toContain("OPENAI_API_KEY");
 });
 
+test("init --force-workflows refuses when only the forwarded secret line is non-default", async () => {
+  const root = await freshRepo();
+  await initCommand([]);
+  // A repo-variable lock (vars.ECR_EXPECTED_TOKEN_ENV) leaves the YAML fallback at
+  // the default while the forwarded secret line is hand-wired to a real credential.
+  // The fallback alone reads as default, so the guard must also see the secret line.
+  const wf = path.join(root, ".github", "workflows", "expo-code-review.yml");
+  const patched = (await readFile(wf, "utf8")).replaceAll(
+    "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}",
+    "ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}",
+  );
+  await writeFile(wf, patched, "utf8");
+
+  const err = await captureStderr(() => initCommand(["--force-workflows"]));
+  expect(process.exitCode).toBe(2);
+  process.exitCode = 0;
+  expect(err).toContain("ANTHROPIC_API_KEY");
+  expect(err).toContain("--token-env");
+  // Untouched: no silent reversion to the default OpenAI wiring.
+  expect(await readFile(wf, "utf8")).toContain(
+    "ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}",
+  );
+});
+
 test("init --force-workflows without --token-env is fine on a default-credential repo", async () => {
   const root = await freshRepo();
   await initCommand([]);
