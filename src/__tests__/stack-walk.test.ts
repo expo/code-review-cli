@@ -1,6 +1,12 @@
 import { test, expect } from "bun:test";
 
-import { parseChildFileNdjson, walkUpstack } from "../sources/github-pr.js";
+import {
+  CHILD_FILES_PER_PAGE,
+  MAX_CHILD_FILE_PAGES,
+  collectChildFiles,
+  parseChildFileNdjson,
+  walkUpstack,
+} from "../sources/github-pr.js";
 import type { StackChildFiles, StackChildPr } from "../sources/github-pr.js";
 import type { StackWalkOptions } from "../sources/source.js";
 
@@ -179,4 +185,66 @@ test("parseChildFileNdjson: a newline inside a filename cannot forge a second en
 test("parseChildFileNdjson: blank lines and missing filenames are skipped", () => {
   const stdout = `\n${JSON.stringify({ filename: "a.ts" })}\n\n${JSON.stringify({})}\n`;
   expect(parseChildFileNdjson(stdout)).toEqual(["a.ts"]);
+});
+
+/** One NDJSON page of `count` filenames, offset so names are unique across pages. */
+function page(count: number, offset = 0): string {
+  return Array.from({ length: count }, (_, i) =>
+    JSON.stringify({ filename: `src/f${offset + i}.ts` }),
+  ).join("\n");
+}
+
+test("collectChildFiles: stops paginating once maxFiles is exceeded", async () => {
+  // 5 full pages exist, but with maxFiles=100 page 2 already proves truncation —
+  // pages 3..5 must never be fetched.
+  const calls: number[] = [];
+  const result = await collectChildFiles(async (n) => {
+    calls.push(n);
+    return page(CHILD_FILES_PER_PAGE, (n - 1) * CHILD_FILES_PER_PAGE);
+  }, 100);
+  expect(calls).toEqual([1, 2]);
+  expect(result.files.length).toBe(100);
+  expect(result.truncated).toBe(true);
+});
+
+test("collectChildFiles: reads to the end of a short list without truncation", async () => {
+  const pages: Record<number, string> = { 1: page(CHILD_FILES_PER_PAGE), 2: page(40, 100) };
+  const calls: number[] = [];
+  const result = await collectChildFiles(async (n) => {
+    calls.push(n);
+    return pages[n] ?? "";
+  }, 500);
+  expect(calls).toEqual([1, 2]);
+  expect(result.files.length).toBe(140);
+  expect(result.truncated).toBe(false);
+});
+
+test("collectChildFiles: never fetches past the hard page ceiling, and marks the subset", async () => {
+  // Endless full pages with a huge maxFiles: the ceiling is the only stop, and the
+  // result must still say truncated (the end of the list was never observed).
+  const calls: number[] = [];
+  const result = await collectChildFiles(async (n) => {
+    calls.push(n);
+    return page(CHILD_FILES_PER_PAGE, (n - 1) * CHILD_FILES_PER_PAGE);
+  }, 1_000_000);
+  expect(calls.length).toBe(MAX_CHILD_FILE_PAGES);
+  expect(result.truncated).toBe(true);
+});
+
+test("collectChildFiles: a dropped control-char name does not end pagination early", async () => {
+  // Page 1 has 100 raw entries but one is dropped by the parser (99 kept). The
+  // "last page?" decision must use the raw count, so page 2 is still fetched.
+  const forged = JSON.stringify({ filename: "docs/a\nforged.ts" });
+  const pages: Record<number, string> = {
+    1: [page(CHILD_FILES_PER_PAGE - 1), forged].join("\n"),
+    2: page(5, 200),
+  };
+  const calls: number[] = [];
+  const result = await collectChildFiles(async (n) => {
+    calls.push(n);
+    return pages[n] ?? "";
+  }, 500);
+  expect(calls).toEqual([1, 2]);
+  expect(result.files.length).toBe(104);
+  expect(result.truncated).toBe(false);
 });
