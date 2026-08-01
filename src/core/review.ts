@@ -143,7 +143,10 @@ export function effectiveConcurrency(
   if (config.chunk.concurrency) {
     return config.chunk.concurrency;
   }
-  if (config.auth.some((entry) => entry.mode === "oauth")) {
+  // A RANDOMIZED (A/B) entry pins 3 whichever arm the coin flip picked: the two
+  // arms must run at the SAME concurrency, or the comparison measures the
+  // concurrency difference instead of the credential path.
+  if (config.auth.some((entry) => entry.mode === "oauth" || entry.randomized)) {
     return 3;
   }
   if (buildEngineMap(config).usesClaude) {
@@ -198,6 +201,17 @@ export async function runReview(
     `${scopedFiles.length} changed file(s); ${kept.length} to review, ${filtered.length} filtered.`,
   );
 
+  // The auth mode each provider resolved to this run (anthropic excluded: its
+  // mode is irrelevant — the Claude Code CLI serves it either way). With a
+  // `mode: "random"` entry this is the A/B arm the coin flip picked; in the base
+  // record so EVERY log line (success, failure, early exit) carries it.
+  const authModes: Record<string, { mode: "api-key" | "oauth"; randomized: boolean }> = {};
+  for (const entry of config.auth) {
+    if (entry.provider !== "anthropic") {
+      authModes[entry.provider] = { mode: entry.mode, randomized: entry.randomized ?? false };
+    }
+  }
+
   const baseRecord = {
     timestamp: new Date().toISOString(),
     mode: options.mode,
@@ -205,6 +219,7 @@ export async function runReview(
     metadata: { baseRef: metadata.baseRef, headRef: metadata.headRef },
     reviewedFiles: kept.map((entry) => entry.path),
     filteredFiles: filtered,
+    authModes,
   };
 
   if (kept.length === 0) {
@@ -639,6 +654,12 @@ export async function runReview(
 
     let completedPasses = 0;
     let failedPasses = 0;
+    // Abandonment events by AgentTimeoutError.reason, for the run log's
+    // passOutcomes: a "stall" is the provider-side silence the auth A/B experiment
+    // measures; a "time" is a non-convergent investigation. Counted at the catch,
+    // so a pass that then subdivides/falls back still records the event.
+    let timedOutPasses = 0;
+    let stalledPasses = 0;
     // promptAndParse already retries internally (same-session corrective, then a
     // bounded fresh session). We do NOT wrap it in another retry loop. On a genuine
     // TIMEOUT, instead of dropping the work we break it into units that converge:
@@ -691,6 +712,11 @@ export async function runReview(
         // Account for the abandoned investigation's spend regardless of what's next.
         agentCosts[task.bucket] = (agentCosts[task.bucket] ?? 0) + error.cost;
         trackTokens(task.bucket, error.tokens);
+        if (error.reason === "stall") {
+          stalledPasses++;
+        } else {
+          timedOutPasses++;
+        }
 
         const remaining = passesDeadline - Date.now();
         // Subdividing trades scope for convergence, which is the right trade for a
@@ -1064,6 +1090,12 @@ export async function runReview(
       coverageNotes,
       verifierDropped,
       requalificationStrips,
+      passOutcomes: {
+        completed: completedPasses,
+        failed: failedPasses,
+        timedOut: timedOutPasses,
+        stalled: stalledPasses,
+      },
       ...(rlTotal > 0
         ? {
             rateLimitEvents: rlTotal,

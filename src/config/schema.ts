@@ -6,6 +6,37 @@ import path from "node:path";
 
 import { z } from "zod";
 
+/**
+ * Shared invariants for one auth entry (both accepted shapes). `mode: "random"`
+ * is the A/B experiment toggle: it needs BOTH env names (either arm must be able
+ * to run — a missing one would fail half the runs at random, which poisons the
+ * experiment and reads as flakiness), and it can't ride an upstream alias (the
+ * synthesized provider block is an api-key-only mechanism; the codex oauth flow
+ * only exists for the real "openai" provider id).
+ */
+function authEntryChecks(
+  entry: { mode: string; apiKeyEnv?: string; oauthTokenEnv?: string; upstream?: string },
+  ctx: z.RefinementCtx,
+): void {
+  if (entry.mode !== "random") {
+    return;
+  }
+  if (!entry.apiKeyEnv || !entry.oauthTokenEnv) {
+    ctx.addIssue({
+      code: "custom",
+      message:
+        'auth mode "random" requires BOTH apiKeyEnv and oauthTokenEnv, so either arm of the A/B run can execute',
+    });
+  }
+  if (entry.upstream) {
+    ctx.addIssue({
+      code: "custom",
+      message:
+        'auth mode "random" cannot be combined with upstream (aliases are api-key-only); use it on the real provider id',
+    });
+  }
+}
+
 export const ReviewConfigSchema = z.object({
   /** Default model for every agent + the coordinator. Override per-agent via
    * frontmatter in the agent's markdown, or globally via REVIEWER_MODEL. */
@@ -80,34 +111,58 @@ export const ReviewConfigSchema = z.object({
       z.object({
         providers: z.record(
           z.string(),
-          z.object({
-            // "api-key": tokenEnv holds the provider's API key.
-            // "oauth": tokenEnv holds an OAuth token, injected into an isolated
-            // OpenCode auth.json. For "openai" this is the REFRESH token from a
-            // ChatGPT/Codex sign-in (OpenCode's codex plugin mints access tokens
-            // from it).
-            // NOTE: provider "anthropic" is ALWAYS served by the Claude Code CLI
-            // (the engine is inferred from the `anthropic/…` model, not this mode) —
-            // for anthropic, mode is irrelevant; tokenEnv optionally names the
-            // credential env (an "sk-ant-oat…" subscription token or an Anthropic
-            // API key), and no entry at all falls back to the machine's `claude`
-            // login. See core/claude-code.ts.
-            mode: z.enum(["api-key", "oauth"]).default("api-key"),
-            tokenEnv: z.string().optional(),
-            // Set ⇒ this provider id is an ALIAS synthesized into the OpenCode
-            // config, backed by the named upstream's SDK ("openai", "anthropic",
-            // anything else = openai-compatible). Lets one upstream be reached
-            // with two credentials at once (subscription + API key).
-            upstream: z.string().optional(),
-          }),
+          z
+            .object({
+              // "api-key": tokenEnv holds the provider's API key.
+              // "oauth": tokenEnv holds an OAuth token, injected into an isolated
+              // OpenCode auth.json. For "openai" this is the REFRESH token from a
+              // ChatGPT/Codex sign-in (OpenCode's codex plugin mints access tokens
+              // from it).
+              // "random": a per-run 50/50 coin flip between the two, for A/B
+              // reliability comparison — REQUIRES apiKeyEnv + oauthTokenEnv so
+              // either arm can run. The chosen arm lands in the run log
+              // (authModes) for later analysis.
+              // NOTE: provider "anthropic" is ALWAYS served by the Claude Code CLI
+              // (the engine is inferred from the `anthropic/…` model, not this mode) —
+              // for anthropic, mode is irrelevant; tokenEnv optionally names the
+              // credential env (an "sk-ant-oat…" subscription token or an Anthropic
+              // API key), and no entry at all falls back to the machine's `claude`
+              // login. See core/claude-code.ts.
+              mode: z.enum(["api-key", "oauth", "random"]).default("api-key"),
+              tokenEnv: z.string().optional(),
+              // Mode-specific env names, so switching `mode` (or letting "random"
+              // flip it) never requires touching anything else. When present, the
+              // one matching the (resolved) mode wins over tokenEnv.
+              apiKeyEnv: z.string().optional(),
+              oauthTokenEnv: z.string().optional(),
+              // Set ⇒ this provider id is an ALIAS synthesized into the OpenCode
+              // config, backed by the named upstream's SDK ("openai", "anthropic",
+              // anything else = openai-compatible). Lets one upstream be reached
+              // with two credentials at once (subscription + API key).
+              upstream: z.string().optional(),
+            })
+            .superRefine(authEntryChecks),
         ),
       }),
-      z.object({
-        mode: z.enum(["api-key", "oauth"]).default("api-key"),
-        provider: z.string().default("openai"),
-        /** Env var holding the key/token. */
-        tokenEnv: z.string().optional(),
-      }),
+      z
+        .object({
+          mode: z.enum(["api-key", "oauth", "random"]).default("api-key"),
+          provider: z.string().default("openai"),
+          /** Env var holding the key/token. */
+          tokenEnv: z.string().optional(),
+          /** Mode-specific env names (see the providers-map form). */
+          apiKeyEnv: z.string().optional(),
+          oauthTokenEnv: z.string().optional(),
+          // A `providers` key means the MAP form was intended: without this, a map
+          // whose entry fails validation (e.g. random missing an env name) falls
+          // through the union to THIS member, which would strip `providers` and
+          // "succeed" with a default entry — silently gutting the real auth config
+          // AND swallowing the map member's error.
+          providers: z
+            .never({ error: "invalid auth.providers entry (see the providers-map errors)" })
+            .optional(),
+        })
+        .superRefine(authEntryChecks),
     ])
     .default({ mode: "api-key", provider: "openai" }),
   review: z
@@ -307,10 +362,12 @@ export interface LoadedAgent {
 export interface AuthConfigEntry {
   provider: string;
   /**
-   * How this credential is supplied to OpenCode ("api-key" or "oauth"). IRRELEVANT
-   * for provider "anthropic": an `anthropic/…` model is always served by the Claude
-   * Code CLI (engine inferred from the model), which reads the credential from
-   * tokenEnv or the machine's `claude` login regardless of this field.
+   * How this credential is supplied to OpenCode ("api-key" or "oauth"). Always
+   * RESOLVED here: a config `mode: "random"` was already coin-flipped to one of
+   * the two by normalizeAuth (see `randomized`). IRRELEVANT for provider
+   * "anthropic": an `anthropic/…` model is always served by the Claude Code CLI
+   * (engine inferred from the model), which reads the credential from tokenEnv
+   * or the machine's `claude` login regardless of this field.
    */
   mode: "api-key" | "oauth";
   /**
@@ -327,6 +384,15 @@ export interface AuthConfigEntry {
    * an API key, while "openai" itself runs on the subscription).
    */
   upstream?: string;
+  /** Mode-specific env names from the config (see the schema). Kept on the
+   * resolved entry so doctor/prepareAuth can fail fast when a RANDOM entry is
+   * missing either credential, and so the CI auth lock covers both names. */
+  apiKeyEnv?: string;
+  oauthTokenEnv?: string;
+  /** True when the config said `mode: "random"` and this run's coin flip picked
+   * `mode`. Drives the both-credentials fail-fast, the equalized concurrency
+   * default, and the run log's authModes record. */
+  randomized?: boolean;
 }
 
 /** Fully-resolved config: prompt files read, models resolved, defaults applied. */

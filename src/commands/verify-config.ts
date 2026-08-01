@@ -95,21 +95,32 @@ function asObject(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-/** Every tokenEnv an auth block names — legacy single, or one per providers entry. */
+/** Env names one entry declares: tokenEnv plus the mode-specific pair. */
+const CREDENTIAL_ENV_KEYS = ["tokenEnv", "apiKeyEnv", "oauthTokenEnv"] as const;
+
+/**
+ * Every credential env an auth block names — legacy single, or one per providers
+ * entry. Counts apiKeyEnv/oauthTokenEnv alongside tokenEnv (they are forwardable
+ * exactly like tokenEnv; `mode: "random"` resolves tokenEnv from them per run),
+ * matching tokenEnvMismatch in config/load.ts.
+ */
 function collectTokenEnvs(auth: Record<string, unknown> | undefined): string[] {
   if (!auth) {
     return [];
   }
   const found: string[] = [];
-  if (typeof auth.tokenEnv === "string") {
-    found.push(auth.tokenEnv);
-  }
+  const collect = (entry: Record<string, unknown> | undefined): void => {
+    for (const key of CREDENTIAL_ENV_KEYS) {
+      const value = entry?.[key];
+      if (typeof value === "string") {
+        found.push(value);
+      }
+    }
+  };
+  collect(auth);
   const providers = asObject(auth.providers);
   for (const entry of Object.values(providers ?? {})) {
-    const tokenEnv = asObject(entry)?.tokenEnv;
-    if (typeof tokenEnv === "string") {
-      found.push(tokenEnv);
-    }
+    collect(asObject(entry));
   }
   return found;
 }

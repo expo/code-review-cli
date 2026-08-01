@@ -194,45 +194,85 @@ async function loadConfigDir(
   return { config, raw: rawObject };
 }
 
+/** One auth entry as either config shape declares it, before mode resolution. */
+interface RawAuthEntry {
+  mode: "api-key" | "oauth" | "random";
+  tokenEnv?: string;
+  apiKeyEnv?: string;
+  oauthTokenEnv?: string;
+  upstream?: string;
+}
+
+/**
+ * Resolve one raw entry to a canonical AuthConfigEntry. "random" is the A/B
+ * experiment toggle: a 50/50 coin flip picks the mode FOR THIS LOAD (one flip per
+ * runReview — routed CI re-loads per scope, so each scope run is its own sample),
+ * and `randomized: true` marks the entry so downstream code fail-fasts on both
+ * credentials, equalizes concurrency across the arms, and logs the chosen arm.
+ * For a fixed mode, the mode-specific env name (apiKeyEnv/oauthTokenEnv) wins
+ * over the overloaded tokenEnv when both are present.
+ */
+function resolveAuthEntry(
+  provider: string,
+  entry: RawAuthEntry,
+  rng: () => number,
+): AuthConfigEntry {
+  const randomized = entry.mode === "random";
+  const mode: "api-key" | "oauth" =
+    entry.mode === "random" ? (rng() < 0.5 ? "api-key" : "oauth") : entry.mode;
+  const modeEnv = mode === "oauth" ? entry.oauthTokenEnv : entry.apiKeyEnv;
+  return {
+    provider,
+    mode,
+    tokenEnv: modeEnv ?? entry.tokenEnv,
+    upstream: entry.upstream,
+    apiKeyEnv: entry.apiKeyEnv,
+    oauthTokenEnv: entry.oauthTokenEnv,
+    ...(randomized ? { randomized } : {}),
+  };
+}
+
 /**
  * Normalize either accepted `auth` shape (legacy single object, or the
- * per-provider `{ providers }` map) into the canonical entry list. Absent auth
- * means the schema default (api-key/openai, no tokenEnv).
+ * per-provider `{ providers }` map) into the canonical entry list, resolving any
+ * `mode: "random"` to a concrete mode (see resolveAuthEntry — `rng` is
+ * injectable for tests). Absent auth means the schema default (api-key/openai,
+ * no tokenEnv).
  */
 export function normalizeAuth(
   auth:
-    | { mode: "api-key" | "oauth"; provider: string; tokenEnv?: string }
-    | {
-        providers: Record<
-          string,
-          { mode: "api-key" | "oauth"; tokenEnv?: string; upstream?: string }
-        >;
-      }
+    | (RawAuthEntry & { provider: string })
+    | { providers: Record<string, RawAuthEntry> }
     | undefined,
+  rng: () => number = Math.random,
 ): AuthConfigEntry[] {
   if (!auth) {
     return [{ provider: "openai", mode: "api-key" }];
   }
   if ("providers" in auth) {
-    return Object.entries(auth.providers).map(([provider, entry]) => ({
-      provider,
-      mode: entry.mode,
-      tokenEnv: entry.tokenEnv,
-      upstream: entry.upstream,
-    }));
+    return Object.entries(auth.providers).map(([provider, entry]) =>
+      resolveAuthEntry(provider, entry, rng),
+    );
   }
-  return [{ provider: auth.provider, mode: auth.mode, tokenEnv: auth.tokenEnv }];
+  return [resolveAuthEntry(auth.provider, auth, rng)];
 }
 
 /**
- * Runtime auth lock: null when the entries' tokenEnv names equal the expected
- * comma-separated set exactly (order-insensitive), else a human-readable
- * mismatch. Set semantics because a multi-provider auth block names several
- * credential envs — a PR must not be able to add, drop, or repoint any of them.
+ * Runtime auth lock: null when the entries' declared credential env names equal
+ * the expected comma-separated set exactly (order-insensitive), else a
+ * human-readable mismatch. Set semantics because a multi-provider auth block
+ * names several credential envs — a PR must not be able to add, drop, or repoint
+ * any of them. Counts apiKeyEnv/oauthTokenEnv alongside tokenEnv: a randomized
+ * entry resolves tokenEnv per run (the coin flip), so the lock must cover BOTH
+ * declared names or it would mismatch on half the runs.
  */
 export function tokenEnvMismatch(auth: AuthConfigEntry[], expected: string): string | null {
   const declared = [
-    ...new Set(auth.map((entry) => entry.tokenEnv).filter((v): v is string => Boolean(v))),
+    ...new Set(
+      auth
+        .flatMap((entry) => [entry.tokenEnv, entry.apiKeyEnv, entry.oauthTokenEnv])
+        .filter((v): v is string => Boolean(v)),
+    ),
   ].sort();
   const expectedSet = [
     ...new Set(

@@ -573,6 +573,36 @@ set in `config.auth` (credentials come from OpenCode):
     One caveat: OpenCode can't price alias models (they're config-declared), so
     pro passes report `$0` in the run log's cost column — token counts are
     correct, and the OpenAI project dashboard is the source of truth for spend.
+- **A/B the two billing modes with `mode: "random"`.** Each run flips a fair
+  coin between `api-key` and `oauth`, so reliability (stalls, rate limits,
+  timeouts) can be compared across the two paths from field data:
+
+  ```jsonc
+  "auth": { "providers": {
+    "openai": { "mode": "random",
+                "apiKeyEnv": "OPENAI_API_KEY",
+                "oauthTokenEnv": "CODEX_OAUTH_ACCESS_TOKEN" }
+  } }
+  ```
+
+  Notes:
+
+  - `apiKeyEnv`/`oauthTokenEnv` split the overloaded `tokenEnv` per mode, so a
+    fixed `mode` can also be flipped by editing ONE field. With a fixed mode,
+    the matching one wins over `tokenEnv`.
+  - **Both credentials must be set** (doctor and the run preflight fail fast
+    with the real cause) — a missing one would fail half the runs at random
+    and read as model flakiness.
+  - Both arms run at the same default concurrency (3), so the comparison
+    measures the credential path, not a concurrency difference. On the oauth
+    arm the ambient API key env is removed for the run, so the key can't
+    silently serve requests labeled oauth.
+  - Every run-log line records the arm under `authModes`
+    (`{"openai":{"mode":"oauth","randomized":true}}`) plus `passOutcomes`
+    (completed/failed/timedOut/stalled), so analysis is one jq pass over
+    `.runs/reviews.jsonl` grouped by mode.
+  - **In CI**, `ECR_EXPECTED_TOKEN_ENV` must list BOTH env names — the lock
+    covers every declared name, stable across flips.
 - **Anthropic / Claude** — use `anthropic/...` model ids and every anthropic pass
   runs through the **Claude Code CLI** (`claude -p --output-format json`), inferred
   from the model. The credential is (in order) a `tokenEnv` you name, an ambient

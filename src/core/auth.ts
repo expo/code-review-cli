@@ -203,34 +203,71 @@ export function checkAuthEntry(
 ): AuthReadiness {
   const { mode, provider, tokenEnv, upstream } = entry;
 
-  if (tokenEnv && FORBIDDEN_TOKEN_ENVS.has(tokenEnv)) {
-    return {
-      ok: false,
-      detail:
-        `auth.tokenEnv is "${tokenEnv}", a well-known non-provider secret; refusing to ` +
-        `forward it to the model provider (that would leak it). Point auth.tokenEnv at a ` +
-        `token minted for the provider instead.`,
-    };
+  // Every env name this entry DECLARES, not just the resolved tokenEnv: a
+  // randomized entry forwards apiKeyEnv on some runs and oauthTokenEnv on others,
+  // so both must pass the deny checks regardless of today's coin flip.
+  const declaredEnvs = [
+    ...new Set(
+      [tokenEnv, entry.apiKeyEnv, entry.oauthTokenEnv].filter((v): v is string => Boolean(v)),
+    ),
+  ];
+
+  for (const name of declaredEnvs) {
+    if (FORBIDDEN_TOKEN_ENVS.has(name)) {
+      return {
+        ok: false,
+        detail:
+          `auth for ${provider} names env "${name}", a well-known non-provider secret; ` +
+          `refusing to forward it to the model provider (that would leak it). Point the ` +
+          `auth entry at a token minted for the provider instead.`,
+      };
+    }
   }
 
-  // A well-known provider key env may only feed THAT provider. The tokenEnv guard
-  // locks which env names are forwarded, but not where they go — without this, a
+  // A well-known provider key env may only feed THAT provider. The env-name guard
+  // locks which names are forwarded, but not where they go — without this, a
   // PR-supplied auth entry could keep the locked name (e.g. OPENAI_API_KEY) and
   // point its provider/upstream somewhere else, sending one provider's key to a
   // different provider.
-  if (tokenEnv) {
+  for (const name of declaredEnvs) {
     const keyOwner =
-      Object.entries(PROVIDER_KEY_ENV).find(([, env]) => env === tokenEnv)?.[0] ??
-      ANTHROPIC_TOKEN_ENVS[tokenEnv];
+      Object.entries(PROVIDER_KEY_ENV).find(([, env]) => env === name)?.[0] ??
+      ANTHROPIC_TOKEN_ENVS[name];
     if (keyOwner && keyOwner !== provider && keyOwner !== upstream) {
       return {
         ok: false,
         detail:
-          `auth for ${provider} names tokenEnv "${tokenEnv}", which is ${keyOwner}'s ` +
+          `auth for ${provider} names env "${name}", which is ${keyOwner}'s ` +
           `well-known credential env — refusing to send one provider's credential to another. ` +
           `Use a credential minted for ${provider}${upstream ? ` (upstream ${upstream})` : ""}, ` +
           `or fix the provider/upstream mapping.`,
       };
+    }
+  }
+
+  // A randomized (A/B) entry must have BOTH credentials present, whatever today's
+  // coin flip picked — a missing one would fail ~half the runs at random, which
+  // poisons the experiment and reads as model flakiness. Fail fast with the real
+  // cause instead. Fixed modes keep the single-credential checks below.
+  if (entry.randomized) {
+    for (const [arm, name] of [
+      ["api-key", entry.apiKeyEnv],
+      ["oauth", entry.oauthTokenEnv],
+    ] as const) {
+      if (!name) {
+        return {
+          ok: false,
+          detail: `auth mode "random" for ${provider} requires both apiKeyEnv and oauthTokenEnv (missing the ${arm} env name).`,
+        };
+      }
+      if (!env[name]) {
+        return {
+          ok: false,
+          detail:
+            `auth mode "random" for ${provider} needs BOTH credentials set so either arm ` +
+            `of the A/B run can execute, but env "${name}" (the ${arm} arm) is not set.`,
+        };
+      }
     }
   }
 
@@ -295,7 +332,12 @@ export function checkAuthEntry(
     if (!shape.ok) {
       return shape;
     }
-    return { ...shape, detail: `oauth for ${provider}; token env ${tokenEnv} is set` };
+    return {
+      ...shape,
+      detail:
+        `oauth for ${provider}; token env ${tokenEnv} is set` +
+        (entry.randomized ? " (mode randomized this run)" : ""),
+    };
   }
 
   // api-key with an upstream alias: the synthesized provider reads the key
@@ -324,7 +366,12 @@ export function checkAuthEntry(
   // env is already present in the environment.
   const providerKeyEnv = PROVIDER_KEY_ENV[provider];
   if (tokenEnv && env[tokenEnv]) {
-    return { ok: true, detail: `api-key for ${provider}; token env ${tokenEnv} is set` };
+    return {
+      ok: true,
+      detail:
+        `api-key for ${provider}; token env ${tokenEnv} is set` +
+        (entry.randomized ? " (mode randomized this run)" : ""),
+    };
   }
   if (providerKeyEnv && env[providerKeyEnv]) {
     return { ok: true, detail: `api-key for ${provider}; ${providerKeyEnv} is set` };
@@ -518,6 +565,10 @@ export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
   // forwarding it here would reintroduce the exact secret-forwarding it prevents.
   const inUse = providersInUse(config);
   const authJson: Record<string, unknown> = {};
+  // Env vars scrubbed for this run (see the randomized-oauth branch), restored by
+  // cleanup so a later runReview in the same process (routed CI runs scopes
+  // sequentially) still finds them — its own coin flip may need the key arm.
+  const scrubbed: Array<[name: string, value: string]> = [];
   for (const entry of config.auth) {
     const { mode, provider, tokenEnv, upstream } = entry;
     if (inUse && !inUse.has(provider)) {
@@ -547,11 +598,28 @@ export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
         `auth mode "oauth" for ${provider} requires tokenEnv to name a set OAuth token env.`,
       );
     }
+    // A randomized run has BOTH credentials in the environment (the fail-fast
+    // requires it). When the flip picks oauth, remove the provider's ambient key
+    // env: an API key the SDK finds in env could silently serve the requests,
+    // which would relabel api-key behavior as oauth and corrupt the experiment.
+    if (entry.randomized) {
+      const keyEnv = PROVIDER_KEY_ENV[provider];
+      if (keyEnv && process.env[keyEnv] !== undefined) {
+        scrubbed.push([keyEnv, process.env[keyEnv]!]);
+        delete process.env[keyEnv];
+      }
+    }
     authJson[provider] = oauthAuthJsonEntry(provider, value);
   }
 
+  const restoreScrubbed = (): void => {
+    for (const [name, value] of scrubbed) {
+      process.env[name] = value;
+    }
+  };
+
   if (Object.keys(authJson).length === 0) {
-    return noop;
+    return { cleanup: async () => restoreScrubbed() };
   }
 
   const dir = await mkdtemp(path.join(tmpdir(), "ecr-auth-"));
@@ -561,6 +629,7 @@ export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
 
   return {
     cleanup: async () => {
+      restoreScrubbed();
       await rm(dir, { recursive: true, force: true });
     },
   };

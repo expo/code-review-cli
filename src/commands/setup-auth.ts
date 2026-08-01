@@ -61,7 +61,26 @@ export function planFromAuth(auth: AuthConfigEntry[], models: string[] = []): Se
   for (const entry of auth) {
     if (entry.provider === "anthropic") {
       continue; // handled above (claude engine); mode is irrelevant here.
-    } else if (entry.mode === "oauth" && entry.provider === "openai" && entry.tokenEnv) {
+    }
+    // A randomized (A/B) entry runs on EITHER credential depending on the per-run
+    // coin flip, so setup must provision BOTH arms — not just the one this load
+    // happened to resolve to.
+    if (entry.randomized) {
+      if (entry.provider === "openai" && entry.oauthTokenEnv) {
+        plan.chatgptLogin = { tokenEnv: entry.oauthTokenEnv };
+      } else if (entry.oauthTokenEnv) {
+        plan.unsupported.push({ ...entry, mode: "oauth", tokenEnv: entry.oauthTokenEnv });
+      }
+      if (entry.apiKeyEnv) {
+        plan.manualKeys.push({
+          provider: entry.provider,
+          tokenEnv: entry.apiKeyEnv,
+          upstream: entry.upstream,
+        });
+      }
+      continue;
+    }
+    if (entry.mode === "oauth" && entry.provider === "openai" && entry.tokenEnv) {
       plan.chatgptLogin = { tokenEnv: entry.tokenEnv };
     } else if (entry.mode === "api-key" && entry.tokenEnv) {
       plan.manualKeys.push({

@@ -36,6 +36,16 @@ export interface RunLogRecord {
   /** Rate-limit events split by engine, present whenever any engine reported a
    * rate-limit event (the non-triggering engine reads 0). */
   rateLimitByEngine?: { opencode: number; claudeCode: number };
+  /** Auth mode each provider actually ran with. `randomized: true` means the
+   * config said `mode: "random"` and this run's coin flip picked the mode — the
+   * A/B key for comparing billing-mode reliability across runs. */
+  authModes?: Record<string, { mode: "api-key" | "oauth"; randomized: boolean }>;
+  /** Review-pass outcomes for reliability analysis: completed (incl. truncated
+   * soft landings), failed (non-timeout errors), and abandoned passes split by
+   * AgentTimeoutError.reason — timedOut (investigated without converging) vs
+   * stalled (the provider request went silent; the provider-side failure the
+   * auth A/B experiment measures). */
+  passOutcomes?: { completed: number; failed: number; timedOut: number; stalled: number };
   // The reasoning trail behind the posted result: raw per-agent findings before
   // coordination, the coverage gaps reported to the coordinator, and the findings
   // the verifier rejected. Together these explain WHY the final finding set looks
