@@ -229,13 +229,13 @@ test("a stall is retried exactly once, and only with budget left to land it", ()
 // claude-opus-4-8" — a real config/version problem buried in per-pass noise.
 
 const AVAILABLE = {
-  anthropic: ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"],
+  anthropic: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
   openai: ["gpt-5.5"],
 };
 
 test("resolvable models produce no complaints", () => {
   expect(
-    findUnknownModels(["anthropic/claude-sonnet-5", "anthropic/claude-opus-4-8"], AVAILABLE),
+    findUnknownModels(["anthropic/claude-sonnet-5", "anthropic/claude-opus-5"], AVAILABLE),
   ).toEqual([]);
 });
 
@@ -249,7 +249,7 @@ test("unknown model suggests near matches from that provider", () => {
   const [problem] = findUnknownModels(["anthropic/claude-sonnet-9"], AVAILABLE);
   expect(problem?.reason).toBe("model");
   // Prefix-matched against the requested id, so the suggestions are the plausible ones.
-  expect(problem?.suggestions).toEqual(["claude-haiku-4-5", "claude-opus-4-8", "claude-sonnet-5"]);
+  expect(problem?.suggestions).toEqual(["claude-haiku-4-5", "claude-opus-5", "claude-sonnet-5"]);
 });
 
 test("a bare model id (no provider) is reported, not silently accepted", () => {
@@ -272,7 +272,7 @@ test("duplicate model ids are reported once", () => {
 
 test("a refused credential blames the credential, not the model id", () => {
   const unknown = findUnknownModels(
-    ["anthropic/claude-sonnet-5", "anthropic/claude-opus-4-8"],
+    ["anthropic/claude-sonnet-5", "anthropic/claude-opus-5"],
     { openai: ["gpt-5.5"] },
     "anthropic",
   );

@@ -96,7 +96,7 @@ test("loadScopeConfig: nested scope reads its own roster/prompts; auth forced fr
   await writeConfigDir(path.join(root, "server", "www", CONFIG_DIRNAME), {
     // No auth here; scope-specific model + noise override the root.
     config:
-      '{ "model": "anthropic/claude-opus-4-1", "noise": { "additionalIgnores": ["www/gen/**"] } }',
+      '{ "model": "anthropic/claude-opus-5", "noise": { "additionalIgnores": ["www/gen/**"] } }',
     agents: { style: agent("style") },
   });
   const manifest = manifestOf({
@@ -109,7 +109,7 @@ test("loadScopeConfig: nested scope reads its own roster/prompts; auth forced fr
   const scoped = await loadScopeConfig(root, manifest.scopes[1]!, manifest, rootConfig);
   expect(scoped.agents.some((a) => a.id === "style")).toBe(true);
   expect(scoped.noise.additionalIgnores).toEqual(["www/gen/**"]);
-  expect(scoped.agents.find((a) => a.id === "style")!.model).toBe("anthropic/claude-opus-4-1");
+  expect(scoped.agents.find((a) => a.id === "style")!.model).toBe("anthropic/claude-opus-5");
   // auth is forced from the root even though the scope config declares none.
   expect(scoped.auth[0]?.tokenEnv).toBe("ROOT_TOKEN");
 });
@@ -237,7 +237,7 @@ test("config-dir override composes: root config + routing.jsonc from override, s
   );
   // The scope subtree lives at the REPO ROOT, not under the override dir.
   await writeConfigDir(path.join(root, "server", "www", CONFIG_DIRNAME), {
-    config: '{ "model": "anthropic/claude-opus-4-1" }',
+    config: '{ "model": "anthropic/claude-opus-5" }',
     agents: { style: agent("style") },
   });
 
@@ -258,7 +258,7 @@ test("config-dir override composes: root config + routing.jsonc from override, s
   // override dir — the override must not relocate the scopes themselves.
   const www = await loadScopeConfig(root, manifest!.scopes[1]!, manifest!, rootConfig);
   expect(www.agents.some((a) => a.id === "style")).toBe(true);
-  expect(www.agents.find((a) => a.id === "style")!.model).toBe("anthropic/claude-opus-4-1");
+  expect(www.agents.find((a) => a.id === "style")!.model).toBe("anthropic/claude-opus-5");
 });
 
 test("loadReviewConfig: ECR_CONFIG_DIR loads from the alternate dir; unset → .expo-code-review (BACKCOMPAT)", async () => {
