@@ -34,9 +34,13 @@
   // Mixed credentials: the ChatGPT/Codex subscription serves the default models
   // (zero marginal cost); the usage-based API key serves only the pro-tier models
   // the subscription excludes (security runs on openai-api/gpt-5.5-pro). The oauth
-  // tokenEnv holds the REFRESH token from an `opencode auth login` ChatGPT sign-in;
-  // "openai-api" is an alias (upstream openai) synthesized in the OpenCode config.
-  // ECR_EXPECTED_TOKEN_ENV (repo variable) must equal this comma-separated set.
+  // tokenEnv holds the ACCESS token (a JWT) that `ecr setup-auth` mints from a
+  // ChatGPT sign-in; it expires in ~10 days, so re-mint it periodically with
+  // `gh secret set CODEX_OAUTH_ACCESS_TOKEN`. Never store the refresh token in a
+  // shared CI secret — refresh tokens are single-use, so the first run spends it
+  // and every later sign-in fails. "openai-api" is an alias (upstream openai)
+  // synthesized in the OpenCode config. ECR_EXPECTED_TOKEN_ENV (repo variable)
+  // must equal this comma-separated set.
   "auth": {
     "providers": {
       "openai": { "mode": "oauth", "tokenEnv": "CODEX_OAUTH_ACCESS_TOKEN" },
