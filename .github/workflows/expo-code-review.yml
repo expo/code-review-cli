@@ -52,6 +52,13 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # The claude-code auth mode runs reviews through the Claude Code CLI on a
+      # Max/Team subscription (see .expo-code-review/config.jsonc). Pinned exactly,
+      # like `opencode-ai` in package.json — an unpinned CLI would silently drift
+      # on every CI run; bump it deliberately.
+      - name: Install Claude Code CLI
+        run: bun install -g @anthropic-ai/claude-code@2.1.212
+
       # SECURITY: the TRUSTED BASE checkout above includes .expo-code-review/
       # config.jsonc, whose auth.tokenEnv names the env var the CLI forwards as the
       # model credential. `ecr verify-config` is the canonical guard (ships with the
@@ -61,7 +68,7 @@ jobs:
       # source, so the guard runs from that same base source — same engine as `ci`.
       - name: Guard config tokenEnv
         env:
-          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CODEX_OAUTH_ACCESS_TOKEN,OPENAI_API_KEY' }}
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CLAUDE_CODE_OAUTH_TOKEN' }}
         run: bun run src/cli.ts verify-config
 
       - name: Run AI review
@@ -76,13 +83,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Layer-1 auth lock: `ecr ci` re-checks the honored tokenEnv at runtime,
           # catching what the guard step above can't. Keep in sync with the guard.
-          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CODEX_OAUTH_ACCESS_TOKEN,OPENAI_API_KEY' }}
-          # Mixed credentials (see config.jsonc auth.providers): the ChatGPT/Codex
-          # subscription ACCESS token serves the default models; the usage-based
-          # API key (project-scoped, inference-only, budget-capped) serves the
-          # pro-tier security pass. ECR_EXPECTED_TOKEN_ENV (repo variable) locks
-          # the comma-separated set of BOTH names.
-          CODEX_OAUTH_ACCESS_TOKEN: ${{ secrets.CODEX_OAUTH_ACCESS_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # Optional: override the model for every agent (uses your OpenCode login).
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CLAUDE_CODE_OAUTH_TOKEN' }}
+          # Claude Max/Team subscription token minted by `claude setup-token`
+          # (~1 year lifetime). The claude-code engine forwards it to the Claude
+          # Code CLI as the only credential (any ANTHROPIC_* key is stripped).
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Optional: override the model for every agent.
           REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}
