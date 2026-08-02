@@ -15,7 +15,7 @@ import {
 import type { LinkContext, ReviewState, ScopeReviewResult } from "../core/render.js";
 import { matchReplies } from "../core/responses.js";
 import type { ReplyComment } from "../core/responses.js";
-import { feedbackApplied } from "../core/adjudicate.js";
+import { dropStaleVerdict, feedbackApplied, feedbackNeedsPrAuthor } from "../core/adjudicate.js";
 import type { AdjudicationItem } from "../core/adjudicate.js";
 import { fingerprintFinding, scopedFingerprint } from "../core/schema.js";
 import type {
@@ -75,6 +75,38 @@ export interface GitHubReporterOptions {
 
 const MAINTAINER_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
+/**
+ * PR-author lookups shared across reporter INSTANCES, keyed by the exact PR they
+ * describe. Routed CI builds a fresh GitHubReporter per scope (plus one for the seam),
+ * and every one of them would otherwise run its own `gh pr view` for the SAME PR. The
+ * key carries the checkout, the repo and the PR number, so a lookup can never leak
+ * across repos or PRs in one process (the `ecr feedback` crawl walks many PRs). The
+ * in-flight promise is stored, not just the result, so concurrent scopes share one call.
+ */
+const prAuthorByPr = new Map<string, Promise<string | null>>();
+
+/** Cache key for prAuthorByPr. Newline-joined with the free-form part (the checkout
+ * path) LAST: a PR number is digits and a repo is `owner/name`, neither of which can
+ * contain a newline, so two different PRs can never collide on one key. Exported for
+ * tests. */
+export function prAuthorCacheKey(repo: string, prNumber: number, cwd?: string): string {
+  return `${prNumber}\n${repo}\n${cwd ?? ""}`;
+}
+
+/** Run `resolve` at most once per PR for the lifetime of the process. Exported for
+ * tests (the reporter's own call path needs `gh`). */
+export function sharedPrAuthor(
+  key: string,
+  resolve: () => Promise<string | null>,
+): Promise<string | null> {
+  let pending = prAuthorByPr.get(key);
+  if (!pending) {
+    pending = resolve();
+    prAuthorByPr.set(key, pending);
+  }
+  return pending;
+}
+
 export interface IssueComment {
   id: number;
   body?: string;
@@ -86,20 +118,24 @@ export interface IssueComment {
   html_url?: string;
 }
 
-// @ref LLP 0011#suppression-is-never-silent [implements] — a decision carries only while BOTH the reply and the reviewed source are unchanged; anything else is re-judged
+// @ref LLP 0011#suppression-is-never-silent [implements] — a verdict carries only while BOTH the reply and the reviewed source are unchanged; a human's `/undismiss` pin instead belongs to the FINDING and only a maintainer action lifts it
 /**
- * Carry a decision (verdict / applied) already recorded in the prior comment
- * state onto the freshly matched records — but only when the current newest
- * reply is the SAME comment it was made about AND the stored verdict judged the
- * SAME source revision (`headSha`). A newer reply resets it: the old verdict judged
- * different words. A newer head resets it too: a verdict is a claim about code, and
- * a fingerprint excludes the line number, so the author can edit the code the
- * rebuttal relied on away while the finding keeps its identity — carrying the
- * verdict there would hide a finding against source that no longer supports it.
- * Unknown source (no `headSha` for this run, or a record stored before the field
- * existed) counts as different: the decision is dropped and adjudicateFeedback
- * judges the reply again. Fresh records own the reply identity (author, comment id,
- * link); the prior state owns the decision.
+ * Carry a decision already recorded in the prior comment state onto the freshly
+ * matched records. Two different lifetimes here, deliberately:
+ *
+ * - A **verdict** (and the `applied` it justified) is bound to the words it judged AND
+ *   to the source it judged: it carries only while the newest reply is the SAME comment
+ *   it was decided about and `dropStaleVerdict` agrees the head is unchanged. A newer
+ *   reply answers different words; a newer head means the code the rebuttal relied on
+ *   may be gone. Either way the reply is re-judged rather than trusted.
+ * - An **`unclearedByHuman` pin** is bound to the FINDING a human restored, not to one
+ *   reply and not to one revision. It carries across a new reply and a new head, so the
+ *   untrusted PR author cannot lift a maintainer's restore just by posting one more
+ *   comment quoting the same finding. Only a maintainer action lifts it: a `/dismiss`
+ *   (see applyDismissal) or a maintainer's own newer reply on that finding.
+ *
+ * Fresh records own the reply identity (author, comment id, link); the prior state owns
+ * the decision.
  */
 function mergeFeedback(
   fresh: FeedbackRecord[],
@@ -109,29 +145,30 @@ function mergeFeedback(
   const priorByFp = new Map(previous.map((record) => [record.fp, record]));
   return fresh.map((record) => {
     const prior = priorByFp.get(record.fp);
-    if (prior && prior.commentId === record.commentId) {
-      // Only a verdict is bound to a revision. A record with none (a maintainer reply,
-      // an unjudged annotation) has no source-dependent decision to go stale, so it
-      // carries exactly as before.
-      const carries =
-        prior.verdict === undefined || (headSha !== undefined && prior.sourceSha === headSha);
-      return {
-        ...record,
-        ...(carries && prior.verdict !== undefined ? { verdict: prior.verdict } : {}),
-        ...(carries && prior.reason !== undefined ? { reason: prior.reason } : {}),
-        ...(carries && prior.sourceSha !== undefined ? { sourceSha: prior.sourceSha } : {}),
-        // A `/undismiss` override is pinned to the reply it restored: carry it forward
-        // for the SAME comment so a re-review's `applied` recompute keeps the finding
-        // active (a newer reply is a fresh decision and drops the pin, like the verdict).
-        // It survives a source change too — a human restored the finding, and only a
-        // newer reply may lift that.
-        ...(prior.unclearedByHuman ? { unclearedByHuman: true } : {}),
-        // A dropped verdict takes its `applied` with it (every caller recomputes it
-        // anyway); carrying `true` here would keep the finding hidden for one render.
-        applied: carries ? prior.applied : false,
-      };
+    if (!prior) {
+      return record;
     }
-    return record;
+    // A newer reply from a MAINTAINER is a fresh trusted decision on this finding, so
+    // it lifts the pin. A newer reply from anyone else (the PR author included) does
+    // not — that is the whole point of pinning to the finding.
+    const sameReply = prior.commentId === record.commentId;
+    const pinned = prior.unclearedByHuman === true && (sameReply || record.maintainer !== true);
+    const pin = pinned ? { unclearedByHuman: true as const, applied: false } : {};
+    if (!sameReply) {
+      // Different words: nothing decided about the old comment carries.
+      return { ...record, ...pin };
+    }
+    const carried = dropStaleVerdict(
+      {
+        ...record,
+        ...(prior.verdict !== undefined ? { verdict: prior.verdict } : {}),
+        ...(prior.reason !== undefined ? { reason: prior.reason } : {}),
+        ...(prior.sourceSha !== undefined ? { sourceSha: prior.sourceSha } : {}),
+        applied: prior.applied,
+      },
+      headSha,
+    );
+    return { ...carried, ...pin };
   });
 }
 
@@ -243,18 +280,18 @@ export class GitHubReporter implements Reporter {
     return this.ownLoginResolution;
   }
 
-  /** Memoized login of the PR author (see resolvePrAuthor). */
-  private prAuthorResolution?: Promise<string | null>;
-
   /**
    * The PR author's login, used to mark a reply as coming from the author (see
    * replyComments) so the adjudicated clear path can gate on it. Resolved via
-   * `gh pr view --json author`; memoized (stable for the PR) and fail-soft — a null
-   * result marks no reply as the author's, so the adjudicated path clears nothing
-   * (fail closed), exactly like an unresolved own-login.
+   * `gh pr view --json author` and fail-soft — a null result marks no reply as the
+   * author's, so the adjudicated path clears nothing (fail closed), exactly like an
+   * unresolved own-login. Memoized per PR across reporter INSTANCES (see
+   * prAuthorByPr), not per instance: routed CI builds one reporter per scope for the
+   * same PR, and the author's login is a property of the PR, not of the reporter.
    */
   private resolvePrAuthor(): Promise<string | null> {
-    this.prAuthorResolution ??= (async () => {
+    const key = prAuthorCacheKey(this.options.repo, this.options.prNumber, this.options.cwd);
+    return sharedPrAuthor(key, async () => {
       try {
         const gh = await resolveTrustedTool("gh");
         const { stdout } = await run(
@@ -279,8 +316,7 @@ export class GitHubReporter implements Reporter {
         // treated as the author's, so nothing clears via the adjudicated path.
         return null;
       }
-    })();
-    return this.prAuthorResolution;
+    });
   }
 
   /** This reporter's own marker comments, author-verified (see selectOwnComments). */
@@ -508,12 +544,17 @@ export class GitHubReporter implements Reporter {
    * our own footer is never read back as a reply; the `author_association` gives
    * the maintainer flag and the PR author's login gives the `author` flag. When our
    * login can't be resolved, the marker filter still keeps our own comments out.
+   *
+   * The PR-author lookup is an extra `gh` call, so it only runs when the flag can
+   * actually change an outcome — `dismiss: "adjudicated"` (see feedbackNeedsPrAuthor).
+   * Skipping it leaves every reply `author: false`, the same fail-closed answer a
+   * failed lookup gives, and under any other `dismiss` value nothing reads the flag.
    */
   private async replyComments(): Promise<ReplyComment[]> {
     const [comments, ownLogin, prAuthor] = await Promise.all([
       this.fetchAllComments(),
       this.resolveOwnLogin(),
-      this.resolvePrAuthor(),
+      feedbackNeedsPrAuthor(this.options.feedback) ? this.resolvePrAuthor() : null,
     ]);
     const out: ReplyComment[] = [];
     for (const comment of comments) {
@@ -655,11 +696,22 @@ export class GitHubReporter implements Reporter {
     // /undismiss (an fp in `remove`) must also restore a finding a REPLY cleared, not
     // just a manual dismissal: un-apply that record and pin it (`unclearedByHuman`) so
     // a later re-review recomputing `applied` from the still-present reply keeps the
-    // finding active instead of re-hiding it forever.
+    // finding active instead of re-hiding it forever. The pin belongs to the finding
+    // and no reply from the untrusted PR author lifts it (see mergeFeedback); a
+    // maintainer's own `/dismiss` of that same finding does — it is the same trusted
+    // hand deciding the opposite way.
     const removeSet = new Set(remove);
-    const feedback = (state.feedback ?? []).map((record) =>
-      removeSet.has(record.fp) ? { ...record, applied: false, unclearedByHuman: true } : record,
-    );
+    const addSet = new Set(matched);
+    const feedback = (state.feedback ?? []).map((record) => {
+      if (removeSet.has(record.fp)) {
+        return { ...record, applied: false, unclearedByHuman: true };
+      }
+      if (addSet.has(record.fp) && record.unclearedByHuman) {
+        const { unclearedByHuman: _pin, ...rest } = record;
+        return rest;
+      }
+      return record;
+    });
     const link = await this.linkContextAsync();
     const body = isAggregate
       ? renderAggregateMarkdown(

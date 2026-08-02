@@ -222,9 +222,11 @@ export const FeedbackRecordSchema = z.object({
    * Set when a human ran `/undismiss <id>` on a finding a reply had cleared: the
    * finding returns to the active list and no live reply may re-apply it, so a later
    * re-review recomputing `applied` from the still-present reply keeps it un-cleared.
-   * Rides the embedded state and is carried forward by mergeFeedback for the same reply.
+   * Rides the embedded state and is carried forward by mergeFeedback for the FINDING,
+   * across a newer reply and a newer head — only a maintainer action (a `/dismiss`, or
+   * a maintainer's own newer reply) lifts it, never one more reply from the PR author.
    */
-  // @ref LLP 0011#suppression-is-never-silent [constrained-by] — /undismiss must actually restore a reply-cleared finding, not leave it hidden forever
+  // @ref LLP 0011#suppression-is-never-silent [constrained-by] — /undismiss must actually restore a reply-cleared finding, and the untrusted PR author must not be able to lift that restore by replying again
   unclearedByHuman: z.boolean().optional(),
 });
 export type FeedbackRecord = z.infer<typeof FeedbackRecordSchema>;

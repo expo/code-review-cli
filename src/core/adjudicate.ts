@@ -96,6 +96,41 @@ export function feedbackApplied(
   );
 }
 
+// @ref LLP 0011#suppression-is-never-silent [implements] — a verdict binds to the source it judged; both merge paths (reporter + aggregate) share THIS predicate so they can never drift apart
+/**
+ * Strip a stored decision that no longer judges the source under review. A verdict is a
+ * claim about CODE, not only about words, and `fingerprintFinding` deliberately excludes
+ * the line number, so the author can edit away the code a rebuttal relied on while the
+ * finding keeps its identity. Unknown head — no `headSha` for this run, or a record
+ * written before the field existed — counts as different, never as trusted. A record
+ * with no verdict (a maintainer reply, an unjudged annotation) has no source-dependent
+ * decision and passes through untouched. The stale `applied` drops with the verdict:
+ * carrying `true` would hide the finding for one render before the recompute.
+ */
+export function dropStaleVerdict(
+  record: FeedbackRecord,
+  headSha: string | undefined,
+): FeedbackRecord {
+  if (record.verdict === undefined || (headSha !== undefined && record.sourceSha === headSha)) {
+    return record;
+  }
+  const { verdict: _verdict, reason: _reason, sourceSha: _sourceSha, ...rest } = record;
+  return { ...rest, applied: false };
+}
+
+// @ref LLP 0011#hard-floors-in-code [constrained-by] — the extra `gh pr view` runs only where the author flag can move an outcome; a skipped lookup reads exactly like a failed one (author:false, clears nothing)
+/**
+ * Whether the PR author's login has to be resolved at all for this config. The `author`
+ * flag gates exactly one thing — the adjudicated clear path in `feedbackApplied` (and,
+ * through it, which replies are worth a model call) — so under any other `dismiss`
+ * value resolving it is a `gh` call that can never move an outcome. Absent config (the
+ * `ecr feedback` crawl) resolves nothing, which is also the fail-closed answer: an
+ * unresolved author marks no reply as the author's and clears nothing.
+ */
+export function feedbackNeedsPrAuthor(config: FeedbackConfig | undefined): boolean {
+  return config?.dismiss === "adjudicated";
+}
+
 /**
  * Whether the command layer must wire the runReview feedback seam at all: either a
  * model judges replies ("adjudicate"), or replies may clear findings (`dismiss` opted

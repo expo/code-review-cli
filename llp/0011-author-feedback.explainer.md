@@ -244,6 +244,24 @@ clears" rather than open [observed] ([responses.ts](../src/core/responses.ts)
 `ReplyComment.author`; [github.ts](../src/reporters/github.ts)
 `resolvePrAuthor`, `replyComments`).
 
+Re-deriving it costs a `gh pr view`, and `mode: "annotate"` is the shipped
+default, so that call would otherwise land on EVERY report of every adopting
+repo — multiplied per scope in routed CI, which builds a fresh reporter per
+scope plus one for the seam. Two things bound it, and neither weakens the fail-
+closed rule. The flag gates exactly one branch, so it is resolved only when that
+branch is reachable: `feedbackNeedsPrAuthor` returns true for
+`dismiss: "adjudicated"` and nothing else, and a skipped lookup reads the same
+as a failed one — `author: false`, clears nothing
+[observed] ([adjudicate.ts](../src/core/adjudicate.ts) `feedbackNeedsPrAuthor`;
+[github.ts](../src/reporters/github.ts) `replyComments`). And when it does run,
+the result is memoized per PR across reporter INSTANCES, not per instance: the
+author's login is a property of the PR, so N scopes share one call. The cache
+holds the in-flight promise (concurrent scopes join it rather than racing) and
+is keyed by checkout + repo + PR number, so a lookup can never leak across the
+many PRs the `ecr feedback` crawl walks in one process
+[observed] ([github.ts](../src/reporters/github.ts) `prAuthorByPr`,
+`prAuthorCacheKey`, `sharedPrAuthor`).
+
 `adjudicateFeedback` re-derives `applied` for **every** record on every call —
 including ones a model never touched this run (already-decided verdicts from a
 prior run are skipped to avoid re-spending the budget on the same words,
@@ -323,27 +341,43 @@ that SAME still-present reply, does not silently re-clear the finding the
 human just restored; `feedbackApplied` checks this pin before any other floor
 [observed] ([adjudicate.ts](../src/core/adjudicate.ts) `feedbackApplied`, the
 `record.unclearedByHuman` guard; [github.ts](../src/reporters/github.ts) the
-`removeSet`/`unclearedByHuman` branch in the dismissal-render path). The pin
-travels with that one reply, not the finding forever: `mergeFeedback` carries
-it forward only while the record is about the SAME `commentId`, and a NEWER
-reply on the same finding is a fresh decision that drops the pin exactly like
-it drops a stale verdict — a human's override doesn't gag a future reply
-[observed] ([github.ts](../src/reporters/github.ts) `mergeFeedback`, the
-`prior.unclearedByHuman` forwarding beside the verdict/reason carry-forward).
-A record already carrying this pin is also excluded from `adjudicateFeedback`'s
-model pass — there's nothing to gain by re-judging a reply whose verdict, even
-if `"accepted"`, a human has already overridden
+`removeSet`/`unclearedByHuman` branch in the dismissal-render path).
+
+**The pin belongs to the FINDING, not to one reply.** `mergeFeedback` carries
+`unclearedByHuman` forward for the same fingerprint even when a NEWER reply
+replaces the record, and across a head change; only a maintainer action lifts
+it — a `/dismiss` on that finding (`applyDismissal` drops the pin for an fp it
+adds, the same trusted hand deciding the opposite way) or a maintainer's own
+newer reply, which is the trust gate that already lets a maintainer reply clear
+a finding at all [observed] ([github.ts](../src/reporters/github.ts)
+`mergeFeedback`, the `pinned` computation and the `addSet` branch in
+`applyDismissal`). An earlier round of this design bound the pin to one
+`commentId` instead, reasoning that "a newer reply is a fresh decision that
+shouldn't be gagged." That handed the lift to exactly the actor the pin exists
+to constrain. `matchReplies` keeps only the NEWEST comment per finding, so the
+untrusted PR author had only to post one more comment quoting the same title:
+the fresh record carried a different `commentId`, the pin vanished, the reply
+was judged again, and an `"accepted"` verdict removed the finding from the
+blocking set a maintainer had just restored — repeatable after every restore,
+with no permission the author didn't already have. A human's override is not a
+claim about one comment's words; it is a decision about that finding, so it
+outlives whatever the author posts next. The rebuttal still gets its hearing —
+from a maintainer, who can `/dismiss` or reply themselves.
+
+A record carrying this pin is also excluded from `adjudicateFeedback`'s model
+pass — there's nothing to gain by re-judging a reply whose verdict, even if
+`"accepted"`, a human has already overridden
 [observed] ([adjudicate.ts](../src/core/adjudicate.ts) `adjudicateFeedback`,
 the `toJudge` filter).
 
 That same-comment gate is necessary but not sufficient. A verdict is a claim
 about SOURCE, not only about words: `fingerprintFinding` deliberately excludes
 the line number, so a finding keeps its identity while the code that justified
-the rebuttal is edited away elsewhere in the file. `mergeFeedback` therefore
-carries a decided `verdict`/`reason`/`applied` forward only while the record's
-`sourceSha` — the reviewed head OID stamped on it when the adjudicator answered
-— equals the head this run reviews [observed] ([github.ts](../src/reporters/github.ts)
-`mergeFeedback`, the `carries` gate; [adjudicate.ts](../src/core/adjudicate.ts)
+the rebuttal is edited away elsewhere in the file. `dropStaleVerdict` is the one
+predicate that says so: a decided `verdict`/`reason`/`applied` survives only
+while the record's `sourceSha` — the reviewed head OID stamped on it when the
+adjudicator answered — equals the head this run reviews
+[observed] ([adjudicate.ts](../src/core/adjudicate.ts) `dropStaleVerdict`;
 `adjudicateFeedback`, the `sourceSha` stamp). Unknown source counts as
 different, never as trusted: a run with no head SHA (the `ecr feedback` crawl,
 which reviews nothing, or `local-git`, which resolves no `headOid`) and a record
@@ -354,13 +388,29 @@ through `adjudicateFeedback`'s `toJudge` filter and the reply is judged again
 against the new source; its stale `applied: true` drops with it, so no render
 hides the finding in between.
 
+That predicate is deliberately ONE exported function rather than a rule each
+merge path restates. There are two such paths — `mergeFeedback` in the reporter,
+and `mergeAggregateFeedback` in `ci.ts` for the `comment:'single'` aggregate —
+and they did drift: the aggregate path kept every prior record whose fingerprint
+no fresh scope claimed and only recomputed `applied`, which `feedbackApplied`
+derives without ever looking at `sourceSha`. A scope whose seam threw on run 2
+therefore carried run 1's `"accepted"` verdict onto a head that verdict never
+judged, and because `reportAggregate` skips `computeFeedback` whenever it is
+handed explicit records, nothing downstream re-checked it. Both paths now call
+`dropStaleVerdict` on every record they take from prior state — fresh records
+are exempt, having just been stamped with this run's own source
+[observed] ([ci.ts](../src/commands/ci.ts) `mergeAggregateFeedback`, the
+`dropStaleVerdict` in the `prior` filter; [github.ts](../src/reporters/github.ts)
+`mergeFeedback`).
+
 Two things deliberately survive a head change, which qualifies the pin claim
-above. An `unclearedByHuman` pin belongs to the reply a human overrode, not to a
-revision — only a NEWER reply lifts it, so it does not drop "exactly like a
-stale verdict" after all. A verdict-less record survives for the same reason: a
-maintainer clears with no model call and no verdict, so it has no
-source-dependent decision to go stale [observed] ([github.ts](../src/reporters/github.ts)
-`mergeFeedback`, the `prior.verdict === undefined` disjunct). The cost is real
+above. An `unclearedByHuman` pin belongs to the finding a human restored, not to
+a revision and not to a reply — nothing but a maintainer action lifts it, so it
+does not drop "exactly like a stale verdict" after all. A verdict-less record
+survives for a related reason: a maintainer clears with no model call and no
+verdict, so it has no source-dependent decision to go stale
+[observed] ([adjudicate.ts](../src/core/adjudicate.ts) `dropStaleVerdict`, the
+`record.verdict === undefined` short-circuit). The cost is real
 and bounded: a push that touches nothing relevant re-spends adjudication budget
 re-judging the same words, capped by `maxAdjudications`. Paying that beats
 hiding a finding against source the rebuttal no longer fits.

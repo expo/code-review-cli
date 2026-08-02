@@ -522,6 +522,10 @@ the root-only `feedback` block in `config.jsonc`:
   "adjudicate"` for verdicts to exist). A `critical` finding, or one categorized `secrets`/
   `security`, can never be cleared this way, whatever the config — that floor is
   enforced in code, not the prompt.
+- **`/undismiss <id>` wins over a reply.** Running it on a finding a reply cleared
+  puts the finding back in the active list and keeps it there: another reply from
+  the PR author can't clear it again. Only a maintainer lifts that — either
+  `/dismiss <id>` on the same finding, or a maintainer's own reply to it.
 
 `ecr feedback` mines this substrate retroactively, with no model call and no
 re-review: it crawls a repo's PRs, reads each one's existing reviewer comment

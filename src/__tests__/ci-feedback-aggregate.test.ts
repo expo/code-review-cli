@@ -26,6 +26,10 @@ const record = (over: Partial<FeedbackRecord> = {}): FeedbackRecord => ({
   ...over,
 });
 
+/** The head this run reviews, and the one a stored verdict was decided against. */
+const HEAD_SHA = "1111111111111111111111111111111111111111";
+const OLD_HEAD_SHA = "2222222222222222222222222222222222222222";
+
 const feedbackConfig: LoadedConfig["feedback"] = {
   mode: "adjudicate",
   match: "both",
@@ -69,7 +73,7 @@ test("a scope whose seam failed this run preserves prior records for its still-p
   const fp = scopedFingerprint("api", f1);
   const prior = [record({ fp, by: "author1", maintainer: true })];
   const results = [seamFailedScope("api", [f1])];
-  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig);
+  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig, HEAD_SHA);
   const kept = merged.find((r) => r.fp === fp);
   expect(kept).toBeDefined();
   expect(kept!.by).toBe("author1");
@@ -82,7 +86,7 @@ test("a scope whose seam succeeded drops a stale record when no fresh reply exis
   const prior = [record({ fp, by: "author1" })];
   // Seam ran fine and returned zero records (e.g. the reply was deleted).
   const results = [seamOkScope("api", [f1], [])];
-  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig);
+  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig, HEAD_SHA);
   expect(merged.find((r) => r.fp === fp)).toBeUndefined();
 });
 
@@ -92,7 +96,7 @@ test("a scope whose seam succeeded replaces the prior record with the fresh one"
   const prior = [record({ fp, by: "author1", verdict: "refuted" })];
   const fresh = record({ fp, by: "author2", verdict: "accepted", commentId: 2 });
   const results = [seamOkScope("api", [f1], [fresh])];
-  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig);
+  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig, HEAD_SHA);
   const kept = merged.find((r) => r.fp === fp);
   expect(kept?.by).toBe("author2");
   expect(kept?.verdict).toBe("accepted");
@@ -109,7 +113,7 @@ test("only the failed scope falls back; a sibling scope's successful seam still 
     // web's seam ran fine and found no records this run (reply gone).
     seamOkScope("web", [webFinding], []),
   ];
-  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig);
+  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig, HEAD_SHA);
   expect(merged.find((r) => r.fp === apiFp)?.by).toBe("apiAuthor");
   expect(merged.find((r) => r.fp === webFp)).toBeUndefined();
 });
@@ -124,7 +128,7 @@ test("a carried-over scope (partial --scopes run) not in `results` keeps its pri
   const apiFinding = finding({ file: "api.ts", title: "Api issue" });
   const results = [seamOkScope("api", [apiFinding], [])];
   const finalResults: ScopeReviewResult[] = [...results, seamOkScope("docs", [carriedFinding], [])];
-  const merged = mergeAggregateFeedback(results, finalResults, prior, feedbackConfig);
+  const merged = mergeAggregateFeedback(results, finalResults, prior, feedbackConfig, HEAD_SHA);
   expect(merged.find((r) => r.fp === docsFp)?.by).toBe("docsAuthor");
 });
 
@@ -154,12 +158,80 @@ test("a stale per-scope feedback copy on a carried-over scope never overrides a 
     ...results,
     seamOkScope("www", [wwwFinding], [staleR1]),
   ];
-  const merged = mergeAggregateFeedback(results, finalResults, prior, feedbackConfig);
+  const merged = mergeAggregateFeedback(results, finalResults, prior, feedbackConfig, HEAD_SHA);
   const kept = merged.find((r) => r.fp === wwwFp);
   expect(kept).toBeDefined();
   // The human override survives: pinned and un-applied, not re-hidden by the stale copy.
   expect(kept!.unclearedByHuman).toBe(true);
   expect(kept!.applied).toBe(false);
+});
+
+// Finding agg-verdict-head: the reporter binds a verdict to the source it judged, and
+// this path has to honor the same rule. A scope whose seam threw keeps its prior
+// record, feedbackApplied never looks at sourceSha, and reportAggregate skips
+// computeFeedback when it is handed explicit records — so without the check here the
+// finding renders as cleared against source the verdict never saw.
+test("a prior verdict decided against an older head is dropped, not re-applied", () => {
+  const f1 = finding({ file: "api.ts", title: "Issue" });
+  const fp = scopedFingerprint("api", f1);
+  const prior = [
+    record({
+      fp,
+      by: "author",
+      author: true,
+      verdict: "accepted",
+      reason: "pre-existing",
+      sourceSha: OLD_HEAD_SHA,
+      applied: true,
+    }),
+  ];
+  // The scope was re-reviewed but its seam threw, so its fingerprints are not fresh and
+  // the prior record is carried.
+  const results = [seamFailedScope("api", [f1])];
+  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig, HEAD_SHA);
+  const kept = merged.find((r) => r.fp === fp);
+  expect(kept).toBeDefined();
+  // The reply attribution survives (the reply is still there); the decision does not.
+  expect(kept!.by).toBe("author");
+  expect(kept!.verdict).toBeUndefined();
+  expect(kept!.reason).toBeUndefined();
+  expect(kept!.sourceSha).toBeUndefined();
+  expect(kept!.applied).toBe(false);
+});
+
+test("a prior verdict decided against the head under review still clears the finding", () => {
+  // The control for the test above: same record, same path, only the source matches —
+  // so the drop is about the head moving, not about carrying records at all.
+  const f1 = finding({ file: "api.ts", title: "Issue" });
+  const fp = scopedFingerprint("api", f1);
+  const prior = [
+    record({ fp, by: "author", author: true, verdict: "accepted", sourceSha: HEAD_SHA }),
+  ];
+  const results = [seamFailedScope("api", [f1])];
+  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig, HEAD_SHA);
+  expect(merged.find((r) => r.fp === fp)?.verdict).toBe("accepted");
+  expect(merged.find((r) => r.fp === fp)?.applied).toBe(true);
+});
+
+test("a prior verdict never carries when this run has no head SHA", () => {
+  const f1 = finding({ file: "api.ts", title: "Issue" });
+  const fp = scopedFingerprint("api", f1);
+  const prior = [
+    record({ fp, by: "author", author: true, verdict: "accepted", sourceSha: HEAD_SHA }),
+  ];
+  const results = [seamFailedScope("api", [f1])];
+  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig, undefined);
+  expect(merged.find((r) => r.fp === fp)?.verdict).toBeUndefined();
+  expect(merged.find((r) => r.fp === fp)?.applied).toBe(false);
+});
+
+test("a verdict-less carried record (maintainer reply) is untouched by a head change", () => {
+  const f1 = finding({ file: "api.ts", title: "Issue" });
+  const fp = scopedFingerprint("api", f1);
+  const prior = [record({ fp, by: "maint", maintainer: true, applied: true })];
+  const results = [seamFailedScope("api", [f1])];
+  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig, HEAD_SHA);
+  expect(merged.find((r) => r.fp === fp)?.applied).toBe(true);
 });
 
 test("applied is recomputed under the current config, not carried as a stored fact", () => {
@@ -169,6 +241,6 @@ test("applied is recomputed under the current config, not carried as a stored fa
   const fp = scopedFingerprint("api", critical);
   const prior = [record({ fp, by: "author1", applied: true, maintainer: true })];
   const results = [seamFailedScope("api", [critical])];
-  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig);
+  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig, HEAD_SHA);
   expect(merged.find((r) => r.fp === fp)?.applied).toBe(false);
 });

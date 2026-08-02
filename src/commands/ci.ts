@@ -26,7 +26,7 @@ import { buildDiffLineIndex } from "../core/render.js";
 import type { LinkContext, ScopeReviewResult } from "../core/render.js";
 import type { CoordinatorOutput, FeedbackRecord, Finding } from "../core/schema.js";
 import { scopedFingerprint } from "../core/schema.js";
-import { feedbackApplied, feedbackNeedsRunSeam } from "../core/adjudicate.js";
+import { dropStaleVerdict, feedbackApplied, feedbackNeedsRunSeam } from "../core/adjudicate.js";
 import { runReview } from "../core/review.js";
 import type { ReviewRunOptions, ReviewRunResult } from "../core/review.js";
 import { GitHubPRSource } from "../sources/github-pr.js";
@@ -339,6 +339,9 @@ function scopeFeedbackRecords(result: ScopeReviewResult): FeedbackRecord[] {
 // which is truthy, see scopeFeedbackRecords). This merge honors the same rule for the
 // aggregate comment: a scope's fresh records are authoritative for its findings'
 // fingerprints ONLY when its own seam actually returned records this run.
+// @ref LLP 0011#suppression-is-never-silent [implements] — the aggregate path applies
+// the SAME dropStaleVerdict rule as the reporter's mergeFeedback, so a verdict can never
+// clear a finding against a head it never judged just because this path was the one used.
 // @ref LLP 0011#the-rebuttal-is-a-hypothesis — fresh records come ONLY from `results`,
 // never `finalResults`: a carried scope's `finalResults` entry can still embed a stale
 // per-scope `review.feedback` copy from a past full run, which would resurrect a record
@@ -353,6 +356,14 @@ function scopeFeedbackRecords(result: ScopeReviewResult): FeedbackRecord[] {
  *   partial run) AND a re-reviewed scope whose seam itself failed (`review.feedback`
  *   stayed undefined) — so a transient GitHub fetch error can never delete a scope's
  *   prior reply attributions/verdicts with nothing to replace them.
+ *
+ * Every record taken from `prior` first goes through `dropStaleVerdict` against
+ * `headSha` — the SAME rule mergeFeedback applies on the reporter side. Without it this
+ * path would re-apply a verdict decided against a head the run no longer reviews: a
+ * scope whose seam threw keeps its prior record, `feedbackApplied` never looks at
+ * `sourceSha`, and reportAggregate skips computeFeedback when it gets explicit records,
+ * so nothing else would ever check. Fresh records are NOT re-checked — they were just
+ * stamped with this run's own source.
  *
  * `applied` is recomputed on every kept record (idempotent for fresh ones) so a
  * carried/fallback record also honors a `dismiss` policy that changed since it was
@@ -369,6 +380,7 @@ export function mergeAggregateFeedback(
   finalResults: ScopeReviewResult[],
   prior: FeedbackRecord[],
   feedbackConfig: LoadedConfig["feedback"],
+  headSha: string | undefined,
 ): FeedbackRecord[] {
   const scopedFpOf = (result: ScopeReviewResult, finding: Finding): string =>
     scopedFingerprint(result.isDefault ? null : result.scope, finding);
@@ -384,7 +396,12 @@ export function mergeAggregateFeedback(
       .flatMap((result) => result.review.findings.map((f) => scopedFpOf(result, f))),
   );
   const byFp = new Map(
-    prior.filter((record) => !freshFps.has(record.fp)).map((record) => [record.fp, record]),
+    prior
+      .filter((record) => !freshFps.has(record.fp))
+      // A verdict decided against a head this run no longer reviews is dropped here,
+      // exactly as mergeFeedback drops it: the reply is judged again instead of
+      // clearing the finding against source it never saw.
+      .map((record) => [record.fp, dropStaleVerdict(record, headSha)] as const),
   );
   // Fresh records come only from THIS run's reviewed scopes; carried scopes'
   // records already sit in `prior` above (a re-inject from `finalResults` would
@@ -863,6 +880,7 @@ async function runRoutedCi(
             finalResults,
             (await aggregate.readState())?.feedback ?? [],
             rootConfig.feedback,
+            headSha,
           )
         : undefined;
       await aggregate.reportAggregate(finalResults, resolution.unmatched, aggFeedback);

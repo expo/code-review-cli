@@ -203,6 +203,77 @@ test("single-mode: a PLAIN fpOf drops the scoped prior verdict (why the mapper m
   expect(items[0]!.record.verdict).toBeUndefined();
 });
 
+// The security regression (finding e75f9b45c6ad): the pin belongs to the FINDING a
+// human restored, not to the one reply that happened to be newest when they restored
+// it. matchReplies keeps only the NEWEST comment per finding, so if the pin were
+// reply-bound the untrusted PR author would lift a maintainer's `/undismiss` simply by
+// posting one more comment quoting the same title — and could repeat it after every
+// restore.
+test("a NEWER reply from the PR AUTHOR does not lift an unclearedByHuman pin", async () => {
+  const priorPinned: FeedbackRecord[] = [
+    {
+      fp: scopedFp,
+      by: "author",
+      commentId: 42,
+      maintainer: false,
+      author: true,
+      applied: false,
+      unclearedByHuman: true,
+    },
+  ];
+  // Same finding, brand-new comment id: the author replied again after the restore.
+  const secondReply: ReplyComment = { ...reply, id: 99 };
+  const items = buildAdjudicationItems(
+    review,
+    priorPinned,
+    [secondReply],
+    (f) => scopedFingerprint("api", f),
+    config.match,
+    HEAD_SHA,
+  );
+  expect(items).toHaveLength(1);
+  expect(items[0]!.record.commentId).toBe(99);
+  expect(items[0]!.record.unclearedByHuman).toBe(true);
+  expect(items[0]!.record.applied).toBe(false);
+
+  // Still excluded from the model pass (noHandle would throw and count as `failed`),
+  // and the finding stays in the blocking set.
+  const out = await adjudicateFeedback(noHandle, items, config);
+  expect(out.adjudicated).toBe(0);
+  expect(out.failed).toBe(0);
+  expect(out.records[0]!.applied).toBe(false);
+});
+
+test("a NEWER reply from a MAINTAINER lifts the pin (only a trusted hand may)", () => {
+  const priorPinned: FeedbackRecord[] = [
+    {
+      fp: scopedFp,
+      by: "author",
+      commentId: 42,
+      maintainer: false,
+      author: true,
+      applied: false,
+      unclearedByHuman: true,
+    },
+  ];
+  const maintainerReply: ReplyComment = {
+    ...reply,
+    id: 99,
+    login: "maint",
+    maintainer: true,
+    author: false,
+  };
+  const items = buildAdjudicationItems(
+    review,
+    priorPinned,
+    [maintainerReply],
+    (f) => scopedFingerprint("api", f),
+    config.match,
+    HEAD_SHA,
+  );
+  expect(items[0]!.record.unclearedByHuman).toBeUndefined();
+});
+
 test("buildAdjudicationItems: carries an unclearedByHuman pin forward for the same reply", () => {
   const priorPinned: FeedbackRecord[] = [
     {
