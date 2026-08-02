@@ -360,11 +360,25 @@ export function formatFeedbackReport(report: FeedbackReport): string {
 // IO wrapper — the only part that talks to `gh`.
 // ---------------------------------------------------------------------------
 
-interface RawPr {
+export interface RawPr {
   number: number;
   title: string;
   url: string;
   updatedAt?: string;
+}
+
+/** A PR the crawl could not fetch material for (e.g. a transient `gh api`
+ * error) — recorded and skipped so one bad PR never aborts the whole crawl. */
+export interface FailedPrFeedback {
+  number: number;
+  title: string;
+  url: string;
+  error: string;
+}
+
+export interface CrawlResult {
+  prs: PrFeedbackData[];
+  failed: FailedPrFeedback[];
 }
 
 /**
@@ -412,13 +426,51 @@ async function fetchPrFeedback(
 // fire hundreds of simultaneous `gh api` calls at once.
 const CRAWL_CONCURRENCY = 4;
 
+/**
+ * Runs `fetchOne` over `prs` through `runGrowableQueue`, isolating each PR's
+ * failure from the rest: a transient `gh api` error on one PR is recorded in
+ * `failed` and that PR is skipped, but every other PR still gets crawled and
+ * the report is still produced — one bad fetch must never lose the whole
+ * multi-PR report. Pure aside from calling `fetchOne`, so the queue/isolation
+ * behavior is unit-testable without `gh`.
+ */
+export async function crawlPrFeedback(
+  prs: RawPr[],
+  concurrency: number,
+  fetchOne: (pr: RawPr) => Promise<PrFeedbackData>,
+  onProgress: (scanned: number, total: number) => void,
+): Promise<CrawlResult> {
+  const results: Array<PrFeedbackData | undefined> = Array.from({ length: prs.length });
+  const failed: FailedPrFeedback[] = [];
+  let scanned = 0;
+  await runGrowableQueue(
+    prs.map((pr, index) => ({ pr, index })),
+    concurrency,
+    async ({ pr, index }) => {
+      try {
+        results[index] = await fetchOne(pr);
+      } catch (error) {
+        failed.push({
+          number: pr.number,
+          title: pr.title,
+          url: pr.url,
+          error: errorMessage(error),
+        });
+      }
+      scanned++;
+      onProgress(scanned, prs.length);
+    },
+  );
+  return { prs: results.filter((pr): pr is PrFeedbackData => pr !== undefined), failed };
+}
+
 async function crawlFeedback(
   args: FeedbackArgs,
   repo: string,
   config: LoadedConfig,
   cwd: string,
   onProgress: (scanned: number, total: number) => void,
-): Promise<PrFeedbackData[]> {
+): Promise<CrawlResult> {
   const gh = await resolveTrustedTool("gh");
   const listArgs = [
     "pr",
@@ -438,18 +490,12 @@ async function crawlFeedback(
   const { stdout } = await run(gh, listArgs, { cwd });
   const prs = JSON.parse(stdout) as RawPr[];
 
-  const results: PrFeedbackData[] = Array.from({ length: prs.length });
-  let scanned = 0;
-  await runGrowableQueue(
-    prs.map((pr, index) => ({ pr, index })),
+  return crawlPrFeedback(
+    prs,
     CRAWL_CONCURRENCY,
-    async ({ pr, index }) => {
-      results[index] = await fetchPrFeedback(pr, repo, config, cwd, args.as);
-      scanned++;
-      onProgress(scanned, prs.length);
-    },
+    (pr) => fetchPrFeedback(pr, repo, config, cwd, args.as),
+    onProgress,
   );
-  return results;
 }
 
 /** CLI wrapper: parse flags, crawl, aggregate, print. Makes no model calls. */
@@ -477,13 +523,19 @@ export async function feedbackCommand(argv: string[]): Promise<void> {
   try {
     const config = await loadReviewConfig(cwd);
     const repo = args.repo ?? (await resolveRepo(cwd));
-    const prs = await crawlFeedback(args, repo, config, cwd, (scanned, total) => {
+    const { prs, failed } = await crawlFeedback(args, repo, config, cwd, (scanned, total) => {
       process.stderr.write(`  scanned PR ${scanned}/${total}…\n`);
     });
+    if (failed.length > 0) {
+      process.stderr.write(
+        `warning: skipped ${failed.length} PR(s) that failed to fetch: ` +
+          `${failed.map((pr) => `#${pr.number} (${pr.error})`).join(", ")}\n`,
+      );
+    }
     const report = aggregateFeedback(prs);
 
     if (args.json) {
-      process.stdout.write(`${JSON.stringify(report)}\n`);
+      process.stdout.write(`${JSON.stringify({ ...report, failed })}\n`);
     } else {
       process.stdout.write(`${formatFeedbackReport(report)}\n`);
     }

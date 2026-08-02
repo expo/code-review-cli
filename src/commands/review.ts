@@ -256,8 +256,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
         // (Per-scope commentTag overrides are rejected by the scope schema for exactly
         // this reason.)
         // @ref LLP 0007#ecr-review-local-trust-and-flag-rules [constrained-by] — must match ci.ts's derivation; the scope schema ban on commentTag is what keeps them aligned
-        const postRepo =
-          args.post && args.pr != null ? (args.repo ?? (await resolveRepo(cwd))) : undefined;
+        const { repo: postRepo, error: postRepoError } = await resolvePostRepo(args, cwd);
         const reporter =
           postRepo != null && args.pr != null
             ? new GitHubReporter({
@@ -295,23 +294,33 @@ export async function reviewCommand(argv: string[]): Promise<void> {
         });
         await new TerminalReporter({ json: args.json, noFail: args.noFail }).report(review);
 
-        if (reporter && args.pr != null) {
-          // Respect the author's break-glass opt-out, same as the non-scope path.
-          let breakGlass = false;
-          try {
-            breakGlass = await reporter.checkBreakGlass();
-          } catch {
-            breakGlass = false;
-          }
-          if (breakGlass) {
-            process.stderr.write(
-              `\nNot posting: ${config.breakGlassMarker} is set on ${postRepo}#${args.pr} (break-glass).\n`,
-            );
+        if (args.pr != null && args.post) {
+          if (reporter) {
+            // Respect the author's break-glass opt-out, same as the non-scope path.
+            let breakGlass = false;
+            try {
+              breakGlass = await reporter.checkBreakGlass();
+            } catch {
+              breakGlass = false;
+            }
+            if (breakGlass) {
+              process.stderr.write(
+                `\nNot posting: ${config.breakGlassMarker} is set on ${postRepo}#${args.pr} (break-glass).\n`,
+              );
+            } else {
+              await reporter.report(review, review.feedback);
+              process.stderr.write(
+                `\nPosted scope "${args.scope}" review to ${postRepo}#${args.pr}.\n`,
+              );
+            }
           } else {
-            await reporter.report(review, review.feedback);
+            // @ref LLP 0007#ecr-review-local-trust-and-flag-rules [implements] — a
+            // `gh` failure resolving the repo must not hide the review already
+            // printed above; only the post step fails here, with a clear message.
             process.stderr.write(
-              `\nPosted scope "${args.scope}" review to ${postRepo}#${args.pr}.\n`,
+              `\nNot posted: could not resolve the repo for --post (${errorMessage(postRepoError)}). Pass --repo owner/repo.\n`,
             );
+            process.exitCode = 2;
           }
         }
       } finally {
@@ -327,8 +336,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
     // PR's replies against the source before the result is rendered. Feedback only
     // has replies to match when reviewing a PR and posting (the terminal preview never
     // renders annotations), so it is wired only on the --post --pr path.
-    const postRepo =
-      args.post && args.pr != null ? (args.repo ?? (await resolveRepo(cwd))) : undefined;
+    const { repo: postRepo, error: postRepoError } = await resolvePostRepo(args, cwd);
     const reporter =
       postRepo != null && args.pr != null
         ? new GitHubReporter({
@@ -363,26 +371,73 @@ export async function reviewCommand(argv: string[]): Promise<void> {
     await new TerminalReporter({ json: args.json, noFail: args.noFail }).report(review);
 
     // Then, only if asked, publish the same result to the PR.
-    if (reporter && args.pr != null) {
-      // Respect the author's break-glass opt-out, same as the CI path.
-      let breakGlass = false;
-      try {
-        breakGlass = await reporter.checkBreakGlass();
-      } catch {
-        breakGlass = false;
-      }
-      if (breakGlass) {
-        process.stderr.write(
-          `\nNot posting: ${config.breakGlassMarker} is set on ${postRepo}#${args.pr} (break-glass).\n`,
-        );
+    if (args.pr != null && args.post) {
+      if (reporter) {
+        // Respect the author's break-glass opt-out, same as the CI path.
+        let breakGlass = false;
+        try {
+          breakGlass = await reporter.checkBreakGlass();
+        } catch {
+          breakGlass = false;
+        }
+        if (breakGlass) {
+          process.stderr.write(
+            `\nNot posting: ${config.breakGlassMarker} is set on ${postRepo}#${args.pr} (break-glass).\n`,
+          );
+        } else {
+          await reporter.report(review, review.feedback);
+          process.stderr.write(`\nPosted review to ${postRepo}#${args.pr}.\n`);
+        }
       } else {
-        await reporter.report(review, review.feedback);
-        process.stderr.write(`\nPosted review to ${postRepo}#${args.pr}.\n`);
+        // @ref LLP 0007#ecr-review-local-trust-and-flag-rules [implements] — a `gh`
+        // failure resolving the repo (no auth, no network, no GitHub remote, rate
+        // limit) must not hide the review already printed above; only the post
+        // step fails here, with a clear message.
+        process.stderr.write(
+          `\nNot posted: could not resolve the repo for --post (${errorMessage(postRepoError)}). Pass --repo owner/repo.\n`,
+        );
+        process.exitCode = 2;
       }
     }
   } catch (error) {
     process.stderr.write(`AI review failed: ${errorMessage(error)}\n`);
     process.exitCode = 2;
+  }
+}
+
+export interface PostRepoResolution {
+  repo?: string;
+  error?: unknown;
+}
+
+// @ref LLP 0007#ecr-review-local-trust-and-flag-rules [implements] — local runs
+// still print the review even when --post's repo can't be resolved
+/**
+ * Resolve the repo needed for --post --pr, without ever throwing: a `gh` failure
+ * (no auth, no network, no GitHub remote, rate limit) must degrade to "skip the
+ * post step", not abort the review itself — the local run already trusts the
+ * caller and should still show them the review. Callers treat a returned `error`
+ * as "no repo, and here's why" once they reach the post step; the review and its
+ * optional feedback seam simply run without a reporter until then.
+ *
+ * `resolve` is injectable (defaults to the real `resolveRepo`) purely so tests can
+ * exercise the failure path deterministically, without a `gh` binary or network.
+ */
+export async function resolvePostRepo(
+  args: Pick<ReviewArgs, "post" | "pr" | "repo">,
+  cwd: string,
+  resolve: (cwd: string) => Promise<string> = resolveRepo,
+): Promise<PostRepoResolution> {
+  if (!(args.post && args.pr != null)) {
+    return {};
+  }
+  if (args.repo) {
+    return { repo: args.repo };
+  }
+  try {
+    return { repo: await resolve(cwd) };
+  } catch (error) {
+    return { error };
   }
 }
 

@@ -98,6 +98,61 @@ test("an applied reply moves the finding to the Dismissed section with a reply a
   expect(body).not.toMatch(/###.*Warning/);
 });
 
+test("a preserved (applied:false) feedback record rides embedded state and keeps the finding active", () => {
+  // Under feedback mode 'off' the reporter PRESERVES prior records instead of wiping
+  // them (returning []); render must carry such a record into the comment's embedded
+  // state so the next run re-reads it, while its finding stays in the active list.
+  const tag = "expo-ai-code-reviewer";
+  const f = finding();
+  const fp = fingerprintFinding(f);
+  const body = renderMarkdown({ ...base, findings: [f] }, tag, [], undefined, [
+    {
+      fp,
+      by: "octocat",
+      commentId: 9,
+      maintainer: false,
+      applied: false,
+      verdict: "accepted",
+      reason: "fixed",
+    },
+  ]);
+  expect(body).not.toContain("Dismissed on this PR");
+  expect(body).toMatch(/###.*Warning/);
+  const state = parseReviewState(body, tag);
+  expect(state!.feedback).toHaveLength(1);
+  expect(state!.feedback![0]!.applied).toBe(false);
+  expect(state!.feedback![0]!.verdict).toBe("accepted");
+});
+
+test("an unclearedByHuman record keeps the finding active and round-trips through state", () => {
+  // A finding a reply had cleared, then a human /undismiss'd: applied is false and the
+  // pin rides the record. The finding must be back in the active list (not Dismissed),
+  // still annotated, and the pin must survive the embedded-state round-trip so a later
+  // re-review does not re-hide it.
+  const tag = "expo-ai-code-reviewer";
+  const f = finding();
+  const fp = fingerprintFinding(f);
+  const body = renderMarkdown({ ...base, findings: [f] }, tag, [], undefined, [
+    {
+      fp,
+      by: "octocat",
+      commentId: 9,
+      url: "https://github.com/o/r/pull/1#issuecomment-9",
+      maintainer: true,
+      applied: false,
+      unclearedByHuman: true,
+    },
+  ]);
+  expect(body).not.toContain("Dismissed on this PR");
+  expect(body).toMatch(/###.*Warning/);
+  expect(body).toContain("@octocat replied");
+
+  const state = parseReviewState(body, tag);
+  expect(state!.feedback).toHaveLength(1);
+  expect(state!.feedback![0]!.unclearedByHuman).toBe(true);
+  expect(state!.feedback![0]!.applied).toBe(false);
+});
+
 test("a feedback record whose finding is gone is not rendered or counted", () => {
   const tag = "expo-ai-code-reviewer";
   const f = finding();

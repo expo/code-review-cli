@@ -1,0 +1,140 @@
+import { test, expect } from "bun:test";
+
+import { mergeAggregateFeedback } from "../commands/ci.js";
+import type { ScopeReviewResult } from "../core/render.js";
+import type { ReviewRunResult } from "../core/review.js";
+import { scopedFingerprint } from "../core/schema.js";
+import type { FeedbackRecord, Finding } from "../core/schema.js";
+import type { LoadedConfig } from "../config/schema.js";
+
+const finding = (over: Partial<Finding> = {}): Finding => ({
+  severity: "warning",
+  category: "quality",
+  file: "a.ts",
+  line: 1,
+  title: "T",
+  rationale: "r",
+  ...over,
+});
+
+const record = (over: Partial<FeedbackRecord> = {}): FeedbackRecord => ({
+  fp: "fp",
+  by: "author",
+  commentId: 1,
+  maintainer: false,
+  applied: false,
+  ...over,
+});
+
+const feedbackConfig: LoadedConfig["feedback"] = {
+  mode: "adjudicate",
+  match: "both",
+  dismiss: "adjudicated",
+  protectedCategories: [],
+  maxAdjudications: 10,
+};
+
+/** A scope result whose seam SUCCEEDED this run: `review.feedback` is a real
+ * (possibly empty) array. */
+function seamOkScope(
+  scope: string,
+  findings: Finding[],
+  feedback: FeedbackRecord[],
+): ScopeReviewResult {
+  const review: ReviewRunResult = {
+    decision: "approve_with_comments",
+    findings,
+    summary: "s",
+    incomplete: [],
+    feedback,
+  };
+  return { scope, isDefault: false, review };
+}
+
+/** A scope result whose seam FAILED this run (matchAdjudicationItems threw, e.g. a
+ * transient GitHub fetch error): `review.feedback` is absent, exactly like
+ * runReview leaves it on a caught feedback-step error. */
+function seamFailedScope(scope: string, findings: Finding[]): ScopeReviewResult {
+  return {
+    scope,
+    isDefault: false,
+    review: { decision: "approve_with_comments", findings, summary: "s", incomplete: [] },
+  };
+}
+
+test("a scope whose seam failed this run preserves prior records for its still-present findings", () => {
+  // Finding 9c274a62974b: a transient GitHub fetch error inside matchAdjudicationItems
+  // must never delete a scope's stored reply attribution/verdict.
+  const f1 = finding({ file: "api.ts", title: "Issue" });
+  const fp = scopedFingerprint("api", f1);
+  const prior = [record({ fp, by: "author1", maintainer: true })];
+  const results = [seamFailedScope("api", [f1])];
+  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig);
+  const kept = merged.find((r) => r.fp === fp);
+  expect(kept).toBeDefined();
+  expect(kept!.by).toBe("author1");
+  expect(kept!.maintainer).toBe(true);
+});
+
+test("a scope whose seam succeeded drops a stale record when no fresh reply exists", () => {
+  const f1 = finding({ file: "api.ts", title: "Issue" });
+  const fp = scopedFingerprint("api", f1);
+  const prior = [record({ fp, by: "author1" })];
+  // Seam ran fine and returned zero records (e.g. the reply was deleted).
+  const results = [seamOkScope("api", [f1], [])];
+  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig);
+  expect(merged.find((r) => r.fp === fp)).toBeUndefined();
+});
+
+test("a scope whose seam succeeded replaces the prior record with the fresh one", () => {
+  const f1 = finding({ file: "api.ts", title: "Issue" });
+  const fp = scopedFingerprint("api", f1);
+  const prior = [record({ fp, by: "author1", verdict: "refuted" })];
+  const fresh = record({ fp, by: "author2", verdict: "accepted", commentId: 2 });
+  const results = [seamOkScope("api", [f1], [fresh])];
+  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig);
+  const kept = merged.find((r) => r.fp === fp);
+  expect(kept?.by).toBe("author2");
+  expect(kept?.verdict).toBe("accepted");
+});
+
+test("only the failed scope falls back; a sibling scope's successful seam still authoritative", () => {
+  const apiFinding = finding({ file: "api.ts", title: "Api issue" });
+  const webFinding = finding({ file: "web.ts", title: "Web issue" });
+  const apiFp = scopedFingerprint("api", apiFinding);
+  const webFp = scopedFingerprint("web", webFinding);
+  const prior = [record({ fp: apiFp, by: "apiAuthor" }), record({ fp: webFp, by: "webAuthor" })];
+  const results = [
+    seamFailedScope("api", [apiFinding]),
+    // web's seam ran fine and found no records this run (reply gone).
+    seamOkScope("web", [webFinding], []),
+  ];
+  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig);
+  expect(merged.find((r) => r.fp === apiFp)?.by).toBe("apiAuthor");
+  expect(merged.find((r) => r.fp === webFp)).toBeUndefined();
+});
+
+test("a carried-over scope (partial --scopes run) not in `results` keeps its prior records untouched", () => {
+  const carriedFinding = finding({ file: "docs.ts", title: "Docs issue" });
+  const docsFp = scopedFingerprint("docs", carriedFinding);
+  const prior = [record({ fp: docsFp, by: "docsAuthor" })];
+  // `results` only contains the freshly re-reviewed scope this run ("api"); "docs"
+  // was carried over from the prior aggregate state via mergePartialAggregate and
+  // is absent from `results`, so its fingerprints must never be treated as fresh.
+  const apiFinding = finding({ file: "api.ts", title: "Api issue" });
+  const results = [seamOkScope("api", [apiFinding], [])];
+  const finalResults: ScopeReviewResult[] = [...results, seamOkScope("docs", [carriedFinding], [])];
+  const merged = mergeAggregateFeedback(results, finalResults, prior, feedbackConfig);
+  expect(merged.find((r) => r.fp === docsFp)?.by).toBe("docsAuthor");
+});
+
+test("applied is recomputed under the current config, not carried as a stored fact", () => {
+  // A critical finding can never be cleared by a reply, even a stored `applied: true`
+  // from a run under a looser config — the hard floor is re-derived every time.
+  const critical = finding({ file: "sec.ts", title: "Secret leak", severity: "critical" });
+  const fp = scopedFingerprint("api", critical);
+  const prior = [record({ fp, by: "author1", applied: true, maintainer: true })];
+  const results = [seamFailedScope("api", [critical])];
+  const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig);
+  expect(merged.find((r) => r.fp === fp)?.applied).toBe(false);
+});

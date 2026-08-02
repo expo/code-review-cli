@@ -43,12 +43,13 @@ const review: CoordinatorOutput = {
   incomplete: [],
 };
 
-// A human reply on a non-default scope, quoting the finding title back verbatim.
+// The PR author's reply on a non-default scope, quoting the finding title back verbatim.
 const reply: ReplyComment = {
   id: 42,
   body: "> Deliberate skip of custom project root\n\nThat's intentional.",
   login: "author",
   maintainer: false,
+  author: true,
 };
 
 // The aggregate (comment:'single') comment stores its feedback under SCOPE-NAMESPACED
@@ -62,6 +63,7 @@ const priorScoped: FeedbackRecord[] = [
     verdict: "accepted",
     reason: "deliberate-scope",
     maintainer: false,
+    author: true,
     applied: true,
   },
 ];
@@ -102,4 +104,33 @@ test("single-mode: a PLAIN fpOf drops the scoped prior verdict (why the mapper m
   expect(items).toHaveLength(1);
   expect(items[0]!.record.fp).toBe(fingerprintFinding(finding));
   expect(items[0]!.record.verdict).toBeUndefined();
+});
+
+test("buildAdjudicationItems: carries an unclearedByHuman pin forward for the same reply", () => {
+  const priorPinned: FeedbackRecord[] = [
+    {
+      fp: scopedFp,
+      by: "author",
+      commentId: 42,
+      maintainer: false,
+      author: true,
+      applied: false,
+      unclearedByHuman: true,
+    },
+  ];
+  const items = buildAdjudicationItems(
+    review,
+    priorPinned,
+    [reply],
+    (f) => scopedFingerprint("api", f),
+    config.match,
+  );
+  expect(items).toHaveLength(1);
+  // The pin rides across (same commentId), so adjudication leaves the finding
+  // restored: no model call and applied stays false.
+  expect(items[0]!.record.unclearedByHuman).toBe(true);
+  return adjudicateFeedback(noHandle, items, config).then((out) => {
+    expect(out.adjudicated).toBe(0);
+    expect(out.records[0]!.applied).toBe(false);
+  });
 });

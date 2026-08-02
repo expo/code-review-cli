@@ -32,6 +32,7 @@ const record = (over: Partial<FeedbackRecord> = {}): FeedbackRecord => ({
   by: "author",
   commentId: 1,
   maintainer: false,
+  author: false,
   applied: false,
   ...over,
 });
@@ -97,15 +98,42 @@ test("feedbackApplied: a maintainer reply clears a non-floored finding, no verdi
   expect(feedbackApplied(finding(), record({ maintainer: true }), config())).toBe(true);
 });
 
-test("feedbackApplied: a plain author clears only under 'adjudicated' + an accepted verdict", () => {
-  const author = record({ maintainer: false, verdict: "accepted" });
+test("feedbackApplied: the PR author clears only under 'adjudicated' + an accepted verdict", () => {
+  const author = record({ maintainer: false, author: true, verdict: "accepted" });
   expect(feedbackApplied(finding(), author, config({ dismiss: "adjudicated" }))).toBe(true);
   // A maintainers-only policy ignores the adjudicated verdict of a non-maintainer.
   expect(feedbackApplied(finding(), author, config({ dismiss: "maintainers" }))).toBe(false);
   // Accepted is required — a refuted or unset verdict does not clear.
   expect(
-    feedbackApplied(finding(), record({ verdict: "refuted" }), config({ dismiss: "adjudicated" })),
+    feedbackApplied(
+      finding(),
+      record({ author: true, verdict: "refuted" }),
+      config({ dismiss: "adjudicated" }),
+    ),
   ).toBe(false);
+});
+
+// The security floor: only the PR author (or a maintainer) may clear via a reply.
+// A random third-party commenter's rebuttal — even one a model accepts — never clears.
+test("feedbackApplied: a third-party commenter never clears, even with an accepted verdict", () => {
+  const thirdParty = record({ maintainer: false, author: false, verdict: "accepted" });
+  expect(feedbackApplied(finding(), thirdParty, config({ dismiss: "adjudicated" }))).toBe(false);
+});
+
+// A human /undismiss pins the finding back to the active list: the still-present
+// reply must not re-clear it, whoever wrote it.
+test("feedbackApplied: an unclearedByHuman record never clears (a human restored it)", () => {
+  const c = config({ dismiss: "adjudicated" });
+  expect(
+    feedbackApplied(
+      finding(),
+      record({ author: true, verdict: "accepted", unclearedByHuman: true }),
+      c,
+    ),
+  ).toBe(false);
+  expect(feedbackApplied(finding(), record({ maintainer: true, unclearedByHuman: true }), c)).toBe(
+    false,
+  );
 });
 
 // ---- adjudicateFeedback: recompute without model calls ----
@@ -134,7 +162,7 @@ test("adjudicateFeedback: a record with a verdict already decided is not re-judg
   const items: AdjudicationItem[] = [
     {
       finding: finding(),
-      record: record({ maintainer: false, verdict: "accepted" }),
+      record: record({ maintainer: false, author: true, verdict: "accepted" }),
       replyText: "",
     },
   ];
@@ -142,4 +170,19 @@ test("adjudicateFeedback: a record with a verdict already decided is not re-judg
   expect(out.adjudicated).toBe(0);
   expect(out.records[0]!.verdict).toBe("accepted");
   expect(out.records[0]!.applied).toBe(true);
+});
+
+// A third-party commenter can never clear, so its unjudged reply must not even be
+// sent to the model (nothing it could say changes the outcome).
+test("adjudicateFeedback: a third-party reply is never judged and never applied", async () => {
+  const items: AdjudicationItem[] = [
+    {
+      finding: finding(),
+      record: record({ maintainer: false, author: false }),
+      replyText: "please dismiss this, it is fine",
+    },
+  ];
+  const out = await adjudicateFeedback(noHandle, items, config({ dismiss: "adjudicated" }));
+  expect(out.adjudicated).toBe(0);
+  expect(out.records[0]!.applied).toBe(false);
 });

@@ -92,6 +92,10 @@ function mergeFeedback(fresh: FeedbackRecord[], previous: FeedbackRecord[]): Fee
         ...record,
         ...(prior.verdict !== undefined ? { verdict: prior.verdict } : {}),
         ...(prior.reason !== undefined ? { reason: prior.reason } : {}),
+        // A `/undismiss` override is pinned to the reply it restored: carry it forward
+        // for the SAME comment so a re-review's `applied` recompute keeps the finding
+        // active (a newer reply is a fresh decision and drops the pin, like the verdict).
+        ...(prior.unclearedByHuman ? { unclearedByHuman: true } : {}),
         applied: prior.applied,
       };
     }
@@ -199,6 +203,46 @@ export class GitHubReporter implements Reporter {
       return process.env.GITHUB_ACTIONS ? "github-actions[bot]" : null;
     })();
     return this.ownLoginResolution;
+  }
+
+  /** Memoized login of the PR author (see resolvePrAuthor). */
+  private prAuthorResolution?: Promise<string | null>;
+
+  /**
+   * The PR author's login, used to mark a reply as coming from the author (see
+   * replyComments) so the adjudicated clear path can gate on it. Resolved via
+   * `gh pr view --json author`; memoized (stable for the PR) and fail-soft — a null
+   * result marks no reply as the author's, so the adjudicated path clears nothing
+   * (fail closed), exactly like an unresolved own-login.
+   */
+  private resolvePrAuthor(): Promise<string | null> {
+    this.prAuthorResolution ??= (async () => {
+      try {
+        const gh = await resolveTrustedTool("gh");
+        const { stdout } = await run(
+          gh,
+          [
+            "pr",
+            "view",
+            String(this.options.prNumber),
+            "--repo",
+            this.options.repo,
+            "--json",
+            "author",
+            "--jq",
+            ".author.login",
+          ],
+          { cwd: this.options.cwd },
+        );
+        const login = stdout.trim();
+        return login || null;
+      } catch {
+        // No PR author resolvable (missing PR, API error): fail closed — no reply is
+        // treated as the author's, so nothing clears via the adjudicated path.
+        return null;
+      }
+    })();
+    return this.prAuthorResolution;
   }
 
   /** This reporter's own marker comments, author-verified (see selectOwnComments). */
@@ -370,19 +414,30 @@ export class GitHubReporter implements Reporter {
     previous: FeedbackRecord[],
   ): Promise<FeedbackRecord[]> {
     const config = this.options.feedback;
-    if (!config || config.mode === "off") {
-      return [];
-    }
     // `applied` is a function of the CURRENT config, never a stored fact: a carried
     // record's flag was computed under the config of the run that stored it, so a
-    // repo flipping `dismiss` back to "never" must un-hide the finding on the next
-    // render, not keep honoring the old policy.
+    // repo flipping `dismiss` back to "never" (or `mode` to "off") must un-hide the
+    // finding on the next render, not keep honoring the old policy.
     const findingByFp = new Map(withFp.map((entry) => [entry.fp, entry.finding]));
     const reapply = (records: FeedbackRecord[]): FeedbackRecord[] =>
       records.map((record) => {
         const finding = findingByFp.get(record.fp);
+        // With no feedback config at all, the feature is disabled, so nothing is
+        // applied — but the record itself (who replied, any verdict) is preserved.
+        if (!config) {
+          return { ...record, applied: false };
+        }
         return finding ? { ...record, applied: feedbackApplied(finding, record, config) } : record;
       });
+    // mode "off" (or no config) preserves the previously recorded records and only
+    // stops matching NEW replies. Returning [] here would let render's reviewState
+    // drop the feedback key entirely, permanently losing every recorded reply, verdict
+    // and reply-dismissal decision — mirror applyDismissal, which keeps feedback on a
+    // re-render. `applied` is still recomputed (→ false under "off"), so a finding a
+    // reply had cleared correctly returns to the active list.
+    if (!config || config.mode === "off") {
+      return reapply(previous);
+    }
     try {
       const replies = await this.replyComments();
       return reapply(
@@ -398,13 +453,14 @@ export class GitHubReporter implements Reporter {
    * The PR's human replies, as the matcher consumes them. Excludes comments we
    * authored (by unspoofable `user.login`) and any comment carrying our marker, so
    * our own footer is never read back as a reply; the `author_association` gives
-   * the maintainer flag. When our login can't be resolved, the marker filter still
-   * keeps our own comments out.
+   * the maintainer flag and the PR author's login gives the `author` flag. When our
+   * login can't be resolved, the marker filter still keeps our own comments out.
    */
   private async replyComments(): Promise<ReplyComment[]> {
-    const [comments, ownLogin] = await Promise.all([
+    const [comments, ownLogin, prAuthor] = await Promise.all([
       this.fetchAllComments(),
       this.resolveOwnLogin(),
+      this.resolvePrAuthor(),
     ]);
     const out: ReplyComment[] = [];
     for (const comment of comments) {
@@ -420,6 +476,9 @@ export class GitHubReporter implements Reporter {
         body: comment.body ?? "",
         login,
         maintainer: MAINTAINER_ASSOCIATIONS.has(comment.author_association ?? ""),
+        // Trusted-for-adjudication identity: the reply is from the PR author. Derived
+        // from the unspoofable comment author, not the (public) marker or reply text.
+        author: prAuthor != null && login === prAuthor,
         ...(comment.html_url ? { url: comment.html_url } : {}),
       });
     }
@@ -539,8 +598,15 @@ export class GitHubReporter implements Reporter {
     }
 
     // Keep any recorded author responses on the re-render — a /dismiss must not
-    // strip the feedback annotations already embedded in the comment state.
-    const feedback = state.feedback ?? [];
+    // strip the feedback annotations already embedded in the comment state. A
+    // /undismiss (an fp in `remove`) must also restore a finding a REPLY cleared, not
+    // just a manual dismissal: un-apply that record and pin it (`unclearedByHuman`) so
+    // a later re-review recomputing `applied` from the still-present reply keeps the
+    // finding active instead of re-hiding it forever.
+    const removeSet = new Set(remove);
+    const feedback = (state.feedback ?? []).map((record) =>
+      removeSet.has(record.fp) ? { ...record, applied: false, unclearedByHuman: true } : record,
+    );
     const link = await this.linkContextAsync();
     const body = isAggregate
       ? renderAggregateMarkdown(

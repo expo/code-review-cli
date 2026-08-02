@@ -332,6 +332,69 @@ function scopeFeedbackRecords(result: ScopeReviewResult): FeedbackRecord[] {
   return (result.review as ReviewRunResult).feedback ?? [];
 }
 
+// @ref LLP 0011#the-rebuttal-is-a-hypothesis [constrained-by] — matchAdjudicationItems
+// throws on a seam fetch error BY DESIGN so the legacy/per-scope paths fall back to
+// computeFeedback's stored-state preservation; runReview leaves `review.feedback`
+// undefined in exactly that case (never `[]` — a successful-but-empty seam sets `[]`,
+// which is truthy, see scopeFeedbackRecords). This merge honors the same rule for the
+// aggregate comment: a scope's fresh records are authoritative for its findings'
+// fingerprints ONLY when its own seam actually returned records this run.
+/**
+ * The aggregate comment's feedback records for comment:'single' mode, merging:
+ * - fresh records for scopes whose seam succeeded this run (`review.feedback` is an
+ *   array, possibly empty) — authoritative for their findings' fingerprints, so a
+ *   prior record with no fresh counterpart there means the reply is gone
+ *   (deleted/edited) and is dropped;
+ * - prior records for every OTHER fingerprint: carried-over scopes (a `--scopes`
+ *   partial run) AND a re-reviewed scope whose seam itself failed (`review.feedback`
+ *   stayed undefined) — so a transient GitHub fetch error can never delete a scope's
+ *   prior reply attributions/verdicts with nothing to replace them.
+ *
+ * `applied` is recomputed on every kept record (idempotent for fresh ones) so a
+ * carried/fallback record also honors a `dismiss` policy that changed since it was
+ * stored. `results` is this run's freshly-reviewed scopes (used only to decide which
+ * fingerprints are fresh-authoritative); `finalResults` is the full set the aggregate
+ * comment renders (includes scopes carried over via `mergePartialAggregate`). Pure so
+ * it's unit-testable.
+ */
+export function mergeAggregateFeedback(
+  results: ScopeReviewResult[],
+  finalResults: ScopeReviewResult[],
+  prior: FeedbackRecord[],
+  feedbackConfig: LoadedConfig["feedback"],
+): FeedbackRecord[] {
+  const scopedFpOf = (result: ScopeReviewResult, finding: Finding): string =>
+    scopedFingerprint(result.isDefault ? null : result.scope, finding);
+  const seamOkByScope = new Map(
+    results.map((result) => [
+      result.scope,
+      (result.review as ReviewRunResult).feedback !== undefined,
+    ]),
+  );
+  const freshFps = new Set(
+    results
+      .filter((result) => seamOkByScope.get(result.scope))
+      .flatMap((result) => result.review.findings.map((f) => scopedFpOf(result, f))),
+  );
+  const byFp = new Map(
+    prior.filter((record) => !freshFps.has(record.fp)).map((record) => [record.fp, record]),
+  );
+  for (const record of finalResults.flatMap(scopeFeedbackRecords)) {
+    byFp.set(record.fp, record);
+  }
+  const findingByFp = new Map(
+    finalResults.flatMap((result) =>
+      result.review.findings.map((f) => [scopedFpOf(result, f), f] as const),
+    ),
+  );
+  return [...byFp.values()].map((record) => {
+    const finding = findingByFp.get(record.fp);
+    return finding
+      ? { ...record, applied: feedbackApplied(finding, record, feedbackConfig) }
+      : record;
+  });
+}
+
 /** Options shared by the legacy and routed CI paths (parsed from argv once). */
 interface CiRunOptions {
   agents: string[] | undefined;
@@ -673,6 +736,14 @@ async function runRoutedCi(
       feedback: rootConfig.feedback,
     });
 
+  // comment:'single' mode: every active scope's feedback seam AND the final
+  // aggregate post target the SAME root-tag comment, so share one reporter
+  // instance (and its comment-list/login cache, see GitHubReporter's
+  // `fetchAllComments` TTL cache) across the whole run — a fresh reporter per
+  // scope would otherwise re-fetch the paginated comment list and re-resolve
+  // the bot login once per scope for the identical comment.
+  const singleModeReporter = mode === "single" ? reporterFor(rootTag, true) : undefined;
+
   const results: ScopeReviewResult[] = [];
   for (const scope of active) {
     const scopeDef = manifest.scopes.find((entry) => entry.name === scope.name)!;
@@ -701,7 +772,9 @@ async function runRoutedCi(
       const feedbackSeam = feedbackNeedsRunSeam(rootConfig.feedback)
         ? adjudicationSeam(
             rootConfig,
-            reporterFor(mode === "single" ? rootTag : scopedCommentTag(rootTag, scope.name)),
+            mode === "single"
+              ? singleModeReporter!
+              : reporterFor(scopedCommentTag(rootTag, scope.name)),
             mode === "single"
               ? (finding) => scopedFingerprint(isDefault ? null : scope.name, finding)
               : undefined,
@@ -731,7 +804,7 @@ async function runRoutedCi(
   }
 
   if (mode === "single") {
-    const aggregate = reporterFor(rootTag, true);
+    const aggregate = singleModeReporter!;
     let finalResults = results;
     if (scopesFilter) {
       // A partial run (--scopes) is authoritative ONLY for the named scopes: merge
@@ -754,42 +827,16 @@ async function runRoutedCi(
       await aggregate.clear();
     } else {
       // A seam-backed run hands the reporter the computed records (re-keyed to the
-      // scope-namespaced ids the aggregate renders under). For the scopes ACTUALLY
-      // re-reviewed this run, the fresh records are authoritative — a prior record
-      // with no fresh counterpart means the reply is gone (deleted/edited), and
-      // carrying it forward would suppress the finding with no way back. Prior
-      // records survive only for carried-over scopes (a --scopes partial run), so
-      // their annotations persist. Without the seam it passes none and the reporter
-      // matches replies itself.
-      let aggFeedback: FeedbackRecord[] | undefined;
-      if (feedbackNeedsRunSeam(rootConfig.feedback)) {
-        const prior = (await aggregate.readState())?.feedback ?? [];
-        const scopedFpOf = (result: ScopeReviewResult, finding: Finding): string =>
-          scopedFingerprint(result.isDefault ? null : result.scope, finding);
-        const freshFps = new Set(
-          results.flatMap((result) => result.review.findings.map((f) => scopedFpOf(result, f))),
-        );
-        const byFp = new Map(
-          prior.filter((record) => !freshFps.has(record.fp)).map((record) => [record.fp, record]),
-        );
-        for (const record of finalResults.flatMap(scopeFeedbackRecords)) {
-          byFp.set(record.fp, record);
-        }
-        // `applied` is a function of the CURRENT config: recompute it on every kept
-        // record (idempotent for fresh ones) so a carried scope's records also honor
-        // a `dismiss` policy that changed since they were stored.
-        const findingByFp = new Map(
-          finalResults.flatMap((result) =>
-            result.review.findings.map((f) => [scopedFpOf(result, f), f] as const),
-          ),
-        );
-        aggFeedback = [...byFp.values()].map((record) => {
-          const finding = findingByFp.get(record.fp);
-          return finding
-            ? { ...record, applied: feedbackApplied(finding, record, rootConfig.feedback) }
-            : record;
-        });
-      }
+      // scope-namespaced ids the aggregate renders under). Without the seam it
+      // passes none and the reporter matches replies itself.
+      const aggFeedback = feedbackNeedsRunSeam(rootConfig.feedback)
+        ? mergeAggregateFeedback(
+            results,
+            finalResults,
+            (await aggregate.readState())?.feedback ?? [],
+            rootConfig.feedback,
+          )
+        : undefined;
       await aggregate.reportAggregate(finalResults, resolution.unmatched, aggFeedback);
     }
     // Clean up any per-scope comments from a previous per-scope run. A partial run

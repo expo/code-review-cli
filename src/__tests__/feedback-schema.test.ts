@@ -28,6 +28,22 @@ test("FeedbackRecordSchema: defaults maintainer/applied to false and allows opti
   expect(parsed.reason).toBeUndefined();
 });
 
+test("FeedbackRecordSchema: author/unclearedByHuman are optional and round-trip", () => {
+  const parsed = FeedbackRecordSchema.parse({
+    fp: "a",
+    by: "b",
+    commentId: 1,
+    author: true,
+    unclearedByHuman: true,
+  });
+  expect(parsed.author).toBe(true);
+  expect(parsed.unclearedByHuman).toBe(true);
+  // Absent → undefined (fail-closed for the author gate; unset for the pin).
+  const bare = FeedbackRecordSchema.parse({ fp: "a", by: "b", commentId: 1 });
+  expect(bare.author).toBeUndefined();
+  expect(bare.unclearedByHuman).toBeUndefined();
+});
+
 test("FeedbackRecordSchema: rejects an out-of-enum verdict and a non-integer commentId", () => {
   expect(
     FeedbackRecordSchema.safeParse({ fp: "a", by: "b", commentId: 1, verdict: "maybe" }).success,

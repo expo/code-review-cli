@@ -59,8 +59,9 @@ export interface AdjudicationOutcome {
  * `dismiss: "maintainers"` works under `mode: "annotate"` with no model involved, the
  * same trust gate as `/dismiss`. NEVER for a critical / secrets / security / protected
  * finding — those floors live here in code, not in any prompt. A maintainer reply
- * clears; a plain author reply clears only under `dismiss: "adjudicated"` with an
- * "accepted" verdict.
+ * clears; the PR author's reply clears only under `dismiss: "adjudicated"` with an
+ * "accepted" verdict. An untrusted third-party commenter (neither maintainer nor PR
+ * author) never clears — its reply is annotated only.
  */
 export function feedbackApplied(
   finding: Finding,
@@ -68,6 +69,11 @@ export function feedbackApplied(
   config: FeedbackConfig,
 ): boolean {
   if (config.mode === "off" || config.dismiss === "never") {
+    return false;
+  }
+  // A human ran `/undismiss` on this reply-cleared finding: it is pinned back to the
+  // active list, so the still-present reply must not silently re-clear it.
+  if (record.unclearedByHuman) {
     return false;
   }
   if (finding.severity === "critical") {
@@ -82,7 +88,12 @@ export function feedbackApplied(
   if (record.maintainer) {
     return true;
   }
-  return config.dismiss === "adjudicated" && record.verdict === "accepted";
+  // The adjudicated path is the PR author's alone. `record.author` is re-derived from
+  // the live comment's unspoofable login every run, so a random PR commenter — even
+  // with a model-accepted rebuttal — can never clear a finding.
+  return (
+    config.dismiss === "adjudicated" && record.verdict === "accepted" && record.author === true
+  );
 }
 
 /**
@@ -118,10 +129,20 @@ export async function adjudicateFeedback(
 
   // Only judge in "adjudicate" mode, and only records without a verdict already decided
   // on a prior run (the reporter carries those forward — re-judging would re-spend the
-  // budget on the same words). A reply with no text can't be judged.
+  // budget on the same words). A reply with no text can't be judged. Only the PR
+  // author's replies are worth judging: a maintainer clears without any verdict, and a
+  // third-party commenter can never clear (feedbackApplied), so judging either would
+  // spend the budget on a rebuttal that changes no outcome. A finding a human already
+  // restored via `/undismiss` is likewise left unjudged.
   const toJudge =
     config.mode === "adjudicate"
-      ? items.filter((item) => item.record.verdict === undefined && item.replyText.trim() !== "")
+      ? items.filter(
+          (item) =>
+            item.record.verdict === undefined &&
+            item.record.author === true &&
+            !item.record.unclearedByHuman &&
+            item.replyText.trim() !== "",
+        )
       : [];
   // Never truncate silently: the first `maxAdjudications` are judged, the rest are
   // reported as skipped so the caller can surface reduced coverage.

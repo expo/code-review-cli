@@ -7,6 +7,10 @@ export interface ReplyComment {
   body: string;
   login: string;
   maintainer: boolean;
+  /** The commenter is the PR author (login === the PR's author login). Set by the
+   * reporter from the unspoofable comment author; gates the adjudicated clear path.
+   * Absent/false is fail-closed — an unresolved author can never clear a finding. */
+  author?: boolean;
   url?: string;
 }
 
@@ -147,6 +151,7 @@ export function matchReplies(
         commentId: comment.id,
         ...(comment.url ? { url: comment.url } : {}),
         maintainer: comment.maintainer,
+        author: comment.author,
         applied: false,
       });
     }

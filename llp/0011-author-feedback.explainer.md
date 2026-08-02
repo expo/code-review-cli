@@ -171,6 +171,22 @@ never breaks the run — `ecr ci` must never fail a PR's checks, and this path i
 no exception [observed] ([review.ts](../src/core/review.ts) the `try/catch`
 around `options.feedback.match`/`adjudicateFeedback`).
 
+That fail-open contract has a sharp edge in `comment:'single'` mode, where every
+active scope's feedback seam writes into ONE shared aggregate comment: a transient
+GitHub fetch error inside one scope's seam must never be read as "this scope's
+replies are gone," or the aggregate merge would delete that scope's prior reply
+attributions/verdicts with nothing to replace them the moment the API blips. The
+try/catch above is what makes the two cases distinguishable: a seam that ran and
+matched zero replies sets that scope's `review.feedback` to `[]` (truthy, and
+correctly authoritative — the reply really is gone); a seam that threw leaves
+`review.feedback` `undefined` (the catch never sets it). `mergeAggregateFeedback`
+(`src/commands/ci.ts`) checks exactly that per scope before treating a scope's
+fingerprints as "fresh": a scope whose seam failed this run falls back to its
+prior aggregate records untouched, while a sibling scope whose seam succeeded —
+even with zero results — is still fully authoritative for its own fingerprints
+[observed] ([ci.ts](../src/commands/ci.ts) `mergeAggregateFeedback`,
+`seamOkByScope`).
+
 ## Hard Floors in Code
 
 The prompt tells the model to be distrustful; the floor that actually protects a
@@ -192,10 +208,20 @@ first guard clause; `feedbackNeedsRunSeam` is what wires the seam for that
 combination). Coupling the two would force a repo to switch on the model mode
 just to enable the no-model maintainer path, which is the same trust gate as
 `/dismiss` in prose form. A maintainer's reply clears a finding with no model
-involved at all (`record.maintainer`); a non-maintainer reply clears one only
-under `dismiss: "adjudicated"` AND a recorded `"accepted"` verdict — never on an
-`"unclear"` or `"refuted"` one [observed] ([adjudicate.ts](../src/core/adjudicate.ts)
-`feedbackApplied`, final two branches).
+involved at all (`record.maintainer`); among everyone else, only the PR
+AUTHOR's reply can clear one, and only under `dismiss: "adjudicated"` AND a
+recorded `"accepted"` verdict — never on an `"unclear"` or `"refuted"` one, and
+never for a third-party commenter's reply even when the model accepted it: the
+adjudicated path is the author's alone, so a stranger's rebuttal is annotated
+but can never move the outcome [observed] ([adjudicate.ts](../src/core/adjudicate.ts)
+`feedbackApplied`, the `record.author === true` check on the final branch).
+`record.author` is re-derived every run from the live comment's login against
+the PR's own author login — never trusted from stored state, the same
+unspoofable-identity discipline as `maintainer` — so an unresolved author (a
+`gh pr view` failure) is `undefined`/`false`, which fails CLOSED to "never
+clears" rather than open [observed] ([responses.ts](../src/core/responses.ts)
+`ReplyComment.author`; [github.ts](../src/reporters/github.ts)
+`resolvePrAuthor`, `replyComments`).
 
 `adjudicateFeedback` re-derives `applied` for **every** record on every call —
 including ones a model never touched this run (already-decided verdicts from a
@@ -212,6 +238,18 @@ counted in `failed`, and leaves that record unjudged rather than throwing
 the `within`/`skipped` slice and the per-item `try/catch`;
 [review.ts](../src/core/review.ts) the `incomplete` push when `skipped > 0 ||
 failed > 0`).
+
+Turning `mode` to `"off"` degrades the same way, on the render side rather than
+the seam side: `GitHubReporter.computeFeedback` recomputes `applied` for every
+carried record under the CURRENT config (so a reply-cleared finding correctly
+falls back to the active list) but keeps the records themselves — who replied,
+any verdict, any `unclearedByHuman` pin — instead of discarding them. Returning
+an empty list here instead would silently erase every recorded reply from the
+comment's embedded state the moment a repo flips the switch, with no way back;
+`"off"` must mean "stop matching new replies," not "forget the ones already
+recorded" [observed] ([github.ts](../src/reporters/github.ts)
+`computeFeedback`, the `!config || config.mode === "off"` branch returning
+`reapply(previous)`).
 
 ## Suppression Is Never Silent
 
@@ -247,6 +285,29 @@ decided about — a newer reply resets the decision, because a new reply answers
 different words and deserves its own judgment
 [observed] ([github.ts](../src/reporters/github.ts) `mergeFeedback`, the
 `prior.commentId === record.commentId` gate).
+
+Suppression by reply must be exactly as reversible as suppression by
+`/dismiss`: a maintainer running `/undismiss <id>` on a finding a REPLY cleared
+(not only a manual dismissal) restores it to the active list, not just to the
+Dismissed fold. The reporter checks the `/undismiss` removal set against
+`state.feedback` too, un-applies any matching record, and pins it —
+`unclearedByHuman: true` — so a later re-review, recomputing `applied` from
+that SAME still-present reply, does not silently re-clear the finding the
+human just restored; `feedbackApplied` checks this pin before any other floor
+[observed] ([adjudicate.ts](../src/core/adjudicate.ts) `feedbackApplied`, the
+`record.unclearedByHuman` guard; [github.ts](../src/reporters/github.ts) the
+`removeSet`/`unclearedByHuman` branch in the dismissal-render path). The pin
+travels with that one reply, not the finding forever: `mergeFeedback` carries
+it forward only while the record is about the SAME `commentId`, and a NEWER
+reply on the same finding is a fresh decision that drops the pin exactly like
+it drops a stale verdict — a human's override doesn't gag a future reply
+[observed] ([github.ts](../src/reporters/github.ts) `mergeFeedback`, the
+`prior.unclearedByHuman` forwarding beside the verdict/reason carry-forward).
+A record already carrying this pin is also excluded from `adjudicateFeedback`'s
+model pass — there's nothing to gain by re-judging a reply whose verdict, even
+if `"accepted"`, a human has already overridden
+[observed] ([adjudicate.ts](../src/core/adjudicate.ts) `adjudicateFeedback`,
+the `toJudge` filter).
 
 ## Asymmetric Defaults
 

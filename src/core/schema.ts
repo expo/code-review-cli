@@ -193,10 +193,27 @@ export const FeedbackRecordSchema = z.object({
   commentId: z.number().int(),
   url: z.string().optional(),
   maintainer: z.boolean().default(false),
+  /**
+   * True when the replying login is the PR author. Re-derived from the live comment
+   * every run (never trusted from stored state), so it is unspoofable like `maintainer`.
+   * Only a maintainer OR the PR author may clear a finding via a reply — an untrusted
+   * third-party commenter is annotated but can never be counted as an adjudicatable
+   * rebuttal (feedbackApplied gates the adjudicated path on this).
+   */
+  // @ref LLP 0011#hard-floors-in-code [constrained-by] — the adjudicated clear path is for the PR author only; a third-party commenter's rebuttal never clears
+  author: z.boolean().optional(),
   verdict: z.enum(FEEDBACK_VERDICTS).optional(),
   reason: z.enum(FEEDBACK_REASONS).optional(),
   /** True when this reply actually removed the finding from the blocking set. */
   applied: z.boolean().default(false),
+  /**
+   * Set when a human ran `/undismiss <id>` on a finding a reply had cleared: the
+   * finding returns to the active list and no live reply may re-apply it, so a later
+   * re-review recomputing `applied` from the still-present reply keeps it un-cleared.
+   * Rides the embedded state and is carried forward by mergeFeedback for the same reply.
+   */
+  // @ref LLP 0011#suppression-is-never-silent [constrained-by] — /undismiss must actually restore a reply-cleared finding, not leave it hidden forever
+  unclearedByHuman: z.boolean().optional(),
 });
 export type FeedbackRecord = z.infer<typeof FeedbackRecordSchema>;
 

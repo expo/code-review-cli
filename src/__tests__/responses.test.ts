@@ -171,3 +171,12 @@ test("matchReplies: carries the comment url and maintainer flag onto the record"
   expect(records[0]!.url).toBe("https://github.com/o/r/pull/1#issuecomment-9");
   expect(records[0]!.maintainer).toBe(true);
 });
+
+test("matchReplies: carries the PR-author flag onto the record (gates the adjudicated path)", () => {
+  const f = { finding: finding(), fp: "authorfp" };
+  const q = "> Validation skips jobs with a custom project root";
+  const asAuthor = matchReplies([reply({ body: q, author: true })], [f], { match: "quote" });
+  expect(asAuthor[0]!.author).toBe(true);
+  const asThirdParty = matchReplies([reply({ body: q, author: false })], [f], { match: "quote" });
+  expect(asThirdParty[0]!.author).toBe(false);
+});
