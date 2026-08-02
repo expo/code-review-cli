@@ -204,6 +204,18 @@ export const FeedbackRecordSchema = z.object({
   author: z.boolean().optional(),
   verdict: z.enum(FEEDBACK_VERDICTS).optional(),
   reason: z.enum(FEEDBACK_REASONS).optional(),
+  /**
+   * The reviewed head commit the verdict above was judged against (the PR head OID of
+   * the run whose adjudicator answered). A verdict is a statement about SOURCE, and a
+   * fingerprint deliberately excludes the line number, so a finding keeps its identity
+   * while the code that justified the rebuttal is edited away. Binding the verdict to
+   * the revision it judged is what lets mergeFeedback drop it once the head moves.
+   * Absent ⇒ unknown source (a record from before this field, or a run with no
+   * resolvable head OID): the verdict never carries, so a missing SHA can never pin a
+   * decision forever.
+   */
+  // @ref LLP 0011#suppression-is-never-silent [constrained-by] — a carried verdict must be re-judged when the source it judged changes; unknown source fails safe to re-judging
+  sourceSha: z.string().optional(),
   /** True when this reply actually removed the finding from the blocking set. */
   applied: z.boolean().default(false),
   /**

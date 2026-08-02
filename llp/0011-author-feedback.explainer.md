@@ -336,6 +336,35 @@ if `"accepted"`, a human has already overridden
 [observed] ([adjudicate.ts](../src/core/adjudicate.ts) `adjudicateFeedback`,
 the `toJudge` filter).
 
+That same-comment gate is necessary but not sufficient. A verdict is a claim
+about SOURCE, not only about words: `fingerprintFinding` deliberately excludes
+the line number, so a finding keeps its identity while the code that justified
+the rebuttal is edited away elsewhere in the file. `mergeFeedback` therefore
+carries a decided `verdict`/`reason`/`applied` forward only while the record's
+`sourceSha` — the reviewed head OID stamped on it when the adjudicator answered
+— equals the head this run reviews [observed] ([github.ts](../src/reporters/github.ts)
+`mergeFeedback`, the `carries` gate; [adjudicate.ts](../src/core/adjudicate.ts)
+`adjudicateFeedback`, the `sourceSha` stamp). Unknown source counts as
+different, never as trusted: a run with no head SHA (the `ecr feedback` crawl,
+which reviews nothing, or `local-git`, which resolves no `headOid`) and a record
+written before the field existed both drop the verdict, so a missing SHA can
+never pin a decision forever [observed] ([schema.ts](../src/core/schema.ts)
+`FeedbackRecordSchema.sourceSha`, optional). The dropped record flows back
+through `adjudicateFeedback`'s `toJudge` filter and the reply is judged again
+against the new source; its stale `applied: true` drops with it, so no render
+hides the finding in between.
+
+Two things deliberately survive a head change, which qualifies the pin claim
+above. An `unclearedByHuman` pin belongs to the reply a human overrode, not to a
+revision — only a NEWER reply lifts it, so it does not drop "exactly like a
+stale verdict" after all. A verdict-less record survives for the same reason: a
+maintainer clears with no model call and no verdict, so it has no
+source-dependent decision to go stale [observed] ([github.ts](../src/reporters/github.ts)
+`mergeFeedback`, the `prior.verdict === undefined` disjunct). The cost is real
+and bounded: a push that touches nothing relevant re-spends adjudication budget
+re-judging the same words, capped by `maxAdjudications`. Paying that beats
+hiding a finding against source the rebuttal no longer fits.
+
 ## Asymmetric Defaults
 
 The `feedback` config block ships with `mode: "annotate"` on by default and

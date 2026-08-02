@@ -52,6 +52,16 @@ export interface GitHubReporterOptions {
    */
   feedback?: LoadedConfig["feedback"];
   /**
+   * The head commit this run reviews (the PR's immutable head OID, from the source's
+   * metadata). Feedback merging binds a stored verdict to the source it judged, so a
+   * verdict only carries forward while this matches what the record recorded. Absent —
+   * a caller that runs no review (the `ecr feedback` crawl, a dismissal re-render) or
+   * a source with no resolvable OID — reads as "unknown source": stored verdicts are
+   * dropped and re-judged rather than trusted, which costs budget but never hides a
+   * finding against source the rebuttal no longer fits.
+   */
+  headSha?: string;
+  /**
    * Identity override: treat comments authored by THIS login as the reviewer's
    * own, instead of resolving the current `gh` identity. Needed by the
    * `ecr feedback` crawl on a developer machine: the reviewer comment was posted
@@ -76,27 +86,49 @@ export interface IssueComment {
   html_url?: string;
 }
 
+// @ref LLP 0011#suppression-is-never-silent [implements] — a decision carries only while BOTH the reply and the reviewed source are unchanged; anything else is re-judged
 /**
  * Carry a decision (verdict / applied) already recorded in the prior comment
  * state onto the freshly matched records — but only when the current newest
- * reply is the SAME comment it was made about. A newer reply on the finding
- * resets it: the old verdict judged different words. Fresh records own the
- * reply identity (author, comment id, link); the prior state owns the decision.
+ * reply is the SAME comment it was made about AND the stored verdict judged the
+ * SAME source revision (`headSha`). A newer reply resets it: the old verdict judged
+ * different words. A newer head resets it too: a verdict is a claim about code, and
+ * a fingerprint excludes the line number, so the author can edit the code the
+ * rebuttal relied on away while the finding keeps its identity — carrying the
+ * verdict there would hide a finding against source that no longer supports it.
+ * Unknown source (no `headSha` for this run, or a record stored before the field
+ * existed) counts as different: the decision is dropped and adjudicateFeedback
+ * judges the reply again. Fresh records own the reply identity (author, comment id,
+ * link); the prior state owns the decision.
  */
-function mergeFeedback(fresh: FeedbackRecord[], previous: FeedbackRecord[]): FeedbackRecord[] {
+function mergeFeedback(
+  fresh: FeedbackRecord[],
+  previous: FeedbackRecord[],
+  headSha: string | undefined,
+): FeedbackRecord[] {
   const priorByFp = new Map(previous.map((record) => [record.fp, record]));
   return fresh.map((record) => {
     const prior = priorByFp.get(record.fp);
     if (prior && prior.commentId === record.commentId) {
+      // Only a verdict is bound to a revision. A record with none (a maintainer reply,
+      // an unjudged annotation) has no source-dependent decision to go stale, so it
+      // carries exactly as before.
+      const carries =
+        prior.verdict === undefined || (headSha !== undefined && prior.sourceSha === headSha);
       return {
         ...record,
-        ...(prior.verdict !== undefined ? { verdict: prior.verdict } : {}),
-        ...(prior.reason !== undefined ? { reason: prior.reason } : {}),
+        ...(carries && prior.verdict !== undefined ? { verdict: prior.verdict } : {}),
+        ...(carries && prior.reason !== undefined ? { reason: prior.reason } : {}),
+        ...(carries && prior.sourceSha !== undefined ? { sourceSha: prior.sourceSha } : {}),
         // A `/undismiss` override is pinned to the reply it restored: carry it forward
         // for the SAME comment so a re-review's `applied` recompute keeps the finding
         // active (a newer reply is a fresh decision and drops the pin, like the verdict).
+        // It survives a source change too — a human restored the finding, and only a
+        // newer reply may lift that.
         ...(prior.unclearedByHuman ? { unclearedByHuman: true } : {}),
-        applied: prior.applied,
+        // A dropped verdict takes its `applied` with it (every caller recomputes it
+        // anyway); carrying `true` here would keep the finding hidden for one render.
+        applied: carries ? prior.applied : false,
       };
     }
     return record;
@@ -110,7 +142,8 @@ function mergeFeedback(fresh: FeedbackRecord[], previous: FeedbackRecord[]): Fee
  * (the comment's stored records) and `replies`. `fpOf` MUST key findings the same way
  * that comment stores them (scope-namespaced for an aggregate comment, plain otherwise)
  * or a prior verdict can never carry — its fp would not match the fresh record's.
- * Exported for tests.
+ * `headSha` is the source revision being reviewed: a stored verdict carries only when
+ * it judged that same revision (see mergeFeedback). Exported for tests.
  */
 export function buildAdjudicationItems(
   review: CoordinatorOutput,
@@ -118,9 +151,14 @@ export function buildAdjudicationItems(
   replies: ReplyComment[],
   fpOf: (finding: Finding) => string,
   match: "quote" | "id" | "both",
+  headSha?: string,
 ): AdjudicationItem[] {
   const withFp = review.findings.map((finding) => ({ finding, fp: fpOf(finding) }));
-  const records = mergeFeedback(matchReplies(replies, withFp, { match }), previousFeedback);
+  const records = mergeFeedback(
+    matchReplies(replies, withFp, { match }),
+    previousFeedback,
+    headSha,
+  );
   const findingByFp = new Map(withFp.map((entry) => [entry.fp, entry.finding]));
   const bodyById = new Map(replies.map((reply) => [reply.id, reply.body]));
   const items: AdjudicationItem[] = [];
@@ -359,7 +397,14 @@ export class GitHubReporter implements Reporter {
     const existing = await this.findExistingComment();
     const state = existing ? parseReviewState(existing.body, this.options.commentTag) : null;
     const replies = await this.replyComments();
-    return buildAdjudicationItems(review, state?.feedback ?? [], replies, fpOf, config.match);
+    return buildAdjudicationItems(
+      review,
+      state?.feedback ?? [],
+      replies,
+      fpOf,
+      config.match,
+      this.options.headSha,
+    );
   }
 
   /**
@@ -391,10 +436,14 @@ export class GitHubReporter implements Reporter {
           : state.review.findings.map((finding) => ({ finding, fp: fingerprintFinding(finding) }));
       const replies = await this.replyComments();
       // The retroactive crawl reports on any recorded pushback regardless of
-      // `mode`; only the match strategy is honored (default "both").
+      // `mode`; only the match strategy is honored (default "both"). The crawl reviews
+      // nothing, so it has no head SHA to compare against: stored verdicts do not carry
+      // here. That costs the report nothing — it renders who replied and where, never a
+      // verdict — and keeps "unknown source" uniformly non-carrying.
       const records = mergeFeedback(
         matchReplies(replies, withFp, { match: this.options.feedback?.match ?? "both" }),
         state.feedback ?? [],
+        this.options.headSha,
       );
       return { findings: withFp, records };
     } catch {
@@ -441,7 +490,11 @@ export class GitHubReporter implements Reporter {
     try {
       const replies = await this.replyComments();
       return reapply(
-        mergeFeedback(matchReplies(replies, withFp, { match: config.match }), previous),
+        mergeFeedback(
+          matchReplies(replies, withFp, { match: config.match }),
+          previous,
+          this.options.headSha,
+        ),
       );
     } catch {
       return reapply(previous);

@@ -115,12 +115,18 @@ export function feedbackNeedsRunSeam(config: FeedbackConfig): boolean {
  * When mode !== "adjudicate" it makes no model calls at all and only recomputes
  * `applied` — under `dismiss: "maintainers"` a maintainer reply still clears without
  * any model; under `dismiss: "never"` nothing does.
+ *
+ * `sourceSha` is the head commit this run reviewed: every verdict decided here is
+ * stamped with it, so a later run can tell whether the verdict still judges the same
+ * source (see mergeFeedback). A source with no resolvable head OID (a local run) stamps
+ * nothing, which makes the verdict non-carrying rather than permanent.
  */
 export async function adjudicateFeedback(
   handle: OpencodeHandle,
   items: AdjudicationItem[],
   config: FeedbackConfig,
   debug: (message: string) => void = () => {},
+  sourceSha?: string,
 ): Promise<AdjudicationOutcome> {
   let cost = 0;
   let model: string | undefined;
@@ -200,8 +206,11 @@ export async function adjudicateFeedback(
   // under the hard floors (this also clears a maintainer reply, which needs no verdict).
   const records = items.map((item) => {
     const decision = judged.get(item.record);
+    // A fresh verdict is stamped with the source it judged (when the run knows it), so
+    // the next run re-judges the same reply once that source moves on.
+    // @ref LLP 0011#suppression-is-never-silent [implements] — the verdict is bound to the revision it was decided against
     const withVerdict: FeedbackRecord = decision
-      ? { ...item.record, verdict: decision.verdict, reason: decision.reason }
+      ? { ...item.record, verdict: decision.verdict, reason: decision.reason, sourceSha }
       : item.record;
     return { ...withVerdict, applied: feedbackApplied(item.finding, withVerdict, config) };
   });

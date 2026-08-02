@@ -267,6 +267,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
                 cwd,
                 // Root-only feedback config (loadScopeConfig inherits it from the root).
                 feedback: config.feedback,
+                headSha: await reviewedHeadSha(source),
               })
             : null;
         const review = await runReview(source, {
@@ -346,6 +347,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
             breakGlassMarker: config.breakGlassMarker,
             cwd,
             feedback: config.feedback,
+            headSha: await reviewedHeadSha(source),
           })
         : null;
 
@@ -402,6 +404,21 @@ export async function reviewCommand(argv: string[]): Promise<void> {
   } catch (error) {
     process.stderr.write(`AI review failed: ${errorMessage(error)}\n`);
     process.exitCode = 2;
+  }
+}
+
+/**
+ * The head commit the review reads, when the source can pin one (a GitHub PR). The
+ * reporter binds every adjudication verdict to it, so a stored verdict carries to a
+ * later run only while the reviewed source is unchanged (see mergeFeedback). Never
+ * throws: an unresolvable head reads as unknown source, which re-judges the reply
+ * instead of trusting a verdict about code we cannot pin.
+ */
+async function reviewedHeadSha(source: ReviewSource): Promise<string | undefined> {
+  try {
+    return (await source.getMetadata()).headOid;
+  } catch {
+    return undefined;
   }
 }
 

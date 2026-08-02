@@ -1064,6 +1064,10 @@ export async function runReview(
           items,
           options.feedback.config,
           progress,
+          // The revision each verdict is judged against: the PR head OID this run
+          // materialized and read from. A source without one (local git) stamps
+          // nothing, so its verdicts never carry to a later run.
+          metadata.headOid,
         );
         feedbackRecords = adjudication.records;
         agentCosts["adjudicator"] = adjudication.cost;

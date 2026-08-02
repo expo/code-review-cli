@@ -44,6 +44,27 @@ test("FeedbackRecordSchema: author/unclearedByHuman are optional and round-trip"
   expect(bare.unclearedByHuman).toBeUndefined();
 });
 
+// A verdict judges SOURCE, so it is stored with the revision it judged. A record
+// written before the field existed parses fine and reads as unknown source, which
+// mergeFeedback treats as stale (never as "trust it forever").
+test("FeedbackRecordSchema: sourceSha is optional and round-trips with the verdict", () => {
+  const parsed = FeedbackRecordSchema.parse({
+    fp: "a",
+    by: "b",
+    commentId: 1,
+    verdict: "accepted",
+    sourceSha: "deadbeefcafe",
+  });
+  expect(parsed.sourceSha).toBe("deadbeefcafe");
+  const legacy = FeedbackRecordSchema.parse({
+    fp: "a",
+    by: "b",
+    commentId: 1,
+    verdict: "accepted",
+  });
+  expect(legacy.sourceSha).toBeUndefined();
+});
+
 test("FeedbackRecordSchema: rejects an out-of-enum verdict and a non-integer commentId", () => {
   expect(
     FeedbackRecordSchema.safeParse({ fp: "a", by: "b", commentId: 1, verdict: "maybe" }).success,

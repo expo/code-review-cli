@@ -492,6 +492,18 @@ async function runLegacyCi(
     return;
   }
 
+  // The head commit this run reviews: it binds every adjudication verdict to the source
+  // it judged, so a stored verdict carries to the next run only while the head is
+  // unchanged (see mergeFeedback). Memoized on the source — no extra API call. A
+  // metadata failure leaves it unknown, which re-judges replies instead of trusting a
+  // verdict against source we cannot pin.
+  let headSha: string | undefined;
+  try {
+    headSha = (await source.getMetadata()).headOid;
+  } catch {
+    // leave headSha unset → stored verdicts do not carry (fail safe, costs budget only)
+  }
+
   const reporter = new GitHubReporter({
     prNumber,
     repo,
@@ -499,6 +511,7 @@ async function runLegacyCi(
     breakGlassMarker: config.breakGlassMarker,
     cwd,
     feedback: config.feedback,
+    headSha,
   });
 
   try {
@@ -705,11 +718,15 @@ async function runRoutedCi(
     prNumber,
     diffLines: buildDiffLineIndex(changed.map((file) => ({ path: file.path, patch: file.patch }))),
   };
+  // The reviewed head OID also binds each adjudication verdict to the source it judged
+  // (see mergeFeedback); unresolved leaves it unknown, so verdicts are re-judged.
+  let headSha: string | undefined;
   try {
-    const { baseOid } = await source.getMetadata();
+    const { baseOid, headOid } = await source.getMetadata();
     if (baseOid) {
       link.baseSha = baseOid;
     }
+    headSha = headOid;
   } catch {
     // leave baseSha unset → out-of-diff findings degrade to plain text
   }
@@ -744,6 +761,7 @@ async function runRoutedCi(
       // Root-only feedback config (see loadScopeConfig): lets a reporter posting with
       // no explicit records match replies itself (annotate mode) at report time.
       feedback: rootConfig.feedback,
+      headSha,
     });
 
   // comment:'single' mode: every active scope's feedback seam AND the final

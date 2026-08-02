@@ -39,6 +39,9 @@ const record = (over: Partial<FeedbackRecord> = {}): FeedbackRecord => ({
 
 // A handle that must never be touched — every test below drives paths that make
 // zero model calls, so an access would be a bug in the code under test.
+// adjudicateFeedback catches per-item errors (it fails open), so this throw is NOT
+// visible as a rejection: every test using noHandle must assert `failed === 0`, or an
+// unwanted model call would be silently swallowed and the test would still pass.
 const noHandle = new Proxy(
   {},
   {
@@ -155,6 +158,8 @@ test("adjudicateFeedback: a maintainer reply is applied with no model call (empt
   ];
   const out = await adjudicateFeedback(noHandle, items, config({ dismiss: "adjudicated" }));
   expect(out.adjudicated).toBe(0);
+  expect(out.failed).toBe(0);
+  expect(out.skipped).toBe(0);
   expect(out.records[0]!.applied).toBe(true);
 });
 
@@ -163,13 +168,32 @@ test("adjudicateFeedback: a record with a verdict already decided is not re-judg
     {
       finding: finding(),
       record: record({ maintainer: false, author: true, verdict: "accepted" }),
-      replyText: "",
+      // A real rebuttal, so the ALREADY-DECIDED verdict is the only thing keeping this
+      // record out of the model pass.
+      replyText: "false positive, sanitizePath runs below",
     },
   ];
   const out = await adjudicateFeedback(noHandle, items, config({ dismiss: "adjudicated" }));
   expect(out.adjudicated).toBe(0);
+  expect(out.failed).toBe(0);
+  expect(out.skipped).toBe(0);
   expect(out.records[0]!.verdict).toBe("accepted");
   expect(out.records[0]!.applied).toBe(true);
+});
+
+// A verdict is bound to the source it judged: a record carried from a prior run keeps
+// the SHA it was decided against, so the next merge can tell whether it is still current.
+test("adjudicateFeedback: a carried verdict keeps the source revision it judged", async () => {
+  const items: AdjudicationItem[] = [
+    {
+      finding: finding(),
+      record: record({ author: true, verdict: "accepted", sourceSha: "abc123def456" }),
+      replyText: "false positive, sanitizePath runs below",
+    },
+  ];
+  const out = await adjudicateFeedback(noHandle, items, config({ dismiss: "adjudicated" }));
+  expect(out.failed).toBe(0);
+  expect(out.records[0]!.sourceSha).toBe("abc123def456");
 });
 
 // A third-party commenter can never clear, so its unjudged reply must not even be
@@ -184,5 +208,9 @@ test("adjudicateFeedback: a third-party reply is never judged and never applied"
   ];
   const out = await adjudicateFeedback(noHandle, items, config({ dismiss: "adjudicated" }));
   expect(out.adjudicated).toBe(0);
+  // The load-bearing assertion: an untrusted third party's reply body must never reach
+  // the adjudicator prompt. A model call here would be caught and counted, not thrown.
+  expect(out.failed).toBe(0);
+  expect(out.skipped).toBe(0);
   expect(out.records[0]!.applied).toBe(false);
 });
