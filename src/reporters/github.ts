@@ -13,8 +13,18 @@ import {
   renderMarkdown,
 } from "../core/render.js";
 import type { LinkContext, ReviewState, ScopeReviewResult } from "../core/render.js";
+import { matchReplies } from "../core/responses.js";
+import type { ReplyComment } from "../core/responses.js";
+import { feedbackApplied } from "../core/adjudicate.js";
+import type { AdjudicationItem } from "../core/adjudicate.js";
 import { fingerprintFinding, scopedFingerprint } from "../core/schema.js";
-import type { CoordinatorOutput, DismissalRecord } from "../core/schema.js";
+import type {
+  CoordinatorOutput,
+  DismissalRecord,
+  FeedbackRecord,
+  Finding,
+} from "../core/schema.js";
+import type { LoadedConfig } from "../config/schema.js";
 import { appendStepSummary } from "../core/step-summary.js";
 import type { Reporter } from "./reporter.js";
 
@@ -35,6 +45,22 @@ export interface GitHubReporterOptions {
    * skips the two `gh` calls — the ci fan-out builds ONE context for all scopes.
    */
   linkContext?: LinkContext;
+  /**
+   * Root-only author-feedback config (see LoadedConfig.feedback). Absent (the
+   * default for existing callers) or `mode: "off"` disables the whole path, so
+   * the reporter behaves exactly as before until a caller opts in.
+   */
+  feedback?: LoadedConfig["feedback"];
+  /**
+   * Identity override: treat comments authored by THIS login as the reviewer's
+   * own, instead of resolving the current `gh` identity. Needed by the
+   * `ecr feedback` crawl on a developer machine: the reviewer comment was posted
+   * by CI (`github-actions[bot]` under the default token), so matching the local
+   * human login would find no comment on any PR. Read-only callers only — a
+   * posting reporter must keep the real identity or it would edit someone
+   * else's comments.
+   */
+  ownLogin?: string;
 }
 
 const MAINTAINER_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
@@ -46,6 +72,62 @@ export interface IssueComment {
   /** The comment's author. GitHub sets this from the authenticated identity; it
    * cannot be forged, so it — not the public body marker — is the identity signal. */
   user?: { login?: string };
+  /** Permalink to the comment, used as the reply link on an annotated finding. */
+  html_url?: string;
+}
+
+/**
+ * Carry a decision (verdict / applied) already recorded in the prior comment
+ * state onto the freshly matched records — but only when the current newest
+ * reply is the SAME comment it was made about. A newer reply on the finding
+ * resets it: the old verdict judged different words. Fresh records own the
+ * reply identity (author, comment id, link); the prior state owns the decision.
+ */
+function mergeFeedback(fresh: FeedbackRecord[], previous: FeedbackRecord[]): FeedbackRecord[] {
+  const priorByFp = new Map(previous.map((record) => [record.fp, record]));
+  return fresh.map((record) => {
+    const prior = priorByFp.get(record.fp);
+    if (prior && prior.commentId === record.commentId) {
+      return {
+        ...record,
+        ...(prior.verdict !== undefined ? { verdict: prior.verdict } : {}),
+        ...(prior.reason !== undefined ? { reason: prior.reason } : {}),
+        applied: prior.applied,
+      };
+    }
+    return record;
+  });
+}
+
+// @ref LLP 0011#deterministic-matching [implements] — the pure core of matchAdjudicationItems: no IO, so it is unit-testable; the caller supplies the fetched state/replies
+/**
+ * Pair each matched reply with the finding it answers and its raw reply text, carrying
+ * any prior verdict forward. Pure: the caller has already fetched `previousFeedback`
+ * (the comment's stored records) and `replies`. `fpOf` MUST key findings the same way
+ * that comment stores them (scope-namespaced for an aggregate comment, plain otherwise)
+ * or a prior verdict can never carry — its fp would not match the fresh record's.
+ * Exported for tests.
+ */
+export function buildAdjudicationItems(
+  review: CoordinatorOutput,
+  previousFeedback: FeedbackRecord[],
+  replies: ReplyComment[],
+  fpOf: (finding: Finding) => string,
+  match: "quote" | "id" | "both",
+): AdjudicationItem[] {
+  const withFp = review.findings.map((finding) => ({ finding, fp: fpOf(finding) }));
+  const records = mergeFeedback(matchReplies(replies, withFp, { match }), previousFeedback);
+  const findingByFp = new Map(withFp.map((entry) => [entry.fp, entry.finding]));
+  const bodyById = new Map(replies.map((reply) => [reply.id, reply.body]));
+  const items: AdjudicationItem[] = [];
+  for (const record of records) {
+    const finding = findingByFp.get(record.fp);
+    if (!finding) {
+      continue;
+    }
+    items.push({ finding, record, replyText: bodyById.get(record.commentId) ?? "" });
+  }
+  return items;
 }
 
 /**
@@ -98,6 +180,9 @@ export class GitHubReporter implements Reporter {
    * stable for the process, and every reporter method consults it.
    */
   private resolveOwnLogin(): Promise<string | null> {
+    if (this.options.ownLogin) {
+      return Promise.resolve(this.options.ownLogin);
+    }
     this.ownLoginResolution ??= (async () => {
       try {
         const gh = await resolveTrustedTool("gh");
@@ -142,29 +227,203 @@ export class GitHubReporter implements Reporter {
     );
   }
 
-  async report(review: CoordinatorOutput): Promise<void> {
+  /**
+   * Post/update the single-scope comment. When `feedback` is supplied (the
+   * adjudication path already matched + judged the replies) it is rendered as-is;
+   * otherwise the reporter matches live replies to this review's findings itself
+   * (annotate mode). Either way the feedback path fails soft — it never blocks the
+   * comment from being posted.
+   */
+  async report(review: CoordinatorOutput, feedback?: FeedbackRecord[]): Promise<void> {
     // Carry forward any per-PR dismissals recorded in the existing comment so they
     // survive re-reviews (a dismissed finding stays in the collapsed section).
     const existing = await this.findExistingComment();
-    const dismissed = existing
-      ? (parseReviewState(existing.body, this.options.commentTag)?.dismissed ?? [])
-      : [];
+    const state = existing ? parseReviewState(existing.body, this.options.commentTag) : null;
+    const dismissed = state?.dismissed ?? [];
+    const withFp = review.findings.map((finding) => ({
+      finding,
+      fp: fingerprintFinding(finding),
+    }));
+    const records = feedback ?? (await this.computeFeedback(withFp, state?.feedback ?? []));
     const link = await this.linkContextAsync();
-    await this.upsertComment(renderMarkdown(review, this.options.commentTag, dismissed, link));
+    await this.upsertComment(
+      renderMarkdown(review, this.options.commentTag, dismissed, link, records),
+    );
   }
 
   /** Post/update the aggregate multi-scope comment (comment:'single' mode). */
-  async reportAggregate(results: ScopeReviewResult[], unmatchedFiles: string[]): Promise<void> {
+  async reportAggregate(
+    results: ScopeReviewResult[],
+    unmatchedFiles: string[],
+    feedback?: FeedbackRecord[],
+  ): Promise<void> {
     const existing = await this.findExistingComment();
-    const dismissed = existing
-      ? (parseReviewState(existing.body, this.options.commentTag)?.dismissed ?? [])
-      : [];
+    const state = existing ? parseReviewState(existing.body, this.options.commentTag) : null;
+    const dismissed = state?.dismissed ?? [];
+    // Feedback is keyed by the SAME scope-namespaced id the aggregate comment
+    // renders, so a record can never drift across scopes.
+    const withFp = results.flatMap((result) =>
+      result.review.findings.map((finding) => ({
+        finding,
+        fp: scopedFingerprint(result.isDefault ? null : result.scope, finding),
+      })),
+    );
+    const records = feedback ?? (await this.computeFeedback(withFp, state?.feedback ?? []));
     const link = await this.linkContextAsync();
     await this.upsertComment(
-      renderAggregateMarkdown(results, this.options.commentTag, dismissed, link, {
-        unmatchedFiles,
-      }),
+      renderAggregateMarkdown(
+        results,
+        this.options.commentTag,
+        dismissed,
+        link,
+        { unmatchedFiles },
+        records,
+      ),
     );
+  }
+
+  /**
+   * Pair each matched PR reply with the finding it answers and its raw reply text —
+   * the input the adjudication step (core/review.ts) judges against the source. Any
+   * verdict already decided in the prior comment state is carried forward (so a reply
+   * is not re-judged for the same words). The reply text rides only the transient
+   * AdjudicationItem: it feeds the adjudicator prompt and is never stored on a record
+   * or rendered (see FeedbackRecordSchema). Gated on `mode !== "off"`. A fetch/parse
+   * error THROWS — the caller (runReview's feedback step) catches it and continues
+   * without records, which lets report() fall back to computeFeedback and preserve
+   * the previously recorded state; returning `[]` here would wipe it instead.
+   *
+   * `fpOf` MUST key findings the same way the comment this review lands in stores its
+   * feedback: scope-namespaced for the aggregate (comment:'single') comment, plain
+   * for a single/per-scope one. A mismatch would leave every fresh record keyed
+   * differently from the prior state, so mergeFeedback would carry no verdict and the
+   * budget would be re-spent judging the same words each run.
+   */
+  async matchAdjudicationItems(
+    review: CoordinatorOutput,
+    fpOf: (finding: Finding) => string = fingerprintFinding,
+  ): Promise<AdjudicationItem[]> {
+    const config = this.options.feedback;
+    if (!config || config.mode === "off") {
+      return [];
+    }
+    // Deliberately NOT wrapped in a swallow-all: a fetch error here must propagate so
+    // runReview's own catch leaves `feedback` undefined — then report() falls back to
+    // computeFeedback, whose error path preserves the previously recorded state. A
+    // caught `[]` instead reads downstream as "there are no replies" and would wipe
+    // prior annotations (and un-hide reply-cleared findings) on a transient API error.
+    const existing = await this.findExistingComment();
+    const state = existing ? parseReviewState(existing.body, this.options.commentTag) : null;
+    const replies = await this.replyComments();
+    return buildAdjudicationItems(review, state?.feedback ?? [], replies, fpOf, config.match);
+  }
+
+  /**
+   * Read what humans pushed back on for THIS PR from the comment already posted:
+   * decode its embedded findings, match the non-bot replies, and merge any prior
+   * verdict. Works retroactively — the bot comment embeds its own findings, so no
+   * re-review is needed. `ecr feedback` crawls history through this. Fails soft:
+   * missing/unparseable comment ⇒ empty result, never a throw.
+   */
+  async collectFeedback(): Promise<{
+    findings: Array<{ finding: Finding; fp: string }>;
+    records: FeedbackRecord[];
+  }> {
+    try {
+      const existing = await this.findExistingComment();
+      const state = existing ? parseReviewState(existing.body, this.options.commentTag) : null;
+      if (!state) {
+        return { findings: [], records: [] };
+      }
+      // An aggregate comment namespaces ids per scope; a single comment does not.
+      const withFp =
+        state.scopes && state.scopes.length > 0
+          ? state.scopes.flatMap((scope) =>
+              scope.review.findings.map((finding) => ({
+                finding,
+                fp: scopedFingerprint(scope.isDefault ? null : scope.scope, finding),
+              })),
+            )
+          : state.review.findings.map((finding) => ({ finding, fp: fingerprintFinding(finding) }));
+      const replies = await this.replyComments();
+      // The retroactive crawl reports on any recorded pushback regardless of
+      // `mode`; only the match strategy is honored (default "both").
+      const records = mergeFeedback(
+        matchReplies(replies, withFp, { match: this.options.feedback?.match ?? "both" }),
+        state.feedback ?? [],
+      );
+      return { findings: withFp, records };
+    } catch {
+      return { findings: [], records: [] };
+    }
+  }
+
+  // @ref LLP 0011#deterministic-matching [implements] — replies are matched to findings deterministically; the reporter never lets a model pick which finding a reply answers
+  /**
+   * The matched, merged feedback records to render, or none. Gated on
+   * `mode !== "off"` (the annotate/adjudicate switch) and wrapped so a fetch or
+   * match error degrades to the records already recorded — a review is never
+   * blocked by the feedback path.
+   */
+  private async computeFeedback(
+    withFp: Array<{ finding: Finding; fp: string }>,
+    previous: FeedbackRecord[],
+  ): Promise<FeedbackRecord[]> {
+    const config = this.options.feedback;
+    if (!config || config.mode === "off") {
+      return [];
+    }
+    // `applied` is a function of the CURRENT config, never a stored fact: a carried
+    // record's flag was computed under the config of the run that stored it, so a
+    // repo flipping `dismiss` back to "never" must un-hide the finding on the next
+    // render, not keep honoring the old policy.
+    const findingByFp = new Map(withFp.map((entry) => [entry.fp, entry.finding]));
+    const reapply = (records: FeedbackRecord[]): FeedbackRecord[] =>
+      records.map((record) => {
+        const finding = findingByFp.get(record.fp);
+        return finding ? { ...record, applied: feedbackApplied(finding, record, config) } : record;
+      });
+    try {
+      const replies = await this.replyComments();
+      return reapply(
+        mergeFeedback(matchReplies(replies, withFp, { match: config.match }), previous),
+      );
+    } catch {
+      return reapply(previous);
+    }
+  }
+
+  // @ref LLP 0008#github-reporter-identity [implements] — a reply is any comment NOT authored by us and NOT carrying our marker; author identity (user.login) is what excludes our own, never the forgeable marker alone
+  /**
+   * The PR's human replies, as the matcher consumes them. Excludes comments we
+   * authored (by unspoofable `user.login`) and any comment carrying our marker, so
+   * our own footer is never read back as a reply; the `author_association` gives
+   * the maintainer flag. When our login can't be resolved, the marker filter still
+   * keeps our own comments out.
+   */
+  private async replyComments(): Promise<ReplyComment[]> {
+    const [comments, ownLogin] = await Promise.all([
+      this.fetchAllComments(),
+      this.resolveOwnLogin(),
+    ]);
+    const out: ReplyComment[] = [];
+    for (const comment of comments) {
+      const login = comment.user?.login;
+      if (!login || (ownLogin && login === ownLogin)) {
+        continue;
+      }
+      if (comment.body?.includes(this.marker)) {
+        continue;
+      }
+      out.push({
+        id: comment.id,
+        body: comment.body ?? "",
+        login,
+        maintainer: MAINTAINER_ASSOCIATIONS.has(comment.author_association ?? ""),
+        ...(comment.html_url ? { url: comment.html_url } : {}),
+      });
+    }
+    return out;
   }
 
   /**
@@ -279,10 +538,20 @@ export class GitHubReporter implements Reporter {
       }
     }
 
+    // Keep any recorded author responses on the re-render — a /dismiss must not
+    // strip the feedback annotations already embedded in the comment state.
+    const feedback = state.feedback ?? [];
     const link = await this.linkContextAsync();
     const body = isAggregate
-      ? renderAggregateMarkdown(state.scopes!, this.options.commentTag, dismissed, link)
-      : renderMarkdown(state.review, this.options.commentTag, dismissed, link);
+      ? renderAggregateMarkdown(
+          state.scopes!,
+          this.options.commentTag,
+          dismissed,
+          link,
+          undefined,
+          feedback,
+        )
+      : renderMarkdown(state.review, this.options.commentTag, dismissed, link, feedback);
     await this.patchComment(existing.id, body);
     return { dismissedCount: dismissed.length, matched, unmatched };
   }
@@ -298,6 +567,36 @@ export class GitHubReporter implements Reporter {
   // pathological PR; virtually every real PR exits far earlier.
   private static readonly MAX_COMMENT_PAGES = 30;
 
+  /** How long a fetched comment list may be reused (see fetchAllComments). */
+  private static readonly COMMENTS_CACHE_TTL_MS = 30_000;
+  private commentsCache?: { at: number; comments: Promise<IssueComment[]> };
+
+  /**
+   * Burst-collapsing cache over fetchAllCommentsUncached. One logical operation
+   * fans out into several comment reads (readState + collectFeedback in the
+   * `ecr feedback` crawl; findExistingComment + replyComments + upsert in a
+   * report) that would each re-fetch the identical paginated list. The TTL is
+   * deliberately short: across a real gap (break-glass check → 30-minute review →
+   * post) a stale list could miss a fresh `/skip-review` or a new duplicate, so
+   * only back-to-back calls coalesce. Any comment mutation invalidates it.
+   */
+  private fetchAllComments(): Promise<IssueComment[]> {
+    const now = Date.now();
+    if (!this.commentsCache || now - this.commentsCache.at > GitHubReporter.COMMENTS_CACHE_TTL_MS) {
+      const comments = this.fetchAllCommentsUncached().catch((error: unknown) => {
+        // Never cache a failure.
+        this.commentsCache = undefined;
+        throw error;
+      });
+      this.commentsCache = { at: now, comments };
+    }
+    return this.commentsCache.comments;
+  }
+
+  private invalidateComments(): void {
+    this.commentsCache = undefined;
+  }
+
   /**
    * Fetch ALL issue comments, paginating manually (a single page's array is valid
    * JSON; `--paginate` concatenates arrays into invalid JSON). The issue-comments
@@ -307,7 +606,7 @@ export class GitHubReporter implements Reporter {
    * causing duplicate comments and missed break-glass).
    */
   // @ref LLP 0008#comment-lifecycle [constrained-by] — the issue-comments endpoint ignores sort/direction and returns oldest-first; pagination must reach the end or the newest comment (ours, or a recent break-glass) can fall outside the window
-  private async fetchAllComments(): Promise<IssueComment[]> {
+  private async fetchAllCommentsUncached(): Promise<IssueComment[]> {
     const all: IssueComment[] = [];
     const gh = await resolveTrustedTool("gh");
     for (let page = 1; page <= GitHubReporter.MAX_COMMENT_PAGES; page++) {
@@ -382,6 +681,7 @@ export class GitHubReporter implements Reporter {
   }
 
   private async createComment(body: string): Promise<void> {
+    this.invalidateComments();
     const gh = await resolveTrustedTool("gh");
     await this.withBodyFile(body, (jsonPath) =>
       run(
@@ -400,6 +700,7 @@ export class GitHubReporter implements Reporter {
   }
 
   private async patchComment(commentId: number, body: string): Promise<void> {
+    this.invalidateComments();
     const gh = await resolveTrustedTool("gh");
     await this.withBodyFile(body, (jsonPath) =>
       run(
@@ -418,6 +719,7 @@ export class GitHubReporter implements Reporter {
   }
 
   private async deleteComment(commentId: number): Promise<void> {
+    this.invalidateComments();
     const gh = await resolveTrustedTool("gh");
     await run(
       gh,

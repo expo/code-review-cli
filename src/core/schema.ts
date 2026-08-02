@@ -74,6 +74,13 @@ export const FindingSchema = z.object({
   requalifiedBy: z
     .object({ prNumber: z.number().int(), file: z.string(), reason: z.string() })
     .optional(),
+  /**
+   * Which reviewer agent produced this finding. Engine-populated (never the
+   * model); excluded from the fingerprint like `requalifiedBy`, so attribution
+   * appearing on a finding can never lapse an existing dismissal.
+   */
+  // @ref LLP 0011#attribution-and-identity [constrained-by] — attribution is annotation-only; never part of fingerprintFinding
+  agent: z.string().optional(),
 });
 export type Finding = z.infer<typeof FindingSchema>;
 
@@ -157,6 +164,55 @@ export interface DismissalRecord {
   fp: string;
   by?: string;
   reason?: string;
+}
+
+/** How an author's reply to a finding held up against the source. */
+export const FEEDBACK_VERDICTS = ["accepted", "refuted", "unclear"] as const;
+export type FeedbackVerdict = (typeof FEEDBACK_VERDICTS)[number];
+
+/** The kinds of pushback authors actually write, as a closed set. */
+export const FEEDBACK_REASONS = [
+  "pre-existing", // the PR only continues a pattern already in the repo
+  "deliberate-scope", // a bounded, intentional limitation of new code
+  "fixed", // the author says they addressed it
+  "disagree", // the author disputes the analysis itself
+  "other",
+] as const;
+export type FeedbackReason = (typeof FEEDBACK_REASONS)[number];
+
+// @ref LLP 0011#never-echo-reply-text [constrained-by] — no free-text field: reply prose never reaches the comment body, so it can never carry a forged state marker
+/**
+ * One author reply matched to one finding, keyed by fingerprint. Everything here
+ * is either engine-derived or enum-valued — deliberately NO free-text field. The
+ * reply's own prose is never stored and never rendered; adding a field for it
+ * would put attacker-written text back into the comment body.
+ */
+export const FeedbackRecordSchema = z.object({
+  fp: z.string(),
+  by: z.string(),
+  commentId: z.number().int(),
+  url: z.string().optional(),
+  maintainer: z.boolean().default(false),
+  verdict: z.enum(FEEDBACK_VERDICTS).optional(),
+  reason: z.enum(FEEDBACK_REASONS).optional(),
+  /** True when this reply actually removed the finding from the blocking set. */
+  applied: z.boolean().default(false),
+});
+export type FeedbackRecord = z.infer<typeof FeedbackRecordSchema>;
+
+/**
+ * The adjudicator's verdict on one rebuttal, re-derived from the source. Both
+ * fields are enum-constrained: the judgment is a classification, never prose the
+ * model could smuggle instructions (or a state marker) through.
+ */
+export const AdjudicationSchema = z.object({
+  verdict: z.enum(FEEDBACK_VERDICTS),
+  reason: z.enum(FEEDBACK_REASONS).default("other"),
+});
+export type Adjudication = z.infer<typeof AdjudicationSchema>;
+
+export function parseAdjudication(text: string): Adjudication {
+  return AdjudicationSchema.parse(extractJsonObject(text));
 }
 
 /** Minimum normalized evidence length to key a fingerprint on the code (below

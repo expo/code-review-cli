@@ -3,6 +3,7 @@
 import { ciCommand } from "./commands/ci.js";
 import { dismissCommand } from "./commands/dismiss.js";
 import { doctorCommand } from "./commands/doctor.js";
+import { feedbackCommand } from "./commands/feedback.js";
 import { initCommand } from "./commands/init.js";
 import { reviewCommand } from "./commands/review.js";
 import { setupAuthCommand } from "./commands/setup-auth.js";
@@ -15,6 +16,7 @@ Usage:
   ecr ci                 Review the current PR and post a comment (GitHub Actions).
   ecr dismiss --pr <n> <id...>     Hide a finding on a PR (see \`ecr dismiss --help\`).
   ecr undismiss --pr <n> <id...>   Restore a dismissed finding.
+  ecr feedback [--repo <owner/repo>] [--limit <n>]   Report what humans pushed back on (see \`ecr feedback --help\`).
   ecr init [--monorepo] [--scope <dir>]   Scaffold .expo-code-review/ in this repo.
   ecr setup-auth [--yes]   Walk through getting model credentials for local runs.
   ecr doctor [--list-scopes]   Check environment, config, credentials, and scopes.
@@ -52,6 +54,9 @@ async function main(): Promise<void> {
       break;
     case "undismiss":
       await dismissCommand(rest, "remove");
+      break;
+    case "feedback":
+      await feedbackCommand(rest);
       break;
     case "init":
       await initCommand(rest);
