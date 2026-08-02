@@ -540,6 +540,12 @@ The crawl matches the reviewer's comments by author. CI posts them as
 `github-actions[bot]` (the default), so a locally-run crawl uses that identity —
 pass `--as <login>` when your workflow posts under something else.
 
+`ecr feedback` always reads `.expo-code-review/config.jsonc` from the LOCAL
+checkout, even with `--repo`. If `--repo` points at a different repo, it warns
+that `commentTag` may not match, so a zero-findings result there is not read as
+zero pushback. It also warns when every scanned PR had no bot comment at all,
+instead of leaving that as an easy-to-miss "0 with a bot comment" in the totals.
+
 See [LLP 0011](./llp/0011-author-feedback.explainer.md) for why matching is
 deterministic, why reply text is never echoed into the comment, and why the
 defaults are asymmetric.

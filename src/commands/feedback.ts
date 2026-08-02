@@ -300,6 +300,24 @@ function pct(rate: number): string {
   return `${Math.round(rate * 100)}%`;
 }
 
+/**
+ * When every scanned PR came back with no bot comment at all, the crawl
+ * found nothing but that fact is easy to miss buried in "0 with a bot
+ * comment" — this makes it an explicit, visible line instead of a silent
+ * zero. Pure.
+ * @ref LLP 0011#ecr-feedback-the-same-substrate-read-backwards — retroactive
+ * crawl must not fail silent when the scan targets the wrong repo/login/config.
+ */
+export function allNullCrawlWarning(totals: FeedbackTotals): string | undefined {
+  if (totals.prsScanned > 0 && totals.prsWithComment === 0) {
+    return (
+      `  no PRs had a matching review comment (0/${totals.prsScanned} scanned) — ` +
+      `check --as and the commentTag, or that --repo matches the config in use`
+    );
+  }
+  return undefined;
+}
+
 /** Human-readable rendering of a report, in the order the spec calls for:
  * totals, breakdowns, repeat offenders, then the per-PR list. Pure. */
 export function formatFeedbackReport(report: FeedbackReport): string {
@@ -309,8 +327,12 @@ export function formatFeedbackReport(report: FeedbackReport): string {
     `PRs scanned: ${t.prsScanned} (${t.prsWithComment} with a bot comment)`,
     `Findings surfaced: ${t.findingsSurfaced}`,
     `Findings with an author reply: ${t.findingsReplied} (${pct(t.replyRate)})`,
-    "",
   );
+  const warning = allNullCrawlWarning(t);
+  if (warning) {
+    lines.push(warning);
+  }
+  lines.push("");
 
   const renderBreakdown = (title: string, entries: FeedbackBreakdownEntry[]): void => {
     lines.push(`${title}:`);
@@ -354,6 +376,35 @@ export function formatFeedbackReport(report: FeedbackReport): string {
   }
 
   return lines.join("\n");
+}
+
+/**
+ * `--repo` lets a crawl target a repo other than the local checkout, but
+ * `feedbackCommand` always loads `.expo-code-review/config.jsonc` from the
+ * LOCAL checkout — it never fetches or trusts a remote repo's config, since
+ * config from another repo is untrusted input (AGENTS.md). If the two repos
+ * differ, the local `commentTag` may not match how the target repo's bot
+ * comments were tagged, so `readState()` silently returns null for every PR
+ * and the crawl reports zero findings with no hint why. This only warns; it
+ * never changes which config is loaded. Pure — takes the already-resolved
+ * local repo (or `undefined` when resolution wasn't attempted/failed) so the
+ * decision is testable without `gh`.
+ * @ref LLP 0011#ecr-feedback-the-same-substrate-read-backwards — retroactive
+ * crawl reuses the local reporter's config; a repo mismatch there must be
+ * visible, not silently zeroed out.
+ */
+export function repoConfigMismatchWarning(
+  targetRepo: string,
+  localRepo: string | undefined,
+): string | undefined {
+  if (localRepo === undefined || localRepo === targetRepo) {
+    return undefined;
+  }
+  return (
+    `warning: scanning ${targetRepo}, but the local .expo-code-review config is from ${localRepo}. ` +
+    `commentTag and other settings may not match the target repo — zero matches below may mean a ` +
+    `config mismatch, not zero pushback.\n`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -522,7 +573,20 @@ export async function feedbackCommand(argv: string[]): Promise<void> {
 
   try {
     const config = await loadReviewConfig(cwd);
-    const repo = args.repo ?? (await resolveRepo(cwd));
+    let repo: string;
+    if (args.repo) {
+      repo = args.repo;
+      // Compare against the local checkout's own repo so a mismatch — the
+      // config we just loaded is ALWAYS the local one, never the target's —
+      // can be surfaced instead of silently zeroing out the crawl.
+      const localRepo = await resolveRepo(cwd).catch(() => undefined);
+      const warning = repoConfigMismatchWarning(repo, localRepo);
+      if (warning) {
+        process.stderr.write(warning);
+      }
+    } else {
+      repo = await resolveRepo(cwd);
+    }
     const { prs, failed } = await crawlFeedback(args, repo, config, cwd, (scanned, total) => {
       process.stderr.write(`  scanned PR ${scanned}/${total}…\n`);
     });

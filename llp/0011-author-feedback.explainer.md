@@ -187,6 +187,27 @@ even with zero results — is still fully authoritative for its own fingerprints
 [observed] ([ci.ts](../src/commands/ci.ts) `mergeAggregateFeedback`,
 `seamOkByScope`).
 
+That authoritative set is built by reading fresh records ONLY from `results` —
+this run's freshly-reviewed scopes — never from `finalResults`, the full set the
+aggregate comment renders (fresh scopes plus whatever `mergePartialAggregate`
+carried over from a `--scopes` partial run). A carried-over scope's entry in
+`finalResults` still embeds whatever `review.feedback` array a PAST full run
+wrote for it; reading records back out of that array would resurrect a stale
+per-scope copy over a newer top-level record — most concretely, a human
+`/undismiss` that already overrode the top-level record (pinning
+`unclearedByHuman: true`) on a fingerprint the carried scope's own embedded copy
+still remembers as applied. `mergeAggregateFeedback` therefore treats
+`finalResults` as read-only for resolving each kept record's CURRENT finding
+(the fingerprint-to-finding lookup for recomputing `applied`), never as a source
+of feedback records itself [observed] ([ci.ts](../src/commands/ci.ts)
+`mergeAggregateFeedback`, the `results.flatMap(scopeFeedbackRecords)` loop).
+This is also why the embedded state never lets a per-scope copy exist to be read
+back in the first place: `renderAggregateMarkdown` strips `feedback` off each
+scope's embedded `review` before writing state, since the top-level `feedback`
+array is the single source of truth and a per-scope duplicate is exactly the
+stale copy this paragraph guards against [observed] ([render.ts](../src/core/render.ts),
+the `stateScopes` map's `_feedback` destructure).
+
 ## Hard Floors in Code
 
 The prompt tells the model to be distrustful; the floor that actually protects a
@@ -270,7 +291,13 @@ branch; `renderMarkdown`'s `isDropped` treats `feedbackByFp.get(fp)?.applied`
 the same as an explicit dismissal). The aggregate renderer applies the same
 note and the same fold, per scope, keyed by the scope-namespaced id so a record
 never crosses scope boundaries [observed] ([render.ts](../src/core/render.ts)
-`renderAggregateMarkdown`, `feedbackById` keyed via `idOf`).
+`renderAggregateMarkdown`, `feedbackById` keyed via `idOf`). That fold opens
+whenever the scope has an active finding, a requalified one, OR a reply that
+suppressed one: a scope whose ONLY findings were cleared by replies (`shown`
+and `requalifiedAll` both empty) still opens with the audit note above the
+fold, never collapsed away as if the scope were silently clean
+[observed] ([render.ts](../src/core/render.ts) `renderAggregateMarkdown`, the
+`open` line's `replies.length > 0` disjunct).
 
 Feedback records also ride the embedded comment state exactly like dismissals:
 they are never trimmed away by the aggregate's size-based truncation loop, even
@@ -364,6 +391,26 @@ them, deliberately stricter than "recurred and got at least one reply" — a
 title answered once out of three occurrences is noise, not an established
 pattern worth surfacing [observed] ([feedback.ts](../src/commands/feedback.ts)
 `repeatOffenders`, the `answeredEveryTime` check).
+
+Because the crawl is retroactive and stateless, two failure modes could
+otherwise print identical output to "no pushback ever happened": scanning the
+wrong repo, and a `commentTag`/`--as` mismatch that makes every past comment
+invisible to `readState`/`replyComments`. `--repo` lets a crawl target a repo
+other than the local checkout, but `feedbackCommand` always loads
+`.expo-code-review/config.jsonc` from the LOCAL checkout — it never fetches or
+trusts a remote repo's config, since a repo's own config is untrusted input
+from the reviewed repo's perspective (see [LLP 0001](./0001-trust-model.principles.md)).
+When `--repo` differs from the local checkout's own repo,
+`repoConfigMismatchWarning` prints a warning naming both repos so a
+zero-findings crawl is not mistaken for zero pushback [observed]
+([feedback.ts](../src/commands/feedback.ts) `repoConfigMismatchWarning`,
+`feedbackCommand`). Separately, when every scanned PR came back with no bot
+comment at all, `allNullCrawlWarning` surfaces that as an explicit line in the
+totals section instead of leaving it as an easy-to-miss "0 with a bot comment"
+[observed] ([feedback.ts](../src/commands/feedback.ts) `allNullCrawlWarning`,
+`formatFeedbackReport`). Both are warnings only: neither changes which config
+loads or which PRs get scanned, matching this feature's fail-open-but-visible
+posture throughout.
 
 ## What Ships Dark, and Why That's the Point
 

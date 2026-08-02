@@ -339,6 +339,10 @@ function scopeFeedbackRecords(result: ScopeReviewResult): FeedbackRecord[] {
 // which is truthy, see scopeFeedbackRecords). This merge honors the same rule for the
 // aggregate comment: a scope's fresh records are authoritative for its findings'
 // fingerprints ONLY when its own seam actually returned records this run.
+// @ref LLP 0011#the-rebuttal-is-a-hypothesis — fresh records come ONLY from `results`,
+// never `finalResults`: a carried scope's `finalResults` entry can still embed a stale
+// per-scope `review.feedback` copy from a past full run, which would resurrect a record
+// a human /undismiss already overrode at the top level.
 /**
  * The aggregate comment's feedback records for comment:'single' mode, merging:
  * - fresh records for scopes whose seam succeeded this run (`review.feedback` is an
@@ -352,10 +356,13 @@ function scopeFeedbackRecords(result: ScopeReviewResult): FeedbackRecord[] {
  *
  * `applied` is recomputed on every kept record (idempotent for fresh ones) so a
  * carried/fallback record also honors a `dismiss` policy that changed since it was
- * stored. `results` is this run's freshly-reviewed scopes (used only to decide which
- * fingerprints are fresh-authoritative); `finalResults` is the full set the aggregate
- * comment renders (includes scopes carried over via `mergePartialAggregate`). Pure so
- * it's unit-testable.
+ * stored. `results` is this run's freshly-reviewed scopes — the SOLE source of fresh
+ * records AND the set whose fingerprints are fresh-authoritative; a carried scope's
+ * prior records already ride the `prior` top-level map, so reading records back out of
+ * `finalResults` would re-inject a stale per-scope copy (e.g. one a human /undismiss
+ * already overrode at the top level). `finalResults` is the full set the aggregate
+ * comment renders (includes scopes carried over via `mergePartialAggregate`), used only
+ * to resolve each kept record's current finding. Pure so it's unit-testable.
  */
 export function mergeAggregateFeedback(
   results: ScopeReviewResult[],
@@ -379,7 +386,10 @@ export function mergeAggregateFeedback(
   const byFp = new Map(
     prior.filter((record) => !freshFps.has(record.fp)).map((record) => [record.fp, record]),
   );
-  for (const record of finalResults.flatMap(scopeFeedbackRecords)) {
+  // Fresh records come only from THIS run's reviewed scopes; carried scopes'
+  // records already sit in `prior` above (a re-inject from `finalResults` would
+  // resurrect a stale per-scope copy over a newer top-level record).
+  for (const record of results.flatMap(scopeFeedbackRecords)) {
     byFp.set(record.fp, record);
   }
   const findingByFp = new Map(

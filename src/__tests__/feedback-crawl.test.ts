@@ -1,7 +1,13 @@
 import { test, expect } from "bun:test";
 
-import { crawlPrFeedback } from "../commands/feedback.js";
-import type { RawPr, PrFeedbackData } from "../commands/feedback.js";
+import {
+  crawlPrFeedback,
+  allNullCrawlWarning,
+  repoConfigMismatchWarning,
+  formatFeedbackReport,
+  aggregateFeedback,
+} from "../commands/feedback.js";
+import type { RawPr, PrFeedbackData, FeedbackTotals } from "../commands/feedback.js";
 
 const pr = (over: Partial<RawPr> = {}): RawPr => ({
   number: 1,
@@ -86,4 +92,77 @@ test("crawlPrFeedback: onProgress is called once per PR regardless of success or
     },
   );
   expect(calls).toBe(2);
+});
+
+// ---------------------------------------------------------------------------
+// feedback-repo-config: local config vs. --repo mismatch must not fail silent
+// ---------------------------------------------------------------------------
+
+const totals = (over: Partial<FeedbackTotals> = {}): FeedbackTotals => ({
+  prsScanned: 0,
+  prsWithComment: 0,
+  findingsSurfaced: 0,
+  findingsReplied: 0,
+  replyRate: 0,
+  ...over,
+});
+
+test("repoConfigMismatchWarning: no warning when --repo matches the local checkout's repo", () => {
+  expect(repoConfigMismatchWarning("o/r", "o/r")).toBeUndefined();
+});
+
+test("repoConfigMismatchWarning: no warning when local resolution failed/wasn't attempted", () => {
+  expect(repoConfigMismatchWarning("o/r", undefined)).toBeUndefined();
+});
+
+test("repoConfigMismatchWarning: warns when --repo differs from the local checkout's repo", () => {
+  const warning = repoConfigMismatchWarning("other/repo", "my/repo");
+  expect(warning).toBeDefined();
+  expect(warning).toContain("other/repo");
+  expect(warning).toContain("my/repo");
+  expect(warning).toContain("commentTag");
+});
+
+test("allNullCrawlWarning: no warning when nothing was scanned", () => {
+  expect(allNullCrawlWarning(totals({ prsScanned: 0, prsWithComment: 0 }))).toBeUndefined();
+});
+
+test("allNullCrawlWarning: no warning when at least one PR had a bot comment", () => {
+  expect(allNullCrawlWarning(totals({ prsScanned: 5, prsWithComment: 1 }))).toBeUndefined();
+});
+
+test("allNullCrawlWarning: warns when PRs were scanned but none had a bot comment", () => {
+  const warning = allNullCrawlWarning(totals({ prsScanned: 5, prsWithComment: 0 }));
+  expect(warning).toBeDefined();
+  expect(warning).toContain("0/5");
+});
+
+test("formatFeedbackReport: surfaces the all-null-crawl warning inline in the totals section", () => {
+  const report = aggregateFeedback([
+    {
+      number: 1,
+      title: "t",
+      url: "https://github.com/o/r/pull/1",
+      hasComment: false,
+      findings: [],
+      records: [],
+    },
+  ]);
+  const text = formatFeedbackReport(report);
+  expect(text).toContain("no PRs had a matching review comment");
+});
+
+test("formatFeedbackReport: omits the all-null-crawl warning when a PR had a comment", () => {
+  const report = aggregateFeedback([
+    {
+      number: 1,
+      title: "t",
+      url: "https://github.com/o/r/pull/1",
+      hasComment: true,
+      findings: [],
+      records: [],
+    },
+  ]);
+  const text = formatFeedbackReport(report);
+  expect(text).not.toContain("no PRs had a matching review comment");
 });

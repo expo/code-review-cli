@@ -615,7 +615,11 @@ export function renderAggregateMarkdown(
       requalifiedAll,
       requalifiedHidden,
     } of rendered) {
-      const open = shown.length > 0 || requalifiedAll.length > 0 ? " open" : "";
+      // @ref LLP 0011#suppression-is-never-silent — a reply-suppressed scope opens
+      // its fold so the audit note is visible, matching renderMarkdown and LLP 0010's
+      // visible-suppression rule (else a scope replies cleared reads as clean).
+      const open =
+        shown.length > 0 || requalifiedAll.length > 0 || replies.length > 0 ? " open" : "";
       const keptCount = shown.length + hidden;
       lines.push(
         `<details${open}>`,
@@ -683,22 +687,32 @@ export function renderAggregateMarkdown(
     // across re-renders. The per-scope data (`scopes`) plus a merged v1 `review`
     // keep both v2 and v1 consumers working.
     const stateScopes: ScopeReviewResult[] = rendered.map(
-      ({ result, shown, requalified, dropped }) => ({
-        scope: result.scope,
-        isDefault: result.isDefault,
-        // Requalified findings ride the embedded state (like dismissed ones) so a
-        // re-render (/dismiss) round-trips them and the addressed section persists.
-        // Under truncation they are trimmed exactly like `shown` — state bytes count
-        // toward the comment size, so an untrimmed list would defeat the cap loop.
-        review: {
-          ...result.review,
-          findings: [
-            ...shown,
-            ...requalified.map((entry) => entry.finding),
-            ...dropped.map((entry) => entry.finding),
-          ],
-        },
-      }),
+      ({ result, shown, requalified, dropped }) => {
+        // @ref LLP 0011#suppression-is-never-silent — strip any per-scope `feedback`
+        // a freshly-reviewed scope's ReviewRunResult carries: the top-level feedback
+        // array (reviewState below) is the single source of truth. A stale per-scope
+        // copy that survived here would be read back on a later carried-over run and
+        // could re-apply a record a human /undismiss already overrode at the top level.
+        const { feedback: _feedback, ...review } = result.review as CoordinatorOutput & {
+          feedback?: unknown;
+        };
+        return {
+          scope: result.scope,
+          isDefault: result.isDefault,
+          // Requalified findings ride the embedded state (like dismissed ones) so a
+          // re-render (/dismiss) round-trips them and the addressed section persists.
+          // Under truncation they are trimmed exactly like `shown` — state bytes count
+          // toward the comment size, so an untrimmed list would defeat the cap loop.
+          review: {
+            ...review,
+            findings: [
+              ...shown,
+              ...requalified.map((entry) => entry.finding),
+              ...dropped.map((entry) => entry.finding),
+            ],
+          },
+        };
+      },
     );
     const merged: CoordinatorOutput = {
       decision: worst,

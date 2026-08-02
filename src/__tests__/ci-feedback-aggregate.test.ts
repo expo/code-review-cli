@@ -128,6 +128,40 @@ test("a carried-over scope (partial --scopes run) not in `results` keeps its pri
   expect(merged.find((r) => r.fp === docsFp)?.by).toBe("docsAuthor");
 });
 
+test("a stale per-scope feedback copy on a carried-over scope never overrides a newer top-level record (undismiss revert)", () => {
+  // Finding stale-scope-feedback: a full run cleared finding F on scope www, storing
+  // R1 (applied:true) both at the top level AND inside www's per-scope review.feedback.
+  // A human /undismiss rewrote ONLY the top-level record to R2 (applied:false, pinned).
+  // A later `--scopes api` run carries www over via mergePartialAggregate — its review
+  // still holds the stale R1. The merge must keep R2 (from `prior`), never re-inject R1.
+  const wwwFinding = finding({ file: "www.ts", title: "Www issue" });
+  const wwwFp = scopedFingerprint("www", wwwFinding);
+  // Top-level prior state = the human-overridden record.
+  const r2 = record({
+    fp: wwwFp,
+    by: "author1",
+    applied: false,
+    unclearedByHuman: true,
+    maintainer: true,
+  });
+  const prior = [r2];
+  // This run freshly reviews only "api"; www is carried over and still embeds the
+  // stale R1 (applied:true, no pin) inside its per-scope review.feedback.
+  const apiFinding = finding({ file: "api.ts", title: "Api issue" });
+  const results = [seamOkScope("api", [apiFinding], [])];
+  const staleR1 = record({ fp: wwwFp, by: "author1", applied: true, maintainer: true });
+  const finalResults: ScopeReviewResult[] = [
+    ...results,
+    seamOkScope("www", [wwwFinding], [staleR1]),
+  ];
+  const merged = mergeAggregateFeedback(results, finalResults, prior, feedbackConfig);
+  const kept = merged.find((r) => r.fp === wwwFp);
+  expect(kept).toBeDefined();
+  // The human override survives: pinned and un-applied, not re-hidden by the stale copy.
+  expect(kept!.unclearedByHuman).toBe(true);
+  expect(kept!.applied).toBe(false);
+});
+
 test("applied is recomputed under the current config, not carried as a stored fact", () => {
   // A critical finding can never be cleared by a reply, even a stored `applied: true`
   // from a run under a looser config — the hard floor is re-derived every time.

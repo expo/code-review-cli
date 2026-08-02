@@ -136,6 +136,66 @@ test("aggregate: dismissed findings survive in embedded state so /undismiss can 
   expect(restored).not.toContain("Dismissed on this PR");
 });
 
+test("aggregate: a freshly-reviewed scope's per-scope feedback array is stripped from embedded state", () => {
+  // Finding stale-scope-feedback (render side): a freshly-reviewed scope's
+  // ReviewRunResult carries `review.feedback`. Embedding it verbatim would leave a
+  // stale per-scope copy that a later carried-over run reads back and re-applies. The
+  // top-level feedback array is the single source of truth, so the per-scope copy must
+  // not survive into the embedded state.
+  const f = finding({ title: "F", evidence: "const perScopeFeedbackStrip = 1;" });
+  const fp = scopedFingerprint("www", f);
+  const staleRecord = { fp, by: "octocat", commentId: 9, maintainer: true, applied: false };
+  const results: ScopeReviewResult[] = [
+    {
+      scope: "www",
+      isDefault: false,
+      review: {
+        decision: "approve",
+        findings: [f],
+        summary: "s",
+        incomplete: [],
+        feedback: [staleRecord],
+      } as CoordinatorOutput,
+    },
+  ];
+  const body = renderAggregateMarkdown(results, "tag", [], undefined, undefined, [staleRecord]);
+  const state = parseReviewState(body, "tag")!;
+  const wwwScope = state.scopes!.find((s) => s.scope === "www")!;
+  expect((wwwScope.review as { feedback?: unknown }).feedback).toBeUndefined();
+  // The record still rides the top-level feedback array (the single source of truth).
+  expect(state.feedback).toHaveLength(1);
+});
+
+test("aggregate: a scope whose reply cleared every finding opens its fold (visible suppression)", () => {
+  // Finding aggregate-audit-fold: when replies suppress a scope's only finding, shown
+  // and requalifiedAll are both empty. The fold must still open so the audit note is
+  // visible, matching renderMarkdown and LLP 0010's visible-suppression rule.
+  const f = finding({ title: "Cleared by reply", evidence: "const replyClearedThing = 1;" });
+  const fp = scopedFingerprint("www", f);
+  const body = renderAggregateMarkdown(
+    [scope("www", false, { findings: [f] })],
+    "tag",
+    [],
+    undefined,
+    undefined,
+    [
+      {
+        fp,
+        by: "octocat",
+        commentId: 9,
+        url: "https://github.com/o/r/pull/1#issuecomment-9",
+        maintainer: true,
+        applied: true,
+      },
+    ],
+  );
+  // The finding is suppressed (moved to Dismissed); the scope shows no active finding.
+  expect(body).toContain("<summary>www — Approve (0)</summary>");
+  // ...but the fold OPENS so the audit note is above-the-fold, not collapsed away.
+  expect(body).toMatch(/<details open>\n<summary>www —/);
+  expect(body).toContain("have an author response");
+});
+
 test('aggregate: oversized findings truncate with a "+N more" note and stay under 65k', () => {
   const many = Array.from({ length: 400 }, (_, i) =>
     finding({
