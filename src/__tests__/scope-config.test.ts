@@ -93,22 +93,22 @@ test("loadScopeConfig: config '.' reuses the root config, auth from loadAuthFrom
 
 test("loadScopeConfig: nested scope reads its own roster/prompts; auth forced from root", async () => {
   const root = await makeRoot('{ "auth": { "mode": "oauth", "tokenEnv": "ROOT_TOKEN" } }');
-  await writeConfigDir(path.join(root, "server", "www", CONFIG_DIRNAME), {
+  await writeConfigDir(path.join(root, "apps", "api", CONFIG_DIRNAME), {
     // No auth here; scope-specific model + noise override the root.
     config:
-      '{ "model": "anthropic/claude-opus-5", "noise": { "additionalIgnores": ["www/gen/**"] } }',
+      '{ "model": "anthropic/claude-opus-5", "noise": { "additionalIgnores": ["api/gen/**"] } }',
     agents: { style: agent("style") },
   });
   const manifest = manifestOf({
     scopes: [
       { name: "default", paths: ["**/*"], config: "." },
-      { name: "www", paths: ["server/www/**"], config: "server/www" },
+      { name: "api", paths: ["apps/api/**"], config: "apps/api" },
     ],
   });
   const rootConfig = await loadReviewConfig(root);
   const scoped = await loadScopeConfig(root, manifest.scopes[1]!, manifest, rootConfig);
   expect(scoped.agents.some((a) => a.id === "style")).toBe(true);
-  expect(scoped.noise.additionalIgnores).toEqual(["www/gen/**"]);
+  expect(scoped.noise.additionalIgnores).toEqual(["api/gen/**"]);
   expect(scoped.agents.find((a) => a.id === "style")!.model).toBe("anthropic/claude-opus-5");
   // auth is forced from the root even though the scope config declares none.
   expect(scoped.auth[0]?.tokenEnv).toBe("ROOT_TOKEN");
@@ -159,13 +159,13 @@ test("loadAuthFromRoot: manifest with defaults but no auth key keeps the root au
 
 test("loadScopeConfig: enforceAgents injects the ROOT agent with alwaysRun", async () => {
   const root = await makeRoot();
-  await writeConfigDir(path.join(root, "www", CONFIG_DIRNAME), {
+  await writeConfigDir(path.join(root, "api", CONFIG_DIRNAME), {
     config: "{}",
     agents: { style: agent("style") }, // no security
   });
   const manifest = manifestOf({
     defaults: { enforceAgents: ["security"] },
-    scopes: [{ name: "www", paths: ["www/**"], config: "www" }],
+    scopes: [{ name: "api", paths: ["api/**"], config: "api" }],
   });
   const rootConfig = await loadReviewConfig(root);
   const scoped = await loadScopeConfig(root, manifest.scopes[0]!, manifest, rootConfig);
@@ -177,14 +177,14 @@ test("loadScopeConfig: enforceAgents injects the ROOT agent with alwaysRun", asy
 
 test("loadScopeConfig: a scope shadowing the enforced id gets the ROOT version (risk 11)", async () => {
   const root = await makeRoot();
-  await writeConfigDir(path.join(root, "www", CONFIG_DIRNAME), {
+  await writeConfigDir(path.join(root, "api", CONFIG_DIRNAME), {
     config: "{}",
     // The scope defines its OWN weaker security agent — must be overridden.
     agents: { security: agent("weak-security", ""), style: agent("style") },
   });
   const manifest = manifestOf({
     defaults: { enforceAgents: ["security"] },
-    scopes: [{ name: "www", paths: ["www/**"], config: "www" }],
+    scopes: [{ name: "api", paths: ["api/**"], config: "api" }],
   });
   const rootConfig = await loadReviewConfig(root);
   const scoped = await loadScopeConfig(root, manifest.scopes[0]!, manifest, rootConfig);
@@ -231,12 +231,12 @@ test("config-dir override composes: root config + routing.jsonc from override, s
     path.join(root, "altroot", "routing.jsonc"),
     `{ "scopes": [
        { "name": "default", "paths": ["**/*"], "config": "." },
-       { "name": "www", "paths": ["server/www/**"], "config": "server/www" }
+       { "name": "api", "paths": ["apps/api/**"], "config": "apps/api" }
      ] }`,
     "utf8",
   );
   // The scope subtree lives at the REPO ROOT, not under the override dir.
-  await writeConfigDir(path.join(root, "server", "www", CONFIG_DIRNAME), {
+  await writeConfigDir(path.join(root, "apps", "api", CONFIG_DIRNAME), {
     config: '{ "model": "anthropic/claude-opus-5" }',
     agents: { style: agent("style") },
   });
@@ -244,7 +244,7 @@ test("config-dir override composes: root config + routing.jsonc from override, s
   // routing.jsonc is read from the override dir (the default tree's is absent).
   const manifest = await loadRoutingManifest(root, { configDir: "altroot" });
   expect(manifest).not.toBeNull();
-  expect(manifest!.scopes.map((s) => s.name)).toEqual(["default", "www"]);
+  expect(manifest!.scopes.map((s) => s.name)).toEqual(["default", "api"]);
 
   // The root config artifacts follow the override.
   const rootConfig = await loadReviewConfig(root, { configDir: "altroot" });
@@ -254,11 +254,11 @@ test("config-dir override composes: root config + routing.jsonc from override, s
   const def = await loadScopeConfig(root, manifest!.scopes[0]!, manifest!, rootConfig);
   expect(def.commentTag).toBe("alt-root-tag");
 
-  // The nested scope is still resolved from the repo root (server/www), NOT the
+  // The nested scope is still resolved from the repo root (apps/api), NOT the
   // override dir — the override must not relocate the scopes themselves.
-  const www = await loadScopeConfig(root, manifest!.scopes[1]!, manifest!, rootConfig);
-  expect(www.agents.some((a) => a.id === "style")).toBe(true);
-  expect(www.agents.find((a) => a.id === "style")!.model).toBe("anthropic/claude-opus-5");
+  const api = await loadScopeConfig(root, manifest!.scopes[1]!, manifest!, rootConfig);
+  expect(api.agents.some((a) => a.id === "style")).toBe(true);
+  expect(api.agents.find((a) => a.id === "style")!.model).toBe("anthropic/claude-opus-5");
 });
 
 test("loadReviewConfig: ECR_CONFIG_DIR loads from the alternate dir; unset → .expo-code-review (BACKCOMPAT)", async () => {

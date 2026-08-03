@@ -37,14 +37,14 @@ test("loadScopeConfig: nested scope inherits the ROOT feedback and stack config"
     }`,
     agents: { security: agent("security") },
   });
-  await writeConfigDir(path.join(root, "server", "www", CONFIG_DIRNAME), {
+  await writeConfigDir(path.join(root, "apps", "api", CONFIG_DIRNAME), {
     config: "{}",
     agents: { style: agent("style") },
   });
   const manifest = RoutingManifestSchema.parse({
     scopes: [
       { name: "default", paths: ["**/*"], config: "." },
-      { name: "www", paths: ["server/www/**"], config: "server/www" },
+      { name: "api", paths: ["apps/api/**"], config: "apps/api" },
     ],
   });
   const rootConfig = await loadReviewConfig(root);

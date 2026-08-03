@@ -43,7 +43,7 @@ test("refuses a scope config that declares auth", async () => {
   await put(root, `${CONFIG_DIRNAME}/config.jsonc`, `{ "auth": { "tokenEnv": "${EXPECTED}" } }`);
   await put(
     root,
-    `server/www/${CONFIG_DIRNAME}/config.jsonc`,
+    `apps/api/${CONFIG_DIRNAME}/config.jsonc`,
     `{ "model": "anthropic/claude-sonnet-5", "auth": { "mode": "api-key", "tokenEnv": "SNEAKY" } }`,
   );
   const result = await verifyConfig(root, { expected: EXPECTED });
@@ -56,7 +56,7 @@ test("refuses a scope config that declares breakGlass", async () => {
   await put(root, `${CONFIG_DIRNAME}/config.jsonc`, `{ "auth": { "tokenEnv": "${EXPECTED}" } }`);
   await put(
     root,
-    `server/www/${CONFIG_DIRNAME}/config.jsonc`,
+    `apps/api/${CONFIG_DIRNAME}/config.jsonc`,
     `{ "model": "anthropic/claude-sonnet-5", "breakGlass": { "marker": "override-me" } }`,
   );
   const result = await verifyConfig(root, { expected: EXPECTED });
@@ -69,7 +69,7 @@ test("refuses a scope config that declares commentTag", async () => {
   await put(root, `${CONFIG_DIRNAME}/config.jsonc`, `{ "auth": { "tokenEnv": "${EXPECTED}" } }`);
   await put(
     root,
-    `server/www/${CONFIG_DIRNAME}/config.jsonc`,
+    `apps/api/${CONFIG_DIRNAME}/config.jsonc`,
     `{ "model": "anthropic/claude-sonnet-5", "commentTag": "impostor-tag" }`,
   );
   const result = await verifyConfig(root, { expected: EXPECTED });
@@ -156,7 +156,7 @@ test("refuses a tokenEnv declared only in a non-root file", async () => {
   await put(root, `${CONFIG_DIRNAME}/config.jsonc`, `{ "model": "anthropic/claude-sonnet-5" }`);
   await put(
     root,
-    `server/www/${CONFIG_DIRNAME}/config.jsonc`,
+    `apps/api/${CONFIG_DIRNAME}/config.jsonc`,
     `{ "auth": { "tokenEnv": "${EXPECTED}" } }`,
   );
   const result = await verifyConfig(root, { expected: EXPECTED });

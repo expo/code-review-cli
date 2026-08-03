@@ -54,8 +54,8 @@ test("RoutingManifestSchema: rejects duplicate config dirs (after normalize)", (
   expect(() =>
     RoutingManifestSchema.parse({
       scopes: [
-        { name: "a", paths: ["x/**"], config: "server/www" },
-        { name: "b", paths: ["y/**"], config: "server/www/" },
+        { name: "a", paths: ["x/**"], config: "apps/api" },
+        { name: "b", paths: ["y/**"], config: "apps/api/" },
       ],
     }),
   ).toThrow(/duplicate scope config dir/);
@@ -148,36 +148,36 @@ test("resolveScopes: single catch-all takes everything, unmatched empty", () => 
 test("resolveScopes: LAST matching scope wins", () => {
   const m = manifest([
     { name: "default", paths: ["**/*"], config: "." },
-    { name: "www", paths: ["server/www/**"], config: "server/www" },
+    { name: "api", paths: ["apps/api/**"], config: "apps/api" },
   ]);
-  const r = resolveScopes(m, ["server/www/app.ts", "other.ts"]);
-  expect(r.active.find((s) => s.name === "www")!.files).toEqual(["server/www/app.ts"]);
+  const r = resolveScopes(m, ["apps/api/app.ts", "other.ts"]);
+  expect(r.active.find((s) => s.name === "api")!.files).toEqual(["apps/api/app.ts"]);
   expect(r.active.find((s) => s.name === "default")!.files).toEqual(["other.ts"]);
 });
 
 test("resolveScopes: reversing manifest order flips the winner", () => {
   const m = manifest([
-    { name: "www", paths: ["server/www/**"], config: "server/www" },
+    { name: "api", paths: ["apps/api/**"], config: "apps/api" },
     { name: "default", paths: ["**/*"], config: "." },
   ]);
-  const r = resolveScopes(m, ["server/www/app.ts"]);
-  expect(r.active.find((s) => s.name === "default")!.files).toEqual(["server/www/app.ts"]);
-  expect(r.active.some((s) => s.name === "www")).toBe(false);
+  const r = resolveScopes(m, ["apps/api/app.ts"]);
+  expect(r.active.find((s) => s.name === "default")!.files).toEqual(["apps/api/app.ts"]);
+  expect(r.active.some((s) => s.name === "api")).toBe(false);
 });
 
 test("resolveScopes: reports overlaps with matched list + winner", () => {
   const m = manifest([
     { name: "default", paths: ["**/*"], config: "." },
-    { name: "www", paths: ["server/www/**"], config: "server/www" },
+    { name: "api", paths: ["apps/api/**"], config: "apps/api" },
   ]);
-  const r = resolveScopes(m, ["server/www/app.ts"]);
+  const r = resolveScopes(m, ["apps/api/app.ts"]);
   expect(r.overlaps).toEqual([
-    { file: "server/www/app.ts", matched: ["default", "www"], winner: "www" },
+    { file: "apps/api/app.ts", matched: ["default", "api"], winner: "api" },
   ]);
 });
 
 test("resolveScopes: no catch-all leaves unmatched files unrouted", () => {
-  const m = manifest([{ name: "www", paths: ["server/www/**"], config: "server/www" }]);
+  const m = manifest([{ name: "api", paths: ["apps/api/**"], config: "apps/api" }]);
   const r = resolveScopes(m, ["README.md"]);
   expect(r.active).toEqual([]);
   expect(r.unmatched).toEqual(["README.md"]);
@@ -216,8 +216,8 @@ test("formatOwnerTable: one row per file, capped with a +N more tail", () => {
 
 test("scopedCommentTag + marker isolation: root marker is NOT a substring of a scoped marker", () => {
   const root = "expo-ai-code-reviewer";
-  const scoped = scopedCommentTag(root, "www");
-  expect(scoped).toBe("expo-ai-code-reviewer:www");
+  const scoped = scopedCommentTag(root, "api");
+  expect(scoped).toBe("expo-ai-code-reviewer:api");
   expect(commentMarker(scoped).includes(commentMarker(root))).toBe(false);
   expect(commentMarker(root).includes(commentMarker(scoped))).toBe(false);
 });
@@ -232,12 +232,12 @@ test("appendScopeEntry: inserts before the closing ] preserving comments", () =>
   ]
 }`;
   const out = appendScopeEntry(raw, {
-    name: "server-www",
-    paths: ["server/www/**"],
-    config: "server/www",
+    name: "apps-api",
+    paths: ["apps/api/**"],
+    config: "apps/api",
   })!;
   expect(out).toContain("// keep me");
-  expect(out).toContain('"name": "server-www"');
+  expect(out).toContain('"name": "apps-api"');
   // Still valid JSON after stripping comments (comma inserted correctly).
   expect(() => RoutingManifestSchema.parse(JSON.parse(out.replace(/\/\/.*$/gm, "")))).not.toThrow();
 });
@@ -249,9 +249,9 @@ test("appendScopeEntry: comma lands after the entry, not inside a trailing line 
   ]
 }`;
   const out = appendScopeEntry(raw, {
-    name: "server-www",
-    paths: ["server/www/**"],
-    config: "server/www",
+    name: "apps-api",
+    paths: ["apps/api/**"],
+    config: "apps/api",
   })!;
   expect(out).toContain('"config": "." }, // the default scope');
   // Still valid JSON after stripping comments (comma NOT swallowed by the comment).
@@ -265,15 +265,15 @@ test("appendScopeEntry: handles a trailing comma plus block comment after the la
     { "name": "default", "paths": ["**/*"], "config": "." }, /* keep */
   ]
 }`;
-  const out = appendScopeEntry(raw, { name: "www", paths: ["www/**"], config: "www" })!;
+  const out = appendScopeEntry(raw, { name: "api", paths: ["api/**"], config: "api" })!;
   // No double comma; still parses after stripping both comment styles.
   const stripped = stripTrailingCommas(stripJsonComments(out));
   expect(() => RoutingManifestSchema.parse(JSON.parse(stripped))).not.toThrow();
 });
 
 test("appendScopeEntry: idempotent on an already-present name", () => {
-  const raw = `{ "scopes": [ { "name": "www", "paths": ["www/**"], "config": "www" } ] }`;
-  expect(appendScopeEntry(raw, { name: "www", paths: ["www/**"], config: "www" })).toBe(raw);
+  const raw = `{ "scopes": [ { "name": "api", "paths": ["api/**"], "config": "api" } ] }`;
+  expect(appendScopeEntry(raw, { name: "api", paths: ["api/**"], config: "api" })).toBe(raw);
 });
 
 test("appendScopeEntry: returns null when there is no scopes array", () => {
@@ -303,8 +303,8 @@ test("scopedFingerprint: null scope === fingerprintFinding (BACKCOMPAT carry-ove
 test("scopedFingerprint: scoped ids are hex-only, same length, and differ per scope", () => {
   const f = finding();
   const plain = fingerprintFinding(f);
-  const a = scopedFingerprint("www", f);
-  const b = scopedFingerprint("website", f);
+  const a = scopedFingerprint("api", f);
+  const b = scopedFingerprint("web", f);
   expect(a).toMatch(/^[a-f0-9]+$/);
   expect(a.length).toBe(plain.length);
   expect(a).not.toBe(plain);

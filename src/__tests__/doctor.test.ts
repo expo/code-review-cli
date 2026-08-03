@@ -47,7 +47,7 @@ test("resolveEngines: a scope selecting an anthropic model adds the Claude Code 
   const root = await makeOpencodeRoot();
   // A nested scope pins an anthropic/… model — the scoped review needs the Claude
   // CLI/login even though the OpenCode-only root config never touches it.
-  await writeConfigDir(path.join(root, "server", "www", CONFIG_DIRNAME), {
+  await writeConfigDir(path.join(root, "apps", "api", CONFIG_DIRNAME), {
     config: '{ "model": "anthropic/claude-opus-5" }',
     agents: { style: agent("style") },
   });
@@ -55,7 +55,7 @@ test("resolveEngines: a scope selecting an anthropic model adds the Claude Code 
     path.join(root, CONFIG_DIRNAME, "routing.jsonc"),
     `{ "scopes": [
        { "name": "default", "paths": ["**/*"], "config": "." },
-       { "name": "www", "paths": ["server/www/**"], "config": "server/www" }
+       { "name": "api", "paths": ["apps/api/**"], "config": "apps/api" }
      ] }`,
     "utf8",
   );
@@ -63,7 +63,7 @@ test("resolveEngines: a scope selecting an anthropic model adds the Claude Code 
   const manifest = await loadRoutingManifest(root);
   const engines = await resolveEngines(root, rootConfig, manifest);
   // Without folding scopes in, this would be opencode-only and doctor would skip the
-  // Claude CLI/login checks the www scope's review actually needs.
+  // Claude CLI/login checks the api scope's review actually needs.
   expect(engines.has("claude-code")).toBe(true);
   expect(engines.has("opencode")).toBe(true);
 });
