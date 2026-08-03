@@ -264,6 +264,25 @@ test("routing: a scope with no setup dir, an unknown enforced agent, and a dead 
   expect(problems.some((p) => p.includes("matches no file in the repo: nope/**"))).toBe(true);
 });
 
+test("enforceAgents is judged against the manifest's own setup dir, not the code tree", async () => {
+  // The `ecr ci` shape: setup from a trusted base-ref checkout, code from the PR head.
+  const code = await makeRepo({ "src/a.ts": "export const a = 1;\n" });
+  const trustedBase = await makeRepo({
+    ".expo-code-review/agents/security.md": "# Security\n",
+    ".expo-code-review/routing.jsonc": JSON.stringify({
+      defaults: { enforceAgents: ["security"] },
+      scopes: [{ name: "default", paths: ["**/*"], config: "." }],
+    }),
+  });
+  const report = await checkConfigRefs({
+    root: code,
+    setupDirs: [path.join(trustedBase, ".expo-code-review")],
+  });
+  expect(report.problems.filter((problem) => problem.problem.includes("enforceAgents"))).toEqual(
+    [],
+  );
+});
+
 test("scope setup dirs are swept too, and dot dirs (other worktrees) are not", async () => {
   const root = await makeRepo(
     setup({

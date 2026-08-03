@@ -678,7 +678,6 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
   const root = path.resolve(options.root);
   const index: RepoIndex = { root, files: await listRepoFiles(root) };
   const dirs = options.setupDirs ?? (await discoverSetupDirs(root));
-  const rootAgents = await agentIds(path.join(root, CONFIG_DIRNAME));
 
   const problems: RefProblem[] = [];
   const refs: ParsedRef[] = [];
@@ -791,7 +790,11 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
 
     const routing = path.join(dir, ROUTING_FILENAME);
     if ((await pathKind(routing)) === "file") {
-      problems.push(...(await checkRoutingManifest(routing, index, rootAgents)));
+      // The roster comes from the dir that OWNS the manifest, never from `root`:
+      // under `ecr ci` the setup is a trusted base-ref checkout while `root` is the PR
+      // head tree, so reading `root/.expo-code-review/agents` would judge enforceAgents
+      // against a different (or absent) roster than the one actually loaded.
+      problems.push(...(await checkRoutingManifest(routing, index, await agentIds(dir))));
     }
   }
 
