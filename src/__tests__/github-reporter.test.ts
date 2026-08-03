@@ -76,8 +76,8 @@ test("selectOwnComments: preserves order (newest-last) among our own comments", 
 
 // Finding 86bba462357c: `feedback.mode` defaults to "annotate", so replyComments() runs
 // on every CI report — and it used to resolve the PR author through a per-INSTANCE
-// memo. Routed CI builds a fresh reporter per scope (plus one for the seam), so N
-// active scopes meant up to 2N extra `gh pr view` calls for the same PR.
+// memo. Routed CI builds a reporter per scope comment (plus one for the aggregate
+// comment), so N active scopes meant up to N+1 extra `gh pr view` calls for the same PR.
 test("sharedPrAuthor: one lookup per PR, shared across reporter instances", async () => {
   let calls = 0;
   const key = prAuthorCacheKey("owner/repo", 7, "/tmp/checkout");

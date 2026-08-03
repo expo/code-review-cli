@@ -279,9 +279,21 @@ model could be argued out of. `feedbackApplied` is the single function that
 decides whether a reply clears a finding, and it returns `false` unconditionally
 for `finding.severity === "critical"` and for any finding whose category is in
 `HARD_FLOOR_CATEGORIES` (`secrets`, `security`) — a constant the configured
-`protectedCategories` can only ADD to, never shrink, since both checks run
-independently [observed] ([adjudicate.ts](../src/core/adjudicate.ts)
-`HARD_FLOOR_CATEGORIES`, `feedbackApplied`). Above those floors, dismissal is
+`protectedCategories` can only ADD to, never shrink, since that check runs
+independently of the floor [observed] ([adjudicate.ts](../src/core/adjudicate.ts)
+`HARD_FLOOR_CATEGORIES`, `hardFloored`, `feedbackApplied`). The floor is also the
+reason such a reply is never JUDGED: `hardFloored` is one function read by both
+`feedbackApplied` and `adjudicateFeedback`'s `toJudge` filter, so the two can never
+drift into a model call whose verdict the floor would then discard — a call that also
+consumed one of the `maxAdjudications` slots a clearable finding's reply could have
+used. The skip is deliberately NOT counted in `skipped`: that figure surfaces as "N
+left unjudged over the cap", and raising the cap would buy back no coverage here,
+so counting it would report a gap that does not exist. The config-tunable exclusions
+(`protectedCategories`, `dismiss`) are deliberately left IN the judged set — they can
+change, and `applied` is recomputed under the current config on every run, so a stored
+verdict there becomes useful the moment a repo widens its policy
+[observed] ([adjudicate.ts](../src/core/adjudicate.ts) `adjudicateFeedback`, the
+`!hardFloored(item.finding)` term of `toJudge`). Above those floors, dismissal is
 gated by `dismiss` alone: `"never"` (the shipped default) short-circuits to
 `false` before any floor is even checked, so nothing clears a finding until a
 repo explicitly opts in. `mode` is deliberately a separate axis — it selects
@@ -310,9 +322,9 @@ clears" rather than open [observed] ([responses.ts](../src/core/responses.ts)
 
 Re-deriving it costs a `gh pr view`, and `mode: "annotate"` is the shipped
 default, so that call would otherwise land on EVERY report of every adopting
-repo — multiplied per scope in routed CI, which builds a fresh reporter per
-scope plus one for the seam. Two things bound it, and neither weakens the fail-
-closed rule. The flag gates exactly one branch, so it is resolved only when that
+repo — multiplied per scope in routed CI, which builds one reporter per scope
+comment plus one for the aggregate comment. Two things bound it, and neither weakens
+the fail-closed rule. The flag gates exactly one branch, so it is resolved only when that
 branch is reachable: `feedbackNeedsPrAuthor` returns true for
 `dismiss: "adjudicated"` and nothing else, and a skipped lookup reads the same
 as a failed one — `author: false`, clears nothing
@@ -337,6 +349,17 @@ settles to null (or rejects), leaving neither a poisoned result nor a dangling
 in-flight entry, while the entry is still what concurrent scopes join
 [observed] ([github.ts](../src/reporters/github.ts) `sharedPrAuthor`, the
 `forget` helper).
+
+The other half of that cost is per instance and stays per instance: the paginated
+comment list (a 30s TTL cache) and the resolved bot login. So the rule in `ci.ts` is
+**one reporter per comment, not one per call site** — a scope's feedback seam reads the
+very comment that scope's review is posted to, so a second instance for the same tag
+re-fetches the identical list and re-resolves the login. `comment:'single'` mode shares
+`singleModeReporter` across every scope's seam and the aggregate post; per-scope mode
+memoizes one reporter per scope name and uses it for both that scope's seam and its
+`report()` [observed] ([ci.ts](../src/commands/ci.ts) `singleModeReporter`,
+`memoizeByScope`). The link context the report needs is inert for the seam
+(`matchAdjudicationItems` renders nothing), so one link-carrying reporter serves both.
 
 `adjudicateFeedback` re-derives `applied` for **every** record on every call —
 including ones a model never touched this run (already-decided verdicts from a

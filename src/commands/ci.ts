@@ -322,6 +322,27 @@ function adjudicationSeam(
   };
 }
 
+// @ref LLP 0011#hard-floors-in-code [constrained-by] — one reporter per comment, so the
+// PR-author lookup and the paginated comment list are fetched once per scope, not twice
+/**
+ * Memoize one value per scope name. Used for the per-scope GitHubReporter: a scope's
+ * feedback seam reads the very comment that scope's report writes, and each reporter
+ * instance holds its own comment-list TTL cache and bot-login memo, so a second instance
+ * for the same comment tag re-fetches the identical paginated comment list and re-resolves
+ * the login. Exported so that sharing is unit-testable.
+ */
+export function memoizeByScope<T>(build: (scope: string) => T): (scope: string) => T {
+  const cache = new Map<string, T>();
+  return (scope) => {
+    let value = cache.get(scope);
+    if (value === undefined) {
+      value = build(scope);
+      cache.set(scope, value);
+    }
+    return value;
+  };
+}
+
 /**
  * A freshly-reviewed scope's adjudicated feedback records, already keyed under the
  * scope-namespaced ids the aggregate comment renders (the single-mode seam builds them
@@ -794,6 +815,15 @@ async function runRoutedCi(
   // the bot login once per scope for the identical comment.
   const singleModeReporter = mode === "single" ? reporterFor(rootTag, true) : undefined;
 
+  // Per-scope mode has the same property, one comment tag at a time: a scope's feedback
+  // seam reads the very comment that scope's review is posted to, so both must use the
+  // same instance or each scope re-fetches its comment list and re-resolves the bot
+  // login. `withLink` is inert for the seam (matchAdjudicationItems renders nothing), so
+  // one link-carrying reporter serves both uses.
+  const scopeReporter = memoizeByScope((name: string) =>
+    reporterFor(scopedCommentTag(rootTag, name), true),
+  );
+
   const results: ScopeReviewResult[] = [];
   for (const scope of active) {
     const scopeDef = manifest.scopes.find((entry) => entry.name === scope.name)!;
@@ -822,9 +852,7 @@ async function runRoutedCi(
       const feedbackSeam = feedbackNeedsRunSeam(rootConfig.feedback)
         ? adjudicationSeam(
             rootConfig,
-            mode === "single"
-              ? singleModeReporter!
-              : reporterFor(scopedCommentTag(rootTag, scope.name)),
+            mode === "single" ? singleModeReporter! : scopeReporter(scope.name),
             mode === "single"
               ? (finding) => scopedFingerprint(isDefault ? null : scope.name, finding)
               : undefined,
@@ -914,7 +942,9 @@ async function runRoutedCi(
       if (scopesFilter && !scopesFilter.includes(scope.name)) {
         continue;
       }
-      const reporter = reporterFor(scopedCommentTag(rootTag, scope.name), true);
+      // The same instance the scope's feedback seam already used (its comment-list and
+      // login caches are per-instance), so the report reuses that fetch.
+      const reporter = scopeReporter(scope.name);
       const result = results.find((entry) => entry.scope === scope.name);
       if (result) {
         await reporter.report(result.review, (result.review as ReviewRunResult).feedback);

@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 
-import { mergeAggregateFeedback } from "../commands/ci.js";
+import { memoizeByScope, mergeAggregateFeedback } from "../commands/ci.js";
 import type { ScopeReviewResult } from "../core/render.js";
 import type { ReviewRunResult } from "../core/review.js";
 import { scopedFingerprint } from "../core/schema.js";
@@ -301,4 +301,26 @@ test("a maintainer's newer reply lifts the pin on the aggregate path too", () =>
   const kept = merged.find((r) => r.fp === fp)!;
   expect(kept.unclearedByHuman).toBeUndefined();
   expect(kept.applied).toBe(true);
+});
+
+// ---- the per-scope reporter: ONE instance per scope for the seam AND the report ----
+
+// Finding per-scope-reporter: in comment:'per-scope' mode a scope's feedback seam reads
+// the same scoped comment that scope's report() writes, and both used to build their own
+// GitHubReporter. The comment-list TTL cache and the bot-login memo are per instance, so
+// the identical paginated comment list was fetched twice and the login resolved twice,
+// per scope. comment:'single' mode already shared one reporter for both.
+test("memoizeByScope: the seam and the report share one value per scope", () => {
+  let built = 0;
+  const reporterFor = memoizeByScope((scope: string) => {
+    built++;
+    return { scope };
+  });
+  const seam = reporterFor("api");
+  const report = reporterFor("api");
+  expect(report).toBe(seam);
+  expect(built).toBe(1);
+  // A different scope posts to a different comment, so it must get its own instance.
+  expect(reporterFor("web")).not.toBe(seam);
+  expect(built).toBe(2);
 });

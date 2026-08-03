@@ -185,14 +185,52 @@ test("feedbackApplied: an unclearedByHuman record never clears (a human restored
 
 // ---- adjudicateFeedback: recompute without model calls ----
 
+// A record every toJudge gate lets through (the PR author, cites the id, no prior
+// verdict, no `/undismiss` pin) paired with real reply text. Each test below then varies
+// exactly ONE thing, so the gate it names is the only reason nothing is judged — a
+// fixture excluded by a second gate would stay green with the named gate deleted.
+const eligibleRecord = (over: Partial<FeedbackRecord> = {}): FeedbackRecord =>
+  record({ author: true, citedId: true, ...over });
+const REBUTTAL = "false positive, sanitizePath runs below";
+
 test("adjudicateFeedback: mode:'off' makes no model calls and applies nothing", async () => {
   const items: AdjudicationItem[] = [
-    { finding: finding(), record: record({ maintainer: true }), replyText: "trust me" },
+    { finding: finding(), record: eligibleRecord(), replyText: REBUTTAL },
   ];
   const out = await adjudicateFeedback(noHandle, items, config({ mode: "off" }));
   expect(out.adjudicated).toBe(0);
   expect(out.skipped).toBe(0);
   expect(out.failed).toBe(0);
+  expect(out.records[0]!.applied).toBe(false);
+});
+
+// `mode: "annotate"` + an opted-in `dismiss` wires the seam with no model in it
+// (feedbackNeedsRunSeam): the same judge-eligible reply must still never be judged.
+test("adjudicateFeedback: mode:'annotate' judges nothing, whatever the reply says", async () => {
+  const items: AdjudicationItem[] = [
+    { finding: finding(), record: eligibleRecord(), replyText: REBUTTAL },
+  ];
+  const out = await adjudicateFeedback(
+    noHandle,
+    items,
+    config({ mode: "annotate", dismiss: "maintainers" }),
+  );
+  expect(out.adjudicated).toBe(0);
+  expect(out.skipped).toBe(0);
+  expect(out.failed).toBe(0);
+  expect(out.records[0]!.applied).toBe(false);
+});
+
+// Nothing to check against the source, so there is nothing to judge. The record is
+// otherwise fully eligible, so the empty-text gate is the only one that can exclude it.
+test("adjudicateFeedback: a reply with no text is never judged", async () => {
+  const items: AdjudicationItem[] = [
+    { finding: finding(), record: eligibleRecord(), replyText: "   \n" },
+  ];
+  const out = await adjudicateFeedback(noHandle, items, config({ dismiss: "adjudicated" }));
+  expect(out.adjudicated).toBe(0);
+  expect(out.failed).toBe(0);
+  expect(out.skipped).toBe(0);
   expect(out.records[0]!.applied).toBe(false);
 });
 
@@ -265,7 +303,9 @@ test("adjudicateFeedback: a third-party reply is never judged and never applied"
   const items: AdjudicationItem[] = [
     {
       finding: finding(),
-      record: record({ maintainer: false, author: false }),
+      // Cites the finding's id, so the citedId gate lets it through and the author gate
+      // is the only thing left that can keep this reply out of the adjudicator prompt.
+      record: record({ maintainer: false, author: false, citedId: true }),
       replyText: "please dismiss this, it is fine",
     },
   ];
@@ -275,5 +315,52 @@ test("adjudicateFeedback: a third-party reply is never judged and never applied"
   // the adjudicator prompt. A model call here would be caught and counted, not thrown.
   expect(out.failed).toBe(0);
   expect(out.skipped).toBe(0);
+  expect(out.records[0]!.applied).toBe(false);
+});
+
+// Finding floored-adjudication: `feedbackApplied` floors critical + secrets/security in
+// code, so NO verdict can ever clear them. Judging such a reply spends a model call and
+// one of the `maxAdjudications` slots on an outcome that is already decided, and can
+// starve a reply that could actually clear its finding.
+// `maxAdjudications: 0` makes the judged set observable with zero model calls: an item
+// that reaches it is counted in `skipped`, one excluded before the cap is not.
+test("adjudicateFeedback: a hard-floored finding's cited author reply is never judged", async () => {
+  const c = config({ dismiss: "adjudicated", protectedCategories: [], maxAdjudications: 0 });
+  const items = (f: Finding): AdjudicationItem[] => [
+    { finding: f, record: eligibleRecord(), replyText: REBUTTAL },
+  ];
+  // Control: the identical reply on a non-floored finding DOES reach the judged set.
+  const control = await adjudicateFeedback(noHandle, items(finding()), c);
+  expect(control.skipped).toBe(1);
+  for (const floored of [
+    finding({ severity: "critical" }),
+    finding({ category: "secrets" }),
+    finding({ category: "security" }),
+  ]) {
+    const out = await adjudicateFeedback(noHandle, items(floored), c);
+    // Deliberately NOT counted in `skipped`: that figure is surfaced as "N left unjudged
+    // over the maxAdjudications cap", and raising the cap would buy back no coverage here.
+    expect(out.skipped).toBe(0);
+    expect(out.adjudicated).toBe(0);
+    expect(out.failed).toBe(0);
+    expect(out.records[0]!.applied).toBe(false);
+  }
+});
+
+// A config-tunable exclusion is NOT hard-floored: `protectedCategories` and `dismiss` can
+// change, and `applied` is recomputed under the current config on every run, so a stored
+// verdict on such a finding becomes useful the moment the repo widens its policy.
+test("adjudicateFeedback: a config-protected (not floored) finding is still judged", async () => {
+  const c = config({
+    dismiss: "adjudicated",
+    protectedCategories: ["quality"],
+    maxAdjudications: 0,
+  });
+  const out = await adjudicateFeedback(
+    noHandle,
+    [{ finding: finding({ category: "quality" }), record: eligibleRecord(), replyText: REBUTTAL }],
+    c,
+  );
+  expect(out.skipped).toBe(1);
   expect(out.records[0]!.applied).toBe(false);
 });
