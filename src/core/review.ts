@@ -1034,15 +1034,14 @@ export async function runReview(
     // coordinator merges and rewrites findings, so match by fingerprint and keep the
     // first agent that produced it; a finding the coordinator changed enough to break the
     // fingerprint stays unattributed (reported as "unknown") rather than guessed. Agent
-    // is excluded from the fingerprint, so setting it can never lapse a dismissal.
-    // @ref LLP 0011#attribution-and-identity [implements] — attribution rides through the coordinator by fingerprint; annotation-only
+    // is excluded from the fingerprint, so setting it can never lapse a dismissal. This
+    // lookup is the ONLY writer: the model-facing schema drops any `agent` the
+    // coordinator emitted, so nothing here has to trust (or defer to) model attribution.
+    // @ref LLP 0011#attribution-and-identity [implements] — attribution rides through the coordinator by fingerprint; annotation-only, and engine-set only
     if (agentByFp.size > 0 && output.findings.length > 0) {
       output = {
         ...output,
         findings: output.findings.map((finding) => {
-          if (finding.agent) {
-            return finding;
-          }
           const agent = agentByFp.get(fingerprintFinding(finding));
           return agent ? { ...finding, agent } : finding;
         }),

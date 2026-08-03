@@ -176,8 +176,11 @@ export const ReviewConfigSchema = z.object({
       // "adjudicate" — also run a source-grounded judgment of the rebuttal and
       //                record its verdict. Dismissal still obeys `dismiss`.
       mode: z.enum(["off", "annotate", "adjudicate"]).default("annotate"),
+      // How a reply is MATCHED to a finding. Clearing one additionally requires the
+      // reply to cite its `id:` token in the replier's own words, whatever this says.
       match: z.enum(["quote", "id", "both"]).default("both"),
-      // Who/what may actually remove a finding from the blocking set:
+      // Who/what may actually remove a finding from the blocking set (always on a
+      // reply citing the finding's `id:` token — a quote only annotates):
       //   "never"       — nothing does (default: adjudication ships dark).
       //   "maintainers" — a maintainer reply dismisses, no model involved.
       //   "adjudicated" — a maintainer reply, or an author reply the adjudicator

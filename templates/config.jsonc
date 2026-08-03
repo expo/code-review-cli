@@ -125,6 +125,9 @@
   //   "dismiss": "never" | "maintainers" | "adjudicated" — who/what may actually
   //     clear a finding: nothing, a maintainer's reply, or (with `adjudicate`) a
   //     maintainer reply OR an author reply the adjudicator confirmed.
+  // Clearing always needs the reply to cite the finding's `id:<fp>` token in the
+  // replier's OWN words: an id (or a title) inside a `>` quote only annotates,
+  // because "Quote reply" copies text the PR author wrote.
   // Critical findings and `protectedCategories` can never be dismissed by a
   // reply, whatever you set here — that floor is enforced in code, not here.
   // "feedback": {

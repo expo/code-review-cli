@@ -31,7 +31,7 @@ The IO and the logic are split on purpose. `walkUpstack` is a pure, exported fun
 
 ## Requalification Schema and Fingerprints
 
-`Finding` gains an optional `requalifiedBy: { prNumber, file, reason }` [observed] ([schema.ts](../src/core/schema.ts) `FindingSchema`). It rides the coordinator output schema for free, since that schema reuses `FindingSchema`. Critically, `fingerprintFinding` is **untouched** — it keys on `file`/`category`/`evidence`, never on `requalifiedBy` [observed] ([schema.ts](../src/core/schema.ts) `fingerprintFinding`). If requalification entered the fingerprint, a maintainer's dismissal would silently lapse the moment a finding was requalified, and the embedded-state identity would churn. Keeping it out means requalification is purely an annotation over an otherwise-stable finding identity.
+`Finding` gains an optional `requalifiedBy: { prNumber, file, reason }` [observed] ([schema.ts](../src/core/schema.ts) `FindingSchema`). It rides the coordinator output schema for free, since that schema reuses the same shape — `ModelFindingSchema`, which is `FindingSchema` minus the engine-only `agent` field (see [LLP 0011](./0011-author-feedback.explainer.md) "attribution-and-identity"); `requalifiedBy` is model-set, so it stays. Critically, `fingerprintFinding` is **untouched** — it keys on `file`/`category`/`evidence`, never on `requalifiedBy` [observed] ([schema.ts](../src/core/schema.ts) `fingerprintFinding`). If requalification entered the fingerprint, a maintainer's dismissal would silently lapse the moment a finding was requalified, and the embedded-state identity would churn. Keeping it out means requalification is purely an annotation over an otherwise-stable finding identity.
 
 ## Coordinator-Only Injection
 

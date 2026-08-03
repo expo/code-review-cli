@@ -58,10 +58,11 @@ export interface AdjudicationOutcome {
  * explicit opt-in. `mode` is a separate axis (how much machinery runs), so
  * `dismiss: "maintainers"` works under `mode: "annotate"` with no model involved, the
  * same trust gate as `/dismiss`. NEVER for a critical / secrets / security / protected
- * finding — those floors live here in code, not in any prompt. A maintainer reply
- * clears; the PR author's reply clears only under `dismiss: "adjudicated"` with an
- * "accepted" verdict. An untrusted third-party commenter (neither maintainer nor PR
- * author) never clears — its reply is annotated only.
+ * finding — those floors live here in code, not in any prompt. A maintainer reply that
+ * CITES the finding's id clears; the PR author's cited reply clears only under
+ * `dismiss: "adjudicated"` with an "accepted" verdict. An untrusted third-party
+ * commenter (neither maintainer nor PR author) never clears — its reply is annotated
+ * only, as is any reply that merely quotes the finding.
  */
 export function feedbackApplied(
   finding: Finding,
@@ -69,6 +70,14 @@ export function feedbackApplied(
   config: FeedbackConfig,
 ): boolean {
   if (config.mode === "off" || config.dismiss === "never") {
+    return false;
+  }
+  // @ref LLP 0011#a-quote-annotates-an-id-clears [implements] — a quote may annotate, only a cited id may clear, on BOTH clear paths below
+  // A quoted line is not consent: GitHub's "Quote reply" copies a comment the untrusted
+  // PR author wrote, so a maintainer can clear-by-accident (or be led to) on text they
+  // never authored. The `id:<fp>` token is printed only by our own comment and counts
+  // only outside a blockquote, so citing it is an act of the replier.
+  if (record.citedId !== true) {
     return false;
   }
   // A human ran `/undismiss` on this reply-cleared finding: it is pinned back to the
@@ -173,14 +182,16 @@ export async function adjudicateFeedback(
   // budget on the same words). A reply with no text can't be judged. Only the PR
   // author's replies are worth judging: a maintainer clears without any verdict, and a
   // third-party commenter can never clear (feedbackApplied), so judging either would
-  // spend the budget on a rebuttal that changes no outcome. A finding a human already
-  // restored via `/undismiss` is likewise left unjudged.
+  // spend the budget on a rebuttal that changes no outcome. A reply that only quotes the
+  // finding can never clear it either, and would otherwise starve a cited reply of the
+  // cap. A finding a human already restored via `/undismiss` is likewise left unjudged.
   const toJudge =
     config.mode === "adjudicate"
       ? items.filter(
           (item) =>
             item.record.verdict === undefined &&
             item.record.author === true &&
+            item.record.citedId === true &&
             !item.record.unclearedByHuman &&
             item.replyText.trim() !== "",
         )

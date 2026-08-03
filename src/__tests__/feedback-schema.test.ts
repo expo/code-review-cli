@@ -28,6 +28,15 @@ test("FeedbackRecordSchema: defaults maintainer/applied to false and allows opti
   expect(parsed.reason).toBeUndefined();
 });
 
+// The clear gate: absent must read as "did not cite", so a record written before the
+// field (or by a path that never derived it) clears nothing.
+test("FeedbackRecordSchema: citedId round-trips and is undefined when absent (fail closed)", () => {
+  expect(
+    FeedbackRecordSchema.parse({ fp: "a", by: "b", commentId: 1, citedId: true }).citedId,
+  ).toBe(true);
+  expect(FeedbackRecordSchema.parse({ fp: "a", by: "b", commentId: 1 }).citedId).toBeUndefined();
+});
+
 test("FeedbackRecordSchema: author/unclearedByHuman are optional and round-trip", () => {
   const parsed = FeedbackRecordSchema.parse({
     fp: "a",

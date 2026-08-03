@@ -75,9 +75,11 @@ export const FindingSchema = z.object({
     .object({ prNumber: z.number().int(), file: z.string(), reason: z.string() })
     .optional(),
   /**
-   * Which reviewer agent produced this finding. Engine-populated (never the
-   * model); excluded from the fingerprint like `requalifiedBy`, so attribution
-   * appearing on a finding can never lapse an existing dismissal.
+   * Which reviewer agent produced this finding. Engine-populated, never the model:
+   * `ModelFindingSchema` omits it, so an `agent` in model JSON is dropped at the parse
+   * boundary and only the engine's fingerprint lookup can set it. Excluded from the
+   * fingerprint like `requalifiedBy`, so attribution appearing on a finding can never
+   * lapse an existing dismissal.
    */
   // @ref LLP 0011#attribution-and-identity [constrained-by] — attribution is annotation-only; never part of fingerprintFinding
   agent: z.string().optional(),
@@ -130,16 +132,28 @@ export function parseStackVerdict(text: string): StackVerdict {
   return StackVerdictSchema.parse(extractJsonObject(text));
 }
 
+// @ref LLP 0011#attribution-and-identity [implements] — `agent` is engine-populated, so the model-facing schema drops it at the parse boundary instead of trusting call sites to strip it
+/**
+ * The finding shape a MODEL may emit: `FindingSchema` minus the engine-only `agent`.
+ * Both model outputs parse through this, so an `agent` a reviewer pass or the
+ * coordinator invented is dropped where model JSON becomes typed data — the engine's own
+ * fingerprint lookup is then the only thing that can set it. The transform re-widens the
+ * result to `Finding` so downstream code (which does set `agent`) needs no change.
+ */
+const ModelFindingSchema = FindingSchema.omit({ agent: true }).transform(
+  (finding): Finding => finding,
+);
+
 /** Shape each sub-reviewer must emit. */
 export const ReviewerOutputSchema = z.object({
-  findings: z.array(FindingSchema).default([]),
+  findings: z.array(ModelFindingSchema).default([]),
 });
 export type ReviewerOutput = z.infer<typeof ReviewerOutputSchema>;
 
 /** Mode-agnostic coordinator result; each Reporter decides how to render it. */
 export const CoordinatorOutputSchema = z.object({
   decision: z.enum(DECISIONS),
-  findings: z.array(FindingSchema).default([]),
+  findings: z.array(ModelFindingSchema).default([]),
   summary: z.string(),
   /**
    * Human-readable notes about reduced coverage (e.g. a review pass that hit its
@@ -202,6 +216,16 @@ export const FeedbackRecordSchema = z.object({
    */
   // @ref LLP 0011#hard-floors-in-code [constrained-by] — the adjudicated clear path is for the PR author only; a third-party commenter's rebuttal never clears
   author: z.boolean().optional(),
+  /**
+   * True when the reply cites this finding's `id:<fp>` token in the replier's OWN words
+   * (outside every blockquote). Re-derived from the live comment every run by
+   * `matchReplies`, never trusted from stored state, exactly like `maintainer`/`author`.
+   * A quote-only match still ANNOTATES the finding; only a cited id may CLEAR it, on
+   * both clear paths. Absent ⇒ false ⇒ clears nothing, so a record written before this
+   * field parses fine and fails closed until its reply is matched again.
+   */
+  // @ref LLP 0011#a-quote-annotates-an-id-clears [constrained-by] — a quoted line can be text the untrusted PR author planted for a maintainer to quote-reply, so a quote may annotate but never clear
+  citedId: z.boolean().optional(),
   verdict: z.enum(FEEDBACK_VERDICTS).optional(),
   reason: z.enum(FEEDBACK_REASONS).optional(),
   /**

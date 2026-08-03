@@ -205,7 +205,14 @@ test("a prior verdict decided against the head under review still clears the fin
   const f1 = finding({ file: "api.ts", title: "Issue" });
   const fp = scopedFingerprint("api", f1);
   const prior = [
-    record({ fp, by: "author", author: true, verdict: "accepted", sourceSha: HEAD_SHA }),
+    record({
+      fp,
+      by: "author",
+      author: true,
+      citedId: true,
+      verdict: "accepted",
+      sourceSha: HEAD_SHA,
+    }),
   ];
   const results = [seamFailedScope("api", [f1])];
   const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig, HEAD_SHA);
@@ -228,7 +235,7 @@ test("a prior verdict never carries when this run has no head SHA", () => {
 test("a verdict-less carried record (maintainer reply) is untouched by a head change", () => {
   const f1 = finding({ file: "api.ts", title: "Issue" });
   const fp = scopedFingerprint("api", f1);
-  const prior = [record({ fp, by: "maint", maintainer: true, applied: true })];
+  const prior = [record({ fp, by: "maint", maintainer: true, citedId: true, applied: true })];
   const results = [seamFailedScope("api", [f1])];
   const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig, HEAD_SHA);
   expect(merged.find((r) => r.fp === fp)?.applied).toBe(true);
@@ -259,6 +266,7 @@ test("a /undismiss pin from the comment state still un-clears a FRESH record", (
     by: "author",
     commentId: 500,
     author: true,
+    citedId: true,
     verdict: "accepted",
     sourceSha: HEAD_SHA,
     applied: true,
@@ -278,7 +286,14 @@ test("a /undismiss pin from the comment state still un-clears a FRESH record", (
 test("a maintainer's newer reply lifts the pin on the aggregate path too", () => {
   const f1 = finding({ file: "api.ts", title: "Issue" });
   const fp = scopedFingerprint("api", f1);
-  const fresh = record({ fp, by: "maint", commentId: 500, maintainer: true, applied: true });
+  const fresh = record({
+    fp,
+    by: "maint",
+    commentId: 500,
+    maintainer: true,
+    citedId: true,
+    applied: true,
+  });
   const results = [seamOkScope("api", [f1], [fresh])];
   const merged = mergeAggregateFeedback(results, results, [], feedbackConfig, HEAD_SHA, [
     { fp, commentId: 42 },

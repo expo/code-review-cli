@@ -36,6 +36,9 @@ inside a fenced code block is explicitly skipped — a pasted snippet that happe
 to contain a `>` must never be read as the author quoting the review
 [observed] ([responses.ts](../src/core/responses.ts) `extractQuotedLines`).
 
+Matching is not consent, though: what a match records and what may CLEAR a finding are
+two different questions, and the section "A Quote Annotates, an Id Clears" below is why.
+
 The one rule that matters most: **an ambiguous quote records nothing.** When a
 quoted line's normalized text matches 2+ findings, the match is dropped for that
 line unless the same comment also carries an `id:<fp>` token that disambiguates
@@ -117,7 +120,14 @@ doc comment; no `finding.evidence` reference exists in `render.ts`).
 
 Findings gain an optional `agent: string` — which reviewer agent produced
 them — populated by the engine after coordination, never by the model itself
-[observed] ([schema.ts](../src/core/schema.ts) `FindingSchema.agent`). It is
+[observed] ([schema.ts](../src/core/schema.ts) `FindingSchema.agent`). "Never by the
+model" is enforced at the parse boundary, not by convention: `agent` is a RECOGNIZED key
+of `FindingSchema`, so zod's strip could not drop it and a reviewer pass — or the
+coordinator, which reads the untrusted diff and PR body — could emit `"agent": "…"` and
+have it survive validation. The model-facing `ModelFindingSchema` omits the field, and
+both model outputs parse through it, so the engine's own fingerprint lookup is the only
+writer that exists [observed] ([schema.ts](../src/core/schema.ts) `ModelFindingSchema`,
+used by `ReviewerOutputSchema` and `CoordinatorOutputSchema`). It is
 excluded from `fingerprintFinding`'s hashed tuple for the same reason
 `requalifiedBy` is (see [LLP 0010](./0010-stack-aware-requalification.explainer.md)
 "requalification-schema-and-fingerprints"): a finding's identity must stay stable
@@ -208,6 +218,59 @@ array is the single source of truth and a per-scope duplicate is exactly the
 stale copy this paragraph guards against [observed] ([render.ts](../src/core/render.ts),
 the `stateScopes` map's `_feedback` destructure).
 
+## A Quote Annotates, an Id Clears
+
+Matching a reply by its quoted title is right for ANNOTATING and wrong for CLEARING,
+because the quoted text is not written by the person who posted the comment. GitHub's
+"Quote reply" copies the whole target comment and prefixes every line with `> `, and
+the PR author controls that text. So: the bot posts the review, which makes every
+finding title (and every `id:` token) public; the author writes one of those titles on
+its own line inside an innocent question; a maintainer answers with one click of "Quote
+reply"; the maintainer's comment now holds `> <finding title>`, `extractQuotedLines`
+returns it, `normalizeTitle` makes it equal to the title, and the match is recorded with
+`maintainer: true` — because `replyComments` reads the maintainer flag off
+`author_association`, which is correct and unspoofable, and says nothing about the words
+being the maintainer's own. Under `dismiss: "maintainers"` that used to be enough to
+move the finding into the collapsed Dismissed fold. The same path fired BY ACCIDENT
+whenever a maintainer quote-replied to an author comment that had pasted a finding
+title, and the mirror case exists on the author path too (the author quote-replying to
+someone else's comment).
+
+Hence the split: **a quote-only match may annotate a finding; only a reply that cites
+the finding's `id:<fp>` token may clear one.** `matchReplies` records which of the two
+happened in `citedId` on the record, and `feedbackApplied` returns `false` before either
+clear path when it is not `true` [observed] ([responses.ts](../src/core/responses.ts)
+`matchReplies`, `citedId: cited.has(fp)`; [adjudicate.ts](../src/core/adjudicate.ts)
+`feedbackApplied`, the `record.citedId !== true` guard). Three properties make that
+gate mean something:
+
+- **The id counts only outside a blockquote.** The id is as public as the title, so a
+  planted `> id:abc123` would defeat the gate exactly like a planted title.
+  `extractCitedFindingIds` drops every `>`-prefixed line before scanning, so only an id
+  in the replier's OWN words counts — and one click of "Quote reply" produces nothing
+  but quoted lines [observed] ([responses.ts](../src/core/responses.ts)
+  `extractCitedFindingIds`).
+- **It is derived, never stored-and-trusted.** `citedId` is re-derived from the live
+  comment on every run, the same discipline as `maintainer`/`author`; absent reads as
+  "did not cite", so a record written by an older version (or carried through a failed
+  seam) fails CLOSED to annotate-only until its reply is matched again
+  [observed] ([schema.ts](../src/core/schema.ts) `FeedbackRecordSchema.citedId`,
+  optional).
+- **It is orthogonal to the `match` config.** `match` (`"quote"`/`"id"`/`"both"`)
+  selects how a reply is MATCHED and is unchanged; `citedId` is computed whatever it
+  says, so a repo on `match: "quote"` still annotates every quote and still clears on a
+  cited id [observed] ([responses.ts](../src/core/responses.ts) `matchReplies`, `cited`
+  built outside the `opts.match` branches).
+
+The cap follows the same logic: a quote-only reply cannot clear whatever a verdict says,
+so `adjudicateFeedback` no longer spends a model call on it — judging it would consume
+`maxAdjudications` on an outcome-free rebuttal and could starve one that does cite the
+finding [observed] ([adjudicate.ts](../src/core/adjudicate.ts) `adjudicateFeedback`, the
+`toJudge` filter). The `/undismiss` pin is untouched by all this: a maintainer's newer
+reply still LIFTS a pin without citing anything, because lifting is not clearing — after
+the lift the record still has to cite the id to remove the finding, so the worst a
+quote-reply can do is return the finding to the ordinary rules.
+
 ## Hard Floors in Code
 
 The prompt tells the model to be distrustful; the floor that actually protects a
@@ -228,9 +291,10 @@ clear — so `dismiss: "maintainers"` works under plain `mode: "annotate"`
 first guard clause; `feedbackNeedsRunSeam` is what wires the seam for that
 combination). Coupling the two would force a repo to switch on the model mode
 just to enable the no-model maintainer path, which is the same trust gate as
-`/dismiss` in prose form. A maintainer's reply clears a finding with no model
-involved at all (`record.maintainer`); among everyone else, only the PR
-AUTHOR's reply can clear one, and only under `dismiss: "adjudicated"` AND a
+`/dismiss` in prose form. A maintainer's reply that CITES the finding's id clears it
+with no model involved at all (`record.maintainer` plus `record.citedId`, see "A Quote
+Annotates, an Id Clears"); among everyone else, only the PR
+AUTHOR's cited reply can clear one, and only under `dismiss: "adjudicated"` AND a
 recorded `"accepted"` verdict — never on an `"unclear"` or `"refuted"` one, and
 never for a third-party commenter's reply even when the model accepted it: the
 adjudicated path is the author's alone, so a stranger's rebuttal is annotated
@@ -453,8 +517,10 @@ emit that finding this run would drop a maintainer's restore.
 Hence the invariant: **a pin is created and lifted only by a maintainer action,
 and nothing else can touch it.** A `/dismiss` on that finding lifts it —
 `applyDismissalToState` removes the fp from the set, the same trusted hand
-deciding the opposite way. A maintainer's own newer reply lifts it, which is the
-trust gate that already lets a maintainer reply clear a finding at all; "newer"
+deciding the opposite way. A maintainer's own newer reply lifts it — the same
+trusted hand, and a lift is not a clear: the lifting reply still has to cite the
+finding's id before it removes anything (see "A Quote Annotates, an Id Clears"), so a
+lift only returns the finding to the ordinary rules. "Newer"
 is decided against the comment id stored with the pin, so a maintainer comment
 that predates the restore (one the author could resurrect by deleting their own
 later reply) never releases it
@@ -573,4 +639,5 @@ immediately, and the risk-bearing half (a reply actually clearing a finding)
 only behind that one explicit knob — `"maintainers"` needs no model at all,
 `"adjudicated"` additionally requires `mode: "adjudicate"` so an author's reply
 clears only with a source-confirmed verdict — with
-`critical`/`secrets`/`security` never reachable by either choice.
+`critical`/`secrets`/`security` never reachable by either choice, and every clear
+requiring the replier to cite the finding's id in their own words.

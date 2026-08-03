@@ -43,18 +43,20 @@ const review: CoordinatorOutput = {
   incomplete: [],
 };
 
-// The PR author's reply on a non-default scope, quoting the finding title back verbatim.
+// The aggregate (comment:'single') comment stores its feedback under SCOPE-NAMESPACED
+// ids, and a prior run already decided this reply's verdict.
+const scopedFp = scopedFingerprint("api", finding);
+
+// The PR author's reply on a non-default scope: it quotes the finding title back and
+// cites the finding's id in the author's own words, which is what a reply needs before
+// it may clear anything (a quote alone only annotates — see LLP 0011).
 const reply: ReplyComment = {
   id: 42,
-  body: "> Deliberate skip of custom project root\n\nThat's intentional.",
+  body: `> Deliberate skip of custom project root\n\nThat's intentional. id:${scopedFp}`,
   login: "author",
   maintainer: false,
   author: true,
 };
-
-// The aggregate (comment:'single') comment stores its feedback under SCOPE-NAMESPACED
-// ids, and a prior run already decided this reply's verdict.
-const scopedFp = scopedFingerprint("api", finding);
 // The head the prior run reviewed, and the verdict it decided against that source.
 const HEAD_SHA = "1111111111111111111111111111111111111111";
 const NEW_HEAD_SHA = "2222222222222222222222222222222222222222";

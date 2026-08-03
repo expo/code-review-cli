@@ -88,6 +88,23 @@ export function extractFindingIds(body: string): string[] {
   return [...new Set(ids)];
 }
 
+// @ref LLP 0011#a-quote-annotates-an-id-clears [implements] — only an id the replier wrote OUTSIDE any blockquote counts as citing the finding
+/**
+ * The `id:<hex>` tokens the commenter wrote THEMSELVES — an id inside a blockquote
+ * line does not count. GitHub's "Quote reply" copies the target comment verbatim with
+ * every line prefixed `> `, and the untrusted PR author controls that text, so a quoted
+ * title OR a quoted id may be text they planted. Only an unquoted id is a citation by
+ * the replier, which is what `feedbackApplied` requires before a reply may CLEAR a
+ * finding.
+ */
+export function extractCitedFindingIds(body: string): string[] {
+  const own = body
+    .split("\n")
+    .filter((line) => !/^\s*>/.test(line))
+    .join("\n");
+  return extractFindingIds(own);
+}
+
 // @ref LLP 0011#deterministic-matching [implements] — an ambiguous quote records nothing; only an id disambiguates
 /**
  * Match author replies to the findings they answer. Deterministic by design: a
@@ -100,6 +117,11 @@ export function extractFindingIds(body: string): string[] {
  * records NOTHING, because attributing pushback to the wrong finding is worse
  * than recording no pushback at all. One record per finding: when several
  * comments answer the same one, the newest (highest comment id) wins.
+ *
+ * `citedId` records HOW the reply names the finding: true only when the replier cited
+ * the finding's id in their own words. It is independent of `opts.match` — that knob
+ * selects how a reply MATCHES, while `citedId` is what `feedbackApplied` requires
+ * before a reply may CLEAR (see LLP 0011).
  */
 export function matchReplies(
   comments: ReplyComment[],
@@ -119,6 +141,10 @@ export function matchReplies(
       continue;
     }
     const matched = new Set<string>();
+    // The ids this replier cited in their own words, computed whatever `match` says: a
+    // quote-matched reply still records WHETHER it cites the finding, because that is
+    // what decides clearing.
+    const cited = new Set(extractCitedFindingIds(comment.body));
     if (opts.match !== "quote") {
       for (const id of extractFindingIds(comment.body)) {
         if (known.has(id)) {
@@ -152,6 +178,7 @@ export function matchReplies(
         ...(comment.url ? { url: comment.url } : {}),
         maintainer: comment.maintainer,
         author: comment.author,
+        citedId: cited.has(fp),
         applied: false,
       });
     }

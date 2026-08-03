@@ -27,6 +27,8 @@ const finding = (over: Partial<Finding> = {}): Finding => ({
   ...over,
 });
 
+// `citedId` is left OFF by default — a plain quote-match, which is what most replies
+// are — so every test that expects a clear has to say `citedId: true` out loud.
 const record = (over: Partial<FeedbackRecord> = {}): FeedbackRecord => ({
   fp: "abc123",
   by: "author",
@@ -55,13 +57,13 @@ const noHandle = new Proxy(
 
 test("feedbackApplied: dismiss:'never' (the default) never applies anything", () => {
   const c = config({ dismiss: "never" });
-  expect(feedbackApplied(finding(), record({ maintainer: true }), c)).toBe(false);
-  expect(feedbackApplied(finding(), record({ verdict: "accepted" }), c)).toBe(false);
+  expect(feedbackApplied(finding(), record({ maintainer: true, citedId: true }), c)).toBe(false);
+  expect(feedbackApplied(finding(), record({ verdict: "accepted", citedId: true }), c)).toBe(false);
 });
 
 test("feedbackApplied: mode:'off' never applies, whatever dismiss says", () => {
   const c = config({ mode: "off", dismiss: "adjudicated" });
-  expect(feedbackApplied(finding(), record({ maintainer: true }), c)).toBe(false);
+  expect(feedbackApplied(finding(), record({ maintainer: true, citedId: true }), c)).toBe(false);
 });
 
 // `mode` gates the machinery, `dismiss` gates the clearing: a maintainer reply
@@ -69,40 +71,73 @@ test("feedbackApplied: mode:'off' never applies, whatever dismiss says", () => {
 // as /dismiss.
 test("feedbackApplied: mode:'annotate' + dismiss:'maintainers' clears on a maintainer reply", () => {
   const c = config({ mode: "annotate", dismiss: "maintainers" });
-  expect(feedbackApplied(finding(), record({ maintainer: true }), c)).toBe(true);
-  expect(feedbackApplied(finding(), record({ verdict: "accepted" }), c)).toBe(false);
+  expect(feedbackApplied(finding(), record({ maintainer: true, citedId: true }), c)).toBe(true);
+  expect(feedbackApplied(finding(), record({ verdict: "accepted", citedId: true }), c)).toBe(false);
 });
 
 test("feedbackApplied: a critical finding is never applied, even maintainer + accepted", () => {
   const c = config({ dismiss: "adjudicated" });
   const crit = finding({ severity: "critical" });
-  expect(feedbackApplied(crit, record({ maintainer: true }), c)).toBe(false);
-  expect(feedbackApplied(crit, record({ verdict: "accepted" }), c)).toBe(false);
+  expect(feedbackApplied(crit, record({ maintainer: true, citedId: true }), c)).toBe(false);
+  expect(feedbackApplied(crit, record({ verdict: "accepted", citedId: true }), c)).toBe(false);
+});
+
+// The floor is pinned to a LITERAL, then the literal is what the assertions loop over.
+// Looping over HARD_FLOOR_CATEGORIES itself would assert only "whatever the constant
+// says today": shrinking it to ["secrets"] would still pass, and emptying it would run
+// zero assertions — while README and LLP 0011 both promise both categories are floored.
+test("HARD_FLOOR_CATEGORIES is exactly secrets + security", () => {
+  expect([...HARD_FLOOR_CATEGORIES]).toEqual(["secrets", "security"]);
 });
 
 test("feedbackApplied: secrets/security are floored in code regardless of protectedCategories", () => {
   // Even with the protected set narrowed to empty, the code floor still holds.
   const c = config({ dismiss: "adjudicated", protectedCategories: [] });
-  for (const category of HARD_FLOOR_CATEGORIES) {
+  for (const category of ["secrets", "security"] as const) {
     const f = finding({ category });
-    expect(feedbackApplied(f, record({ maintainer: true }), c)).toBe(false);
-    expect(feedbackApplied(f, record({ verdict: "accepted" }), c)).toBe(false);
+    expect(feedbackApplied(f, record({ maintainer: true, citedId: true }), c)).toBe(false);
+    expect(feedbackApplied(f, record({ verdict: "accepted", citedId: true }), c)).toBe(false);
   }
 });
 
 test("feedbackApplied: a configured protectedCategory can only widen the floor", () => {
   const c = config({ dismiss: "adjudicated", protectedCategories: ["quality"] });
-  expect(feedbackApplied(finding({ category: "quality" }), record({ maintainer: true }), c)).toBe(
-    false,
-  );
+  expect(
+    feedbackApplied(
+      finding({ category: "quality" }),
+      record({ maintainer: true, citedId: true }),
+      c,
+    ),
+  ).toBe(false);
 });
 
 test("feedbackApplied: a maintainer reply clears a non-floored finding, no verdict needed", () => {
-  expect(feedbackApplied(finding(), record({ maintainer: true }), config())).toBe(true);
+  expect(feedbackApplied(finding(), record({ maintainer: true, citedId: true }), config())).toBe(
+    true,
+  );
+});
+
+// Finding 1fbf85c0e651: a quoted line is not consent. GitHub's "Quote reply" copies the
+// whole target comment with every line prefixed `> `, so the untrusted PR author can
+// write a finding's title (or its id) in a comment and have a maintainer's one-click
+// quote-reply carry it — matching the finding on text the maintainer never wrote. A
+// quote-matched reply may therefore ANNOTATE, but only a reply citing the finding's id
+// in the replier's own words may CLEAR.
+test("feedbackApplied: a quote-only reply never clears, on either clear path", () => {
+  const c = config({ dismiss: "adjudicated" });
+  // The attack: the maintainer quote-replied to the author's planted text.
+  expect(feedbackApplied(finding(), record({ maintainer: true, by: "maint" }), c)).toBe(false);
+  // The same rule on the adjudicated author path, even with an accepted verdict.
+  expect(feedbackApplied(finding(), record({ author: true, verdict: "accepted" }), c)).toBe(false);
+  // Control: the identical records with the id cited do clear.
+  expect(feedbackApplied(finding(), record({ maintainer: true, citedId: true }), c)).toBe(true);
+  expect(
+    feedbackApplied(finding(), record({ author: true, verdict: "accepted", citedId: true }), c),
+  ).toBe(true);
 });
 
 test("feedbackApplied: the PR author clears only under 'adjudicated' + an accepted verdict", () => {
-  const author = record({ maintainer: false, author: true, verdict: "accepted" });
+  const author = record({ maintainer: false, author: true, verdict: "accepted", citedId: true });
   expect(feedbackApplied(finding(), author, config({ dismiss: "adjudicated" }))).toBe(true);
   // A maintainers-only policy ignores the adjudicated verdict of a non-maintainer.
   expect(feedbackApplied(finding(), author, config({ dismiss: "maintainers" }))).toBe(false);
@@ -110,7 +145,7 @@ test("feedbackApplied: the PR author clears only under 'adjudicated' + an accept
   expect(
     feedbackApplied(
       finding(),
-      record({ author: true, verdict: "refuted" }),
+      record({ author: true, verdict: "refuted", citedId: true }),
       config({ dismiss: "adjudicated" }),
     ),
   ).toBe(false);
@@ -119,7 +154,12 @@ test("feedbackApplied: the PR author clears only under 'adjudicated' + an accept
 // The security floor: only the PR author (or a maintainer) may clear via a reply.
 // A random third-party commenter's rebuttal — even one a model accepts — never clears.
 test("feedbackApplied: a third-party commenter never clears, even with an accepted verdict", () => {
-  const thirdParty = record({ maintainer: false, author: false, verdict: "accepted" });
+  const thirdParty = record({
+    maintainer: false,
+    author: false,
+    verdict: "accepted",
+    citedId: true,
+  });
   expect(feedbackApplied(finding(), thirdParty, config({ dismiss: "adjudicated" }))).toBe(false);
 });
 
@@ -130,13 +170,17 @@ test("feedbackApplied: an unclearedByHuman record never clears (a human restored
   expect(
     feedbackApplied(
       finding(),
-      record({ author: true, verdict: "accepted", unclearedByHuman: true }),
+      record({ author: true, verdict: "accepted", citedId: true, unclearedByHuman: true }),
       c,
     ),
   ).toBe(false);
-  expect(feedbackApplied(finding(), record({ maintainer: true, unclearedByHuman: true }), c)).toBe(
-    false,
-  );
+  expect(
+    feedbackApplied(
+      finding(),
+      record({ maintainer: true, citedId: true, unclearedByHuman: true }),
+      c,
+    ),
+  ).toBe(false);
 });
 
 // ---- adjudicateFeedback: recompute without model calls ----
@@ -154,7 +198,7 @@ test("adjudicateFeedback: mode:'off' makes no model calls and applies nothing", 
 
 test("adjudicateFeedback: a maintainer reply is applied with no model call (empty replyText)", async () => {
   const items: AdjudicationItem[] = [
-    { finding: finding(), record: record({ maintainer: true }), replyText: "" },
+    { finding: finding(), record: record({ maintainer: true, citedId: true }), replyText: "" },
   ];
   const out = await adjudicateFeedback(noHandle, items, config({ dismiss: "adjudicated" }));
   expect(out.adjudicated).toBe(0);
@@ -167,7 +211,7 @@ test("adjudicateFeedback: a record with a verdict already decided is not re-judg
   const items: AdjudicationItem[] = [
     {
       finding: finding(),
-      record: record({ maintainer: false, author: true, verdict: "accepted" }),
+      record: record({ maintainer: false, author: true, verdict: "accepted", citedId: true }),
       // A real rebuttal, so the ALREADY-DECIDED verdict is the only thing keeping this
       // record out of the model pass.
       replyText: "false positive, sanitizePath runs below",
@@ -198,6 +242,25 @@ test("adjudicateFeedback: a carried verdict keeps the source revision it judged"
 
 // A third-party commenter can never clear, so its unjudged reply must not even be
 // sent to the model (nothing it could say changes the outcome).
+// A quote-only reply cannot clear whatever the verdict says, so judging it would spend
+// the run's cap on a rebuttal that can move no outcome — and could starve a reply that
+// does cite the finding.
+test("adjudicateFeedback: a quote-only author reply is never judged and never applied", async () => {
+  const items: AdjudicationItem[] = [
+    {
+      finding: finding(),
+      record: record({ author: true }),
+      replyText: "false positive, sanitizePath runs below",
+    },
+  ];
+  const out = await adjudicateFeedback(noHandle, items, config({ dismiss: "adjudicated" }));
+  expect(out.adjudicated).toBe(0);
+  // A model call would be caught by the per-item try/catch and counted here.
+  expect(out.failed).toBe(0);
+  expect(out.skipped).toBe(0);
+  expect(out.records[0]!.applied).toBe(false);
+});
+
 test("adjudicateFeedback: a third-party reply is never judged and never applied", async () => {
   const items: AdjudicationItem[] = [
     {

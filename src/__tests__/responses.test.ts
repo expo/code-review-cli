@@ -1,12 +1,15 @@
 import { test, expect } from "bun:test";
 
 import {
+  extractCitedFindingIds,
   extractFindingIds,
   extractQuotedLines,
   matchReplies,
   normalizeTitle,
 } from "../core/responses.js";
 import type { ReplyComment } from "../core/responses.js";
+import { feedbackApplied } from "../core/adjudicate.js";
+import type { LoadedConfig } from "../config/schema.js";
 import type { Finding } from "../core/schema.js";
 
 const finding = (over: Partial<Finding> = {}): Finding => ({
@@ -57,6 +60,17 @@ test("extractFindingIds: lowercases and dedupes id: tokens in the fingerprint al
     "abc123",
     "deadbeef99",
   ]);
+});
+
+// ---- extractCitedFindingIds ----
+
+test("extractCitedFindingIds: an id inside a blockquote is not a citation by the replier", () => {
+  // GitHub's "Quote reply" prefixes every line of the target comment with "> ", so a
+  // quoted id may be text the untrusted PR author planted.
+  expect(extractCitedFindingIds("> the reviewer said id:abc123\n\nwhat do you think?")).toEqual([]);
+  expect(extractCitedFindingIds("> quoted prose\n\nagreed, id:abc123 is fine")).toEqual(["abc123"]);
+  // Nested quotes count as quotes too.
+  expect(extractCitedFindingIds(">> id:deadbeef99")).toEqual([]);
 });
 
 // ---- matchReplies ----
@@ -170,6 +184,70 @@ test("matchReplies: carries the comment url and maintainer flag onto the record"
   );
   expect(records[0]!.url).toBe("https://github.com/o/r/pull/1#issuecomment-9");
   expect(records[0]!.maintainer).toBe(true);
+});
+
+// Finding 1fbf85c0e651, end to end: (1) the bot posts the review, so every finding
+// title is public; (2) the PR author writes one of those titles on its own line inside
+// an innocent question; (3) a maintainer uses "Quote reply" on that comment, which
+// copies it with every line prefixed "> ". The maintainer's comment now matches the
+// finding — but on text the AUTHOR wrote, so it may annotate and must never clear.
+test("matchReplies: a maintainer's quote-reply to author-planted text annotates but cannot clear", () => {
+  const fp = "aa11bb22cc33";
+  const f = { finding: finding(), fp };
+  const planted =
+    "Quick question about this one:\n\n" +
+    "> Validation skips jobs with a custom project root\n" +
+    "> `id:aa11bb22cc33`\n\n" +
+    "> is that a problem?";
+  const records = matchReplies(
+    [reply({ id: 200, login: "maint", maintainer: true, body: planted })],
+    [f],
+    { match: "both" },
+  );
+  // The reply is recorded (the annotation is the useful, zero-risk half)…
+  expect(records).toHaveLength(1);
+  expect(records[0]!.maintainer).toBe(true);
+  // …but nothing in it was written by the maintainer, so it cites no id.
+  expect(records[0]!.citedId).toBe(false);
+  const c: LoadedConfig["feedback"] = {
+    mode: "adjudicate",
+    match: "both",
+    dismiss: "adjudicated",
+    protectedCategories: [],
+    maxAdjudications: 10,
+  };
+  expect(feedbackApplied(f.finding, records[0]!, c)).toBe(false);
+  // Control: the same maintainer citing the id in their own words does clear it.
+  const cited = matchReplies(
+    [
+      reply({
+        id: 201,
+        login: "maint",
+        maintainer: true,
+        body: "agreed, dropping id:aa11bb22cc33",
+      }),
+    ],
+    [f],
+    { match: "both" },
+  );
+  expect(cited[0]!.citedId).toBe(true);
+  expect(feedbackApplied(f.finding, cited[0]!, c)).toBe(true);
+});
+
+test("matchReplies: citedId is derived whatever `match` says (that knob only picks how a reply matches)", () => {
+  const fp = "aa11bb22cc33";
+  const f = { finding: finding(), fp };
+  // match:'quote' does not use ids to MATCH, but a cited id still gates clearing.
+  const quoteMatched = matchReplies(
+    [
+      reply({
+        body: "> Validation skips jobs with a custom project root\n\npre-existing, id:aa11bb22cc33",
+      }),
+    ],
+    [f],
+    { match: "quote" },
+  );
+  expect(quoteMatched[0]!.citedId).toBe(true);
 });
 
 test("matchReplies: carries the PR-author flag onto the record (gates the adjudicated path)", () => {

@@ -221,13 +221,15 @@ const review: CoordinatorOutput = {
   summary: "s",
   incomplete: [],
 };
-/** B was cleared by the PR author's reply, under `dismiss: "adjudicated"`. */
+/** B was cleared by the PR author's reply, under `dismiss: "adjudicated"`. The reply
+ * cites B's id in the author's own words — a quote alone only annotates. */
 const clearedB: FeedbackRecord = {
   fp: fpB,
   by: "author",
   commentId: 42,
   maintainer: false,
   author: true,
+  citedId: true,
   verdict: "accepted",
   reason: "pre-existing",
   sourceSha: HEAD,
