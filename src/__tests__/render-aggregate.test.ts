@@ -136,6 +136,66 @@ test("aggregate: dismissed findings survive in embedded state so /undismiss can 
   expect(restored).not.toContain("Dismissed on this PR");
 });
 
+test("aggregate: a freshly-reviewed scope's per-scope feedback array is stripped from embedded state", () => {
+  // Finding stale-scope-feedback (render side): a freshly-reviewed scope's
+  // ReviewRunResult carries `review.feedback`. Embedding it verbatim would leave a
+  // stale per-scope copy that a later carried-over run reads back and re-applies. The
+  // top-level feedback array is the single source of truth, so the per-scope copy must
+  // not survive into the embedded state.
+  const f = finding({ title: "F", evidence: "const perScopeFeedbackStrip = 1;" });
+  const fp = scopedFingerprint("www", f);
+  const staleRecord = { fp, by: "octocat", commentId: 9, maintainer: true, applied: false };
+  const results: ScopeReviewResult[] = [
+    {
+      scope: "www",
+      isDefault: false,
+      review: {
+        decision: "approve",
+        findings: [f],
+        summary: "s",
+        incomplete: [],
+        feedback: [staleRecord],
+      } as CoordinatorOutput,
+    },
+  ];
+  const body = renderAggregateMarkdown(results, "tag", [], undefined, undefined, [staleRecord]);
+  const state = parseReviewState(body, "tag")!;
+  const wwwScope = state.scopes!.find((s) => s.scope === "www")!;
+  expect((wwwScope.review as { feedback?: unknown }).feedback).toBeUndefined();
+  // The record still rides the top-level feedback array (the single source of truth).
+  expect(state.feedback).toHaveLength(1);
+});
+
+test("aggregate: a scope whose reply cleared every finding opens its fold (visible suppression)", () => {
+  // Finding aggregate-audit-fold: when replies suppress a scope's only finding, shown
+  // and requalifiedAll are both empty. The fold must still open so the audit note is
+  // visible, matching renderMarkdown and LLP 0010's visible-suppression rule.
+  const f = finding({ title: "Cleared by reply", evidence: "const replyClearedThing = 1;" });
+  const fp = scopedFingerprint("www", f);
+  const body = renderAggregateMarkdown(
+    [scope("www", false, { findings: [f] })],
+    "tag",
+    [],
+    undefined,
+    undefined,
+    [
+      {
+        fp,
+        by: "octocat",
+        commentId: 9,
+        url: "https://github.com/o/r/pull/1#issuecomment-9",
+        maintainer: true,
+        applied: true,
+      },
+    ],
+  );
+  // The finding is suppressed (moved to Dismissed); the scope shows no active finding.
+  expect(body).toContain("<summary>www — Approve (0)</summary>");
+  // ...but the fold OPENS so the audit note is above-the-fold, not collapsed away.
+  expect(body).toMatch(/<details open>\n<summary>www —/);
+  expect(body).toContain("have an author response");
+});
+
 test('aggregate: oversized findings truncate with a "+N more" note and stay under 65k', () => {
   const many = Array.from({ length: 400 }, (_, i) =>
     finding({
@@ -158,4 +218,45 @@ test("aggregate: unmatched files render as a coverage note", () => {
   });
   expect(body).toContain("Coverage note");
   expect(body).toContain("weird/path.txt");
+});
+
+// Finding 135b432cb46b: the `/undismiss` pin set is a maintainer decision about a
+// finding. It rides the aggregate state whole — never indexed by the records or
+// findings this render happens to show, and never trimmed by the size cap loop, which
+// would silently release a restore no later run could recover.
+test("aggregate: the /undismiss pin set survives a render with no records and a truncating one", () => {
+  const pinned = finding({ title: "Pinned", evidence: "const pinnedEvidence = 1;" });
+  const pinnedFp = scopedFingerprint("www", pinned);
+  const pins = [{ fp: pinnedFp, commentId: 42 }];
+  // No feedback record matched this run (the author edited the reply away).
+  const plain = renderAggregateMarkdown(
+    [scope("www", false, { findings: [pinned] })],
+    "tag",
+    [],
+    undefined,
+    undefined,
+    [],
+    pins,
+  );
+  expect(parseReviewState(plain, "tag")!.pins).toEqual(pins);
+
+  const many = Array.from({ length: 400 }, (_, i) =>
+    finding({
+      title: `Finding ${i}`,
+      severity: "critical",
+      evidence: `const uniqueEvidenceNumber${i} = ${i};`,
+      rationale: "x".repeat(300),
+    }),
+  );
+  const big = renderAggregateMarkdown(
+    [scope("www", false, { decision: "request_changes", findings: [pinned, ...many] })],
+    "tag",
+    [],
+    undefined,
+    undefined,
+    [],
+    pins,
+  );
+  expect(big.length).toBeLessThan(65_000);
+  expect(parseReviewState(big, "tag")!.pins).toEqual(pins);
 });

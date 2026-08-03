@@ -115,6 +115,7 @@ is a ready example to adapt.
 | `ecr review --scope <name>` | Review only one routing scope over just that scope's changed files. |
 | `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
 | `ecr doctor [--list-scopes]` | Check environment, config, credentials, and (with a manifest) scopes. |
+| `ecr feedback [--repo <owner/repo>]` | Report which findings PR authors pushed back on, across history. See below. |
 
 Extra flags for monorepos: `review`/`ci` `--config-dir <dir>` (load config from an
 alternate dir; also `ECR_CONFIG_DIR`), `ci --scopes a,b` (limit the fan-out to
@@ -485,6 +486,82 @@ line: **comments = one-shot actions, labels = persistent configuration.**
 
 These workflows are comment-only (they never fail the PR's checks). The engine runs
 as the published package via `npx`, so no PR-controlled code is built.
+
+</details>
+
+<details>
+<summary><b>Author feedback (replies to findings)</b></summary>
+
+A PR author's reply to a finding is matched to it deterministically — by quoting
+the finding's title back, or by citing its short `` `id:…` `` token (only the id can
+clear a finding, see below) — and recorded
+in the comment's embedded state, no model involved in the matching itself. A
+matched finding shows `💬 @login replied` (linked to the comment) and a visible
+count above the fold; the reply's own text is never stored or rendered, only the
+login, the comment link, and (optionally) an enum-valued verdict. Controlled by
+the root-only `feedback` block in `config.jsonc`:
+
+```jsonc
+"feedback": {
+  "mode": "annotate",       // "off" | "annotate" | "adjudicate"
+  "match": "both",          // "quote" | "id" | "both"
+  "dismiss": "never",       // "never" | "maintainers" | "adjudicated"
+  "protectedCategories": ["secrets", "security"],
+  "maxAdjudications": 10    // cap on model calls per run, when mode is "adjudicate"
+}
+```
+
+- **`annotate`** (the default) matches and shows "author replied" with zero effect
+  on the decision — safe and useful even if you never touch this block.
+- **Clearing a finding always needs the `` `id:…` `` token**, in the replier's own words
+  (an id inside a `>` quote does not count). Quoting the title is enough to *annotate*,
+  never to clear: GitHub's "Quote reply" copies the PR author's text verbatim, so a
+  maintainer clicking it would otherwise dismiss a finding on words the author wrote —
+  by accident, or because they were led to.
+- **`adjudicate`** additionally has a model re-check the reply against the actual
+  source (distrust-by-default, like the finding verifier) and record a verdict.
+  Whether that verdict can actually clear a finding is a separate, still-off-by-
+  default choice — `mode` and `dismiss` are independent axes: `dismiss:
+  "maintainers"` lets a maintainer's own reply dismiss with no model involved
+  (it works under plain `annotate` too); `dismiss: "adjudicated"` additionally
+  accepts an author reply the model confirmed (which does need `mode:
+  "adjudicate"` for verdicts to exist). Either way the reply has to cite the finding's
+  `` `id:…` ``. A `critical` finding, or one categorized `secrets`/
+  `security`, can never be cleared this way, whatever the config — that floor is
+  enforced in code, not the prompt.
+- **`/undismiss <id>` wins over a reply.** Running it on a finding a reply cleared
+  puts the finding back in the active list and keeps it there: another reply from
+  the PR author can't clear it again. The restore is recorded against the FINDING
+  in the comment state, not against the reply, so editing or deleting the reply
+  doesn't drop it either. Only a maintainer lifts that — either `/dismiss <id>` on
+  the same finding, or a maintainer's own reply to it.
+
+`ecr feedback` mines this substrate retroactively, with no model call and no
+re-review: it crawls a repo's PRs, reads each one's existing reviewer comment
+(which already embeds its findings), matches non-bot replies against it, and
+reports totals, a reply-rate, breakdowns by category/severity/agent, and — the
+highest-value part — "repeat offenders": findings whose title recurred across 2+
+PRs and drew a reply every single time.
+
+```bash
+ecr feedback --repo expo/eas-cli --limit 100 --since 2026-06-01
+ecr feedback --as my-review-bot   # if CI posts under a PAT/app identity
+ecr feedback --json               # for scripting
+```
+
+The crawl matches the reviewer's comments by author. CI posts them as
+`github-actions[bot]` (the default), so a locally-run crawl uses that identity —
+pass `--as <login>` when your workflow posts under something else.
+
+`ecr feedback` always reads `.expo-code-review/config.jsonc` from the LOCAL
+checkout, even with `--repo`. If `--repo` points at a different repo, it warns
+that `commentTag` may not match, so a zero-findings result there is not read as
+zero pushback. It also warns when every scanned PR had no bot comment at all,
+instead of leaving that as an easy-to-miss "0 with a bot comment" in the totals.
+
+See [LLP 0011](./llp/0011-author-feedback.explainer.md) for why matching is
+deterministic, why reply text is never echoed into the comment, and why the
+defaults are asymmetric.
 
 </details>
 

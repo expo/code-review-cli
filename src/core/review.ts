@@ -42,7 +42,9 @@ import {
   NO_TOOLS_INSTRUCTION,
 } from "./prompts.js";
 import { fingerprintFinding, isOverallRiskHandoff, parseReviewerOutput } from "./schema.js";
-import type { CoordinatorOutput, Finding } from "./schema.js";
+import type { CoordinatorOutput, FeedbackRecord, Finding } from "./schema.js";
+import { adjudicateFeedback } from "./adjudicate.js";
+import type { AdjudicationItem } from "./adjudicate.js";
 import { buildManifestMembership, manifestKey, normalizeManifestPath } from "./stack.js";
 import { confirmStackRequalifications, patchConfirmer } from "./stack-confirm.js";
 import { sortFindings } from "./render.js";
@@ -91,6 +93,30 @@ export interface ReviewRunOptions {
    */
   // @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — gated by confirmWithPatch so v2 ships dark until flipped
   stackConfirm?: { maxConfirmations: number };
+  /**
+   * Author-feedback inputs. When present and `config.feedback.mode !== "off"`, the
+   * replies matched to this run's findings are judged (in "adjudicate" mode) against
+   * the source and the enriched records are returned on the result. Absent ⇒ the whole
+   * feature is a no-op and behavior is byte-identical, which is how it ships dark.
+   *
+   * `match` does the comment IO in the command layer (the reporter matches replies and
+   * pairs each with its reply body); the model calls stay here. The reply body is used
+   * only to build the adjudicator prompt — never stored on a record, never rendered.
+   */
+  // @ref LLP 0011#never-echo-reply-text [constrained-by] — reply text enters only the adjudicator prompt via this seam; the returned records carry no free text
+  feedback?: {
+    config: LoadedConfig["feedback"];
+    match: (review: CoordinatorOutput) => Promise<AdjudicationItem[]>;
+  };
+}
+
+/**
+ * A completed review plus, when the feedback feature is on, the author-reply records
+ * matched to its findings (adjudicated and with `applied` computed). `feedback` is
+ * absent whenever no feedback input was supplied or the mode is "off".
+ */
+export interface ReviewRunResult extends CoordinatorOutput {
+  feedback?: FeedbackRecord[];
 }
 
 /**
@@ -157,7 +183,7 @@ export function effectiveConcurrency(
 export async function runReview(
   source: ReviewSource,
   options: ReviewRunOptions,
-): Promise<CoordinatorOutput> {
+): Promise<ReviewRunResult> {
   const { config } = options;
   const started = Date.now();
   const runId = makeRunId();
@@ -379,6 +405,12 @@ export async function runReview(
   // reviewers produced before the failure — partial findings are exactly what's
   // needed to debug a run that died mid-way.
   const agentFindings: Record<string, Finding[]> = {};
+  // First reviewer (by scheduling order) that produced each fingerprint, so a finding's
+  // originating agent can be carried through the coordinator's merge/rewrite by matching
+  // on fingerprint. Kept separate from agentFindings so the coordinator prompt and the
+  // run log stay byte-identical (attribution is engine metadata, never sent to a model).
+  // @ref LLP 0011#attribution-and-identity [constrained-by] — engine-set, excluded from fingerprintFinding, so attribution never re-keys a dismissal
+  const agentByFp = new Map<string, string>();
   // Every model request's usage lands in the run total AND its bucket, so the run
   // log can show cache effectiveness per pass and not just run-wide.
   const trackTokens = (bucket: string, tokens?: TokenUsage): void => {
@@ -652,6 +684,12 @@ export async function runReview(
         trackTokens(task.bucket, tokens);
         trackModel(task.bucket, taskModel(task), model);
         (agentFindings[task.bucket] ??= []).push(...value.findings);
+        for (const finding of value.findings) {
+          const fp = fingerprintFinding(finding);
+          if (!agentByFp.has(fp)) {
+            agentByFp.set(fp, task.bucket);
+          }
+        }
         completedPasses++;
         if (truncated) {
           progress(`  ${task.label}: hit its budget — returned partial findings`);
@@ -992,6 +1030,82 @@ export async function runReview(
       output = { ...output, summary: reconcileRequalifiedSummary(output.summary) };
     }
 
+    // Attribution: carry each surviving finding's originating agent onto the output. The
+    // coordinator merges and rewrites findings, so match by fingerprint and keep the
+    // first agent that produced it; a finding the coordinator changed enough to break the
+    // fingerprint stays unattributed (reported as "unknown") rather than guessed. Agent
+    // is excluded from the fingerprint, so setting it can never lapse a dismissal. This
+    // lookup is the ONLY writer: the model-facing schema drops any `agent` the
+    // coordinator emitted, so nothing here has to trust (or defer to) model attribution.
+    // @ref LLP 0011#attribution-and-identity [implements] — attribution rides through the coordinator by fingerprint; annotation-only, and engine-set only
+    if (agentByFp.size > 0 && output.findings.length > 0) {
+      output = {
+        ...output,
+        findings: output.findings.map((finding) => {
+          const agent = agentByFp.get(fingerprintFinding(finding));
+          return agent ? { ...finding, agent } : finding;
+        }),
+      };
+    }
+
+    // Author-feedback adjudication (ships dark): when the caller supplied feedback input
+    // and the mode is on, match the replies to the final findings and — in "adjudicate"
+    // mode — judge each rebuttal against the source, then record the verdict and whether
+    // it cleared the finding. Fails open: any error leaves the review untouched, so the
+    // feedback path can never break a review (`ecr ci` must never fail a PR's checks).
+    // @ref LLP 0011#the-rebuttal-is-a-hypothesis [implements] — runs after verification, before reporting; the hard floors and the cap live in adjudicate.ts, not the prompt
+    let feedbackRecords: FeedbackRecord[] | undefined;
+    if (options.feedback && options.feedback.config.mode !== "off") {
+      try {
+        const items = await options.feedback.match(output);
+        const adjudication = await adjudicateFeedback(
+          handle,
+          items,
+          options.feedback.config,
+          progress,
+          // The revision each verdict is judged against: the PR head OID this run
+          // materialized and read from. A source without one (local git) stamps
+          // nothing, so its verdicts never carry to a later run.
+          metadata.headOid,
+        );
+        feedbackRecords = adjudication.records;
+        agentCosts["adjudicator"] = adjudication.cost;
+        trackTokens("adjudicator", adjudication.tokens);
+        trackModel(
+          "adjudicator",
+          config.agents[0]?.model ?? config.coordinator.model,
+          adjudication.model,
+        );
+        // Never silent: a capped or failed adjudication is a reduced-coverage fact.
+        if (adjudication.skipped > 0 || adjudication.failed > 0) {
+          const parts: string[] = [];
+          if (adjudication.skipped > 0) {
+            parts.push(
+              `${adjudication.skipped} left unjudged over the maxAdjudications=${options.feedback.config.maxAdjudications} cap`,
+            );
+          }
+          if (adjudication.failed > 0) {
+            parts.push(`${adjudication.failed} could not be judged (the source check failed)`);
+          }
+          output = {
+            ...output,
+            incomplete: [
+              ...new Set([
+                ...output.incomplete,
+                `Author-reply adjudication was reduced this run: ${parts.join("; ")}. ` +
+                  `Those replies carry no verdict and cleared no finding.`,
+              ]),
+            ],
+          };
+        }
+      } catch (error) {
+        // Fail open — feedback never breaks a review.
+        progress(
+          `Author-reply adjudication failed (${errorMessage(error)}); continuing without it.`,
+        );
+      }
+    }
+
     // Surface provider throttling as a fact about the run: passes already waited or
     // backed off, but the operator should still SEE that it happened (a run that
     // was rate-limited is slower and may carry partial passes — that's the cause).
@@ -1053,7 +1167,7 @@ export async function runReview(
       summary: output.summary,
     });
 
-    return output;
+    return feedbackRecords ? { ...output, feedback: feedbackRecords } : output;
   } catch (error) {
     await safeLog(logPath, {
       ...baseRecord,

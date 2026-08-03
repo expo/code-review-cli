@@ -108,4 +108,33 @@
   //   "confirmWithPatch": false, // v2: confirm each requalification against the addressing PR's patch
   //   "maxConfirmations": 10     // v2: max patch confirmations per run (overflow is stripped)
   // }
+
+  // Author feedback (ROOT-ONLY: the comment lifecycle is global). A PR author's
+  // reply is matched to the finding it answers (a quoted title and/or an
+  // `id:<fp>` token) and recorded in the comment's embedded state. This is ON
+  // by default even if you never touch this block, and deliberately ASYMMETRIC:
+  // `mode: "annotate"` marks a matched finding "author replied" with a link back
+  // to the comment — purely informational, no effect on the pass/fail decision.
+  // `dismiss: "never"` keeps it that way: no reply, and no model judgment, can
+  // remove a finding from the blocking set until you opt in below. This is
+  // deliberate — a repo that never edits this file still gets the useful,
+  // read-only behavior, never a surprise auto-dismissal.
+  //   "mode": "off" | "annotate" | "adjudicate" — "adjudicate" additionally runs
+  //     a model that re-checks the reply against the SOURCE (distrust by
+  //     default, like the verifier) and records a verdict.
+  //   "dismiss": "never" | "maintainers" | "adjudicated" — who/what may actually
+  //     clear a finding: nothing, a maintainer's reply, or (with `adjudicate`) a
+  //     maintainer reply OR an author reply the adjudicator confirmed.
+  // Clearing always needs the reply to cite the finding's `id:<fp>` token in the
+  // replier's OWN words: an id (or a title) inside a `>` quote only annotates,
+  // because "Quote reply" copies text the PR author wrote.
+  // Critical findings and `protectedCategories` can never be dismissed by a
+  // reply, whatever you set here — that floor is enforced in code, not here.
+  // "feedback": {
+  //   "mode": "annotate",
+  //   "match": "both",                              // "quote" | "id" | "both"
+  //   "dismiss": "never",
+  //   "protectedCategories": ["secrets", "security"],
+  //   "maxAdjudications": 10                        // cap on model calls per run
+  // }
 }

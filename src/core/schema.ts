@@ -74,6 +74,15 @@ export const FindingSchema = z.object({
   requalifiedBy: z
     .object({ prNumber: z.number().int(), file: z.string(), reason: z.string() })
     .optional(),
+  /**
+   * Which reviewer agent produced this finding. Engine-populated, never the model:
+   * `ModelFindingSchema` omits it, so an `agent` in model JSON is dropped at the parse
+   * boundary and only the engine's fingerprint lookup can set it. Excluded from the
+   * fingerprint like `requalifiedBy`, so attribution appearing on a finding can never
+   * lapse an existing dismissal.
+   */
+  // @ref LLP 0011#attribution-and-identity [constrained-by] — attribution is annotation-only; never part of fingerprintFinding
+  agent: z.string().optional(),
 });
 export type Finding = z.infer<typeof FindingSchema>;
 
@@ -123,16 +132,28 @@ export function parseStackVerdict(text: string): StackVerdict {
   return StackVerdictSchema.parse(extractJsonObject(text));
 }
 
+// @ref LLP 0011#attribution-and-identity [implements] — `agent` is engine-populated, so the model-facing schema drops it at the parse boundary instead of trusting call sites to strip it
+/**
+ * The finding shape a MODEL may emit: `FindingSchema` minus the engine-only `agent`.
+ * Both model outputs parse through this, so an `agent` a reviewer pass or the
+ * coordinator invented is dropped where model JSON becomes typed data — the engine's own
+ * fingerprint lookup is then the only thing that can set it. The transform re-widens the
+ * result to `Finding` so downstream code (which does set `agent`) needs no change.
+ */
+const ModelFindingSchema = FindingSchema.omit({ agent: true }).transform(
+  (finding): Finding => finding,
+);
+
 /** Shape each sub-reviewer must emit. */
 export const ReviewerOutputSchema = z.object({
-  findings: z.array(FindingSchema).default([]),
+  findings: z.array(ModelFindingSchema).default([]),
 });
 export type ReviewerOutput = z.infer<typeof ReviewerOutputSchema>;
 
 /** Mode-agnostic coordinator result; each Reporter decides how to render it. */
 export const CoordinatorOutputSchema = z.object({
   decision: z.enum(DECISIONS),
-  findings: z.array(FindingSchema).default([]),
+  findings: z.array(ModelFindingSchema).default([]),
   summary: z.string(),
   /**
    * Human-readable notes about reduced coverage (e.g. a review pass that hit its
@@ -157,6 +178,178 @@ export interface DismissalRecord {
   fp: string;
   by?: string;
   reason?: string;
+}
+
+/** How an author's reply to a finding held up against the source. */
+export const FEEDBACK_VERDICTS = ["accepted", "refuted", "unclear"] as const;
+export type FeedbackVerdict = (typeof FEEDBACK_VERDICTS)[number];
+
+/** The kinds of pushback authors actually write, as a closed set. */
+export const FEEDBACK_REASONS = [
+  "pre-existing", // the PR only continues a pattern already in the repo
+  "deliberate-scope", // a bounded, intentional limitation of new code
+  "fixed", // the author says they addressed it
+  "disagree", // the author disputes the analysis itself
+  "other",
+] as const;
+export type FeedbackReason = (typeof FEEDBACK_REASONS)[number];
+
+// @ref LLP 0011#never-echo-reply-text [constrained-by] — no free-text field: reply prose never reaches the comment body, so it can never carry a forged state marker
+/**
+ * One author reply matched to one finding, keyed by fingerprint. Everything here
+ * is either engine-derived or enum-valued — deliberately NO free-text field. The
+ * reply's own prose is never stored and never rendered; adding a field for it
+ * would put attacker-written text back into the comment body.
+ */
+export const FeedbackRecordSchema = z.object({
+  fp: z.string(),
+  by: z.string(),
+  commentId: z.number().int(),
+  url: z.string().optional(),
+  maintainer: z.boolean().default(false),
+  /**
+   * True when the replying login is the PR author. Re-derived from the live comment
+   * every run (never trusted from stored state), so it is unspoofable like `maintainer`.
+   * Only a maintainer OR the PR author may clear a finding via a reply — an untrusted
+   * third-party commenter is annotated but can never be counted as an adjudicatable
+   * rebuttal (feedbackApplied gates the adjudicated path on this).
+   */
+  // @ref LLP 0011#hard-floors-in-code [constrained-by] — the adjudicated clear path is for the PR author only; a third-party commenter's rebuttal never clears
+  author: z.boolean().optional(),
+  /**
+   * True when the reply cites this finding's `id:<fp>` token in the replier's OWN words
+   * (outside every blockquote). Re-derived from the live comment every run by
+   * `matchReplies`, never trusted from stored state, exactly like `maintainer`/`author`.
+   * A quote-only match still ANNOTATES the finding; only a cited id may CLEAR it, on
+   * both clear paths. Absent ⇒ false ⇒ clears nothing, so a record written before this
+   * field parses fine and fails closed until its reply is matched again.
+   */
+  // @ref LLP 0011#a-quote-annotates-an-id-clears [constrained-by] — a quoted line can be text the untrusted PR author planted for a maintainer to quote-reply, so a quote may annotate but never clear
+  citedId: z.boolean().optional(),
+  verdict: z.enum(FEEDBACK_VERDICTS).optional(),
+  reason: z.enum(FEEDBACK_REASONS).optional(),
+  /**
+   * The reviewed head commit the verdict above was judged against (the PR head OID of
+   * the run whose adjudicator answered). A verdict is a statement about SOURCE, and a
+   * fingerprint deliberately excludes the line number, so a finding keeps its identity
+   * while the code that justified the rebuttal is edited away. Binding the verdict to
+   * the revision it judged is what lets mergeFeedback drop it once the head moves.
+   * Absent ⇒ unknown source (a record from before this field, or a run with no
+   * resolvable head OID): the verdict never carries, so a missing SHA can never pin a
+   * decision forever.
+   */
+  // @ref LLP 0011#suppression-is-never-silent [constrained-by] — a carried verdict must be re-judged when the source it judged changes; unknown source fails safe to re-judging
+  sourceSha: z.string().optional(),
+  /** True when this reply actually removed the finding from the blocking set. */
+  applied: z.boolean().default(false),
+  /**
+   * Set when a human ran `/undismiss <id>` on a finding a reply had cleared: the
+   * finding returns to the active list and no live reply may re-apply it, so a later
+   * re-review recomputing `applied` from the still-present reply keeps it un-cleared.
+   *
+   * DERIVED, never the storage: the pin itself lives in the comment state's own `pins`
+   * set (see FeedbackPinSchema), which survives a run where no reply matches the
+   * finding at all. This flag is stamped back onto the record by `applyPins` on every
+   * render so `feedbackApplied` stays a pure record-local decision — and so a comment
+   * written by this version is still read correctly by an older one.
+   */
+  // @ref LLP 0011#suppression-is-never-silent [constrained-by] — /undismiss must actually restore a reply-cleared finding, and the untrusted PR author must not be able to lift that restore by removing or replacing their reply
+  unclearedByHuman: z.boolean().optional(),
+});
+export type FeedbackRecord = z.infer<typeof FeedbackRecordSchema>;
+
+// @ref LLP 0011#the-pin-belongs-to-the-finding [implements] — the pin is state about a FINDING, stored outside the reply record so a vanishing reply can never drop it
+/**
+ * One maintainer `/undismiss` pin: the finding they restored, plus the reply comment
+ * the pin was applied against (absent when the finding had no reply record). The
+ * comment id is what makes "a maintainer's own NEWER reply lifts the pin" decidable
+ * without the pin having to live on a reply record: only a maintainer reply posted
+ * AFTER the pin (a strictly greater comment id — GitHub issue comment ids increase)
+ * releases it.
+ */
+export const FeedbackPinSchema = z.object({
+  fp: z.string(),
+  commentId: z.number().int().optional(),
+});
+export type FeedbackPin = z.infer<typeof FeedbackPinSchema>;
+
+/**
+ * The pin set to work with: the state's own `pins` plus any record-level
+ * `unclearedByHuman` flag. The second half is the migration for a comment written
+ * before `pins` existed — its pins live only on the records, and dropping them would
+ * silently lift a maintainer's restore on the first render by this version. Idempotent.
+ */
+export function collectPins(
+  pins: FeedbackPin[] | undefined,
+  records: FeedbackRecord[],
+): FeedbackPin[] {
+  const byFp = new Map<string, FeedbackPin>();
+  for (const pin of pins ?? []) {
+    byFp.set(pin.fp, pin);
+  }
+  for (const record of records) {
+    if (record.unclearedByHuman === true && !byFp.has(record.fp)) {
+      byFp.set(record.fp, { fp: record.fp, commentId: record.commentId });
+    }
+  }
+  return [...byFp.values()];
+}
+
+// @ref LLP 0011#the-pin-belongs-to-the-finding [implements] — the pin set is the single source of truth; the record flag is stamped from it, never the other way round
+/**
+ * Carry the pin set across one render and stamp the records it covers. A pinned
+ * record can never be `applied` (the finding stays in the active list), and a record
+ * the set does NOT pin loses any stale flag — the set decides, so a flag left on a
+ * record could never resurrect a lifted pin.
+ *
+ * The only lift here is a maintainer's own newer reply: a reply record for the pinned
+ * finding, from a maintainer, posted after the pin. Everything else (a newer reply from
+ * the untrusted PR author, an edited or deleted reply, a re-review that matched no
+ * reply at all) leaves the pin exactly where it is. The other lift — a maintainer's
+ * `/dismiss` on that finding — happens in applyDismissalToState, the same trusted hand
+ * deciding the opposite way.
+ */
+export function applyPins(
+  records: FeedbackRecord[],
+  pins: FeedbackPin[],
+): { records: FeedbackRecord[]; pins: FeedbackPin[] } {
+  const kept = pins.filter(
+    (pin) =>
+      // A pin with no recorded commentId is never lifted by a reply: "unknown" must not
+      // read as "older than every comment", which would let any maintainer reply lift it.
+      pin.commentId === undefined ||
+      !records.some(
+        (record) =>
+          record.fp === pin.fp && record.maintainer === true && record.commentId > pin.commentId!,
+      ),
+  );
+  const pinnedFps = new Set(kept.map((pin) => pin.fp));
+  const stamped = records.map((record) => {
+    if (pinnedFps.has(record.fp)) {
+      return { ...record, unclearedByHuman: true, applied: false };
+    }
+    if (record.unclearedByHuman === undefined) {
+      return record;
+    }
+    const { unclearedByHuman: _lifted, ...rest } = record;
+    return rest;
+  });
+  return { records: stamped, pins: kept };
+}
+
+/**
+ * The adjudicator's verdict on one rebuttal, re-derived from the source. Both
+ * fields are enum-constrained: the judgment is a classification, never prose the
+ * model could smuggle instructions (or a state marker) through.
+ */
+export const AdjudicationSchema = z.object({
+  verdict: z.enum(FEEDBACK_VERDICTS),
+  reason: z.enum(FEEDBACK_REASONS).default("other"),
+});
+export type Adjudication = z.infer<typeof AdjudicationSchema>;
+
+export function parseAdjudication(text: string): Adjudication {
+  return AdjudicationSchema.parse(extractJsonObject(text));
 }
 
 /** Minimum normalized evidence length to key a fingerprint on the code (below

@@ -1,8 +1,24 @@
 // @ref LLP 0005#comment-rendering — pure Markdown builder; the comment body is the durable state store
 import { createHash } from "node:crypto";
 
-import { fingerprintFinding, scopedFingerprint, SEVERITIES, SEVERITY_RANK } from "./schema.js";
-import type { CoordinatorOutput, Decision, DismissalRecord, Finding, Severity } from "./schema.js";
+import {
+  collectPins,
+  FeedbackPinSchema,
+  FeedbackRecordSchema,
+  fingerprintFinding,
+  scopedFingerprint,
+  SEVERITIES,
+  SEVERITY_RANK,
+} from "./schema.js";
+import type {
+  CoordinatorOutput,
+  Decision,
+  DismissalRecord,
+  FeedbackPin,
+  FeedbackRecord,
+  Finding,
+  Severity,
+} from "./schema.js";
 
 /**
  * Enough PR context to turn a finding's `file:line` into a link to that line in
@@ -101,8 +117,47 @@ export function commentMarker(tag: string): string {
   return `<!-- ${tag} -->`;
 }
 
+// @ref LLP 0011#forged-state-markers [implements] — the first-match parsers make an earlier forged marker win, so untrusted prose never keeps a raw `<!--`
+/**
+ * Neutralize anything that could impersonate this reviewer's embedded state
+ * comment. `parseReviewState` and `parseEmbeddedFingerprints` match with a
+ * non-global RegExp, so they take the FIRST marker in the body while the genuine
+ * one is appended LAST: a forged `<!-- tag:state=… -->` rendered earlier — inside
+ * a model-written rationale, a path, a dismissal reason — would win over the real
+ * state and let PR content dictate the dismissal list. None of that prose ever
+ * legitimately needs an HTML comment, so every `<!--` in it is escaped.
+ */
+export function stripStateMarkers(text: string): string {
+  return text.replace(/<!--/g, "&lt;!--");
+}
+
+/** GitHub logins are `[A-Za-z0-9-]`, 39 chars max — anything else is forged. */
+const LOGIN_RE = /^[A-Za-z0-9-]{1,39}$/;
+
+/** A reply link must be a github.com URL, so a record can't inject an arbitrary
+ * target into the body. */
+const REPLY_URL_RE = /^https:\/\/github\.com\/[\w.\-/#]+$/;
+
+// @ref LLP 0011#never-echo-reply-text [constrained-by] — only the login and the link are rendered, both validated; a login that isn't GitHub-shaped names no one
+/**
+ * `@login`, or `an author` when the login isn't GitHub-shaped. The reply's own
+ * text is never rendered, so this credit line is the whole of what a reply
+ * contributes to the body.
+ */
+function replyAuthor(record: FeedbackRecord): string {
+  return LOGIN_RE.test(record.by) ? `@${record.by}` : "an author";
+}
+
+/** Link `text` to the reply comment, or leave it plain when the URL doesn't
+ * validate. */
+function replyLink(text: string, record: FeedbackRecord): string {
+  return record.url && REPLY_URL_RE.test(record.url) ? `[${text}](${record.url})` : text;
+}
+
 function locationText(finding: Finding): string {
-  return finding.line != null ? `${finding.file}:${finding.line}` : finding.file;
+  // A git path may legally hold anything, including a forged state marker.
+  const file = stripStateMarkers(finding.file);
+  return finding.line != null ? `${file}:${finding.line}` : file;
 }
 
 // @ref LLP 0005#comment-rendering [implements] — diff anchor only if the line is in the diff; else base-SHA blob (f9fecd5)
@@ -133,7 +188,7 @@ function location(finding: Finding, link?: LinkContext): string {
   }
   if (link.baseSha) {
     const lineAnchor = finding.line != null ? `#L${finding.line}` : "";
-    const url = `https://github.com/${link.repo}/blob/${link.baseSha}/${finding.file}${lineAnchor}`;
+    const url = `https://github.com/${link.repo}/blob/${link.baseSha}/${stripStateMarkers(finding.file)}${lineAnchor}`;
     return `[\`${text}\`](${url})`;
   }
   return `\`${text}\``;
@@ -149,11 +204,18 @@ export function renderMarkdown(
   tag: string,
   dismissed: DismissalRecord[] = [],
   link?: LinkContext,
+  feedback: FeedbackRecord[] = [],
+  pins: FeedbackPin[] = [],
 ): string {
   const dismissedByFp = new Map(dismissed.map((record) => [record.fp, record]));
   const withFp = review.findings.map((finding) => ({ finding, fp: fingerprintFinding(finding) }));
-  const notDismissed = withFp.filter(({ fp }) => !dismissedByFp.has(fp));
-  const dropped = withFp.filter(({ fp }) => dismissedByFp.has(fp));
+  const feedbackByFp = matchedFeedback(feedback, new Set(withFp.map((entry) => entry.fp)));
+  // An applied reply cleared the finding, so it leaves the active list exactly
+  // like a dismissal — with its own audit line saying a reply is what did it.
+  const isDropped = ({ fp }: { fp: string }): boolean =>
+    dismissedByFp.has(fp) || feedbackByFp.get(fp)?.applied === true;
+  const notDismissed = withFp.filter((entry) => !isDropped(entry));
+  const dropped = withFp.filter((entry) => isDropped(entry));
   // A requalified finding is addressed by a stacked PR: shown in its own collapsed
   // section and counted, but never in the main (blocking) severity list.
   const kept = notDismissed.filter(({ finding }) => !finding.requalifiedBy);
@@ -163,7 +225,7 @@ export function renderMarkdown(
   lines.push(
     `**Decision:** ${review.couldNotComplete ? "No review — every pass failed" : decisionLabel(review.decision)}`,
     "",
-    review.summary,
+    stripStateMarkers(review.summary),
     "",
   );
 
@@ -171,12 +233,13 @@ export function renderMarkdown(
     lines.push(
       "> ⏱️ **Coverage note:** coverage is partial — some review passes did not",
       "> finish (timed out or failed), so issues may exist in areas not fully reviewed:",
-      ...review.incomplete.map((note) => `> - ${note}`),
+      ...review.incomplete.map((note) => `> - ${stripStateMarkers(note)}`),
       "",
     );
   }
 
   lines.push(...requalificationAuditNote(requalified.map((entry) => entry.finding)));
+  lines.push(...feedbackAuditNote([...feedbackByFp.values()]));
 
   if (kept.length === 0) {
     lines.push("No findings.", "");
@@ -185,6 +248,8 @@ export function renderMarkdown(
       ...renderSeveritySections(
         kept.map((entry) => entry.finding),
         link,
+        fingerprintFinding,
+        feedbackByFp,
       ),
     );
   }
@@ -203,10 +268,10 @@ export function renderMarkdown(
   if (dropped.length > 0) {
     lines.push("<details>", `<summary>🚫 Dismissed on this PR (${dropped.length})</summary>`, "");
     for (const { finding, fp } of dropped) {
-      const record = dismissedByFp.get(fp)!;
-      const who = record.by ? ` by @${record.by}` : "";
-      const why = record.reason ? ` — ${record.reason}` : "";
-      lines.push(`- **${finding.title}** — ${location(finding, link)} \`id:${fp}\`${who}${why}`);
+      const suffix = droppedSuffix(dismissedByFp.get(fp), feedbackByFp.get(fp));
+      lines.push(
+        `- **${stripStateMarkers(finding.title)}** — ${location(finding, link)} \`id:${fp}\`${suffix}`,
+      );
     }
     lines.push("", "_Re-add one with `/undismiss <id>`._", "</details>", "");
   }
@@ -216,7 +281,9 @@ export function renderMarkdown(
   // and dismissals, so `/dismiss` can re-render this comment without re-running.
   const fingerprints = review.findings.map(fingerprintFinding);
   lines.push("", `<!-- ${tag}:fingerprints=${JSON.stringify(fingerprints)} -->`);
-  lines.push(`<!-- ${tag}:state=${encodeState({ review, dismissed })} -->`);
+  lines.push(
+    `<!-- ${tag}:state=${encodeState(reviewState({ review, dismissed }, feedbackByFp, pins))} -->`,
+  );
   return lines.join("\n");
 }
 
@@ -229,6 +296,7 @@ function renderSeveritySections(
   findings: Finding[],
   link?: LinkContext,
   idFor: (finding: Finding) => string = fingerprintFinding,
+  feedbackById?: Map<string, FeedbackRecord>,
 ): string[] {
   const out: string[] = [];
   const groups = groupBySeverity(sortFindings(findings));
@@ -239,7 +307,8 @@ function renderSeveritySections(
     }
     out.push(`### ${severityHeading(severity)} (${group.length})`, "");
     for (const finding of group) {
-      out.push(...renderFindingLines(finding, link, idFor(finding)));
+      const id = idFor(finding);
+      out.push(...renderFindingLines(finding, link, id, feedbackById?.get(id)));
     }
     out.push("");
   }
@@ -268,13 +337,14 @@ function renderFindingLines(
   finding: Finding,
   link?: LinkContext,
   id: string = fingerprintFinding(finding),
+  reply?: FeedbackRecord,
 ): string[] {
   const out = [
-    `- **${finding.title}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\``,
-    ...indentContinuation(finding.rationale),
+    `- **${stripStateMarkers(finding.title)}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\`${replyAnnotation(reply)}`,
+    ...indentContinuation(stripStateMarkers(finding.rationale)),
   ];
   if (finding.suggestion) {
-    out.push(...indentContinuation(`_Suggestion:_ ${finding.suggestion}`));
+    out.push(...indentContinuation(`_Suggestion:_ ${stripStateMarkers(finding.suggestion)}`));
   }
   // Separator so a rationale ending in `</details>` cannot swallow the next
   // bullet. Findings are already loose list items, so this changes no spacing.
@@ -311,11 +381,80 @@ function requalificationAuditNote(requalified: Finding[]): string[] {
  * addressing PR and the exact upstack path relied on. */
 function addressedLines(finding: Finding, fp: string, link?: LinkContext): string[] {
   const requalified = finding.requalifiedBy!;
-  const reason = requalified.reason ? `: ${requalified.reason}` : "";
+  const reason = requalified.reason ? `: ${stripStateMarkers(requalified.reason)}` : "";
   return [
-    `- **${finding.title}** — ${location(finding, link)} \`id:${fp}\` — addressed in ` +
-      `#${requalified.prNumber} (\`${requalified.file}\`)${reason}`,
+    `- **${stripStateMarkers(finding.title)}** — ${location(finding, link)} \`id:${fp}\` — addressed in ` +
+      `#${requalified.prNumber} (\`${stripStateMarkers(requalified.file)}\`)${reason}`,
   ];
+}
+
+/**
+ * Index the feedback records that answer a finding actually present in this
+ * comment, keyed by the id the comment renders. A record whose finding is gone
+ * (the flagged code changed, so the fingerprint moved) is dropped: it can no
+ * longer be shown, counted, or audited, so carrying it forward only grows state.
+ */
+function matchedFeedback(
+  feedback: FeedbackRecord[],
+  ids: Set<string>,
+): Map<string, FeedbackRecord> {
+  const matched = new Map<string, FeedbackRecord>();
+  for (const record of feedback) {
+    if (ids.has(record.fp) && !matched.has(record.fp)) {
+      matched.set(record.fp, record);
+    }
+  }
+  return matched;
+}
+
+// @ref LLP 0011#suppression-is-never-silent [implements] — the count sits above the fold, exactly like the requalification note, so a reply clearing a finding is never a quiet fold nobody opens
+/** The visible one-line audit note for author responses. Empty when no reply
+ * matched a finding in this comment. */
+function feedbackAuditNote(records: FeedbackRecord[]): string[] {
+  if (records.length === 0) {
+    return [];
+  }
+  const applied = records.filter((record) => record.applied).length;
+  return [
+    `> 💬 **${records.length} finding(s)** have an author response (${applied} applied).`,
+    "",
+  ];
+}
+
+/** ` · 💬 [@login replied](url)` on an active finding — the entire visible trace
+ * of a reply. The reply's own text is never part of it. */
+function replyAnnotation(record?: FeedbackRecord): string {
+  return record ? ` · 💬 ${replyLink(`${replyAuthor(record)} replied`, record)}` : "";
+}
+
+/** The audit tail of a "Dismissed" bullet: an explicit `/dismiss`, or the reply
+ * that cleared the finding. */
+function droppedSuffix(dismissal?: DismissalRecord, reply?: FeedbackRecord): string {
+  if (dismissal) {
+    const who = dismissal.by ? ` by @${stripStateMarkers(dismissal.by)}` : "";
+    const why = dismissal.reason ? ` — ${stripStateMarkers(dismissal.reason)}` : "";
+    return `${who}${why}`;
+  }
+  return reply ? ` — dismissed via reply by ${replyLink(replyAuthor(reply), reply)}` : "";
+}
+
+// @ref LLP 0011#the-pin-belongs-to-the-finding [implements] — the pin set rides the state on EVERY render, independent of which replies matched this run, so a reply that disappears can never drop a maintainer's restore
+/** Attach the matched feedback to the state blob. It rides the embedded state
+ * like dismissals do, so the next run re-reads what was recorded (including a
+ * verdict already decided) instead of re-deriving it.
+ *
+ * `pins` is written whole and unfiltered — NOT indexed by the findings or the records
+ * this render happens to show. A pin is a maintainer's decision about a finding, so it
+ * must outlive a run where the reply was edited away, the record was dropped, or the
+ * finding itself was not re-emitted. */
+function reviewState(
+  state: ReviewState,
+  feedbackByFp: Map<string, FeedbackRecord>,
+  pins: FeedbackPin[] = [],
+): ReviewState {
+  const feedback = [...feedbackByFp.values()];
+  const withFeedback = feedback.length > 0 ? { ...state, feedback } : state;
+  return pins.length > 0 ? { ...withFeedback, pins } : withFeedback;
 }
 
 /** Parse the fingerprints embedded in a previously-posted comment body. */
@@ -350,6 +489,16 @@ export interface ReviewState {
   dismissed: DismissalRecord[];
   /** v2: present only on aggregate comments (routing, comment:'single'). */
   scopes?: ScopeReviewResult[];
+  /** v3: author replies matched to the findings shown in this comment. */
+  feedback?: FeedbackRecord[];
+  /**
+   * v4: the findings a maintainer restored with `/undismiss` after a reply had cleared
+   * them. Stored beside the records rather than on them: a record only exists while a
+   * reply still matches its finding, and the pin has to survive the author editing,
+   * replacing or deleting that reply (see collectPins/applyPins). Read from a v3
+   * comment, the pins are migrated out of the records themselves.
+   */
+  pins?: FeedbackPin[];
 }
 
 const DECISION_RANK: Record<Decision, number> = {
@@ -384,10 +533,18 @@ export function renderAggregateMarkdown(
   dismissed: DismissalRecord[],
   link?: LinkContext,
   opts?: { unmatchedFiles?: string[] },
+  feedback: FeedbackRecord[] = [],
+  pins: FeedbackPin[] = [],
 ): string {
   const dismissedByFp = new Map(dismissed.map((record) => [record.fp, record]));
   const idOf = (result: ScopeReviewResult, finding: Finding): string =>
     scopedFingerprint(result.isDefault ? null : result.scope, finding);
+  // Feedback is keyed by the SAME scope-namespaced id the comment renders, so a
+  // record can never cross scopes.
+  const feedbackById = matchedFeedback(
+    feedback,
+    new Set(results.flatMap((result) => result.review.findings.map((f) => idOf(result, f)))),
+  );
 
   // Split each scope's findings into kept/requalified/dropped once (dismissal and
   // requalification are both limit-independent). `kept` is the active/blocking set;
@@ -398,12 +555,19 @@ export function renderAggregateMarkdown(
       finding,
       id: idOf(result, finding),
     }));
-    const notDismissed = withId.filter((entry) => !dismissedByFp.has(entry.id));
+    // An applied reply drops a finding out of the active list, like a dismissal.
+    const isDropped = (entry: { id: string }): boolean =>
+      dismissedByFp.has(entry.id) || feedbackById.get(entry.id)?.applied === true;
+    const notDismissed = withId.filter((entry) => !isDropped(entry));
     return {
       result,
       kept: notDismissed.filter((entry) => !entry.finding.requalifiedBy),
       requalified: notDismissed.filter((entry) => entry.finding.requalifiedBy),
-      dropped: withId.filter((entry) => dismissedByFp.has(entry.id)),
+      dropped: withId.filter((entry) => isDropped(entry)),
+      // The scope's own author responses, for its audit note.
+      feedback: withId
+        .map((entry) => feedbackById.get(entry.id))
+        .filter((record): record is FeedbackRecord => record != null),
     };
   });
 
@@ -422,7 +586,7 @@ export function renderAggregateMarkdown(
     ];
     for (const { result, kept } of perScope) {
       lines.push(
-        `| ${result.scope} | ${result.review.couldNotComplete ? "No review — every pass failed" : decisionLabel(result.review.decision)} | ${kept.length} |`,
+        `| ${stripStateMarkers(result.scope)} | ${result.review.couldNotComplete ? "No review — every pass failed" : decisionLabel(result.review.decision)} | ${kept.length} |`,
       );
     }
     lines.push("");
@@ -433,14 +597,14 @@ export function renderAggregateMarkdown(
       if (unmatched.length > 0) {
         const shown = unmatched
           .slice(0, 10)
-          .map((file) => `\`${file}\``)
+          .map((file) => `\`${stripStateMarkers(file)}\``)
           .join(", ");
         const more = unmatched.length > 10 ? `, …(+${unmatched.length - 10} more)` : "";
         lines.push(`> - ${unmatched.length} changed file(s) matched no scope: ${shown}${more}`);
       }
       for (const result of results) {
         for (const note of result.review.incomplete) {
-          lines.push(`> - [${result.scope}] ${note}`);
+          lines.push(`> - [${stripStateMarkers(result.scope)}] ${stripStateMarkers(note)}`);
         }
       }
       lines.push("");
@@ -450,8 +614,9 @@ export function renderAggregateMarkdown(
     // embedded state trims KEPT findings to the same set so a truncated comment
     // still fits GitHub's body limit (the hidden findings are noted, not silently
     // carried) — but dismissed findings are always kept in state (see below).
-    const rendered = perScope.map(({ result, kept, requalified, dropped }) => ({
+    const rendered = perScope.map(({ result, kept, requalified, dropped, feedback: replies }) => ({
       result,
+      replies,
       shown: sortFindings(kept.map((entry) => entry.finding)).slice(0, limitPerScope),
       hidden: Math.max(0, kept.length - limitPerScope),
       // The requalified section is trimmed by the same per-scope limit as shown: it
@@ -467,27 +632,35 @@ export function renderAggregateMarkdown(
 
     for (const {
       result,
+      replies,
       shown,
       hidden,
       requalified,
       requalifiedAll,
       requalifiedHidden,
     } of rendered) {
-      const open = shown.length > 0 || requalifiedAll.length > 0 ? " open" : "";
+      // @ref LLP 0011#suppression-is-never-silent — a reply-suppressed scope opens
+      // its fold so the audit note is visible, matching renderMarkdown and LLP 0010's
+      // visible-suppression rule (else a scope replies cleared reads as clean).
+      const open =
+        shown.length > 0 || requalifiedAll.length > 0 || replies.length > 0 ? " open" : "";
       const keptCount = shown.length + hidden;
       lines.push(
         `<details${open}>`,
-        `<summary>${result.scope} — ${decisionLabel(result.review.decision)} (${keptCount})</summary>`,
+        `<summary>${stripStateMarkers(result.scope)} — ${decisionLabel(result.review.decision)} (${keptCount})</summary>`,
         "",
       );
       if (result.review.summary) {
-        lines.push(result.review.summary, "");
+        lines.push(stripStateMarkers(result.review.summary), "");
       }
       lines.push(...requalificationAuditNote(requalifiedAll.map((entry) => entry.finding)));
+      lines.push(...feedbackAuditNote(replies));
       if (shown.length === 0) {
         lines.push("No findings.", "");
       } else {
-        lines.push(...renderSeveritySections(shown, link, (finding) => idOf(result, finding)));
+        lines.push(
+          ...renderSeveritySections(shown, link, (finding) => idOf(result, finding), feedbackById),
+        );
       }
       if (hidden > 0) {
         lines.push(`_…and ${hidden} more finding(s) — see the workflow log._`, "");
@@ -518,11 +691,9 @@ export function renderAggregateMarkdown(
         "",
       );
       for (const { finding, id, scope } of allDropped) {
-        const record = dismissedByFp.get(id)!;
-        const who = record.by ? ` by @${record.by}` : "";
-        const why = record.reason ? ` — ${record.reason}` : "";
+        const suffix = droppedSuffix(dismissedByFp.get(id), feedbackById.get(id));
         lines.push(
-          `- **${finding.title}** — ${location(finding, link)} \`id:${id}\` _(${scope})_${who}${why}`,
+          `- **${stripStateMarkers(finding.title)}** — ${location(finding, link)} \`id:${id}\` _(${stripStateMarkers(scope)})_${suffix}`,
         );
       }
       lines.push("", "_Re-add one with `/undismiss <id>`._", "</details>", "");
@@ -540,22 +711,32 @@ export function renderAggregateMarkdown(
     // across re-renders. The per-scope data (`scopes`) plus a merged v1 `review`
     // keep both v2 and v1 consumers working.
     const stateScopes: ScopeReviewResult[] = rendered.map(
-      ({ result, shown, requalified, dropped }) => ({
-        scope: result.scope,
-        isDefault: result.isDefault,
-        // Requalified findings ride the embedded state (like dismissed ones) so a
-        // re-render (/dismiss) round-trips them and the addressed section persists.
-        // Under truncation they are trimmed exactly like `shown` — state bytes count
-        // toward the comment size, so an untrimmed list would defeat the cap loop.
-        review: {
-          ...result.review,
-          findings: [
-            ...shown,
-            ...requalified.map((entry) => entry.finding),
-            ...dropped.map((entry) => entry.finding),
-          ],
-        },
-      }),
+      ({ result, shown, requalified, dropped }) => {
+        // @ref LLP 0011#suppression-is-never-silent — strip any per-scope `feedback`
+        // a freshly-reviewed scope's ReviewRunResult carries: the top-level feedback
+        // array (reviewState below) is the single source of truth. A stale per-scope
+        // copy that survived here would be read back on a later carried-over run and
+        // could re-apply a record a human /undismiss already overrode at the top level.
+        const { feedback: _feedback, ...review } = result.review as CoordinatorOutput & {
+          feedback?: unknown;
+        };
+        return {
+          scope: result.scope,
+          isDefault: result.isDefault,
+          // Requalified findings ride the embedded state (like dismissed ones) so a
+          // re-render (/dismiss) round-trips them and the addressed section persists.
+          // Under truncation they are trimmed exactly like `shown` — state bytes count
+          // toward the comment size, so an untrimmed list would defeat the cap loop.
+          review: {
+            ...review,
+            findings: [
+              ...shown,
+              ...requalified.map((entry) => entry.finding),
+              ...dropped.map((entry) => entry.finding),
+            ],
+          },
+        };
+      },
     );
     const merged: CoordinatorOutput = {
       decision: worst,
@@ -571,8 +752,13 @@ export function renderAggregateMarkdown(
       ),
     );
     lines.push("", `<!-- ${tag}:fingerprints=${JSON.stringify(fingerprints)} -->`);
+    // Feedback records and `/undismiss` pins ride the state whole, never trimmed by the
+    // cap loop: each is a handful of bytes, and losing one would lose a verdict already
+    // decided — or a maintainer's restore, which no later run could recover.
     lines.push(
-      `<!-- ${tag}:state=${encodeState({ review: merged, dismissed, scopes: stateScopes })} -->`,
+      `<!-- ${tag}:state=${encodeState(
+        reviewState({ review: merged, dismissed, scopes: stateScopes }, feedbackById, pins),
+      )} -->`,
     );
     return lines.join("\n");
   };
@@ -609,7 +795,21 @@ export function parseReviewState(body: string, tag: string): ReviewState | null 
   try {
     const parsed = JSON.parse(Buffer.from(match[1]!, "base64").toString("utf8")) as ReviewState;
     if (parsed && Array.isArray(parsed.review?.findings) && Array.isArray(parsed.dismissed)) {
-      return parsed;
+      // The v3 `feedback` field is shape-validated rather than trusted: it feeds
+      // the blocking decision, so a malformed blob must yield no records, not
+      // junk ones. Same for the v4 `pins`.
+      const feedback = FeedbackRecordSchema.array().safeParse(parsed.feedback ?? []);
+      const records = feedback.success ? feedback.data : [];
+      const parsedPins = FeedbackPinSchema.array().safeParse(parsed.pins ?? []);
+      // Migration on read: a v3 comment stored its pins on the records themselves, so
+      // collectPins lifts those into the set. Without this, the first render by this
+      // version would write a state with no pins at all and silently release every
+      // `/undismiss` a maintainer had already made.
+      return {
+        ...parsed,
+        feedback: records,
+        pins: collectPins(parsedPins.success ? parsedPins.data : [], records),
+      };
     }
   } catch {
     // fall through

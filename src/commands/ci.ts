@@ -24,8 +24,11 @@ import { errorMessage, publicFailureReason } from "../core/util.js";
 import { readContextFile } from "../core/context-file.js";
 import { buildDiffLineIndex } from "../core/render.js";
 import type { LinkContext, ScopeReviewResult } from "../core/render.js";
-import type { CoordinatorOutput } from "../core/schema.js";
+import type { CoordinatorOutput, FeedbackPin, FeedbackRecord, Finding } from "../core/schema.js";
+import { applyPins, collectPins, scopedFingerprint } from "../core/schema.js";
+import { dropStaleVerdict, feedbackApplied, feedbackNeedsRunSeam } from "../core/adjudicate.js";
 import { runReview } from "../core/review.js";
+import type { ReviewRunOptions, ReviewRunResult } from "../core/review.js";
 import { GitHubPRSource } from "../sources/github-pr.js";
 import { memoizeSource, stackConfirmFromConfig, stackWalkFromConfig } from "../sources/source.js";
 import type { PreparedReadRoot, ReviewSource, StackWalkOptions } from "../sources/source.js";
@@ -294,6 +297,136 @@ async function postTerminalFailureNote(
   }
 }
 
+// @ref LLP 0011#the-rebuttal-is-a-hypothesis [constrained-by] — only "adjudicate" mode runs the model; the reporter reads the same comment it posts to, and `fpOf` keys records the same way that comment stores them, so a prior verdict carries and the same words are not re-judged
+/**
+ * The runReview feedback seam for a single-comment reporter. Wired when the mode
+ * judges replies ("adjudicate") OR when `dismiss` is opted in — a maintainer reply
+ * clearing a finding under `mode: "annotate"` needs the seam to compute `applied`,
+ * with no model call (see feedbackNeedsRunSeam). Otherwise the reporter matches
+ * replies itself at report time and the seam is absent (undefined). `fpOf` maps a
+ * finding to the fingerprint the target comment stores its feedback under
+ * (scope-namespaced for the aggregate comment, plain otherwise); omit it for the
+ * plain default.
+ */
+function adjudicationSeam(
+  config: LoadedConfig,
+  reporter: GitHubReporter,
+  fpOf?: (finding: Finding) => string,
+): ReviewRunOptions["feedback"] {
+  if (!feedbackNeedsRunSeam(config.feedback)) {
+    return undefined;
+  }
+  return {
+    config: config.feedback,
+    match: (review) => reporter.matchAdjudicationItems(review, fpOf),
+  };
+}
+
+/**
+ * A freshly-reviewed scope's adjudicated feedback records, already keyed under the
+ * scope-namespaced ids the aggregate comment renders (the single-mode seam builds them
+ * with a scoped `fpOf`, see runRoutedCi), so they merge into the aggregate view as-is.
+ * A carried-over prior scope (no fresh feedback) contributes nothing here.
+ */
+function scopeFeedbackRecords(result: ScopeReviewResult): FeedbackRecord[] {
+  return (result.review as ReviewRunResult).feedback ?? [];
+}
+
+// @ref LLP 0011#the-rebuttal-is-a-hypothesis [constrained-by] — matchAdjudicationItems
+// throws on a seam fetch error BY DESIGN so the legacy/per-scope paths fall back to
+// computeFeedback's stored-state preservation; runReview leaves `review.feedback`
+// undefined in exactly that case (never `[]` — a successful-but-empty seam sets `[]`,
+// which is truthy, see scopeFeedbackRecords). This merge honors the same rule for the
+// aggregate comment: a scope's fresh records are authoritative for its findings'
+// fingerprints ONLY when its own seam actually returned records this run.
+// @ref LLP 0011#suppression-is-never-silent [implements] — the aggregate path applies
+// the SAME dropStaleVerdict rule as the reporter's mergeFeedback, so a verdict can never
+// clear a finding against a head it never judged just because this path was the one used.
+// @ref LLP 0011#the-rebuttal-is-a-hypothesis — fresh records come ONLY from `results`,
+// never `finalResults`: a carried scope's `finalResults` entry can still embed a stale
+// per-scope `review.feedback` copy from a past full run, which would resurrect a record
+// a human /undismiss already overrode at the top level.
+/**
+ * The aggregate comment's feedback records for comment:'single' mode, merging:
+ * - fresh records for scopes whose seam succeeded this run (`review.feedback` is an
+ *   array, possibly empty) — authoritative for their findings' fingerprints, so a
+ *   prior record with no fresh counterpart there means the reply is gone
+ *   (deleted/edited) and is dropped;
+ * - prior records for every OTHER fingerprint: carried-over scopes (a `--scopes`
+ *   partial run) AND a re-reviewed scope whose seam itself failed (`review.feedback`
+ *   stayed undefined) — so a transient GitHub fetch error can never delete a scope's
+ *   prior reply attributions/verdicts with nothing to replace them.
+ *
+ * Every record taken from `prior` first goes through `dropStaleVerdict` against
+ * `headSha` — the SAME rule mergeFeedback applies on the reporter side. Without it this
+ * path would re-apply a verdict decided against a head the run no longer reviews: a
+ * scope whose seam threw keeps its prior record, `feedbackApplied` never looks at
+ * `sourceSha`, and reportAggregate skips computeFeedback when it gets explicit records,
+ * so nothing else would ever check. Fresh records are NOT re-checked — they were just
+ * stamped with this run's own source.
+ *
+ * `applied` is recomputed on every kept record (idempotent for fresh ones) so a
+ * carried/fallback record also honors a `dismiss` policy that changed since it was
+ * stored. `results` is this run's freshly-reviewed scopes — the SOLE source of fresh
+ * records AND the set whose fingerprints are fresh-authoritative; a carried scope's
+ * prior records already ride the `prior` top-level map, so reading records back out of
+ * `finalResults` would re-inject a stale per-scope copy (e.g. one a human /undismiss
+ * already overrode at the top level). `finalResults` is the full set the aggregate
+ * comment renders (includes scopes carried over via `mergePartialAggregate`), used only
+ * to resolve each kept record's current finding. Pure so it's unit-testable.
+ */
+export function mergeAggregateFeedback(
+  results: ScopeReviewResult[],
+  finalResults: ScopeReviewResult[],
+  prior: FeedbackRecord[],
+  feedbackConfig: LoadedConfig["feedback"],
+  headSha: string | undefined,
+  pins?: FeedbackPin[],
+): FeedbackRecord[] {
+  const scopedFpOf = (result: ScopeReviewResult, finding: Finding): string =>
+    scopedFingerprint(result.isDefault ? null : result.scope, finding);
+  const seamOkByScope = new Map(
+    results.map((result) => [
+      result.scope,
+      (result.review as ReviewRunResult).feedback !== undefined,
+    ]),
+  );
+  const freshFps = new Set(
+    results
+      .filter((result) => seamOkByScope.get(result.scope))
+      .flatMap((result) => result.review.findings.map((f) => scopedFpOf(result, f))),
+  );
+  const byFp = new Map(
+    prior
+      .filter((record) => !freshFps.has(record.fp))
+      // A verdict decided against a head this run no longer reviews is dropped here,
+      // exactly as mergeFeedback drops it: the reply is judged again instead of
+      // clearing the finding against source it never saw.
+      .map((record) => [record.fp, dropStaleVerdict(record, headSha)] as const),
+  );
+  // Fresh records come only from THIS run's reviewed scopes; carried scopes'
+  // records already sit in `prior` above (a re-inject from `finalResults` would
+  // resurrect a stale per-scope copy over a newer top-level record).
+  for (const record of results.flatMap(scopeFeedbackRecords)) {
+    byFp.set(record.fp, record);
+  }
+  const findingByFp = new Map(
+    finalResults.flatMap((result) =>
+      result.review.findings.map((f) => [scopedFpOf(result, f), f] as const),
+    ),
+  );
+  // The maintainer `/undismiss` pins are state about FINDINGS, so they apply to fresh
+  // and carried records alike — a scope whose seam matched no reply this run must not
+  // hand back a record that a pin no longer covers.
+  const { records } = applyPins([...byFp.values()], collectPins(pins, prior));
+  return records.map((record) => {
+    const finding = findingByFp.get(record.fp);
+    return finding
+      ? { ...record, applied: feedbackApplied(finding, record, feedbackConfig) }
+      : record;
+  });
+}
+
 /** Options shared by the legacy and routed CI paths (parsed from argv once). */
 interface CiRunOptions {
   agents: string[] | undefined;
@@ -381,12 +514,26 @@ async function runLegacyCi(
     return;
   }
 
+  // The head commit this run reviews: it binds every adjudication verdict to the source
+  // it judged, so a stored verdict carries to the next run only while the head is
+  // unchanged (see mergeFeedback). Memoized on the source — no extra API call. A
+  // metadata failure leaves it unknown, which re-judges replies instead of trusting a
+  // verdict against source we cannot pin.
+  let headSha: string | undefined;
+  try {
+    headSha = (await source.getMetadata()).headOid;
+  } catch {
+    // leave headSha unset → stored verdicts do not carry (fail safe, costs budget only)
+  }
+
   const reporter = new GitHubReporter({
     prNumber,
     repo,
     commentTag: config.commentTag,
     breakGlassMarker: config.breakGlassMarker,
     cwd,
+    feedback: config.feedback,
+    headSha,
   });
 
   try {
@@ -411,9 +558,14 @@ async function runLegacyCi(
       stack: resolveStackWalk(config.stack, noStackAware),
       stackConfirm: resolveStackConfirm(config.stack, noStackAware),
       runsDir: workspaceRunsDir(cwd),
+      // Adjudicate mode judges the matched replies against the source before the
+      // comment is rendered; annotate mode lets the reporter match them at report
+      // time. Either way the feedback path is fail-open (runReview swallows its own
+      // errors), so it never fails the PR's checks.
+      feedback: adjudicationSeam(config, reporter),
       onProgress: (message) => process.stderr.write(`${message}\n`),
     });
-    await reporter.report(review);
+    await reporter.report(review, review.feedback);
     process.stderr.write(`CI reviewer: posted review (${review.decision}).\n`);
   } catch (error) {
     // A reviewer failure must never fail the PR's checks — but it must also not be
@@ -588,11 +740,15 @@ async function runRoutedCi(
     prNumber,
     diffLines: buildDiffLineIndex(changed.map((file) => ({ path: file.path, patch: file.patch }))),
   };
+  // The reviewed head OID also binds each adjudication verdict to the source it judged
+  // (see mergeFeedback); unresolved leaves it unknown, so verdicts are re-judged.
+  let headSha: string | undefined;
   try {
-    const { baseOid } = await source.getMetadata();
+    const { baseOid, headOid } = await source.getMetadata();
     if (baseOid) {
       link.baseSha = baseOid;
     }
+    headSha = headOid;
   } catch {
     // leave baseSha unset → out-of-diff findings degrade to plain text
   }
@@ -616,6 +772,28 @@ async function runRoutedCi(
   const stackWalk = resolveStackWalk(rootConfig.stack, noStackAware);
   const stackConfirm = resolveStackConfirm(rootConfig.stack, noStackAware);
 
+  const reporterFor = (tag: string, withLink = false): GitHubReporter =>
+    new GitHubReporter({
+      prNumber,
+      repo,
+      commentTag: tag,
+      breakGlassMarker: rootConfig.breakGlassMarker,
+      cwd,
+      linkContext: withLink ? link : undefined,
+      // Root-only feedback config (see loadScopeConfig): lets a reporter posting with
+      // no explicit records match replies itself (annotate mode) at report time.
+      feedback: rootConfig.feedback,
+      headSha,
+    });
+
+  // comment:'single' mode: every active scope's feedback seam AND the final
+  // aggregate post target the SAME root-tag comment, so share one reporter
+  // instance (and its comment-list/login cache, see GitHubReporter's
+  // `fetchAllComments` TTL cache) across the whole run — a fresh reporter per
+  // scope would otherwise re-fetch the paginated comment list and re-resolve
+  // the bot login once per scope for the identical comment.
+  const singleModeReporter = mode === "single" ? reporterFor(rootTag, true) : undefined;
+
   const results: ScopeReviewResult[] = [];
   for (const scope of active) {
     const scopeDef = manifest.scopes.find((entry) => entry.name === scope.name)!;
@@ -636,6 +814,22 @@ async function runRoutedCi(
         effectiveScopeDef = { ...scopeDef, config: "." };
       }
       const config = await loadScopeConfig(configRoot, effectiveScopeDef, manifest, rootConfig);
+      // The seam reads the replies off the comment this scope's review will land
+      // in — the aggregate (root) comment in "single" mode, the scoped comment
+      // otherwise — so prior verdicts carry. The fingerprint the records are keyed
+      // under must match how THAT comment stores them: scope-namespaced for the
+      // aggregate comment, plain for the scoped one. Feedback is root-only, so gate on it.
+      const feedbackSeam = feedbackNeedsRunSeam(rootConfig.feedback)
+        ? adjudicationSeam(
+            rootConfig,
+            mode === "single"
+              ? singleModeReporter!
+              : reporterFor(scopedCommentTag(rootTag, scope.name)),
+            mode === "single"
+              ? (finding) => scopedFingerprint(isDefault ? null : scope.name, finding)
+              : undefined,
+          )
+        : undefined;
       review = await runReview(source, {
         config,
         mode: "ci",
@@ -647,6 +841,7 @@ async function runRoutedCi(
         stackConfirm,
         passesBudgetMs: budget,
         runsDir: workspaceRunsDir(cwd),
+        feedback: feedbackSeam,
         onProgress: (message) => process.stderr.write(`[${scope.name}] ${message}\n`),
       });
     } catch (error) {
@@ -658,18 +853,8 @@ async function runRoutedCi(
     results.push({ scope: scope.name, isDefault, review });
   }
 
-  const reporterFor = (tag: string, withLink = false): GitHubReporter =>
-    new GitHubReporter({
-      prNumber,
-      repo,
-      commentTag: tag,
-      breakGlassMarker: rootConfig.breakGlassMarker,
-      cwd,
-      linkContext: withLink ? link : undefined,
-    });
-
   if (mode === "single") {
-    const aggregate = reporterFor(rootTag, true);
+    const aggregate = singleModeReporter!;
     let finalResults = results;
     if (scopesFilter) {
       // A partial run (--scopes) is authoritative ONLY for the named scopes: merge
@@ -691,7 +876,23 @@ async function runRoutedCi(
       // @ref LLP 0007#routed-ci-fan-out — zero active scopes → no comment
       await aggregate.clear();
     } else {
-      await aggregate.reportAggregate(finalResults, resolution.unmatched);
+      // A seam-backed run hands the reporter the computed records (re-keyed to the
+      // scope-namespaced ids the aggregate renders under). Without the seam it
+      // passes none and the reporter matches replies itself.
+      const aggState = feedbackNeedsRunSeam(rootConfig.feedback)
+        ? await aggregate.readState()
+        : null;
+      const aggFeedback = feedbackNeedsRunSeam(rootConfig.feedback)
+        ? mergeAggregateFeedback(
+            results,
+            finalResults,
+            aggState?.feedback ?? [],
+            rootConfig.feedback,
+            headSha,
+            aggState?.pins,
+          )
+        : undefined;
+      await aggregate.reportAggregate(finalResults, resolution.unmatched, aggFeedback);
     }
     // Clean up any per-scope comments from a previous per-scope run. A partial run
     // only ever touches the named scopes' comments.
@@ -716,7 +917,7 @@ async function runRoutedCi(
       const reporter = reporterFor(scopedCommentTag(rootTag, scope.name), true);
       const result = results.find((entry) => entry.scope === scope.name);
       if (result) {
-        await reporter.report(result.review);
+        await reporter.report(result.review, (result.review as ReviewRunResult).feedback);
       } else {
         // A reconciled scope with zero matched files gets its stale comment deleted.
         await reporter.clear();

@@ -6,6 +6,9 @@ import path from "node:path";
 
 import { z } from "zod";
 
+import { CATEGORIES } from "../core/schema.js";
+import type { Category } from "../core/schema.js";
+
 export const ReviewConfigSchema = z.object({
   /** Default model for every agent + the coordinator. Override per-agent via
    * frontmatter in the agent's markdown, or globally via REVIEWER_MODEL. */
@@ -157,6 +160,45 @@ export const ReviewConfigSchema = z.object({
       confirmWithPatch: false,
       maxConfirmations: 10,
     }),
+  // Author replies to findings: match them to the finding they answer, record
+  // them in the comment's embedded state, and (optionally) let a model judge the
+  // rebuttal against the source. ROOT-ONLY: the comment lifecycle is global.
+  // Defaults are deliberately ASYMMETRIC: `annotate` is on but `dismiss` is off.
+  // An adopting repo has its own config.jsonc and never re-copies this template,
+  // so a key it never set must still resolve to the safe, useful default via
+  // zod — annotating is safe and useful out of the box; suppressing a finding is
+  // not, so it stays opt-in.
+  // @ref LLP 0011#asymmetric-defaults [implements] — annotate on, dismiss off; adopting repos never re-copy the template
+  feedback: z
+    .object({
+      // "off"        — ignore replies entirely.
+      // "annotate"   — match + record + show "author replied" (no decision effect).
+      // "adjudicate" — also run a source-grounded judgment of the rebuttal and
+      //                record its verdict. Dismissal still obeys `dismiss`.
+      mode: z.enum(["off", "annotate", "adjudicate"]).default("annotate"),
+      // How a reply is MATCHED to a finding. Clearing one additionally requires the
+      // reply to cite its `id:` token in the replier's own words, whatever this says.
+      match: z.enum(["quote", "id", "both"]).default("both"),
+      // Who/what may actually remove a finding from the blocking set (always on a
+      // reply citing the finding's `id:` token — a quote only annotates):
+      //   "never"       — nothing does (default: adjudication ships dark).
+      //   "maintainers" — a maintainer reply dismisses, no model involved.
+      //   "adjudicated" — a maintainer reply, or an author reply the adjudicator
+      //                   confirmed against the source.
+      dismiss: z.enum(["never", "maintainers", "adjudicated"]).default("never"),
+      // Categories a reply can NEVER clear, whatever the verdict. Also hard-coded
+      // as a floor in code — this only widens the set, never narrows it.
+      protectedCategories: z.array(z.enum(CATEGORIES)).default(["secrets", "security"]),
+      // Cap on adjudication model calls per run.
+      maxAdjudications: z.number().int().positive().default(10),
+    })
+    .default({
+      mode: "annotate",
+      match: "both",
+      dismiss: "never",
+      protectedCategories: ["secrets", "security"],
+      maxAdjudications: 10,
+    }),
 });
 export type RawReviewConfig = z.infer<typeof ReviewConfigSchema>;
 
@@ -266,6 +308,7 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
   breakGlass: true,
   commentTag: true,
   stack: true,
+  feedback: true,
 }).extend({
   auth: z
     .never({ error: "auth is locked to the root config; remove it from this scope config" })
@@ -281,6 +324,12 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
     .never({
       error:
         "stack is locked to the root config (one PR has one stack); remove it from this scope config",
+    })
+    .optional(),
+  feedback: z
+    .never({
+      error:
+        "feedback is locked to the root config (the comment lifecycle is global); remove it from this scope config",
     })
     .optional(),
 });
@@ -371,5 +420,13 @@ export interface LoadedConfig {
     requireSameAuthor: boolean;
     confirmWithPatch: boolean;
     maxConfirmations: number;
+  };
+  /** Root-only author-feedback settings (see ReviewConfigSchema.feedback). */
+  feedback: {
+    mode: "off" | "annotate" | "adjudicate";
+    match: "quote" | "id" | "both";
+    dismiss: "never" | "maintainers" | "adjudicated";
+    protectedCategories: Category[];
+    maxAdjudications: number;
   };
 }

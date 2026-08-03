@@ -94,6 +94,10 @@ export async function dismissCommand(argv: string[], mode: "add" | "remove"): Pr
       commentTag: config.commentTag,
       breakGlassMarker: config.breakGlassMarker,
       cwd,
+      // The re-render re-derives every feedback record's `applied` flag, so it needs the
+      // feedback policy in force now — without it a reply-cleared finding would be
+      // un-hidden by an unrelated /dismiss.
+      feedback: config.feedback,
     });
     const result = await reporter.applyDismissal(
       mode === "add" ? args.ids : [],

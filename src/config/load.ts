@@ -30,6 +30,15 @@ const STACK_CONFIG_DEFAULTS: LoadedConfig["stack"] = {
   maxConfirmations: 10,
 };
 
+/** Feedback config for a scope load (where `feedback` is schema-rejected and absent). */
+const FEEDBACK_CONFIG_DEFAULTS: LoadedConfig["feedback"] = {
+  mode: "annotate",
+  match: "both",
+  dismiss: "never",
+  protectedCategories: ["secrets", "security"],
+  maxAdjudications: 10,
+};
+
 /** Default OpenCode tool toggles for a reviewer: read the repo, never mutate it. */
 const DEFAULT_AGENT_TOOLS = toolMap(["read", "grep", "glob", "list"]);
 
@@ -57,11 +66,15 @@ export interface LoadConfigOptions {
 }
 
 /** Parsed config with the centrally-locked keys optional (scope configs omit them). */
-type ParsedConfig = Omit<RawReviewConfig, "auth" | "breakGlass" | "commentTag" | "stack"> & {
+type ParsedConfig = Omit<
+  RawReviewConfig,
+  "auth" | "breakGlass" | "commentTag" | "stack" | "feedback"
+> & {
   auth?: RawReviewConfig["auth"];
   breakGlass?: RawReviewConfig["breakGlass"];
   commentTag?: RawReviewConfig["commentTag"];
   stack?: RawReviewConfig["stack"];
+  feedback?: RawReviewConfig["feedback"];
 };
 
 export function hasConfig(repoRoot: string, options: LoadConfigOptions = {}): boolean {
@@ -190,6 +203,10 @@ async function loadConfigDir(
     // scope config and the defaults stand in (unused — the command layer reads the
     // ROOT config's stack values to drive the walk).
     stack: parsed.stack ?? STACK_CONFIG_DEFAULTS,
+    // Root-only: the scope schema rejects `feedback`, so parsed.feedback is absent
+    // for a scope config and the defaults stand in (unused — the command layer
+    // reads the ROOT config's feedback values; the comment lifecycle is global).
+    feedback: parsed.feedback ?? FEEDBACK_CONFIG_DEFAULTS,
   };
   return { config, raw: rawObject };
 }
@@ -351,6 +368,12 @@ export async function loadScopeConfig(
     auth: loadAuthFromRoot(rootConfig, manifest),
     breakGlassMarker: rootConfig.breakGlassMarker,
     commentTag,
+    // Root-only, like stack: a non-default scope's `base` carries only the
+    // hardcoded placeholder (the scope schema rejects `feedback`), so re-derive
+    // from the root here or consumers of a nested scope's config would silently
+    // run the default policy instead of the repo's real one.
+    stack: rootConfig.stack,
+    feedback: rootConfig.feedback,
     scopeName: scope.name,
   };
 }

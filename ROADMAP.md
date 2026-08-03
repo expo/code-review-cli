@@ -57,6 +57,34 @@ PRs** (do these first, in this order):
 
 ## Recently shipped
 
+- **Author feedback on findings (shipped 2026-08-01)** — a PR author's reply is
+  now matched to the finding it answers **deterministically** (a quoted title or
+  an `id:` token — no model decides which finding a reply is about; an ambiguous
+  quote records nothing), recorded in the comment's embedded state, and shown as
+  `💬 @login replied` with a visible above-the-fold count. Reply text is never
+  stored or rendered — the record is fingerprint + login + comment link + two
+  closed enums, nothing free-text. Root-only `feedback` config
+  (`mode: off|annotate|adjudicate`, `dismiss: never|maintainers|adjudicated`,
+  `protectedCategories`, `maxAdjudications`), asymmetric defaults (`annotate` on,
+  `dismiss` off) for the same reason `stack` shipped `enabled: false` — adopting
+  repos never re-copy the template. `mode: "adjudicate"` has a model re-check a
+  rebuttal against the actual source (distrust-by-default, mirroring the
+  verifier) and record a verdict; a `critical`/`secrets`/`security` finding can
+  never be cleared this way regardless of config — enforced as a hard floor in
+  code. New `ecr feedback` command mines this substrate retroactively across a
+  repo's PR history (findings come from each PR's own past reviewer comment, so
+  no re-review and no model call): totals, reply rate, breakdowns by
+  category/severity/agent, and "repeat offenders" — findings whose title
+  recurred across 2+ PRs and drew a reply every time. Closed a latent security
+  hole found while building this: `parseReviewState`/`parseEmbeddedFingerprints`
+  matched with a non-global regex and took the FIRST marker in the body while the
+  genuine one is appended LAST, so a forged `<!-- tag:state=… -->` earlier in the
+  body (e.g. inside a model-written `rationale`) would have won over the real
+  state; every externally-sourced string rendered into the body is now sanitized
+  (`stripStateMarkers`) to close it. Findings also gained engine-populated
+  `agent` attribution (which reviewer agent produced them), excluded from the
+  fingerprint so attribution can never lapse an existing dismissal. See
+  [LLP 0011](./llp/0011-author-feedback.explainer.md).
 - **Bounded per-scope passes budget (shipped 2026-07-23)** — active scopes review
   SEQUENTIALLY in one `ecr ci`, so the old per-scope budget
   (`max(10m, floor(32m / N))`) let 4+ scopes spend 40m+ of pass time alone,
