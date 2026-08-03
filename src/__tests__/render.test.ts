@@ -31,6 +31,18 @@ test("parseEmbeddedFingerprints round-trips even with a regex-metachar comment t
   expect(parseEmbeddedFingerprints(body, tag).length).toBe(1);
 });
 
+test("setup note renders only when there is ref advice, and never as a finding", () => {
+  expect(renderMarkdown(base, "tag")).not.toContain("Review setup");
+  const body = renderMarkdown(
+    { ...base, setupNotes: ["The reviewer setup cites code that no longer resolves (1 ref(s))."] },
+    "tag",
+  );
+  expect(body).toContain("🔗 **Review setup:**");
+  expect(body).toContain("no longer resolves");
+  // advice does not change the decision or the findings list
+  expect(body).toContain("No findings.");
+});
+
 test("coverage note only renders when incomplete is non-empty (no more wolf-crying)", () => {
   expect(renderMarkdown(base, "tag")).not.toContain("Coverage note");
   expect(renderMarkdown({ ...base, incomplete: ["a pass timed out"] }, "tag")).toContain(

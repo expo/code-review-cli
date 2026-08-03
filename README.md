@@ -116,6 +116,7 @@ is a ready example to adapt.
 | `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
 | `ecr doctor [--list-scopes]` | Check environment, config, credentials, and (with a manifest) scopes. |
 | `ecr feedback [--repo <owner/repo>]` | Report which findings PR authors pushed back on, across history. See below. |
+| `ecr ref-check [--json]` | Fail when the review setup cites code that moved or vanished. See below. |
 
 Extra flags for monorepos: `review`/`ci` `--config-dir <dir>` (load config from an
 alternate dir; also `ECR_CONFIG_DIR`), `ci --scopes a,b` (limit the fan-out to
@@ -124,6 +125,48 @@ named scopes), `ci --comment single|per-scope` (override the manifest). Both
 untrusted external context; see below).
 
 (When developing this repo itself, use `bun run src/cli.ts <command>`.)
+
+---
+
+## Keeping prompts true (`ecr ref-check`)
+
+Good reviewer prompts cite real code: "the only session entry point is
+`server/src/session.ts`", "every webhook router must call `sanitizeSecrets`". Then the
+code moves and the prompt keeps citing a path that no longer exists — the reviewer
+reasons from a fiction, on every PR, with nothing to warn you.
+
+`ecr ref-check` makes those citations checkable. Pin each one with a ref, in a comment
+of its own (`<!-- … -->` in Markdown, `//` in JSONC):
+
+```md
+<!-- @ref server/src/session.ts#createSession — the only place a session is minted -->
+<!-- @ref server/src/entities/oauth/ — every provider lives here -->
+<!-- @ref glob:**/*WebhookRouter.ts — the routers this rule is about -->
+```
+
+A target is a file, a `dir/`, `glob:<pattern>`, `file#symbol`, or `doc.md#heading` —
+never a line number, since a line number rots without any signal. Symbol anchors are
+checked by whole-word match, so code moving inside its file is fine and a rename is not.
+
+The check is strict on purpose: a backticked token in `.expo-code-review/` that looks
+like a repo path **must** be a ref, because the stale citations are exactly the ones
+nobody thought to annotate. A token with no extension (`eas-build-worker/terraform`,
+`general-central/{module,production}`, `finops`) counts when it names something that
+exists — so those get pinned too, while `anthropic/claude-opus-5`, shaped the same way,
+stays prose. For a token that only looks like a path, say so once:
+`<!-- @ref-ignore knex.raw() -->`. It also checks what your config already declares —
+`enforceAgents` ids, scope `config` directories, scope path globs.
+
+Refs are repo-root-relative, including in a scope's own setup dir. A scope prompt that
+cites `general-central/module` for `infrastructure/general-central/module` gets told the
+root-relative form to use.
+
+Two run points:
+
+- `ecr ref-check` exits 1 on any problem. Run it in CI or a pre-commit hook.
+- `ecr review` / `ecr ci` run it too, and never fail a PR's checks with it. The comment
+  carries a **Review setup** note instead: refs that no longer resolve, plus cited code
+  *this PR* changes, where the ref still resolves but the guidance may not.
 
 ---
 

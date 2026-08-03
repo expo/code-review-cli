@@ -19,7 +19,13 @@ issues in the changed code.
   concrete trigger.
 
 <!-- TODO: customize for this repo — add project-specific correctness rules,
-     e.g. framework conventions, required flag handling, API compatibility. -->
+     e.g. framework conventions, required flag handling, API compatibility.
+
+     Cite real code, and pin every citation with a ref so `ecr ref-check` fails when
+     it moves. In a comment of its own, on one line:
+         @ref <path/to/file.ts>#<symbol> — why this matters
+     Targets: a file, a `<dir>/`, `glob:<pattern>`, `<file>#<symbol>`, `<doc>.md#<heading>`.
+     Never a line number. Not a path? `@ref-ignore <token>`. -->
 
 ## What NOT to flag
 

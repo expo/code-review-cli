@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { initCommand, parseTokenEnvs, substituteTokenEnv } from "../commands/init.js";
+import { checkConfigRefs } from "../core/config-refs.js";
 import { git } from "../core/exec.js";
 import { CONFIG_DIRNAME } from "../config/load.js";
 
@@ -301,4 +302,14 @@ test("every `uses:` in templates/*.yml is pinned by 40-hex commit SHA with a ver
   }
   // Each template pins checkout + setup-node (+ upload-artifact in workflow.yml).
   expect(usesLines).toBeGreaterThanOrEqual(7);
+});
+
+// @ref LLP 0012#what-gets-scanned [constrained-by] — a scaffold must pass `ecr ref-check` on day one
+test("a freshly scaffolded repo passes ref-check", async () => {
+  const root = await freshRepo();
+  await initCommand(["--monorepo"]);
+
+  // LLP annotations the templates carry belong to the engine's own corpus and are
+  // skipped here, not reported: ecr only judges citations into the reviewed repo.
+  expect((await checkConfigRefs({ root })).problems).toEqual([]);
 });

@@ -33,6 +33,10 @@ verifies their findings, and posts one updating PR comment.
   don't silently "fix" either side.
 - `./ref-check` (`bun run llp:check`) validates refs and metadata; CI runs it
   on every push and PR.
+- `ecr ref-check` validates the SAME `@ref` grammar inside a repo's
+  `.expo-code-review/` setup (see LLP 0012). The two checkers share the grammar:
+  a change to target kinds, the `<placeholder>` rule, or the glob dialect must
+  land in `./ref-check` and `src/core/config-refs.ts` together.
 
 ## Conventions
 

@@ -12,6 +12,9 @@ These rules apply to every reviewer and are concatenated onto your role prompt.
 - **Do not judge the diff in isolation.** Before reporting, read the surrounding
   source with your file/read/grep tools and trace the relevant execution path.
   If you cannot substantiate a concrete failure or exploit path, do not report it.
+<!-- Generic guidance, not a claim that either file exists. Once this repo has one,
+     replace this with a real ref: @ref AGENTS.md — the conventions to judge against -->
+<!-- @ref-ignore AGENTS.md CLAUDE.md -->
 - Ground your judgment in the repo's own conventions (`AGENTS.md` / `CLAUDE.md`
   at the repo root, and any per-directory guidance) rather than generic
   best-practices.

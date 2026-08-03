@@ -39,7 +39,10 @@ must support `--non-interactive` the way sibling commands do (a non-interactive
 path with no prompts, erroring clearly when a required value is missing), and it
 must expose flags to supply every prompted value so the command stays scriptable.
 
-<!-- TODO: replace the example above with this repo's most important conventions. -->
+<!-- TODO: replace the example above with this repo's most important conventions.
+     Pin each file, directory, or symbol you cite with a ref on its own line —
+         @ref <path/to/file.ts>#<symbol> — why this matters
+     so `ecr ref-check` fails when the cited code moves. Never a line number. -->
 
 ## What NOT to flag
 
