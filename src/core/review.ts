@@ -50,6 +50,7 @@ import { confirmStackRequalifications, patchConfirmer } from "./stack-confirm.js
 import { sortFindings } from "./render.js";
 import { appendStepSummary } from "./step-summary.js";
 import { errorMessage, sleep } from "./util.js";
+import { reviewSetupRefNotes } from "./config-refs.js";
 import { verifyFindings } from "./verify.js";
 import { applyInlineIgnores } from "./suppress.js";
 
@@ -295,6 +296,20 @@ export async function runReview(
   if (readRoot) {
     progress("Reviewing the PR-head tree (so reads match the PR, not the checkout).");
     process.chdir(readRoot.dir);
+  }
+
+  // Ref integrity of the setup that is about to review this PR. Resolved against the
+  // tree the reviewers read (PR head when materialized), while the setup itself may
+  // come from the trusted base ref — so a PR that moves cited code is reported against
+  // the prompts that will actually judge it.
+  // @ref LLP 0012#run-points-command-and-review [implements] — every review checks its own refs; advice only, never a gate
+  const setupNotes = await reviewSetupRefNotes({
+    root: readRoot?.dir ?? originalCwd,
+    setupDirs: [config.configDir],
+    changedFiles: kept.map((entry) => entry.path),
+  });
+  for (const note of setupNotes) {
+    progress(`  setup: ${note}`);
   }
 
   const starting = [
@@ -1167,7 +1182,10 @@ export async function runReview(
       summary: output.summary,
     });
 
-    return feedbackRecords ? { ...output, feedback: feedbackRecords } : output;
+    // Engine-owned: overwrite whatever the coordinator may have emitted under this key,
+    // so setup advice is always the checker's, never model text.
+    const reviewed = { ...output, setupNotes };
+    return feedbackRecords ? { ...reviewed, feedback: feedbackRecords } : reviewed;
   } catch (error) {
     await safeLog(logPath, {
       ...baseRecord,

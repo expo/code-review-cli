@@ -5,6 +5,7 @@ import { dismissCommand } from "./commands/dismiss.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { feedbackCommand } from "./commands/feedback.js";
 import { initCommand } from "./commands/init.js";
+import { refCheckCommand } from "./commands/ref-check.js";
 import { reviewCommand } from "./commands/review.js";
 import { setupAuthCommand } from "./commands/setup-auth.js";
 import { verifyConfigCommand } from "./commands/verify-config.js";
@@ -21,6 +22,7 @@ Usage:
   ecr setup-auth [--yes]   Walk through getting model credentials for local runs.
   ecr doctor [--list-scopes]   Check environment, config, credentials, and scopes.
   ecr verify-config [--expected <env>] [--json]   Refuse to run if a config could redirect the credential (CI guard).
+  ecr ref-check [--root <dir>] [--json]   Fail if the review setup cites code that moved or vanished.
 
 Agents live in each repo under .expo-code-review/. This CLI is the engine.
 
@@ -69,6 +71,9 @@ async function main(): Promise<void> {
       break;
     case "verify-config":
       await verifyConfigCommand(rest);
+      break;
+    case "ref-check":
+      await refCheckCommand(rest);
       break;
     default:
       process.stderr.write(`Unknown command: ${sub}\n\n${USAGE}`);

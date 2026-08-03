@@ -238,6 +238,7 @@ export function renderMarkdown(
     );
   }
 
+  lines.push(...setupNote(review.setupNotes));
   lines.push(...requalificationAuditNote(requalified.map((entry) => entry.finding)));
   lines.push(...feedbackAuditNote([...feedbackByFp.values()]));
 
@@ -350,6 +351,15 @@ function renderFindingLines(
   // bullet. Findings are already loose list items, so this changes no spacing.
   out.push("");
   return out;
+}
+
+// @ref LLP 0012#run-points-command-and-review [implements] — setup advice renders outside the findings list, so it never blocks
+/** Advice about the reviewer's own setup (stale refs, cited code this PR moves). */
+function setupNote(notes: string[] = []): string[] {
+  if (notes.length === 0) {
+    return [];
+  }
+  return ["> 🔗 **Review setup:**", ...notes.map((note) => `> - ${stripStateMarkers(note)}`), ""];
 }
 
 // @ref LLP 0010#rendering-in-all-three-paths [implements] — the visible audit count is mandatory: requalification's only effect on a real finding is moving it out of the blocking set, so it must never be silent
@@ -608,6 +618,15 @@ export function renderAggregateMarkdown(
         }
       }
       lines.push("");
+    }
+
+    const setupLines = results.flatMap((result) =>
+      (result.review.setupNotes ?? []).map(
+        (note) => `> - [${stripStateMarkers(result.scope)}] ${stripStateMarkers(note)}`,
+      ),
+    );
+    if (setupLines.length > 0) {
+      lines.push("> 🔗 **Review setup:**", ...setupLines, "");
     }
 
     // Shown = the most-severe N kept findings per scope (N = limitPerScope). The

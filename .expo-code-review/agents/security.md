@@ -23,6 +23,14 @@ average severity.
 
 ## This repo's sensitive surfaces
 
+<!-- @ref src/core/auth.ts#FORBIDDEN_TOKEN_ENVS — the deny-list this section is about -->
+<!-- @ref src/core/exec.ts — the single child-process seam (execFile, no shell) -->
+<!-- @ref src/core/prompts.ts#sanitizeUntrusted — the injection boundary named below -->
+<!-- @ref src/core/render.ts — writes the state markers a PR must not forge -->
+<!-- @ref templates/workflow.yml — scaffolded into every adopting repo -->
+<!-- @ref templates/config.jsonc — the tokenEnv guard must stay in sync with it -->
+<!-- @ref-ignore .runs/ -->
+
 This CLI's core job is forwarding a model-provider credential and executing
 PR-controlled config, so these areas are critical surface:
 
@@ -49,6 +57,8 @@ PR-controlled config, so these areas are critical surface:
   every adopting repo. Changes to its `permissions:`, triggers, or the tokenEnv
   guard step affect all downstream users, and the guard must stay in sync with
   `templates/config.jsonc`.
+
+<!-- @ref glob:.github/workflows/** — the workflows this section judges -->
 
 ## CI / workflow supply-chain (changes under `.github/workflows/**`)
 

@@ -170,6 +170,16 @@ export const CoordinatorOutputSchema = z.object({
    * overrides the presentation instead).
    */
   couldNotComplete: z.boolean().optional(),
+  /**
+   * Advice about the review's OWN setup: refs in `.expo-code-review/` that no longer
+   * resolve, and cited code this PR changes. Engine-set (never the model, never a
+   * finding) and never blocking — a stale prompt is a maintenance signal, not a defect
+   * in the PR.
+   */
+  // @ref LLP 0012#run-points-command-and-review [implements] — the review advises about stale refs instead of failing on them
+  // Optional (like couldNotComplete) so every internal CoordinatorOutput literal stays
+  // valid without restating an engine-owned field.
+  setupNotes: z.array(z.string()).optional(),
 });
 export type CoordinatorOutput = z.infer<typeof CoordinatorOutputSchema>;
 

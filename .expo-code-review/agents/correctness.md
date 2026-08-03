@@ -19,6 +19,10 @@ issues in the changed code.
 
 ## This repo's footguns
 
+<!-- @ref src/core/verify.ts#matchEvidence — where model claims become trusted -->
+<!-- @ref-ignore .js -->
+
+
 - **ESM specifiers**: TypeScript with NodeNext resolution — relative imports need
   the `.js` suffix. A missing suffix can type-check yet break the built CLI at
   runtime.

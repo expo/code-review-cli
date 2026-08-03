@@ -17,3 +17,13 @@ jobs:
 
       - name: Validate LLP references and metadata
         run: ./ref-check --verbose
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      # The same grammar, applied to this repo's own review setup (see LLP 0012).
+      - name: Validate review-setup refs
+        run: bun run src/cli.ts ref-check

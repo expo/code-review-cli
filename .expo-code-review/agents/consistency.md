@@ -35,10 +35,22 @@ the same kind of thing, so the codebase stays uniform and predictable.
 
 ## This repo's conventions
 
+<!-- @ref glob:src/commands/*.ts — every command follows the shape described here -->
+<!-- @ref src/core/util.ts#errorMessage — the required error path -->
+<!-- @ref src/cli.ts — where a new command must be registered -->
+<!-- @ref src/config/schema.ts — one of the three places a config option lands -->
+<!-- @ref src/config/load.ts — the second -->
+<!-- @ref templates/config.jsonc — the third; a missing option here is a finding -->
+<!-- @ref templates/ — the scaffolding source that must stay in sync with src/ -->
+<!-- @ref src/ — the engine side of that sync -->
+<!-- @ref src/reporters/reporter.ts — the reporter interface siblings implement -->
+<!-- @ref src/sources/source.ts — the source interface siblings implement -->
+<!-- @ref src/__tests__/ — where a new module's bun test file belongs -->
+
 - **New CLI commands** (`src/commands/*.ts`): a `USAGE` string, `-h`/`--help`
   handled first, errors written to stderr via `errorMessage(error)` from
-  `core/util.ts`, and `process.exitCode = 2` on failure — never `process.exit()`.
-  Registered in `src/cli.ts`.
+  `src/core/util.ts`, and `process.exitCode = 2` on failure — never
+  `process.exit()`. Registered in `src/cli.ts`.
 - **New config options** land in three places together: the zod schema
   (`src/config/schema.ts`), loading/defaults (`src/config/load.ts`), and the
   commented example in `templates/config.jsonc`. An option missing from the

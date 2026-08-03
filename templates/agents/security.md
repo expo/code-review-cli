@@ -26,7 +26,12 @@ average severity.
 - Insecure file permissions, or writing secrets to world-readable paths.
 
 <!-- TODO: customize for this repo — name the sensitive surfaces specific to this
-     codebase (credential stores, tokens, arbitrary-command features, etc.). -->
+     codebase (credential stores, tokens, arbitrary-command features, etc.).
+
+     Pin every path or symbol you cite with a ref, on a line of its own:
+         @ref <path/to/file.ts>#<symbol> — why this matters
+     `ecr ref-check` then fails when that code moves, so this prompt never sends a
+     reviewer after a file that no longer exists. Never cite a line number. -->
 
 ## CI / workflow supply-chain (changes under `.github/workflows/**`)
 

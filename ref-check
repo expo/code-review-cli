@@ -52,6 +52,12 @@ CODE_REF_RE = re.compile(re.escape(REF_MARK) + r"\s+(.+)")
 MD_REF_RE = re.compile(r"<!--\s*" + re.escape(REF_MARK) + r"\s+(.+?)-->", re.DOTALL)
 LLP_TARGET_RE = re.compile(r"^LLP\s+(\d{1,4})(?:#(\S+))?$")
 SHORTHAND_RE = re.compile(r"^[A-Z][A-Z0-9_]*(?:#\S+)?$")
+# Shared with `ecr ref-check`, which validates the SAME @ref grammar inside a repo's
+# .expo-code-review/ setup: `glob:<pattern>` targets a set of files, and a `<…>` target
+# documents the syntax rather than citing a file. Both checkers must agree on these or
+# the same annotation passes one and fails the other.
+GLOB_PREFIX = "glob:"
+PLACEHOLDER_RE = re.compile(r"^[<`]")
 URL_RE = re.compile(r"^https?://[^\s/]+\.[^\s/]+\S*$")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 LLP_FILE_RE = re.compile(r"^(\d{4})-[a-z0-9-]+\.([a-z0-9]+)\.md$")
@@ -141,17 +147,68 @@ def parse_target(rest):
     token = rest.split()[0] if rest.split() else ""
     if token.startswith(("http://", "https://")):
         return "url", token, None
+    if PLACEHOLDER_RE.match(token):
+        return "placeholder", token, None
+    if token.startswith(GLOB_PREFIX):
+        return "glob", token[len(GLOB_PREFIX):], None
     if SHORTHAND_RE.match(token):
         return "shorthand", token, None
     path, _, anchor = token.partition("#")
     return "path", path, anchor or None
 
 
+def glob_to_regex(pattern):
+    """The mini-glob dialect shared with the CLI: `**` crosses `/`, `*` does not."""
+    out, i = "", 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "*":
+            if pattern[i + 1:i + 2] == "*":
+                out += ".*"
+                i += 1
+            else:
+                out += "[^/]*"
+        elif ch in ".+^${}()|[]\\?":
+            out += "\\" + ch
+        else:
+            out += ch
+        i += 1
+    return re.compile(f"^{out}$")
+
+
+def repo_files(root):
+    """Every file in the tree (SKIP_DIRS pruned), root-relative with / separators."""
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for name in filenames:
+            rel = os.path.relpath(os.path.join(dirpath, name), root)
+            found.append(rel.replace(os.sep, "/"))
+    return found
+
+
+def fenced_lines(text):
+    """1-based line numbers inside a fenced code block (the fence lines included)."""
+    fenced, open_fence = set(), False
+    for i, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith("```"):
+            fenced.add(i)
+            open_fence = not open_fence
+        elif open_fence:
+            fenced.add(i)
+    return fenced
+
+
 def collect_refs(path, text):
     refs = []  # (lineno, rest)
     if path.endswith(".md"):
+        # An annotation inside a fence documents the grammar; resolving it would make
+        # every doc that explains refs fail. Same rule in ecr's config-refs.ts.
+        fenced = fenced_lines(text)
         for m in MD_REF_RE.finditer(text):
             lineno = text.count("\n", 0, m.start()) + 1
+            if lineno in fenced:
+                continue
             refs.append((lineno, m.group(1)))
     else:
         for i, line in enumerate(text.splitlines(), 1):
@@ -205,6 +262,7 @@ def check(root):
 
     # --- refs: scan the tree ---
     n_files = n_refs = 0
+    all_files = repo_files(root)
     exempt = (os.path.join("llp", "tombstones"), os.path.join("llp", "reviews"))
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
@@ -237,6 +295,13 @@ def check(root):
                 elif kind == "url":
                     if not URL_RE.match(target):
                         rep.error(f"{where}: malformed URL target: {target}")
+                elif kind == "placeholder":
+                    rep.info(f"{where}: documentation placeholder, not a citation: {target}")
+                elif kind == "glob":
+                    if not target:
+                        rep.error(f"{where}: empty glob target")
+                    elif not any(glob_to_regex(target).match(f) for f in all_files):
+                        rep.error(f"{where}: broken ref: glob matches no file: {target}")
                 elif kind == "shorthand":
                     rep.info(f"{where}: unchecked shorthand: {target} (no mapping defined)")
                 else:  # path

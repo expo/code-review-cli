@@ -65,6 +65,15 @@ export class TerminalReporter implements Reporter {
       out.push("");
     }
 
+    const setupNotes = review.setupNotes ?? [];
+    if (setupNotes.length > 0) {
+      out.push(this.paint(BOLD, "🔗 Review setup:"));
+      for (const note of setupNotes) {
+        out.push(this.paint(DIM, `  - ${note}`));
+      }
+      out.push("");
+    }
+
     if (review.findings.length === 0) {
       out.push(this.paint(DIM, "No findings."), "");
     } else {
