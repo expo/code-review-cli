@@ -762,7 +762,19 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
       }
 
       for (const { line, token } of findProseCitations(text)) {
-        const forms = citationForms(token);
+        // Extension or wildcard tail ⇒ a citation on shape alone. Otherwise it only
+        // counts if it names something real: `eas-build-worker/terraform` and
+        // `general-central/{module,production}` are paths, `anthropic/claude-opus-5`
+        // is shaped identically and is not.
+        const named = isCodeCitation(token) ? null : await namedPath(token, scopeRoot);
+        if (!isCodeCitation(token) && !named) {
+          continue;
+        }
+        // Coverage must accept the path the token RESOLVED to, not just the token as
+        // written: a prompt says `cert-manager` and the ref that pins it is
+        // `infrastructure/cert-manager/`. Without this, the fix the message suggests
+        // does not silence the citation it was suggested for.
+        const forms = [...citationForms(token), ...(named ? coveringForms(named) : [])];
         if (
           ignored.has(token) ||
           forms.some((form) => covered.has(form)) ||
@@ -770,14 +782,6 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
             forms.some((form) => matchesIgnore(form.replace(/^\.\.\.\//, ""), pattern)),
           )
         ) {
-          continue;
-        }
-        // Extension or wildcard tail ⇒ a citation on shape alone. Otherwise it only
-        // counts if it names something real: `eas-build-worker/terraform` and
-        // `general-central/{module,production}` are paths, `anthropic/claude-opus-5`
-        // is shaped identically and is not.
-        const named = isCodeCitation(token) ? null : await namedPath(token, scopeRoot);
-        if (!isCodeCitation(token) && !named) {
           continue;
         }
         const lineCitation = LINE_CITATION_RE.exec(token);
