@@ -92,7 +92,9 @@ test("prose citations skip fenced code blocks", () => {
 
 test("suggestedRef turns abbreviated and bare citations into suffix globs", () => {
   expect(suggestedRef("server/www/src/a.ts")).toBe("server/www/src/a.ts");
-  expect(suggestedRef(".../config/MetricGroupCounter.kt")).toBe("glob:**/config/MetricGroupCounter.kt");
+  expect(suggestedRef(".../config/MetricGroupCounter.kt")).toBe(
+    "glob:**/config/MetricGroupCounter.kt",
+  );
   expect(suggestedRef("session.ts")).toBe("glob:**/session.ts");
   expect(suggestedRef("*PrivacyPolicy.ts")).toBe("glob:**/*PrivacyPolicy.ts");
 });
@@ -154,8 +156,7 @@ test("line-number refs and citations are refused, in an annotation or in prose",
   const root = await makeRepo(
     setup({
       "src/auth.ts": "export function verifySession() {}\n",
-      ".expo-code-review/agents/security.md":
-        `<!-- ${REF} src/auth.ts:42 — the check -->\n\nSee \`src/auth.ts:42-51\`.\n`,
+      ".expo-code-review/agents/security.md": `<!-- ${REF} src/auth.ts:42 — the check -->\n\nSee \`src/auth.ts:42-51\`.\n`,
     }),
   );
   const report = await checkConfigRefs({ root });
@@ -166,8 +167,7 @@ test("line-number refs and citations are refused, in an annotation or in prose",
 test("a ref may never escape the repository", async () => {
   const root = await makeRepo(
     setup({
-      ".expo-code-review/agents/security.md":
-        `<!-- ${REF} ../outside/secrets.ts -->\n<!-- ${REF} /etc/passwd -->\n`,
+      ".expo-code-review/agents/security.md": `<!-- ${REF} ../outside/secrets.ts -->\n<!-- ${REF} /etc/passwd -->\n`,
     }),
   );
   const report = await checkConfigRefs({ root });
@@ -180,7 +180,8 @@ test("an unannotated path citation fails, and @ref-ignore or an annotation clear
   const root = await makeRepo(
     setup({
       "src/auth.ts": "export const a = 1;\n",
-      ".expo-code-review/agents/security.md": "Read `src/auth.ts` and `knex.raw()` before flagging.\n",
+      ".expo-code-review/agents/security.md":
+        "Read `src/auth.ts` and `knex.raw()` before flagging.\n",
     }),
   );
   const before = await checkConfigRefs({ root });
@@ -228,13 +229,14 @@ test("a scope-relative annotated ref is broken, and names the root-relative fix"
   const root = await makeRepo({
     "infrastructure/general-central/module/main.tf": "resource {}\n",
     "infrastructure/.expo-code-review/config.jsonc": "{}\n",
-    "infrastructure/.expo-code-review/agents/terraform-safety.md":
-      `<!-- ${REF} general-central/module/ — the module tree -->\n`,
+    "infrastructure/.expo-code-review/agents/terraform-safety.md": `<!-- ${REF} general-central/module/ — the module tree -->\n`,
   });
   const report = await checkConfigRefs({ root });
   expect(report.problems).toHaveLength(1);
   expect(report.problems[0]!.kind).toBe("broken-ref");
-  expect(report.problems[0]!.problem).toContain("did you mean infrastructure/general-central/module");
+  expect(report.problems[0]!.problem).toContain(
+    "did you mean infrastructure/general-central/module",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -258,7 +260,7 @@ test("routing: a scope with no setup dir, an unknown enforced agent, and a dead 
   const problems = report.problems.filter((p) => p.kind === "structural").map((p) => p.problem);
   expect(problems).toHaveLength(3);
   expect(problems.some((p) => p.includes('scope "billing" has no packages/billing/'))).toBe(true);
-  expect(problems.some((p) => p.includes('agents/ghost.md'))).toBe(true);
+  expect(problems.some((p) => p.includes("agents/ghost.md"))).toBe(true);
   expect(problems.some((p) => p.includes("matches no file in the repo: nope/**"))).toBe(true);
 });
 
@@ -299,7 +301,9 @@ test("one ref covers the prose form of the same citation", async () => {
 
 test("annotations inside a fenced block document the grammar and are not resolved", () => {
   const text = `<!-- ${REF} src/real.ts -->\n\n\`\`\`md\n<!-- ${REF} src/example.ts — how to write one -->\n\`\`\`\n`;
-  expect(parseRefAnnotations(text, "agents/x.md").map((ref) => ref.target)).toEqual(["src/real.ts"]);
+  expect(parseRefAnnotations(text, "agents/x.md").map((ref) => ref.target)).toEqual([
+    "src/real.ts",
+  ]);
 });
 
 test("a target starting with < is a documented placeholder, not a citation", async () => {
@@ -319,8 +323,7 @@ test("reviewSetupRefNotes advises on broken refs and on cited code the PR change
   const root = await makeRepo(
     setup({
       "src/auth.ts": "export const a = 1;\n",
-      ".expo-code-review/agents/security.md":
-        `<!-- ${REF} src/auth.ts — entry point -->\n<!-- ${REF} src/gone.ts — moved -->\n`,
+      ".expo-code-review/agents/security.md": `<!-- ${REF} src/auth.ts — entry point -->\n<!-- ${REF} src/gone.ts — moved -->\n`,
     }),
   );
   const setupDir = path.join(root, ".expo-code-review");
@@ -368,8 +371,7 @@ test("citedPathsTouchedBy reports cited paths a PR changed, dirs included", asyn
     setup({
       "src/auth.ts": "export const a = 1;\n",
       "src/entities/oauth/index.ts": "export const b = 2;\n",
-      ".expo-code-review/agents/security.md":
-        `<!-- ${REF} src/auth.ts — entry point -->\n<!-- ${REF} src/entities/oauth/ -->\n`,
+      ".expo-code-review/agents/security.md": `<!-- ${REF} src/auth.ts — entry point -->\n<!-- ${REF} src/entities/oauth/ -->\n`,
     }),
   );
   const report = await checkConfigRefs({ root });

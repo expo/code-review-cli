@@ -38,10 +38,45 @@ const LINE_CITATION_RE = /^(.+?):(\d+)(?:-\d+)?$/;
  * paths, while `session.ts` and `.github/workflows/**` must.
  */
 const CITATION_EXTENSIONS = new Set([
-  ".c", ".cc", ".cjs", ".cpp", ".cs", ".css", ".go", ".graphql", ".h", ".hpp", ".html",
-  ".java", ".js", ".json", ".jsonc", ".jsx", ".kt", ".lock", ".md", ".mjs", ".mts",
-  ".php", ".prisma", ".proto", ".py", ".rb", ".rs", ".scss", ".sh", ".sql", ".swift",
-  ".toml", ".ts", ".tsx", ".txt", ".vue", ".yaml", ".yml", ".zsh",
+  ".c",
+  ".cc",
+  ".cjs",
+  ".cpp",
+  ".cs",
+  ".css",
+  ".go",
+  ".graphql",
+  ".h",
+  ".hpp",
+  ".html",
+  ".java",
+  ".js",
+  ".json",
+  ".jsonc",
+  ".jsx",
+  ".kt",
+  ".lock",
+  ".md",
+  ".mjs",
+  ".mts",
+  ".php",
+  ".prisma",
+  ".proto",
+  ".py",
+  ".rb",
+  ".rs",
+  ".scss",
+  ".sh",
+  ".sql",
+  ".swift",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".txt",
+  ".vue",
+  ".yaml",
+  ".yml",
+  ".zsh",
 ]);
 
 /** Files inside a review-setup dir that are prompts or config (everything else is skipped). */
@@ -272,7 +307,12 @@ export function pathishCandidates(token: string): string[] {
     token.length,
   );
   const prefix = token.slice(0, cut).replace(/\/$/, "");
-  if (!prefix || !/[a-zA-Z]/.test(prefix) || /[\s<>()"'|=,;:]/.test(prefix) || prefix.startsWith("-")) {
+  if (
+    !prefix ||
+    !/[a-zA-Z]/.test(prefix) ||
+    /[\s<>()"'|=,;:]/.test(prefix) ||
+    prefix.startsWith("-")
+  ) {
     return [];
   }
   return prefix === token ? [token] : [prefix];
@@ -520,7 +560,9 @@ function parseJsonc(text: string): Record<string, unknown> | null {
 }
 
 function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 // @ref LLP 0012#structural-refs-need-no-annotation [implements] — ids and scope dirs are refs the config already declares
@@ -544,7 +586,9 @@ async function checkRoutingManifest(
     return problems;
   }
   if (!parsed) {
-    return [{ file: relative, line: 1, kind: "structural", problem: "could not be parsed as JSONC" }];
+    return [
+      { file: relative, line: 1, kind: "structural", problem: "could not be parsed as JSONC" },
+    ];
   }
 
   const defaults = (parsed.defaults ?? {}) as Record<string, unknown>;
@@ -581,7 +625,9 @@ async function checkRoutingManifest(
     if (index.files.length > 0) {
       for (const pattern of stringArray(entry.paths)) {
         const variants = [pattern, pattern.replace(/\*\*\//g, "")];
-        if (!index.files.some((repoFile) => variants.some((v) => v && matchesIgnore(repoFile, v)))) {
+        if (
+          !index.files.some((repoFile) => variants.some((v) => v && matchesIgnore(repoFile, v)))
+        ) {
           problems.push({
             file: relative,
             line: 1,
@@ -699,7 +745,12 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
         }
         refs.push(ref);
         const cited = splitAnchor(ref.target)[0];
-        if (cited && !cited.startsWith(GLOB_PREFIX) && !URL_RE.test(cited) && !LLP_TARGET_RE.test(ref.target)) {
+        if (
+          cited &&
+          !cited.startsWith(GLOB_PREFIX) &&
+          !URL_RE.test(cited) &&
+          !LLP_TARGET_RE.test(ref.target)
+        ) {
           citedPaths.add(cited.replace(/\/$/, ""));
         }
       }
