@@ -524,8 +524,10 @@ the root-only `feedback` block in `config.jsonc`:
   enforced in code, not the prompt.
 - **`/undismiss <id>` wins over a reply.** Running it on a finding a reply cleared
   puts the finding back in the active list and keeps it there: another reply from
-  the PR author can't clear it again. Only a maintainer lifts that — either
-  `/dismiss <id>` on the same finding, or a maintainer's own reply to it.
+  the PR author can't clear it again. The restore is recorded against the FINDING
+  in the comment state, not against the reply, so editing or deleting the reply
+  doesn't drop it either. Only a maintainer lifts that — either `/dismiss <id>` on
+  the same finding, or a maintainer's own reply to it.
 
 `ecr feedback` mines this substrate retroactively, with no model call and no
 re-review: it crawls a repo's PRs, reads each one's existing reviewer comment

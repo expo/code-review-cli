@@ -244,3 +244,46 @@ test("applied is recomputed under the current config, not carried as a stored fa
   const merged = mergeAggregateFeedback(results, results, prior, feedbackConfig, HEAD_SHA);
   expect(merged.find((r) => r.fp === fp)?.applied).toBe(false);
 });
+
+// Finding 135b432cb46b: on this path a prior record is dropped for every fingerprint a
+// fresh scope claims, so a pin stored on the record vanished the moment the author's
+// edited reply produced a different (or no) record. The pin set is passed in beside the
+// records and applies to fresh ones too.
+test("a /undismiss pin from the comment state still un-clears a FRESH record", () => {
+  const f1 = finding({ file: "api.ts", title: "Issue" });
+  const fp = scopedFingerprint("api", f1);
+  // The author re-posted their rebuttal: a brand-new comment id, judged and accepted,
+  // and no record-level pin anywhere.
+  const fresh = record({
+    fp,
+    by: "author",
+    commentId: 500,
+    author: true,
+    verdict: "accepted",
+    sourceSha: HEAD_SHA,
+    applied: true,
+  });
+  const results = [seamOkScope("api", [f1], [fresh])];
+  const merged = mergeAggregateFeedback(results, results, [], feedbackConfig, HEAD_SHA, [
+    { fp, commentId: 42 },
+  ]);
+  const kept = merged.find((r) => r.fp === fp)!;
+  expect(kept.unclearedByHuman).toBe(true);
+  expect(kept.applied).toBe(false);
+  // Control: with no pin the same fresh record does clear the finding.
+  const noPin = mergeAggregateFeedback(results, results, [], feedbackConfig, HEAD_SHA);
+  expect(noPin.find((r) => r.fp === fp)!.applied).toBe(true);
+});
+
+test("a maintainer's newer reply lifts the pin on the aggregate path too", () => {
+  const f1 = finding({ file: "api.ts", title: "Issue" });
+  const fp = scopedFingerprint("api", f1);
+  const fresh = record({ fp, by: "maint", commentId: 500, maintainer: true, applied: true });
+  const results = [seamOkScope("api", [f1], [fresh])];
+  const merged = mergeAggregateFeedback(results, results, [], feedbackConfig, HEAD_SHA, [
+    { fp, commentId: 42 },
+  ]);
+  const kept = merged.find((r) => r.fp === fp)!;
+  expect(kept.unclearedByHuman).toBeUndefined();
+  expect(kept.applied).toBe(true);
+});

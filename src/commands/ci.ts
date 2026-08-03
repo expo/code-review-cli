@@ -24,8 +24,8 @@ import { errorMessage, publicFailureReason } from "../core/util.js";
 import { readContextFile } from "../core/context-file.js";
 import { buildDiffLineIndex } from "../core/render.js";
 import type { LinkContext, ScopeReviewResult } from "../core/render.js";
-import type { CoordinatorOutput, FeedbackRecord, Finding } from "../core/schema.js";
-import { scopedFingerprint } from "../core/schema.js";
+import type { CoordinatorOutput, FeedbackPin, FeedbackRecord, Finding } from "../core/schema.js";
+import { applyPins, collectPins, scopedFingerprint } from "../core/schema.js";
 import { dropStaleVerdict, feedbackApplied, feedbackNeedsRunSeam } from "../core/adjudicate.js";
 import { runReview } from "../core/review.js";
 import type { ReviewRunOptions, ReviewRunResult } from "../core/review.js";
@@ -381,6 +381,7 @@ export function mergeAggregateFeedback(
   prior: FeedbackRecord[],
   feedbackConfig: LoadedConfig["feedback"],
   headSha: string | undefined,
+  pins?: FeedbackPin[],
 ): FeedbackRecord[] {
   const scopedFpOf = (result: ScopeReviewResult, finding: Finding): string =>
     scopedFingerprint(result.isDefault ? null : result.scope, finding);
@@ -414,7 +415,11 @@ export function mergeAggregateFeedback(
       result.review.findings.map((f) => [scopedFpOf(result, f), f] as const),
     ),
   );
-  return [...byFp.values()].map((record) => {
+  // The maintainer `/undismiss` pins are state about FINDINGS, so they apply to fresh
+  // and carried records alike — a scope whose seam matched no reply this run must not
+  // hand back a record that a pin no longer covers.
+  const { records } = applyPins([...byFp.values()], collectPins(pins, prior));
+  return records.map((record) => {
     const finding = findingByFp.get(record.fp);
     return finding
       ? { ...record, applied: feedbackApplied(finding, record, feedbackConfig) }
@@ -874,13 +879,17 @@ async function runRoutedCi(
       // A seam-backed run hands the reporter the computed records (re-keyed to the
       // scope-namespaced ids the aggregate renders under). Without the seam it
       // passes none and the reporter matches replies itself.
+      const aggState = feedbackNeedsRunSeam(rootConfig.feedback)
+        ? await aggregate.readState()
+        : null;
       const aggFeedback = feedbackNeedsRunSeam(rootConfig.feedback)
         ? mergeAggregateFeedback(
             results,
             finalResults,
-            (await aggregate.readState())?.feedback ?? [],
+            aggState?.feedback ?? [],
             rootConfig.feedback,
             headSha,
+            aggState?.pins,
           )
         : undefined;
       await aggregate.reportAggregate(finalResults, resolution.unmatched, aggFeedback);

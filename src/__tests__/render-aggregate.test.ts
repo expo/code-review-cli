@@ -219,3 +219,44 @@ test("aggregate: unmatched files render as a coverage note", () => {
   expect(body).toContain("Coverage note");
   expect(body).toContain("weird/path.txt");
 });
+
+// Finding 135b432cb46b: the `/undismiss` pin set is a maintainer decision about a
+// finding. It rides the aggregate state whole — never indexed by the records or
+// findings this render happens to show, and never trimmed by the size cap loop, which
+// would silently release a restore no later run could recover.
+test("aggregate: the /undismiss pin set survives a render with no records and a truncating one", () => {
+  const pinned = finding({ title: "Pinned", evidence: "const pinnedEvidence = 1;" });
+  const pinnedFp = scopedFingerprint("www", pinned);
+  const pins = [{ fp: pinnedFp, commentId: 42 }];
+  // No feedback record matched this run (the author edited the reply away).
+  const plain = renderAggregateMarkdown(
+    [scope("www", false, { findings: [pinned] })],
+    "tag",
+    [],
+    undefined,
+    undefined,
+    [],
+    pins,
+  );
+  expect(parseReviewState(plain, "tag")!.pins).toEqual(pins);
+
+  const many = Array.from({ length: 400 }, (_, i) =>
+    finding({
+      title: `Finding ${i}`,
+      severity: "critical",
+      evidence: `const uniqueEvidenceNumber${i} = ${i};`,
+      rationale: "x".repeat(300),
+    }),
+  );
+  const big = renderAggregateMarkdown(
+    [scope("www", false, { decision: "request_changes", findings: [pinned, ...many] })],
+    "tag",
+    [],
+    undefined,
+    undefined,
+    [],
+    pins,
+  );
+  expect(big.length).toBeLessThan(65_000);
+  expect(parseReviewState(big, "tag")!.pins).toEqual(pins);
+});

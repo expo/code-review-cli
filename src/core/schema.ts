@@ -222,14 +222,96 @@ export const FeedbackRecordSchema = z.object({
    * Set when a human ran `/undismiss <id>` on a finding a reply had cleared: the
    * finding returns to the active list and no live reply may re-apply it, so a later
    * re-review recomputing `applied` from the still-present reply keeps it un-cleared.
-   * Rides the embedded state and is carried forward by mergeFeedback for the FINDING,
-   * across a newer reply and a newer head — only a maintainer action (a `/dismiss`, or
-   * a maintainer's own newer reply) lifts it, never one more reply from the PR author.
+   *
+   * DERIVED, never the storage: the pin itself lives in the comment state's own `pins`
+   * set (see FeedbackPinSchema), which survives a run where no reply matches the
+   * finding at all. This flag is stamped back onto the record by `applyPins` on every
+   * render so `feedbackApplied` stays a pure record-local decision — and so a comment
+   * written by this version is still read correctly by an older one.
    */
-  // @ref LLP 0011#suppression-is-never-silent [constrained-by] — /undismiss must actually restore a reply-cleared finding, and the untrusted PR author must not be able to lift that restore by replying again
+  // @ref LLP 0011#suppression-is-never-silent [constrained-by] — /undismiss must actually restore a reply-cleared finding, and the untrusted PR author must not be able to lift that restore by removing or replacing their reply
   unclearedByHuman: z.boolean().optional(),
 });
 export type FeedbackRecord = z.infer<typeof FeedbackRecordSchema>;
+
+// @ref LLP 0011#the-pin-belongs-to-the-finding [implements] — the pin is state about a FINDING, stored outside the reply record so a vanishing reply can never drop it
+/**
+ * One maintainer `/undismiss` pin: the finding they restored, plus the reply comment
+ * the pin was applied against (absent when the finding had no reply record). The
+ * comment id is what makes "a maintainer's own NEWER reply lifts the pin" decidable
+ * without the pin having to live on a reply record: only a maintainer reply posted
+ * AFTER the pin (a strictly greater comment id — GitHub issue comment ids increase)
+ * releases it.
+ */
+export const FeedbackPinSchema = z.object({
+  fp: z.string(),
+  commentId: z.number().int().optional(),
+});
+export type FeedbackPin = z.infer<typeof FeedbackPinSchema>;
+
+/**
+ * The pin set to work with: the state's own `pins` plus any record-level
+ * `unclearedByHuman` flag. The second half is the migration for a comment written
+ * before `pins` existed — its pins live only on the records, and dropping them would
+ * silently lift a maintainer's restore on the first render by this version. Idempotent.
+ */
+export function collectPins(
+  pins: FeedbackPin[] | undefined,
+  records: FeedbackRecord[],
+): FeedbackPin[] {
+  const byFp = new Map<string, FeedbackPin>();
+  for (const pin of pins ?? []) {
+    byFp.set(pin.fp, pin);
+  }
+  for (const record of records) {
+    if (record.unclearedByHuman === true && !byFp.has(record.fp)) {
+      byFp.set(record.fp, { fp: record.fp, commentId: record.commentId });
+    }
+  }
+  return [...byFp.values()];
+}
+
+// @ref LLP 0011#the-pin-belongs-to-the-finding [implements] — the pin set is the single source of truth; the record flag is stamped from it, never the other way round
+/**
+ * Carry the pin set across one render and stamp the records it covers. A pinned
+ * record can never be `applied` (the finding stays in the active list), and a record
+ * the set does NOT pin loses any stale flag — the set decides, so a flag left on a
+ * record could never resurrect a lifted pin.
+ *
+ * The only lift here is a maintainer's own newer reply: a reply record for the pinned
+ * finding, from a maintainer, posted after the pin. Everything else (a newer reply from
+ * the untrusted PR author, an edited or deleted reply, a re-review that matched no
+ * reply at all) leaves the pin exactly where it is. The other lift — a maintainer's
+ * `/dismiss` on that finding — happens in applyDismissalToState, the same trusted hand
+ * deciding the opposite way.
+ */
+export function applyPins(
+  records: FeedbackRecord[],
+  pins: FeedbackPin[],
+): { records: FeedbackRecord[]; pins: FeedbackPin[] } {
+  const kept = pins.filter(
+    (pin) =>
+      // A pin with no recorded commentId is never lifted by a reply: "unknown" must not
+      // read as "older than every comment", which would let any maintainer reply lift it.
+      pin.commentId === undefined ||
+      !records.some(
+        (record) =>
+          record.fp === pin.fp && record.maintainer === true && record.commentId > pin.commentId!,
+      ),
+  );
+  const pinnedFps = new Set(kept.map((pin) => pin.fp));
+  const stamped = records.map((record) => {
+    if (pinnedFps.has(record.fp)) {
+      return { ...record, unclearedByHuman: true, applied: false };
+    }
+    if (record.unclearedByHuman === undefined) {
+      return record;
+    }
+    const { unclearedByHuman: _lifted, ...rest } = record;
+    return rest;
+  });
+  return { records: stamped, pins: kept };
+}
 
 /**
  * The adjudicator's verdict on one rebuttal, re-derived from the source. Both

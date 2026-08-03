@@ -17,10 +17,11 @@ import { matchReplies } from "../core/responses.js";
 import type { ReplyComment } from "../core/responses.js";
 import { dropStaleVerdict, feedbackApplied, feedbackNeedsPrAuthor } from "../core/adjudicate.js";
 import type { AdjudicationItem } from "../core/adjudicate.js";
-import { fingerprintFinding, scopedFingerprint } from "../core/schema.js";
+import { applyPins, collectPins, fingerprintFinding, scopedFingerprint } from "../core/schema.js";
 import type {
   CoordinatorOutput,
   DismissalRecord,
+  FeedbackPin,
   FeedbackRecord,
   Finding,
 } from "../core/schema.js";
@@ -93,17 +94,45 @@ export function prAuthorCacheKey(repo: string, prNumber: number, cwd?: string): 
   return `${prNumber}\n${repo}\n${cwd ?? ""}`;
 }
 
-/** Run `resolve` at most once per PR for the lifetime of the process. Exported for
- * tests (the reporter's own call path needs `gh`). */
+/**
+ * Run `resolve` at most once per PR for the lifetime of the process — but cache only a
+ * SUCCESSFUL answer. A `gh pr view` that fails (rate limit, network blip) resolves to
+ * null, and caching that null would make one transient error fail-close every later
+ * scope of the same run: routed CI builds a reporter per scope, all reading this map,
+ * so every reply would be marked `author: false` and the adjudicated clear path could
+ * not fire again for the whole process. The entry is therefore removed once the promise
+ * settles to null (or rejects, which leaves nothing dangling either), so the next scope
+ * retries. Concurrency is unchanged: the in-flight promise is what's stored, so
+ * simultaneous scopes still join one call rather than each firing their own. Exported
+ * for tests (the reporter's own call path needs `gh`).
+ */
 export function sharedPrAuthor(
   key: string,
   resolve: () => Promise<string | null>,
 ): Promise<string | null> {
-  let pending = prAuthorByPr.get(key);
-  if (!pending) {
-    pending = resolve();
-    prAuthorByPr.set(key, pending);
+  const cached = prAuthorByPr.get(key);
+  if (cached) {
+    return cached;
   }
+  // Only ever forget OUR entry: a later call may already have started a new lookup.
+  const forget = (settled: Promise<string | null>): void => {
+    if (prAuthorByPr.get(key) === settled) {
+      prAuthorByPr.delete(key);
+    }
+  };
+  const pending: Promise<string | null> = resolve().then(
+    (login) => {
+      if (login == null) {
+        forget(pending);
+      }
+      return login;
+    },
+    (error: unknown) => {
+      forget(pending);
+      throw error;
+    },
+  );
+  prAuthorByPr.set(key, pending);
   return pending;
 }
 
@@ -118,24 +147,19 @@ export interface IssueComment {
   html_url?: string;
 }
 
-// @ref LLP 0011#suppression-is-never-silent [implements] — a verdict carries only while BOTH the reply and the reviewed source are unchanged; a human's `/undismiss` pin instead belongs to the FINDING and only a maintainer action lifts it
+// @ref LLP 0011#suppression-is-never-silent [implements] — a verdict carries only while BOTH the reply and the reviewed source are unchanged
 /**
  * Carry a decision already recorded in the prior comment state onto the freshly
- * matched records. Two different lifetimes here, deliberately:
- *
- * - A **verdict** (and the `applied` it justified) is bound to the words it judged AND
- *   to the source it judged: it carries only while the newest reply is the SAME comment
- *   it was decided about and `dropStaleVerdict` agrees the head is unchanged. A newer
- *   reply answers different words; a newer head means the code the rebuttal relied on
- *   may be gone. Either way the reply is re-judged rather than trusted.
- * - An **`unclearedByHuman` pin** is bound to the FINDING a human restored, not to one
- *   reply and not to one revision. It carries across a new reply and a new head, so the
- *   untrusted PR author cannot lift a maintainer's restore just by posting one more
- *   comment quoting the same finding. Only a maintainer action lifts it: a `/dismiss`
- *   (see applyDismissal) or a maintainer's own newer reply on that finding.
+ * matched records. A **verdict** (and the `applied` it justified) is bound to the words
+ * it judged AND to the source it judged: it carries only while the newest reply is the
+ * SAME comment it was decided about and `dropStaleVerdict` agrees the head is
+ * unchanged. A newer reply answers different words; a newer head means the code the
+ * rebuttal relied on may be gone. Either way the reply is re-judged rather than trusted.
  *
  * Fresh records own the reply identity (author, comment id, link); the prior state owns
- * the decision.
+ * the decision. A maintainer's `/undismiss` pin is NOT merged here — it belongs to the
+ * finding, lives in the comment state's own `pins` set, and is stamped back on by
+ * `applyPins` (which is what keeps it alive through a run that matches no reply at all).
  */
 function mergeFeedback(
   fresh: FeedbackRecord[],
@@ -145,20 +169,12 @@ function mergeFeedback(
   const priorByFp = new Map(previous.map((record) => [record.fp, record]));
   return fresh.map((record) => {
     const prior = priorByFp.get(record.fp);
-    if (!prior) {
+    if (!prior || prior.commentId !== record.commentId) {
+      // No prior decision, or different words: nothing decided about the old comment
+      // carries.
       return record;
     }
-    // A newer reply from a MAINTAINER is a fresh trusted decision on this finding, so
-    // it lifts the pin. A newer reply from anyone else (the PR author included) does
-    // not — that is the whole point of pinning to the finding.
-    const sameReply = prior.commentId === record.commentId;
-    const pinned = prior.unclearedByHuman === true && (sameReply || record.maintainer !== true);
-    const pin = pinned ? { unclearedByHuman: true as const, applied: false } : {};
-    if (!sameReply) {
-      // Different words: nothing decided about the old comment carries.
-      return { ...record, ...pin };
-    }
-    const carried = dropStaleVerdict(
+    return dropStaleVerdict(
       {
         ...record,
         ...(prior.verdict !== undefined ? { verdict: prior.verdict } : {}),
@@ -168,7 +184,6 @@ function mergeFeedback(
       },
       headSha,
     );
-    return { ...carried, ...pin };
   });
 }
 
@@ -180,7 +195,10 @@ function mergeFeedback(
  * that comment stores them (scope-namespaced for an aggregate comment, plain otherwise)
  * or a prior verdict can never carry — its fp would not match the fresh record's.
  * `headSha` is the source revision being reviewed: a stored verdict carries only when
- * it judged that same revision (see mergeFeedback). Exported for tests.
+ * it judged that same revision (see mergeFeedback). `pins` is the comment's
+ * `/undismiss` set: it is stamped onto the matched records so a pinned finding is never
+ * re-judged and never re-cleared (a v3 comment's record-level flags migrate in through
+ * collectPins). Exported for tests.
  */
 export function buildAdjudicationItems(
   review: CoordinatorOutput,
@@ -189,12 +207,12 @@ export function buildAdjudicationItems(
   fpOf: (finding: Finding) => string,
   match: "quote" | "id" | "both",
   headSha?: string,
+  pins?: FeedbackPin[],
 ): AdjudicationItem[] {
   const withFp = review.findings.map((finding) => ({ finding, fp: fpOf(finding) }));
-  const records = mergeFeedback(
-    matchReplies(replies, withFp, { match }),
-    previousFeedback,
-    headSha,
+  const { records } = applyPins(
+    mergeFeedback(matchReplies(replies, withFp, { match }), previousFeedback, headSha),
+    collectPins(pins, previousFeedback),
   );
   const findingByFp = new Map(withFp.map((entry) => [entry.fp, entry.finding]));
   const bodyById = new Map(replies.map((reply) => [reply.id, reply.body]));
@@ -207,6 +225,103 @@ export function buildAdjudicationItems(
     items.push({ finding, record, replyText: bodyById.get(record.commentId) ?? "" });
   }
   return items;
+}
+
+/**
+ * The findings a posted comment holds, keyed by the id that comment renders them under:
+ * scope-namespaced on an aggregate (comment:'single') comment, plain otherwise. This is
+ * both the valid-id set a `/dismiss` is checked against and the lookup that re-derives
+ * each feedback record's `applied` under the current config.
+ */
+function stateFindingsById(state: ReviewState): Map<string, Finding> {
+  const scopes = state.scopes;
+  if (scopes && scopes.length > 0) {
+    return new Map(
+      scopes.flatMap((scope) =>
+        scope.review.findings.map(
+          (finding) =>
+            [scopedFingerprint(scope.isDefault ? null : scope.scope, finding), finding] as const,
+        ),
+      ),
+    );
+  }
+  return new Map(state.review.findings.map((finding) => [fingerprintFinding(finding), finding]));
+}
+
+/** What a `/dismiss` or `/undismiss` turns the comment's state into. */
+export interface DismissalStateUpdate {
+  dismissed: DismissalRecord[];
+  feedback: FeedbackRecord[];
+  pins: FeedbackPin[];
+  matched: string[];
+  unmatched: string[];
+}
+
+// @ref LLP 0011#the-pin-belongs-to-the-finding [implements] — `/undismiss` writes the pin into the state's own pin set (never only onto a reply record), and `/dismiss` is the maintainer action that lifts it
+// @ref LLP 0011#hard-floors-in-code [implements] — a re-render is a render: every kept record's `applied` is re-derived from feedbackApplied under the CURRENT config, never carried over as a stored fact
+/**
+ * The pure state transition behind applyDismissal: which findings end up dismissed,
+ * which are pinned back to the active list, and what each feedback record's `applied`
+ * flag is under the config in force NOW. Exported for tests (the reporter's own path
+ * needs `gh`).
+ *
+ * Three rules meet here:
+ * - a `/dismiss` (an fp in `add`) is only recorded for an id this comment actually
+ *   holds, and it LIFTS any pin on that finding — the same trusted hand deciding the
+ *   opposite way;
+ * - a `/undismiss` (an fp in `remove`) restores a finding a REPLY cleared, not just a
+ *   manual dismissal: it pins the finding so a later re-review recomputing `applied`
+ *   from the still-present reply keeps it active;
+ * - every record's `applied` is then re-derived with `feedbackApplied` — the same single
+ *   decision function every other render path uses. Passing a record through untouched
+ *   would keep honoring the config of the run that stored it, so a repo that has since
+ *   tightened `dismiss` (or widened `protectedCategories`) would leave an unrelated
+ *   finding hidden until the next full review. A record whose finding is no longer in
+ *   the comment keeps its stored flag, exactly as computeFeedback does.
+ */
+export function applyDismissalToState(
+  state: ReviewState,
+  add: string[],
+  remove: string[],
+  config: LoadedConfig["feedback"] | undefined,
+  by?: string,
+  reason?: string,
+): DismissalStateUpdate {
+  const findingById = stateFindingsById(state);
+  const matched = add.filter((fp) => findingById.has(fp));
+  const unmatched = add.filter((fp) => !findingById.has(fp));
+
+  const dismissed: DismissalRecord[] = state.dismissed.filter(
+    (record) => !remove.includes(record.fp),
+  );
+  for (const fp of matched) {
+    if (!dismissed.some((record) => record.fp === fp)) {
+      dismissed.push({ fp, by, reason });
+    }
+  }
+
+  const records = state.feedback ?? [];
+  const removeSet = new Set(remove);
+  const addSet = new Set(matched);
+  const pins = collectPins(state.pins, records).filter((pin) => !addSet.has(pin.fp));
+  for (const record of records) {
+    if (removeSet.has(record.fp) && !pins.some((pin) => pin.fp === record.fp)) {
+      // Pinned against the reply that is current right now: that same reply must not
+      // lift the pin later, only a maintainer reply posted after it (see applyPins).
+      pins.push({ fp: record.fp, commentId: record.commentId });
+    }
+  }
+  const stamped = applyPins(records, pins);
+  const feedback = stamped.records.map((record) => {
+    const finding = findingById.get(record.fp);
+    // No feedback config ⇒ the feature is off for this caller, so nothing is applied;
+    // the record itself (who replied, any verdict) is still preserved.
+    if (!config) {
+      return { ...record, applied: false };
+    }
+    return finding ? { ...record, applied: feedbackApplied(finding, record, config) } : record;
+  });
+  return { dismissed, feedback, pins: stamped.pins, matched, unmatched };
 }
 
 /**
@@ -362,10 +477,16 @@ export class GitHubReporter implements Reporter {
       finding,
       fp: fingerprintFinding(finding),
     }));
-    const records = feedback ?? (await this.computeFeedback(withFp, state?.feedback ?? []));
+    // The `/undismiss` pins carry on every render, whether or not this run matched a
+    // reply for the pinned finding — the records may come and go, the pin does not.
+    const priorRecords = state?.feedback ?? [];
+    const pinsIn = collectPins(state?.pins, priorRecords);
+    const { records, pins } = feedback
+      ? applyPins(feedback, pinsIn)
+      : await this.computeFeedback(withFp, priorRecords, pinsIn);
     const link = await this.linkContextAsync();
     await this.upsertComment(
-      renderMarkdown(review, this.options.commentTag, dismissed, link, records),
+      renderMarkdown(review, this.options.commentTag, dismissed, link, records, pins),
     );
   }
 
@@ -386,7 +507,11 @@ export class GitHubReporter implements Reporter {
         fp: scopedFingerprint(result.isDefault ? null : result.scope, finding),
       })),
     );
-    const records = feedback ?? (await this.computeFeedback(withFp, state?.feedback ?? []));
+    const priorRecords = state?.feedback ?? [];
+    const pinsIn = collectPins(state?.pins, priorRecords);
+    const { records, pins } = feedback
+      ? applyPins(feedback, pinsIn)
+      : await this.computeFeedback(withFp, priorRecords, pinsIn);
     const link = await this.linkContextAsync();
     await this.upsertComment(
       renderAggregateMarkdown(
@@ -396,6 +521,7 @@ export class GitHubReporter implements Reporter {
         link,
         { unmatchedFiles },
         records,
+        pins,
       ),
     );
   }
@@ -440,6 +566,7 @@ export class GitHubReporter implements Reporter {
       fpOf,
       config.match,
       this.options.headSha,
+      state?.pins,
     );
   }
 
@@ -476,10 +603,13 @@ export class GitHubReporter implements Reporter {
       // nothing, so it has no head SHA to compare against: stored verdicts do not carry
       // here. That costs the report nothing — it renders who replied and where, never a
       // verdict — and keeps "unknown source" uniformly non-carrying.
-      const records = mergeFeedback(
-        matchReplies(replies, withFp, { match: this.options.feedback?.match ?? "both" }),
-        state.feedback ?? [],
-        this.options.headSha,
+      const { records } = applyPins(
+        mergeFeedback(
+          matchReplies(replies, withFp, { match: this.options.feedback?.match ?? "both" }),
+          state.feedback ?? [],
+          this.options.headSha,
+        ),
+        collectPins(state.pins, state.feedback ?? []),
       );
       return { findings: withFp, records };
     } catch {
@@ -497,23 +627,35 @@ export class GitHubReporter implements Reporter {
   private async computeFeedback(
     withFp: Array<{ finding: Finding; fp: string }>,
     previous: FeedbackRecord[],
-  ): Promise<FeedbackRecord[]> {
+    pinsIn: FeedbackPin[],
+  ): Promise<{ records: FeedbackRecord[]; pins: FeedbackPin[] }> {
     const config = this.options.feedback;
     // `applied` is a function of the CURRENT config, never a stored fact: a carried
     // record's flag was computed under the config of the run that stored it, so a
     // repo flipping `dismiss` back to "never" (or `mode` to "off") must un-hide the
     // finding on the next render, not keep honoring the old policy.
     const findingByFp = new Map(withFp.map((entry) => [entry.fp, entry.finding]));
-    const reapply = (records: FeedbackRecord[]): FeedbackRecord[] =>
-      records.map((record) => {
-        const finding = findingByFp.get(record.fp);
-        // With no feedback config at all, the feature is disabled, so nothing is
-        // applied — but the record itself (who replied, any verdict) is preserved.
-        if (!config) {
-          return { ...record, applied: false };
-        }
-        return finding ? { ...record, applied: feedbackApplied(finding, record, config) } : record;
-      });
+    const reapply = (
+      records: FeedbackRecord[],
+    ): { records: FeedbackRecord[]; pins: FeedbackPin[] } => {
+      // Stamp the pins first: `feedbackApplied` reads the pin off the record, and the
+      // set — not the record — is what says which finding a maintainer restored.
+      const stamped = applyPins(records, pinsIn);
+      return {
+        pins: stamped.pins,
+        records: stamped.records.map((record) => {
+          const finding = findingByFp.get(record.fp);
+          // With no feedback config at all, the feature is disabled, so nothing is
+          // applied — but the record itself (who replied, any verdict) is preserved.
+          if (!config) {
+            return { ...record, applied: false };
+          }
+          return finding
+            ? { ...record, applied: feedbackApplied(finding, record, config) }
+            : record;
+        }),
+      };
+    };
     // mode "off" (or no config) preserves the previously recorded records and only
     // stops matching NEW replies. Returning [] here would let render's reviewState
     // drop the feedback key entirely, permanently losing every recorded reply, verdict
@@ -648,7 +790,11 @@ export class GitHubReporter implements Reporter {
 
   /**
    * Add or remove per-PR finding dismissals in the reviewer's comment and re-render
-   * it in place — no re-review needed (the comment embeds the full review state).
+   * it in place — no re-review needed (the comment embeds the full review state). The
+   * decision itself is pure: see applyDismissalToState, which also re-derives every
+   * feedback record's `applied` under the current config and carries the `/undismiss`
+   * pin set. This is a render like any other, so it must never leave a record hidden
+   * under a policy the repo has since changed.
    */
   // @ref LLP 0008#comment-lifecycle [implements] — validates added fingerprints against the CURRENT review's valid set, scope-aware (scoped fingerprints for an aggregate comment, plain otherwise), rather than trusting caller-supplied ids
   async applyDismissal(
@@ -667,64 +813,33 @@ export class GitHubReporter implements Reporter {
         "The reviewer comment has no embedded state (posted before dismissals existed); re-run a review first.",
       );
     }
-    // Scope-aware validity: on an aggregate comment the ids are scope-namespaced, so
-    // validate against every scope's scoped fingerprints; otherwise the plain ones.
     const isAggregate = Array.isArray(state.scopes) && state.scopes.length > 0;
-    const validFps = isAggregate
-      ? new Set(
-          state.scopes!.flatMap((scope) =>
-            scope.review.findings.map((finding) =>
-              scopedFingerprint(scope.isDefault ? null : scope.scope, finding),
-            ),
-          ),
-        )
-      : new Set(state.review.findings.map(fingerprintFinding));
-    const matched = add.filter((fp) => validFps.has(fp));
-    const unmatched = add.filter((fp) => !validFps.has(fp));
-
-    const dismissed: DismissalRecord[] = state.dismissed.filter(
-      (record) => !remove.includes(record.fp),
-    );
-    for (const fp of matched) {
-      if (!dismissed.some((record) => record.fp === fp)) {
-        dismissed.push({ fp, by, reason });
-      }
-    }
-
-    // Keep any recorded author responses on the re-render — a /dismiss must not
-    // strip the feedback annotations already embedded in the comment state. A
-    // /undismiss (an fp in `remove`) must also restore a finding a REPLY cleared, not
-    // just a manual dismissal: un-apply that record and pin it (`unclearedByHuman`) so
-    // a later re-review recomputing `applied` from the still-present reply keeps the
-    // finding active instead of re-hiding it forever. The pin belongs to the finding
-    // and no reply from the untrusted PR author lifts it (see mergeFeedback); a
-    // maintainer's own `/dismiss` of that same finding does — it is the same trusted
-    // hand deciding the opposite way.
-    const removeSet = new Set(remove);
-    const addSet = new Set(matched);
-    const feedback = (state.feedback ?? []).map((record) => {
-      if (removeSet.has(record.fp)) {
-        return { ...record, applied: false, unclearedByHuman: true };
-      }
-      if (addSet.has(record.fp) && record.unclearedByHuman) {
-        const { unclearedByHuman: _pin, ...rest } = record;
-        return rest;
-      }
-      return record;
-    });
+    const next = applyDismissalToState(state, add, remove, this.options.feedback, by, reason);
     const link = await this.linkContextAsync();
     const body = isAggregate
       ? renderAggregateMarkdown(
           state.scopes!,
           this.options.commentTag,
-          dismissed,
+          next.dismissed,
           link,
           undefined,
-          feedback,
+          next.feedback,
+          next.pins,
         )
-      : renderMarkdown(state.review, this.options.commentTag, dismissed, link, feedback);
+      : renderMarkdown(
+          state.review,
+          this.options.commentTag,
+          next.dismissed,
+          link,
+          next.feedback,
+          next.pins,
+        );
     await this.patchComment(existing.id, body);
-    return { dismissedCount: dismissed.length, matched, unmatched };
+    return {
+      dismissedCount: next.dismissed.length,
+      matched: next.matched,
+      unmatched: next.unmatched,
+    };
   }
 
   /** Newest comment WE authored carrying our marker (id + body), or null if none. */

@@ -194,9 +194,9 @@ carried over from a `--scopes` partial run). A carried-over scope's entry in
 `finalResults` still embeds whatever `review.feedback` array a PAST full run
 wrote for it; reading records back out of that array would resurrect a stale
 per-scope copy over a newer top-level record — most concretely, a human
-`/undismiss` that already overrode the top-level record (pinning
-`unclearedByHuman: true`) on a fingerprint the carried scope's own embedded copy
-still remembers as applied. `mergeAggregateFeedback` therefore treats
+`/undismiss` that already overrode the top-level record (pinning the finding, see
+"The Pin Belongs to the Finding") on a fingerprint the carried scope's own
+embedded copy still remembers as applied. `mergeAggregateFeedback` therefore treats
 `finalResults` as read-only for resolving each kept record's CURRENT finding
 (the fingerprint-to-finding lookup for recomputing `applied`), never as a source
 of feedback records itself [observed] ([ci.ts](../src/commands/ci.ts)
@@ -262,6 +262,18 @@ many PRs the `ecr feedback` crawl walks in one process
 [observed] ([github.ts](../src/reporters/github.ts) `prAuthorByPr`,
 `prAuthorCacheKey`, `sharedPrAuthor`).
 
+Only a SUCCESSFUL lookup is cached, though. A failed `gh pr view` resolves to
+null — the fail-closed answer for that attempt — and caching that null would turn
+one rate-limited call into a process-wide outcome: the first scope's blip would
+mark every later scope's replies `author: false` and keep the adjudicated clear
+path from firing for the rest of the run, on a PR where the very next attempt
+would have succeeded. Sharing the cache across instances is what made that a
+single point of failure, so `sharedPrAuthor` deletes its entry when the promise
+settles to null (or rejects), leaving neither a poisoned result nor a dangling
+in-flight entry, while the entry is still what concurrent scopes join
+[observed] ([github.ts](../src/reporters/github.ts) `sharedPrAuthor`, the
+`forget` helper).
+
 `adjudicateFeedback` re-derives `applied` for **every** record on every call —
 including ones a model never touched this run (already-decided verdicts from a
 prior run are skipped to avoid re-spending the budget on the same words,
@@ -282,13 +294,29 @@ Turning `mode` to `"off"` degrades the same way, on the render side rather than
 the seam side: `GitHubReporter.computeFeedback` recomputes `applied` for every
 carried record under the CURRENT config (so a reply-cleared finding correctly
 falls back to the active list) but keeps the records themselves — who replied,
-any verdict, any `unclearedByHuman` pin — instead of discarding them. Returning
-an empty list here instead would silently erase every recorded reply from the
-comment's embedded state the moment a repo flips the switch, with no way back;
-`"off"` must mean "stop matching new replies," not "forget the ones already
-recorded" [observed] ([github.ts](../src/reporters/github.ts)
-`computeFeedback`, the `!config || config.mode === "off"` branch returning
-`reapply(previous)`).
+any verdict — instead of discarding them, and the pin set rides the state
+untouched beside them. Returning an empty list here instead would silently erase
+every recorded reply from the comment's embedded state the moment a repo flips
+the switch, with no way back; `"off"` must mean "stop matching new replies," not
+"forget the ones already recorded" [observed]
+([github.ts](../src/reporters/github.ts) `computeFeedback`, the
+`!config || config.mode === "off"` branch returning `reapply(previous)`).
+
+`applied` being a function of the current config and not a stored fact has to
+hold on EVERY path that rewrites the comment, including the one that runs no
+review: `/dismiss` and `/undismiss` re-render the whole comment from its embedded
+state, so a record they do not touch used to flow through with whatever `applied`
+the run that stored it computed. A repo that had since tightened `dismiss` back
+to `"never"`, or widened `protectedCategories`, would then keep an unrelated
+finding hidden until the next full review — a maintainer's action on finding A
+freezing the policy on finding B. `applyDismissalToState` therefore maps every
+record through the same `feedbackApplied`, resolving each record's finding by the
+id the comment renders it under (scope-namespaced on an aggregate comment); a
+record whose finding is gone keeps its stored flag, exactly as `computeFeedback`
+does [observed] ([github.ts](../src/reporters/github.ts)
+`applyDismissalToState`, `stateFindingsById`). `ecr dismiss` passes the loaded
+`feedback` block to the reporter for that reason
+[observed] ([dismiss.ts](../src/commands/dismiss.ts)).
 
 ## Suppression Is Never Silent
 
@@ -317,58 +345,20 @@ fold, never collapsed away as if the scope were silently clean
 [observed] ([render.ts](../src/core/render.ts) `renderAggregateMarkdown`, the
 `open` line's `replies.length > 0` disjunct).
 
-Feedback records also ride the embedded comment state exactly like dismissals:
-they are never trimmed away by the aggregate's size-based truncation loop, even
-when that loop is shrinking how many findings are shown, because losing a
-record would silently lose a verdict a prior run already decided
+Feedback records — and the `/undismiss` pin set beside them — also ride the
+embedded comment state exactly like dismissals: they are never trimmed away by
+the aggregate's size-based truncation loop, even when that loop is shrinking how
+many findings are shown, because losing one would silently lose a verdict a prior
+run already decided, or a restore no later run could recover
 [observed] ([render.ts](../src/core/render.ts) `renderAggregateMarkdown`, the
-comment above the `stateScopes` map: "Feedback records ride the state whole,
-never trimmed by the cap loop"). And the reporter's merge step
+comment above the state marker: "Feedback records and `/undismiss` pins ride the
+state whole, never trimmed by the cap loop"). And the reporter's merge step
 (`mergeFeedback`) only ever carries a decided `verdict`/`reason`/`applied`
 forward when the newest reply on that finding is the SAME comment it was
 decided about — a newer reply resets the decision, because a new reply answers
 different words and deserves its own judgment
 [observed] ([github.ts](../src/reporters/github.ts) `mergeFeedback`, the
 `prior.commentId === record.commentId` gate).
-
-Suppression by reply must be exactly as reversible as suppression by
-`/dismiss`: a maintainer running `/undismiss <id>` on a finding a REPLY cleared
-(not only a manual dismissal) restores it to the active list, not just to the
-Dismissed fold. The reporter checks the `/undismiss` removal set against
-`state.feedback` too, un-applies any matching record, and pins it —
-`unclearedByHuman: true` — so a later re-review, recomputing `applied` from
-that SAME still-present reply, does not silently re-clear the finding the
-human just restored; `feedbackApplied` checks this pin before any other floor
-[observed] ([adjudicate.ts](../src/core/adjudicate.ts) `feedbackApplied`, the
-`record.unclearedByHuman` guard; [github.ts](../src/reporters/github.ts) the
-`removeSet`/`unclearedByHuman` branch in the dismissal-render path).
-
-**The pin belongs to the FINDING, not to one reply.** `mergeFeedback` carries
-`unclearedByHuman` forward for the same fingerprint even when a NEWER reply
-replaces the record, and across a head change; only a maintainer action lifts
-it — a `/dismiss` on that finding (`applyDismissal` drops the pin for an fp it
-adds, the same trusted hand deciding the opposite way) or a maintainer's own
-newer reply, which is the trust gate that already lets a maintainer reply clear
-a finding at all [observed] ([github.ts](../src/reporters/github.ts)
-`mergeFeedback`, the `pinned` computation and the `addSet` branch in
-`applyDismissal`). An earlier round of this design bound the pin to one
-`commentId` instead, reasoning that "a newer reply is a fresh decision that
-shouldn't be gagged." That handed the lift to exactly the actor the pin exists
-to constrain. `matchReplies` keeps only the NEWEST comment per finding, so the
-untrusted PR author had only to post one more comment quoting the same title:
-the fresh record carried a different `commentId`, the pin vanished, the reply
-was judged again, and an `"accepted"` verdict removed the finding from the
-blocking set a maintainer had just restored — repeatable after every restore,
-with no permission the author didn't already have. A human's override is not a
-claim about one comment's words; it is a decision about that finding, so it
-outlives whatever the author posts next. The rebuttal still gets its hearing —
-from a maintainer, who can `/dismiss` or reply themselves.
-
-A record carrying this pin is also excluded from `adjudicateFeedback`'s model
-pass — there's nothing to gain by re-judging a reply whose verdict, even if
-`"accepted"`, a human has already overridden
-[observed] ([adjudicate.ts](../src/core/adjudicate.ts) `adjudicateFeedback`,
-the `toJudge` filter).
 
 That same-comment gate is necessary but not sufficient. A verdict is a claim
 about SOURCE, not only about words: `fingerprintFinding` deliberately excludes
@@ -403,17 +393,95 @@ are exempt, having just been stamped with this run's own source
 `dropStaleVerdict` in the `prior` filter; [github.ts](../src/reporters/github.ts)
 `mergeFeedback`).
 
-Two things deliberately survive a head change, which qualifies the pin claim
-above. An `unclearedByHuman` pin belongs to the finding a human restored, not to
-a revision and not to a reply — nothing but a maintainer action lifts it, so it
-does not drop "exactly like a stale verdict" after all. A verdict-less record
-survives for a related reason: a maintainer clears with no model call and no
-verdict, so it has no source-dependent decision to go stale
+Two things deliberately survive a head change. A verdict-less record does,
+because a maintainer clears with no model call and no verdict, so it has no
+source-dependent decision to go stale
 [observed] ([adjudicate.ts](../src/core/adjudicate.ts) `dropStaleVerdict`, the
-`record.verdict === undefined` short-circuit). The cost is real
-and bounded: a push that touches nothing relevant re-spends adjudication budget
-re-judging the same words, capped by `maxAdjudications`. Paying that beats
-hiding a finding against source the rebuttal no longer fits.
+`record.verdict === undefined` short-circuit). And a maintainer's `/undismiss`
+pin does — it is not a claim about source at all, which the next section is
+about. The cost is real and bounded: a push that touches nothing relevant
+re-spends adjudication budget re-judging the same words, capped by
+`maxAdjudications`. Paying that beats hiding a finding against source the
+rebuttal no longer fits.
+
+## The Pin Belongs to the Finding
+
+Suppression by reply must be exactly as reversible as suppression by
+`/dismiss`: a maintainer running `/undismiss <id>` on a finding a REPLY cleared
+(not only a manual dismissal) restores it to the active list, not just to the
+Dismissed fold. So `/undismiss` records a **pin** on that finding, and
+`feedbackApplied` checks the pin before any other floor — a later re-review,
+recomputing `applied` from that same still-present reply, must not silently
+re-clear what the human just restored
+[observed] ([adjudicate.ts](../src/core/adjudicate.ts) `feedbackApplied`, the
+`record.unclearedByHuman` guard; [github.ts](../src/reporters/github.ts)
+`applyDismissalToState`, the `removeSet` branch).
+
+**The pin belongs to the FINDING, not to one reply — so it cannot live on a
+reply record.** It is stored as its own field of the embedded comment state, a
+`pins` set of `{fp, commentId}`, and every render writes that set forward whole:
+not indexed by the records this run matched, not filtered by the findings this
+run emitted, and never trimmed by the aggregate's size cap loop
+[observed] ([render.ts](../src/core/render.ts) `reviewState`, `ReviewState.pins`;
+[schema.ts](../src/core/schema.ts) `FeedbackPinSchema`). `applyPins` stamps the
+set back onto the matched records (`unclearedByHuman: true`, `applied: false`)
+so `feedbackApplied` stays a pure record-local decision, and strips the flag from
+any record the set does not pin — the set decides, the flag is only its shadow
+[observed] ([schema.ts](../src/core/schema.ts) `applyPins`; call sites in
+[github.ts](../src/reporters/github.ts) `computeFeedback`,
+`buildAdjudicationItems`, `report`/`reportAggregate` and in
+[ci.ts](../src/commands/ci.ts) `mergeAggregateFeedback`).
+
+Two rounds of this design got the lifetime wrong, in the same direction both
+times: binding the pin to something the untrusted PR author controls. The first
+bound it to one `commentId`, reasoning that "a newer reply is a fresh decision
+that shouldn't be gagged" — but `matchReplies` keeps only the NEWEST comment per
+finding, so the author had only to post one more comment quoting the same title:
+the fresh record carried a different id, the pin vanished, the reply was judged
+again, and an `"accepted"` verdict removed the finding a maintainer had just
+restored. The second kept the pin on the record while carrying it across a newer
+reply — which closed that path but not the shorter one, because a record exists
+only while some reply still matches the finding. `mergeFeedback` maps over the
+FRESH records, and the render stores only what it returns, so one run with no
+matching reply wrote the pin out of existence: the author edits (or deletes) the
+comment that quoted the finding, pushes, then restores the quote and pushes
+again, and the reply is judged afresh with no pin left to stop it. The aggregate
+path lost it the same way, for every fingerprint a fresh scope claimed. The
+non-attack case is identical and just as bad: a re-review that simply does not
+emit that finding this run would drop a maintainer's restore.
+
+Hence the invariant: **a pin is created and lifted only by a maintainer action,
+and nothing else can touch it.** A `/dismiss` on that finding lifts it —
+`applyDismissalToState` removes the fp from the set, the same trusted hand
+deciding the opposite way. A maintainer's own newer reply lifts it, which is the
+trust gate that already lets a maintainer reply clear a finding at all; "newer"
+is decided against the comment id stored with the pin, so a maintainer comment
+that predates the restore (one the author could resurrect by deleting their own
+later reply) never releases it
+[observed] ([schema.ts](../src/core/schema.ts) `applyPins`, the
+`record.commentId > (pin.commentId ?? 0)` gate). Everything else — a newer reply
+from the PR author, an edited, deleted or unmatched reply, a moved head, a run
+that re-emits nothing — leaves the pin exactly where it is. A human's override is
+not a claim about one comment's words, nor about one revision; it is a decision
+about that finding. The rebuttal still gets its hearing — from a maintainer, who
+can `/dismiss` or reply themselves.
+
+A pinned finding is also excluded from `adjudicateFeedback`'s model pass — there
+is nothing to gain by re-judging a reply whose verdict, even if `"accepted"`, a
+human has already overridden
+[observed] ([adjudicate.ts](../src/core/adjudicate.ts) `adjudicateFeedback`,
+the `toJudge` filter).
+
+The embedded state is a compatibility surface, so moving the pin needed a
+migration, not a cutover: a comment written before `pins` existed carries its
+pins on the records themselves, and reading it as "no pins" would silently
+release every restore already made. `collectPins` unions the state's set with any
+record-level `unclearedByHuman` flag, and `parseReviewState` runs it on every
+read, so a v3 comment upgrades on its next render
+[observed] ([render.ts](../src/core/render.ts) `parseReviewState`;
+[schema.ts](../src/core/schema.ts) `collectPins`). The flag is still written onto
+the records too — as a derived mirror, never as the storage — so a comment this
+version writes also reads correctly under an older one.
 
 ## Asymmetric Defaults
 

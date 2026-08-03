@@ -2,6 +2,8 @@
 import { createHash } from "node:crypto";
 
 import {
+  collectPins,
+  FeedbackPinSchema,
   FeedbackRecordSchema,
   fingerprintFinding,
   scopedFingerprint,
@@ -12,6 +14,7 @@ import type {
   CoordinatorOutput,
   Decision,
   DismissalRecord,
+  FeedbackPin,
   FeedbackRecord,
   Finding,
   Severity,
@@ -202,6 +205,7 @@ export function renderMarkdown(
   dismissed: DismissalRecord[] = [],
   link?: LinkContext,
   feedback: FeedbackRecord[] = [],
+  pins: FeedbackPin[] = [],
 ): string {
   const dismissedByFp = new Map(dismissed.map((record) => [record.fp, record]));
   const withFp = review.findings.map((finding) => ({ finding, fp: fingerprintFinding(finding) }));
@@ -278,7 +282,7 @@ export function renderMarkdown(
   const fingerprints = review.findings.map(fingerprintFinding);
   lines.push("", `<!-- ${tag}:fingerprints=${JSON.stringify(fingerprints)} -->`);
   lines.push(
-    `<!-- ${tag}:state=${encodeState(reviewState({ review, dismissed }, feedbackByFp))} -->`,
+    `<!-- ${tag}:state=${encodeState(reviewState({ review, dismissed }, feedbackByFp, pins))} -->`,
   );
   return lines.join("\n");
 }
@@ -434,12 +438,23 @@ function droppedSuffix(dismissal?: DismissalRecord, reply?: FeedbackRecord): str
   return reply ? ` — dismissed via reply by ${replyLink(replyAuthor(reply), reply)}` : "";
 }
 
+// @ref LLP 0011#the-pin-belongs-to-the-finding [implements] — the pin set rides the state on EVERY render, independent of which replies matched this run, so a reply that disappears can never drop a maintainer's restore
 /** Attach the matched feedback to the state blob. It rides the embedded state
  * like dismissals do, so the next run re-reads what was recorded (including a
- * verdict already decided) instead of re-deriving it. */
-function reviewState(state: ReviewState, feedbackByFp: Map<string, FeedbackRecord>): ReviewState {
+ * verdict already decided) instead of re-deriving it.
+ *
+ * `pins` is written whole and unfiltered — NOT indexed by the findings or the records
+ * this render happens to show. A pin is a maintainer's decision about a finding, so it
+ * must outlive a run where the reply was edited away, the record was dropped, or the
+ * finding itself was not re-emitted. */
+function reviewState(
+  state: ReviewState,
+  feedbackByFp: Map<string, FeedbackRecord>,
+  pins: FeedbackPin[] = [],
+): ReviewState {
   const feedback = [...feedbackByFp.values()];
-  return feedback.length > 0 ? { ...state, feedback } : state;
+  const withFeedback = feedback.length > 0 ? { ...state, feedback } : state;
+  return pins.length > 0 ? { ...withFeedback, pins } : withFeedback;
 }
 
 /** Parse the fingerprints embedded in a previously-posted comment body. */
@@ -476,6 +491,14 @@ export interface ReviewState {
   scopes?: ScopeReviewResult[];
   /** v3: author replies matched to the findings shown in this comment. */
   feedback?: FeedbackRecord[];
+  /**
+   * v4: the findings a maintainer restored with `/undismiss` after a reply had cleared
+   * them. Stored beside the records rather than on them: a record only exists while a
+   * reply still matches its finding, and the pin has to survive the author editing,
+   * replacing or deleting that reply (see collectPins/applyPins). Read from a v3
+   * comment, the pins are migrated out of the records themselves.
+   */
+  pins?: FeedbackPin[];
 }
 
 const DECISION_RANK: Record<Decision, number> = {
@@ -511,6 +534,7 @@ export function renderAggregateMarkdown(
   link?: LinkContext,
   opts?: { unmatchedFiles?: string[] },
   feedback: FeedbackRecord[] = [],
+  pins: FeedbackPin[] = [],
 ): string {
   const dismissedByFp = new Map(dismissed.map((record) => [record.fp, record]));
   const idOf = (result: ScopeReviewResult, finding: Finding): string =>
@@ -728,11 +752,12 @@ export function renderAggregateMarkdown(
       ),
     );
     lines.push("", `<!-- ${tag}:fingerprints=${JSON.stringify(fingerprints)} -->`);
-    // Feedback records ride the state whole, never trimmed by the cap loop: each is
-    // a handful of bytes, and losing one would lose a verdict already decided.
+    // Feedback records and `/undismiss` pins ride the state whole, never trimmed by the
+    // cap loop: each is a handful of bytes, and losing one would lose a verdict already
+    // decided — or a maintainer's restore, which no later run could recover.
     lines.push(
       `<!-- ${tag}:state=${encodeState(
-        reviewState({ review: merged, dismissed, scopes: stateScopes }, feedbackById),
+        reviewState({ review: merged, dismissed, scopes: stateScopes }, feedbackById, pins),
       )} -->`,
     );
     return lines.join("\n");
@@ -772,9 +797,19 @@ export function parseReviewState(body: string, tag: string): ReviewState | null 
     if (parsed && Array.isArray(parsed.review?.findings) && Array.isArray(parsed.dismissed)) {
       // The v3 `feedback` field is shape-validated rather than trusted: it feeds
       // the blocking decision, so a malformed blob must yield no records, not
-      // junk ones.
+      // junk ones. Same for the v4 `pins`.
       const feedback = FeedbackRecordSchema.array().safeParse(parsed.feedback ?? []);
-      return { ...parsed, feedback: feedback.success ? feedback.data : [] };
+      const records = feedback.success ? feedback.data : [];
+      const parsedPins = FeedbackPinSchema.array().safeParse(parsed.pins ?? []);
+      // Migration on read: a v3 comment stored its pins on the records themselves, so
+      // collectPins lifts those into the set. Without this, the first render by this
+      // version would write a state with no pins at all and silently release every
+      // `/undismiss` a maintainer had already made.
+      return {
+        ...parsed,
+        feedback: records,
+        pins: collectPins(parsedPins.success ? parsedPins.data : [], records),
+      };
     }
   } catch {
     // fall through
