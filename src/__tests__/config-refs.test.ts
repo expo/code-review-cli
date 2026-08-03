@@ -69,6 +69,8 @@ test("isCodeCitation separates paths from prose tokens", () => {
     "src/entities/oauth/",
     ".github/workflows/**",
     "*PrivacyPolicy.ts",
+    "castai-spot.tf",
+    "*/.terraform.lock.hcl",
   ]) {
     expect(isCodeCitation(token)).toBe(true);
   }
@@ -269,6 +271,34 @@ test("a scope-relative citation WITH an extension is covered by its precise ref"
     ),
   });
   expect(pinned.problems).toEqual([]);
+});
+
+test("a scope-relative wildcard token gets a glob suggestion that itself resolves", async () => {
+  const files = (pin: string): Record<string, string> => ({
+    "infra/pgbouncer/production/patch.yaml": "x\n",
+    "infra/.expo-code-review/config.jsonc": "{}\n",
+    "infra/.expo-code-review/agents/a.md": `${pin}\nSee \`pgbouncer/*/patch.yaml\`.\n`,
+  });
+  const report = await checkConfigRefs({ root: await makeRepo(files("")) });
+  expect(report.problems).toHaveLength(1);
+  expect(report.problems[0]!.problem).toContain(`${REF} glob:infra/pgbouncer/*/patch.yaml`);
+  // …and that suggestion, once written, clears the citation and resolves
+  const pinned = await checkConfigRefs({
+    root: await makeRepo(files(`<!-- ${REF} glob:infra/pgbouncer/*/patch.yaml — the patches -->`)),
+  });
+  expect(pinned.problems).toEqual([]);
+});
+
+test("scope wins over root when both could satisfy an extensionless citation", async () => {
+  const root = await makeRepo({
+    "alerts/root.txt": "x\n",
+    "infra/alerts/scope.tf": "y\n",
+    "infra/.expo-code-review/config.jsonc": "{}\n",
+    "infra/.expo-code-review/agents/a.md": "Watch `alerts/` closely.\n",
+  });
+  const report = await checkConfigRefs({ root });
+  expect(report.problems).toHaveLength(1);
+  expect(report.problems[0]!.problem).toContain(`${REF} infra/alerts/ —`);
 });
 
 test("a token carrying its own wildcard keeps the glob suggestion", async () => {

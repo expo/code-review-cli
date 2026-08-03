@@ -47,6 +47,7 @@ const CITATION_EXTENSIONS = new Set([
   ".css",
   ".go",
   ".graphql",
+  ".hcl",
   ".h",
   ".hpp",
   ".html",
@@ -70,6 +71,8 @@ const CITATION_EXTENSIONS = new Set([
   ".sh",
   ".sql",
   ".swift",
+  ".tf",
+  ".tfvars",
   ".toml",
   ".ts",
   ".tsx",
@@ -696,10 +699,11 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
   // Does an extensionless token name something real? Cached: prompts repeat the same
   // paths, and each miss would otherwise cost a stat per occurrence.
   const resolvable = new Map<string, string | null>();
-  /** The root-relative path an extensionless token names, or null if it names nothing. */
+  /** The root-relative path a token names, or null. Scope first: a scoped prompt
+   * citing `alerts/` means its own tree even when the root has one too. */
   const namedPath = async (token: string, scopeRoot: string): Promise<string | null> => {
     for (const candidate of pathishCandidates(token)) {
-      for (const base of [root, scopeRoot]) {
+      for (const base of [scopeRoot, root]) {
         const absolute = path.resolve(base, candidate);
         let resolved = resolvable.get(absolute);
         if (resolved === undefined) {
@@ -714,6 +718,19 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
         if (resolved) {
           return resolved;
         }
+      }
+    }
+    return null;
+  };
+
+  /** The glob a wildcard token names, rebased onto the scope when that is what
+   * matches, so the suggested `glob:` ref actually resolves. */
+  const namedGlob = (token: string, scopeRoot: string): string | null => {
+    const scopeRel = path.relative(root, scopeRoot).split(path.sep).join("/");
+    const candidates = [...(scopeRel && scopeRel !== "." ? [`${scopeRel}/${token}`] : []), token];
+    for (const candidate of candidates) {
+      if (index.files.some((file) => matchesIgnore(file, candidate))) {
+        return candidate;
       }
     }
     return null;
@@ -766,7 +783,8 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
       }
 
       for (const { line, token } of findProseCitations(text)) {
-        const named = await namedPath(token, scopeRoot);
+        const isWild = token.includes("*");
+        const named = isWild ? namedGlob(token, scopeRoot) : await namedPath(token, scopeRoot);
         // Shape alone makes a citation; otherwise it must name something real, or
         // `anthropic/claude-opus-5` would read as a path.
         if (!isCodeCitation(token) && !named) {
@@ -786,8 +804,10 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
         }
         const lineCitation = LINE_CITATION_RE.exec(token);
         // A wildcard token means the family; anything else gets the precise resolved path.
-        const suggestion = token.includes("*")
-          ? suggestedRef(token)
+        const suggestion = isWild
+          ? named
+            ? `${GLOB_PREFIX}${named}`
+            : suggestedRef(token)
           : (named ?? suggestedRef(token));
         problems.push({
           file: relative,
