@@ -49,7 +49,9 @@ export async function refCheckCommand(argv: string[]): Promise<void> {
       json = true;
     } else if (arg === "--root") {
       root = argv[++i];
-      if (!root) {
+      // A flag-shaped value means the directory was forgotten: taking it would check
+      // some nonexistent path and report "all resolve" while swallowing the real flag.
+      if (!root || root.startsWith("-")) {
         process.stderr.write("ecr ref-check: --root needs a directory\n");
         process.exitCode = 2;
         return;

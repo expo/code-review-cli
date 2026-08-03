@@ -15,6 +15,7 @@ import {
   slugifyHeading,
   suggestedRef,
 } from "../core/config-refs.js";
+import { refCheckCommand } from "../commands/ref-check.js";
 
 const REF = "@ref";
 
@@ -413,4 +414,18 @@ test("citedPathsTouchedBy reports cited paths a PR changed, dirs included", asyn
     "src/entities/oauth",
   ]);
   expect(citedPathsTouchedBy(report, ["README.md"])).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// the command's argument parsing
+// ---------------------------------------------------------------------------
+
+test("--root refuses a flag-shaped value instead of checking a nonexistent tree", async () => {
+  await refCheckCommand(["--root", "--json"]);
+  expect(process.exitCode).toBe(2);
+  process.exitCode = 0;
+
+  await refCheckCommand(["--root"]);
+  expect(process.exitCode).toBe(2);
+  process.exitCode = 0;
 });
