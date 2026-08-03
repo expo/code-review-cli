@@ -78,11 +78,12 @@ const MAINTAINER_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
 /**
  * PR-author lookups shared across reporter INSTANCES, keyed by the exact PR they
- * describe. Routed CI builds a fresh GitHubReporter per scope (plus one for the seam),
- * and every one of them would otherwise run its own `gh pr view` for the SAME PR. The
- * key carries the checkout, the repo and the PR number, so a lookup can never leak
- * across repos or PRs in one process (the `ecr feedback` crawl walks many PRs). The
- * in-flight promise is stored, not just the result, so concurrent scopes share one call.
+ * describe. Routed CI builds one GitHubReporter per scope comment (plus one for the
+ * aggregate comment), and every one of them would otherwise run its own `gh pr view` for
+ * the SAME PR. The key carries the checkout, the repo and the PR number, so a lookup can
+ * never leak across repos or PRs in one process (the `ecr feedback` crawl walks many
+ * PRs). The in-flight promise is stored, not just the result, so concurrent scopes share
+ * one call.
  */
 const prAuthorByPr = new Map<string, Promise<string | null>>();
 

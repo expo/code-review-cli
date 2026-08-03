@@ -25,6 +25,17 @@ const ADJUDICATE_TIMEOUT_MS = 3 * 60 * 1000;
 export const HARD_FLOOR_CATEGORIES: readonly Category[] = ["secrets", "security"];
 
 /**
+ * Whether no config — current or future — can ever let a reply clear this finding.
+ * `feedbackApplied`'s floor and `adjudicateFeedback`'s "don't spend a model call on it"
+ * skip are the same question, so they read it from one place and cannot drift.
+ * Deliberately NOT `config.protectedCategories`/`dismiss`: those are user-tunable, so a
+ * stored verdict on such a finding becomes useful the moment the config changes.
+ */
+function hardFloored(finding: Finding): boolean {
+  return finding.severity === "critical" || HARD_FLOOR_CATEGORIES.includes(finding.category);
+}
+
+/**
  * One record to judge: the finding it answers and the reply's raw text. The reply text
  * is transient adjudicator input — it is built into the prompt and then discarded; it
  * is never stored on the record and never rendered (see FeedbackRecordSchema).
@@ -85,13 +96,10 @@ export function feedbackApplied(
   if (record.unclearedByHuman) {
     return false;
   }
-  if (finding.severity === "critical") {
+  if (hardFloored(finding)) {
     return false;
   }
-  if (
-    HARD_FLOOR_CATEGORIES.includes(finding.category) ||
-    config.protectedCategories.includes(finding.category)
-  ) {
+  if (config.protectedCategories.includes(finding.category)) {
     return false;
   }
   if (record.maintainer) {
@@ -185,6 +193,10 @@ export async function adjudicateFeedback(
   // spend the budget on a rebuttal that changes no outcome. A reply that only quotes the
   // finding can never clear it either, and would otherwise starve a cited reply of the
   // cap. A finding a human already restored via `/undismiss` is likewise left unjudged.
+  // A hard-floored finding is skipped for the same reason and is deliberately NOT counted
+  // in `skipped` below: that figure means "reduced coverage, raise the cap", and a verdict
+  // no config could ever act on is not coverage a higher cap would buy back.
+  // @ref LLP 0011#hard-floors-in-code [constrained-by] — the code floor also means the model never judges a critical/secrets/security rebuttal: no verdict could move that outcome
   const toJudge =
     config.mode === "adjudicate"
       ? items.filter(
@@ -193,6 +205,7 @@ export async function adjudicateFeedback(
             item.record.author === true &&
             item.record.citedId === true &&
             !item.record.unclearedByHuman &&
+            !hardFloored(item.finding) &&
             item.replyText.trim() !== "",
         )
       : [];
