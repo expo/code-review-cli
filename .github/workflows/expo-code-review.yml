@@ -49,9 +49,26 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
-      # `gh` comes preinstalled on GitHub-hosted images but is not guaranteed on a
-      # self-hosted one, and `ecr ci` reads the whole PR through it. Fail here, named,
-      # instead of as N unexplained reviewer errors 20 minutes in.
+      # `ecr ci` reads the whole PR through `gh`, which GitHub-hosted images ship and
+      # ours do not. Pinned by version AND sha256: this binary runs with GH_TOKEN and
+      # the model credential in its environment, so "whatever the image happens to
+      # ship" is a worse answer than one we can name. Installs into $HOME, never the
+      # workspace — resolveTrustedTool refuses a `gh` found inside the reviewed tree.
+      - name: Install gh
+        env:
+          GH_VERSION: "2.97.0"
+          GH_SHA256: "a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112"
+        run: |
+          set -euo pipefail
+          tarball="gh_${GH_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${tarball}"
+          echo "${GH_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP"
+          install -m 0755 "$RUNNER_TEMP/gh_${GH_VERSION}_linux_amd64/bin/gh" "$HOME/.local/bin/gh"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Check gh is available
         run: gh --version
 
