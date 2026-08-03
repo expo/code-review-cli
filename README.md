@@ -70,9 +70,9 @@ excludes) — see [the mixed setup](#other-providers) below. Prefer
 # Review working-tree changes; prints here, posts nothing
 ecr review
 # Review a GitHub PR by number (preview only)
-ecr review --pr 4057
+ecr review --pr 123
 # …and post it as the PR comment
-ecr review --pr 4057 --post
+ecr review --pr 123 --post
 ```
 
 Options (most to least common):
@@ -141,9 +141,9 @@ your-monorepo/
     routing.jsonc          # the manifest — infra-owned, ordered scope list + locked defaults
     config.jsonc           # the default/root scope; the ONLY place auth/tokenEnv lives
     shared.md coordinator.md agents/
-  server/
-    www/.expo-code-review/{config.jsonc(NO auth),coordinator.md,agents/}       # www team
-    website/.expo-code-review/{config.jsonc(NO auth),coordinator.md,agents/}   # website team
+  apps/
+    api/.expo-code-review/{config.jsonc(NO auth),coordinator.md,agents/}   # api team
+    web/.expo-code-review/{config.jsonc(NO auth),coordinator.md,agents/}   # web team
   .github/workflows/expo-code-review.yml   # unchanged shape: one workflow, one `ecr ci`
 ```
 
@@ -160,21 +160,21 @@ your-monorepo/
   "comment": "single",   // "single" = one aggregated comment (default) | "per-scope"
   // Ordered; the LAST matching scope wins per changed file (CODEOWNERS discipline).
   "scopes": [
-    { "name": "default",        "paths": ["**/*"],              "config": "." },
-    { "name": "server-www",     "paths": ["server/www/**"],     "config": "server/www" },
-    { "name": "server-website", "paths": ["server/website/**"], "config": "server/website" }
+    { "name": "default",  "paths": ["**/*"],        "config": "." },
+    { "name": "apps-api", "paths": ["apps/api/**"], "config": "apps/api" },
+    { "name": "apps-web", "paths": ["apps/web/**"], "config": "apps/web" }
   ]
 }
 ```
 
 ```jsonc
-// server/www/.expo-code-review/config.jsonc  (the www team owns this)
+// apps/api/.expo-code-review/config.jsonc  (the api team owns this)
 {
   // NO "auth" block — locked centrally; a tokenEnv here is rejected by loader + CI guard.
   "model": "openai/gpt-5.5",
   "policy": { "includeSuggestions": false },
-  "noise":  { "additionalIgnores": ["server/www/**/__generated__/**"] }
-  // shared.md, coordinator.md, agents/*.md live beside this file — the www team's roster.
+  "noise":  { "additionalIgnores": ["apps/api/**/__generated__/**"] }
+  // shared.md, coordinator.md, agents/*.md live beside this file — the api team's roster.
 }
 ```
 
@@ -248,7 +248,7 @@ your-monorepo/
   security warning and will be removed on a minor boundary.
 
 Ownership is enforced with CODEOWNERS: `/.expo-code-review/routing.jsonc @your-infra`
-(the single authoritative router) and `/server/www/.expo-code-review/ @your-www-team`
+(the single authoritative router) and `/apps/api/.expo-code-review/ @your-api-team`
 (each team owns only its own scope dir). Rerouting globs is gated behind infra review.
 
 ---
@@ -544,7 +544,7 @@ highest-value part — "repeat offenders": findings whose title recurred across 
 PRs and drew a reply every single time.
 
 ```bash
-ecr feedback --repo expo/eas-cli --limit 100 --since 2026-06-01
+ecr feedback --repo your-org/your-repo --limit 100 --since 2026-06-01
 ecr feedback --as my-review-bot   # if CI posts under a PAT/app identity
 ecr feedback --json               # for scripting
 ```
