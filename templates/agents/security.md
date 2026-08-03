@@ -33,6 +33,8 @@ average severity.
      `ecr ref-check` then fails when that code moves, so this prompt never sends a
      reviewer after a file that no longer exists. Never cite a line number. -->
 
+<!-- @ref glob:.github/workflows/** — the workflows this section judges -->
+
 ## CI / workflow supply-chain (changes under `.github/workflows/**`)
 
 Treat any changed workflow as high-risk and reason about the *trigger*, not just

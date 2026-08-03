@@ -24,7 +24,7 @@ issues in the changed code.
      Cite real code, and pin every citation with a ref so `ecr ref-check` fails when
      it moves. In a comment of its own, on one line:
          @ref <path/to/file.ts>#<symbol> — why this matters
-     Targets: a file, a `dir/`, `glob:<pattern>`, `file#symbol`, `doc.md#heading`.
+     Targets: a file, a `<dir>/`, `glob:<pattern>`, `<file>#<symbol>`, `<doc>.md#<heading>`.
      Never a line number. Not a path? `@ref-ignore <token>`. -->
 
 ## What NOT to flag

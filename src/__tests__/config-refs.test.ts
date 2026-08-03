@@ -325,6 +325,20 @@ test("annotations inside a fenced block document the grammar and are not resolve
   ]);
 });
 
+test("an LLP target belongs to another mechanism: not resolved, not counted", async () => {
+  const root = await makeRepo(
+    setup({
+      ".expo-code-review/agents/security.md":
+        `<!-- ${REF} LLP 0009#config-and-prompt-templates [implements] — engine corpus -->\n` +
+        `<!-- ${REF} LLP 4 -->\n`,
+    }),
+  );
+  const report = await checkConfigRefs({ root });
+  expect(report.problems).toEqual([]);
+  expect(report.refs).toEqual([]);
+  expect(report.citedPaths).toEqual([]);
+});
+
 test("a target starting with < is a documented placeholder, not a citation", async () => {
   const root = await makeRepo(
     setup({

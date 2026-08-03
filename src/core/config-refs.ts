@@ -153,7 +153,10 @@ function markdownHeadings(text: string): string[] {
 function refTarget(body: string): string {
   const withoutGloss = body.split(/\s+(?:[—–]|--)(?:\s+|$)/)[0]!.trim();
   const withoutRelation = withoutGloss.replace(/\s*\[[a-z-]+\]\s*$/, "").trim();
-  return withoutRelation.split(/\s+/)[0] ?? "";
+  // `LLP 0009#anchor` is ONE target that contains a space; taking the first
+  // whitespace-separated token would leave a bare `LLP` and read as a broken path.
+  const llp = /^LLP\s+\d{1,4}(?:#\S+)?/.exec(withoutRelation);
+  return llp ? llp[0] : (withoutRelation.split(/\s+/)[0] ?? "");
 }
 
 /** Line numbers (1-based) that sit inside a fenced code block. */
@@ -452,7 +455,10 @@ function splitAnchor(target: string): [string, string | undefined] {
  */
 async function listRepoFiles(root: string): Promise<string[]> {
   try {
-    const tracked = (await git(["ls-files"], root))
+    // Tracked AND untracked-but-not-ignored: a plain path ref resolves with `stat` and
+    // therefore sees a file the moment it exists, so a glob must too — otherwise a
+    // freshly scaffolded (uncommitted) tree reports globs as matching nothing.
+    const tracked = (await git(["ls-files", "--cached", "--others", "--exclude-standard"], root))
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean);
@@ -742,14 +748,15 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
           });
           continue;
         }
+        // An `LLP NNNN` target belongs to a different mechanism (a design corpus, owned
+        // by that repo's own checker). ecr neither resolves nor counts it: the refs it
+        // owns are the ones citing the reviewed code.
+        if (LLP_TARGET_RE.test(ref.target)) {
+          continue;
+        }
         refs.push(ref);
         const cited = splitAnchor(ref.target)[0];
-        if (
-          cited &&
-          !cited.startsWith(GLOB_PREFIX) &&
-          !URL_RE.test(cited) &&
-          !LLP_TARGET_RE.test(ref.target)
-        ) {
+        if (cited && !cited.startsWith(GLOB_PREFIX) && !URL_RE.test(cited)) {
           citedPaths.add(cited.replace(/\/$/, ""));
         }
       }

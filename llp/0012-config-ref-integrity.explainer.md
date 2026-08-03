@@ -152,9 +152,17 @@ annotation the other accepted [observed]:
 
 All of it is fixed in the grammar rather than per-checker: `glob:` is understood by both,
 a target starting with `<` or a backtick is a documentation placeholder, and an annotation
-inside a fenced code block is an example that neither checker resolves. `LLP NNNN` targets
-stay owned by `./ref-check` — `ecr ref-check` skips them, since an adopting repo has no
-LLP corpus.
+inside a fenced code block is an example that neither checker resolves.
+
+Ownership stays split by target kind, not by file: an `LLP NNNN` target belongs to the
+design corpus and its own checker, so `ecr ref-check` neither resolves nor counts one —
+it owns exactly the refs that cite the reviewed repo's code. That split is why the
+templates can keep their engine annotations and still scaffold a repo that passes
+`ecr ref-check` on day one (asserted in `init-scaffold.test.ts`). An earlier attempt had
+`ecr init` strip those annotations while scaffolding; it mixed the two mechanisms and
+broke the "workflow templates land byte-identical" invariant [observed]. Parsing is what
+must be right: `LLP 0009#anchor` is one target containing a space, and taking the first
+whitespace-separated token left a bare `LLP` that read as a broken path.
 
 **Invariant:** the grammar is shared. A change to target kinds, the placeholder rule, or
 the glob dialect must land in `./ref-check` and `src/core/config-refs.ts` together, or the
