@@ -823,6 +823,13 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
   };
 }
 
+/** The file a target names, with any `glob:` prefix, `#anchor` or `:line` stripped. */
+function citedBasename(target: string): string {
+  const withoutPrefix = target.startsWith(GLOB_PREFIX) ? target.slice(GLOB_PREFIX.length) : target;
+  const withoutLine = LINE_CITATION_RE.exec(withoutPrefix)?.[1] ?? withoutPrefix;
+  return path.basename(splitAnchor(withoutLine)[0]);
+}
+
 /** How many examples a review-side note names before saying "and N more". */
 const NOTE_EXAMPLES = 5;
 
@@ -856,7 +863,7 @@ export async function reviewSetupRefNotes(options: {
   const broken = report.problems.filter(
     (problem) =>
       problem.kind !== "unannotated-citation" &&
-      !(problem.target && isAmbientRuntimeConfig(path.basename(problem.target))),
+      !(problem.target && isAmbientRuntimeConfig(citedBasename(problem.target))),
   );
   if (broken.length > 0) {
     notes.push(

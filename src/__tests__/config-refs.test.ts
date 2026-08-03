@@ -448,6 +448,8 @@ test("a ref to scrubbed ambient config is not review advice (the read root remov
       "src/auth.ts": "export const a = 1;\n",
       ".expo-code-review/shared.md":
         `<!-- ${REF} AGENTS.md — the conventions to judge against -->\n` +
+        `<!-- ${REF} CLAUDE.md#conventions — same, with an anchor -->\n` +
+        `<!-- ${REF} glob:**/.env.local — same, as a glob -->\n` +
         `<!-- ${REF} src/gone.ts — really moved -->\n`,
     }),
   );
@@ -457,8 +459,8 @@ test("a ref to scrubbed ambient config is not review advice (the read root remov
   expect(notes[0]).toContain("1 ref(s)");
   expect(notes[0]).not.toContain("shared.md:1");
 
-  // The standalone gate still reports both — there the tree is a real checkout.
-  expect((await checkConfigRefs({ root })).problems).toHaveLength(2);
+  // The standalone gate still reports all of them — there the tree is a real checkout.
+  expect((await checkConfigRefs({ root })).problems).toHaveLength(4);
 });
 
 test("setup problems are labelled by setup-dir position when the config lives outside the tree", async () => {
