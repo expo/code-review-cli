@@ -226,6 +226,28 @@ test("extensionless citations count only when they name something real", async (
   expect(tokens.some((problem) => problem.includes(`${REF} infrastructure/finops/ —`))).toBe(true);
 });
 
+test("the ref the message suggests silences the citation it was suggested for", async () => {
+  // A scoped prompt names an app by its directory basename; the ref that pins it is
+  // the root-relative path. Coverage has to connect the two, or the suggested fix is
+  // not a fix. Both the plain and the glob form of that path must count.
+  const files = (pin: string): Record<string, string> => ({
+    "infrastructure/cert-manager/kustomization.yaml": "resources: []\n",
+    "infrastructure/.expo-code-review/config.jsonc": "{}\n",
+    "infrastructure/.expo-code-review/agents/k8s.md": `${pin}\n\nApps: \`cert-manager\`.\n`,
+  });
+
+  const unpinned = await checkConfigRefs({ root: await makeRepo(files("")) });
+  expect(unpinned.problems).toHaveLength(1);
+  expect(unpinned.problems[0]!.problem).toContain(`${REF} infrastructure/cert-manager/ —`);
+
+  for (const pin of [
+    `<!-- ${REF} infrastructure/cert-manager/ — the app -->`,
+    `<!-- ${REF} glob:infrastructure/cert-manager/** — the app -->`,
+  ]) {
+    expect((await checkConfigRefs({ root: await makeRepo(files(pin)) })).problems).toEqual([]);
+  }
+});
+
 test("a scope-relative annotated ref is broken, and names the root-relative fix", async () => {
   const root = await makeRepo({
     "infrastructure/general-central/module/main.tf": "resource {}\n",
