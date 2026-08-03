@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   review:
-    runs-on: ubuntu-latest
+    runs-on: expo-large
     # Trigger policy lives in .expo-code-review/config.jsonc (review.trigger); `ecr ci`
     # self-gates on it (and honors the ai-review:skip label). This coarse gate just
     # avoids spinning up a runner for a PR that explicitly opted out. Uses the array
@@ -48,6 +48,12 @@ jobs:
           persist-credentials: false
 
       - uses: oven-sh/setup-bun@v2
+
+      # `gh` comes preinstalled on GitHub-hosted images but is not guaranteed on a
+      # self-hosted one, and `ecr ci` reads the whole PR through it. Fail here, named,
+      # instead of as N unexplained reviewer errors 20 minutes in.
+      - name: Check gh is available
+        run: gh --version
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
