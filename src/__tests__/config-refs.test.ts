@@ -248,6 +248,39 @@ test("the ref the message suggests silences the citation it was suggested for", 
   }
 });
 
+test("a scope-relative citation WITH an extension is covered by its precise ref", async () => {
+  const files = (pin: string): Record<string, string> => ({
+    "infrastructure/pgbouncer/base/pdb.yaml": "kind: PodDisruptionBudget\n",
+    "server/www/k8s/pdb.yaml": "kind: PodDisruptionBudget\n",
+    "infrastructure/.expo-code-review/config.jsonc": "{}\n",
+    "infrastructure/.expo-code-review/agents/k8s.md": `${pin}\n\nSee \`pgbouncer/base/pdb.yaml\`.\n`,
+  });
+
+  const unpinned = await checkConfigRefs({ root: await makeRepo(files("")) });
+  expect(unpinned.problems).toHaveLength(1);
+  // the suggestion is the precise path, never a basename glob
+  expect(unpinned.problems[0]!.problem).toContain(
+    `${REF} infrastructure/pgbouncer/base/pdb.yaml —`,
+  );
+
+  const pinned = await checkConfigRefs({
+    root: await makeRepo(
+      files(`<!-- ${REF} infrastructure/pgbouncer/base/pdb.yaml — the PDB this rule is about -->`),
+    ),
+  });
+  expect(pinned.problems).toEqual([]);
+});
+
+test("a token carrying its own wildcard keeps the glob suggestion", async () => {
+  const root = await makeRepo({
+    ".github/workflows/deploy.yml": "on: push\n",
+    ".expo-code-review/config.jsonc": "{}\n",
+    ".expo-code-review/agents/sec.md": "Changes under `.github/workflows/**` are high risk.\n",
+  });
+  const report = await checkConfigRefs({ root });
+  expect(report.problems[0]!.problem).toContain(`${REF} glob:.github/workflows/**`);
+});
+
 test("a scope-relative annotated ref is broken, and names the root-relative fix", async () => {
   const root = await makeRepo({
     "infrastructure/general-central/module/main.tf": "resource {}\n",

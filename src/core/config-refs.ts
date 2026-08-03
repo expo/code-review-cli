@@ -762,18 +762,14 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
       }
 
       for (const { line, token } of findProseCitations(text)) {
-        // Extension or wildcard tail ⇒ a citation on shape alone. Otherwise it only
-        // counts if it names something real: `eas-build-worker/terraform` and
-        // `general-central/{module,production}` are paths, `anthropic/claude-opus-5`
-        // is shaped identically and is not.
-        const named = isCodeCitation(token) ? null : await namedPath(token, scopeRoot);
+        const named = await namedPath(token, scopeRoot);
+        // Shape alone makes a citation; otherwise it must name something real, or
+        // `anthropic/claude-opus-5` would read as a path.
         if (!isCodeCitation(token) && !named) {
           continue;
         }
-        // Coverage must accept the path the token RESOLVED to, not just the token as
-        // written: a prompt says `cert-manager` and the ref that pins it is
-        // `infrastructure/cert-manager/`. Without this, the fix the message suggests
-        // does not silence the citation it was suggested for.
+        // Coverage accepts the resolved path too, else the only ref that silences a
+        // scope-relative citation is an over-broad `glob:**/<basename>`.
         const forms = [...citationForms(token), ...(named ? coveringForms(named) : [])];
         if (
           ignored.has(token) ||
@@ -785,9 +781,10 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
           continue;
         }
         const lineCitation = LINE_CITATION_RE.exec(token);
-        // For an extensionless token the suggestion is the path that actually resolved,
-        // which is also how a scope-relative citation learns its root-relative form.
-        const suggestion = named ?? suggestedRef(token);
+        // A wildcard token means the family; anything else gets the precise resolved path.
+        const suggestion = token.includes("*")
+          ? suggestedRef(token)
+          : (named ?? suggestedRef(token));
         problems.push({
           file: relative,
           line,
