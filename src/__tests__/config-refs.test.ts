@@ -442,6 +442,25 @@ test("reviewSetupRefNotes advises on broken refs and on cited code the PR change
   ).toEqual([]);
 });
 
+test("a ref to scrubbed ambient config is not review advice (the read root removes it)", async () => {
+  const root = await makeRepo(
+    setup({
+      "src/auth.ts": "export const a = 1;\n",
+      ".expo-code-review/shared.md":
+        `<!-- ${REF} AGENTS.md — the conventions to judge against -->\n` +
+        `<!-- ${REF} src/gone.ts — really moved -->\n`,
+    }),
+  );
+  const setupDir = path.join(root, ".expo-code-review");
+  const notes = await reviewSetupRefNotes({ root, setupDirs: [setupDir], changedFiles: [] });
+  expect(notes).toHaveLength(1);
+  expect(notes[0]).toContain("1 ref(s)");
+  expect(notes[0]).not.toContain("shared.md:1");
+
+  // The standalone gate still reports both — there the tree is a real checkout.
+  expect((await checkConfigRefs({ root })).problems).toHaveLength(2);
+});
+
 test("setup problems are labelled by setup-dir position when the config lives outside the tree", async () => {
   const code = await makeRepo({ "src/auth.ts": "export const a = 1;\n" });
   const trustedBase = await makeRepo(

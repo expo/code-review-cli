@@ -8,6 +8,7 @@ import { CONFIG_DIRNAME, stripJsonComments, stripTrailingCommas } from "../confi
 import { ROUTING_FILENAME } from "../config/routing.js";
 import { git, pathInside } from "./exec.js";
 import { matchesIgnore } from "./noise.js";
+import { isAmbientRuntimeConfig } from "./scrub.js";
 
 /**
  * Built by concatenation so this module's own regexes and doc comments are not
@@ -95,6 +96,8 @@ export interface RefProblem {
   kind: RefProblemKind;
   /** One sentence, imperative where a fix is obvious. */
   problem: string;
+  /** The ref target (or prose token) at fault. Absent for structural problems. */
+  target?: string;
 }
 
 export interface ParsedRef {
@@ -745,6 +748,7 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
             line: ref.line,
             kind: problem.startsWith("cites a line number") ? "line-number-ref" : "broken-ref",
             problem,
+            target: ref.target,
           });
           continue;
         }
@@ -792,6 +796,7 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
           problem: lineCitation
             ? `\`${token}\` pins a line number; cite the file or a \`#symbol\` instead, as \`${REF_MARK} ${suggestedRef(lineCitation[1]!)}\``
             : `\`${token}\` cites code without a ref; add \`${REF_MARK} ${suggestion} — why it matters\` (or \`${IGNORE_MARK} ${token}\` if it is not a path)`,
+          target: token,
         });
       }
     }
@@ -845,7 +850,14 @@ export async function reviewSetupRefNotes(options: {
     return []; // a check that cannot run must never degrade the review
   }
   const notes: string[] = [];
-  const broken = report.problems.filter((problem) => problem.kind !== "unannotated-citation");
+  // The read root is scrubbed of ambient runtime config (AGENTS.md, CLAUDE.md, .env…),
+  // so a ref to one is missing by design here, not stale. The template itself cites
+  // AGENTS.md, which would make this note cry wolf on every PR.
+  const broken = report.problems.filter(
+    (problem) =>
+      problem.kind !== "unannotated-citation" &&
+      !(problem.target && isAmbientRuntimeConfig(path.basename(problem.target))),
+  );
   if (broken.length > 0) {
     notes.push(
       `The reviewer setup cites code that no longer resolves (${broken.length} ref(s)): ` +
