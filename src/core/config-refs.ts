@@ -8,6 +8,7 @@ import { CONFIG_DIRNAME, stripJsonComments, stripTrailingCommas } from "../confi
 import { ROUTING_FILENAME } from "../config/routing.js";
 import { git, pathInside } from "./exec.js";
 import { matchesIgnore } from "./noise.js";
+import { isAmbientRuntimeConfig } from "./scrub.js";
 
 /**
  * Built by concatenation so this module's own regexes and doc comments are not
@@ -46,6 +47,7 @@ const CITATION_EXTENSIONS = new Set([
   ".css",
   ".go",
   ".graphql",
+  ".hcl",
   ".h",
   ".hpp",
   ".html",
@@ -69,6 +71,8 @@ const CITATION_EXTENSIONS = new Set([
   ".sh",
   ".sql",
   ".swift",
+  ".tf",
+  ".tfvars",
   ".toml",
   ".ts",
   ".tsx",
@@ -95,6 +99,8 @@ export interface RefProblem {
   kind: RefProblemKind;
   /** One sentence, imperative where a fix is obvious. */
   problem: string;
+  /** The ref target (or prose token) at fault. Absent for structural problems. */
+  target?: string;
 }
 
 export interface ParsedRef {
@@ -693,10 +699,11 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
   // Does an extensionless token name something real? Cached: prompts repeat the same
   // paths, and each miss would otherwise cost a stat per occurrence.
   const resolvable = new Map<string, string | null>();
-  /** The root-relative path an extensionless token names, or null if it names nothing. */
+  /** The root-relative path a token names, or null. Scope first: a scoped prompt
+   * citing `alerts/` means its own tree even when the root has one too. */
   const namedPath = async (token: string, scopeRoot: string): Promise<string | null> => {
     for (const candidate of pathishCandidates(token)) {
-      for (const base of [root, scopeRoot]) {
+      for (const base of [scopeRoot, root]) {
         const absolute = path.resolve(base, candidate);
         let resolved = resolvable.get(absolute);
         if (resolved === undefined) {
@@ -711,6 +718,19 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
         if (resolved) {
           return resolved;
         }
+      }
+    }
+    return null;
+  };
+
+  /** The glob a wildcard token names, rebased onto the scope when that is what
+   * matches, so the suggested `glob:` ref actually resolves. */
+  const namedGlob = (token: string, scopeRoot: string): string | null => {
+    const scopeRel = path.relative(root, scopeRoot).split(path.sep).join("/");
+    const candidates = [...(scopeRel && scopeRel !== "." ? [`${scopeRel}/${token}`] : []), token];
+    for (const candidate of candidates) {
+      if (index.files.some((file) => matchesIgnore(file, candidate))) {
+        return candidate;
       }
     }
     return null;
@@ -745,6 +765,7 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
             line: ref.line,
             kind: problem.startsWith("cites a line number") ? "line-number-ref" : "broken-ref",
             problem,
+            target: ref.target,
           });
           continue;
         }
@@ -762,18 +783,15 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
       }
 
       for (const { line, token } of findProseCitations(text)) {
-        // Extension or wildcard tail ⇒ a citation on shape alone. Otherwise it only
-        // counts if it names something real: `eas-build-worker/terraform` and
-        // `general-central/{module,production}` are paths, `anthropic/claude-opus-5`
-        // is shaped identically and is not.
-        const named = isCodeCitation(token) ? null : await namedPath(token, scopeRoot);
+        const isWild = token.includes("*");
+        const named = isWild ? namedGlob(token, scopeRoot) : await namedPath(token, scopeRoot);
+        // Shape alone makes a citation; otherwise it must name something real, or
+        // `anthropic/claude-opus-5` would read as a path.
         if (!isCodeCitation(token) && !named) {
           continue;
         }
-        // Coverage must accept the path the token RESOLVED to, not just the token as
-        // written: a prompt says `cert-manager` and the ref that pins it is
-        // `infrastructure/cert-manager/`. Without this, the fix the message suggests
-        // does not silence the citation it was suggested for.
+        // Coverage accepts the resolved path too, else the only ref that silences a
+        // scope-relative citation is an over-broad `glob:**/<basename>`.
         const forms = [...citationForms(token), ...(named ? coveringForms(named) : [])];
         if (
           ignored.has(token) ||
@@ -785,9 +803,12 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
           continue;
         }
         const lineCitation = LINE_CITATION_RE.exec(token);
-        // For an extensionless token the suggestion is the path that actually resolved,
-        // which is also how a scope-relative citation learns its root-relative form.
-        const suggestion = named ?? suggestedRef(token);
+        // A wildcard token means the family; anything else gets the precise resolved path.
+        const suggestion = isWild
+          ? named
+            ? `${GLOB_PREFIX}${named}`
+            : suggestedRef(token)
+          : (named ?? suggestedRef(token));
         problems.push({
           file: relative,
           line,
@@ -795,6 +816,7 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
           problem: lineCitation
             ? `\`${token}\` pins a line number; cite the file or a \`#symbol\` instead, as \`${REF_MARK} ${suggestedRef(lineCitation[1]!)}\``
             : `\`${token}\` cites code without a ref; add \`${REF_MARK} ${suggestion} — why it matters\` (or \`${IGNORE_MARK} ${token}\` if it is not a path)`,
+          target: token,
         });
       }
     }
@@ -819,6 +841,13 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
     scannedFiles,
     citedPaths: [...citedPaths].sort(),
   };
+}
+
+/** The file a target names, with any `glob:` prefix, `#anchor` or `:line` stripped. */
+function citedBasename(target: string): string {
+  const withoutPrefix = target.startsWith(GLOB_PREFIX) ? target.slice(GLOB_PREFIX.length) : target;
+  const withoutLine = LINE_CITATION_RE.exec(withoutPrefix)?.[1] ?? withoutPrefix;
+  return path.basename(splitAnchor(withoutLine)[0]);
 }
 
 /** How many examples a review-side note names before saying "and N more". */
@@ -848,7 +877,14 @@ export async function reviewSetupRefNotes(options: {
     return []; // a check that cannot run must never degrade the review
   }
   const notes: string[] = [];
-  const broken = report.problems.filter((problem) => problem.kind !== "unannotated-citation");
+  // The read root is scrubbed of ambient runtime config (AGENTS.md, CLAUDE.md, .env…),
+  // so a ref to one is missing by design here, not stale. The template itself cites
+  // AGENTS.md, which would make this note cry wolf on every PR.
+  const broken = report.problems.filter(
+    (problem) =>
+      problem.kind !== "unannotated-citation" &&
+      !(problem.target && isAmbientRuntimeConfig(citedBasename(problem.target))),
+  );
   if (broken.length > 0) {
     notes.push(
       `The reviewer setup cites code that no longer resolves (${broken.length} ref(s)): ` +

@@ -69,6 +69,8 @@ test("isCodeCitation separates paths from prose tokens", () => {
     "src/entities/oauth/",
     ".github/workflows/**",
     "*PrivacyPolicy.ts",
+    "castai-spot.tf",
+    "*/.terraform.lock.hcl",
   ]) {
     expect(isCodeCitation(token)).toBe(true);
   }
@@ -248,6 +250,67 @@ test("the ref the message suggests silences the citation it was suggested for", 
   }
 });
 
+test("a scope-relative citation WITH an extension is covered by its precise ref", async () => {
+  const files = (pin: string): Record<string, string> => ({
+    "infrastructure/pgbouncer/base/pdb.yaml": "kind: PodDisruptionBudget\n",
+    "server/www/k8s/pdb.yaml": "kind: PodDisruptionBudget\n",
+    "infrastructure/.expo-code-review/config.jsonc": "{}\n",
+    "infrastructure/.expo-code-review/agents/k8s.md": `${pin}\n\nSee \`pgbouncer/base/pdb.yaml\`.\n`,
+  });
+
+  const unpinned = await checkConfigRefs({ root: await makeRepo(files("")) });
+  expect(unpinned.problems).toHaveLength(1);
+  // the suggestion is the precise path, never a basename glob
+  expect(unpinned.problems[0]!.problem).toContain(
+    `${REF} infrastructure/pgbouncer/base/pdb.yaml —`,
+  );
+
+  const pinned = await checkConfigRefs({
+    root: await makeRepo(
+      files(`<!-- ${REF} infrastructure/pgbouncer/base/pdb.yaml — the PDB this rule is about -->`),
+    ),
+  });
+  expect(pinned.problems).toEqual([]);
+});
+
+test("a scope-relative wildcard token gets a glob suggestion that itself resolves", async () => {
+  const files = (pin: string): Record<string, string> => ({
+    "infra/pgbouncer/production/patch.yaml": "x\n",
+    "infra/.expo-code-review/config.jsonc": "{}\n",
+    "infra/.expo-code-review/agents/a.md": `${pin}\nSee \`pgbouncer/*/patch.yaml\`.\n`,
+  });
+  const report = await checkConfigRefs({ root: await makeRepo(files("")) });
+  expect(report.problems).toHaveLength(1);
+  expect(report.problems[0]!.problem).toContain(`${REF} glob:infra/pgbouncer/*/patch.yaml`);
+  // …and that suggestion, once written, clears the citation and resolves
+  const pinned = await checkConfigRefs({
+    root: await makeRepo(files(`<!-- ${REF} glob:infra/pgbouncer/*/patch.yaml — the patches -->`)),
+  });
+  expect(pinned.problems).toEqual([]);
+});
+
+test("scope wins over root when both could satisfy an extensionless citation", async () => {
+  const root = await makeRepo({
+    "alerts/root.txt": "x\n",
+    "infra/alerts/scope.tf": "y\n",
+    "infra/.expo-code-review/config.jsonc": "{}\n",
+    "infra/.expo-code-review/agents/a.md": "Watch `alerts/` closely.\n",
+  });
+  const report = await checkConfigRefs({ root });
+  expect(report.problems).toHaveLength(1);
+  expect(report.problems[0]!.problem).toContain(`${REF} infra/alerts/ —`);
+});
+
+test("a token carrying its own wildcard keeps the glob suggestion", async () => {
+  const root = await makeRepo({
+    ".github/workflows/deploy.yml": "on: push\n",
+    ".expo-code-review/config.jsonc": "{}\n",
+    ".expo-code-review/agents/sec.md": "Changes under `.github/workflows/**` are high risk.\n",
+  });
+  const report = await checkConfigRefs({ root });
+  expect(report.problems[0]!.problem).toContain(`${REF} glob:.github/workflows/**`);
+});
+
 test("a scope-relative annotated ref is broken, and names the root-relative fix", async () => {
   const root = await makeRepo({
     "infrastructure/general-central/module/main.tf": "resource {}\n",
@@ -407,6 +470,27 @@ test("reviewSetupRefNotes advises on broken refs and on cited code the PR change
       changedFiles: [],
     }),
   ).toEqual([]);
+});
+
+test("a ref to scrubbed ambient config is not review advice (the read root removes it)", async () => {
+  const root = await makeRepo(
+    setup({
+      "src/auth.ts": "export const a = 1;\n",
+      ".expo-code-review/shared.md":
+        `<!-- ${REF} AGENTS.md — the conventions to judge against -->\n` +
+        `<!-- ${REF} CLAUDE.md#conventions — same, with an anchor -->\n` +
+        `<!-- ${REF} glob:**/.env.local — same, as a glob -->\n` +
+        `<!-- ${REF} src/gone.ts — really moved -->\n`,
+    }),
+  );
+  const setupDir = path.join(root, ".expo-code-review");
+  const notes = await reviewSetupRefNotes({ root, setupDirs: [setupDir], changedFiles: [] });
+  expect(notes).toHaveLength(1);
+  expect(notes[0]).toContain("1 ref(s)");
+  expect(notes[0]).not.toContain("shared.md:1");
+
+  // The standalone gate still reports all of them — there the tree is a real checkout.
+  expect((await checkConfigRefs({ root })).problems).toHaveLength(4);
 });
 
 test("setup problems are labelled by setup-dir position when the config lives outside the tree", async () => {

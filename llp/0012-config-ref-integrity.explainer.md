@@ -91,8 +91,11 @@ settle. A reviewer of this feature named the case: a Terraform prompt citing
 "this is very likely going to drift" [observed] — not one of those has an extension, and
 `anthropic/claude-opus-5` is shaped identically while naming no file. Syntax cannot tell
 them apart, so an extensionless token counts as a citation exactly when it *names
-something real*: probed against the repo root and the scope's own subtree, brace lists
-and wildcards cut back to their fixed prefix. Model ids resolve to nothing and stay prose.
+something real*: probed against the scope's own subtree first, then the repo root (a
+scoped prompt citing `alerts/` means its own tree even when the root has one too), brace
+lists cut back to their fixed prefix. A token carrying `*` resolves as a glob instead,
+scope-rebased when that is what matches, so the suggested `glob:` ref itself resolves.
+Model ids resolve to nothing and stay prose.
 
 The consequence is deliberate: an extensionless path that had already drifted before
 adoption is invisible (nothing distinguishes it from prose), while every one that is true

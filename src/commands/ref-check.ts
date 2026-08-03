@@ -25,7 +25,7 @@ Exit 0 = every ref holds. Exit 1 = at least one is broken.
 
 Options:
   --root <dir>   Repository root to check (default: the current git repo).
-  --json         Emit {ok, problems:[{file, line, kind, problem}]} on stdout.
+  --json         Emit {ok, problems:[{file, line, kind, problem, target?}]} on stdout.
 `;
 
 const KIND_LABEL: Record<RefProblem["kind"], string> = {
