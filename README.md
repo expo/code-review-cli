@@ -694,7 +694,7 @@ set in `config.auth` (credentials come from OpenCode):
     pro passes report `$0` in the run log's cost column — token counts are
     correct, and the OpenAI project dashboard is the source of truth for spend.
 - **Anthropic / Claude** — use `anthropic/...` model ids and every anthropic pass
-  runs through the **Claude Code CLI** (`claude -p --output-format json`), inferred
+  runs through the **Claude Code CLI** (`claude -p --output-format stream-json --verbose`), inferred
   from the model. The credential is (in order) a `tokenEnv` you name, an ambient
   `CLAUDE_CODE_OAUTH_TOKEN`, or your local `claude` login — an `auth` entry is
   entirely optional. Run `claude setup-token` for a Max/Team subscription token

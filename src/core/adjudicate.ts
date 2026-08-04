@@ -244,6 +244,7 @@ export async function adjudicateFeedback(
             title: `adjudicate-${index}`,
             maxWaitMs: ADJUDICATE_TIMEOUT_MS,
             finalizeOnTimeout: true,
+            onActivity: (line) => debug(`  [adjudicator] #${index + 1}: ${line}`),
           },
           parseAdjudication,
         );

@@ -99,9 +99,18 @@ oversight, and must not be silently reintroduced as a "fix" ([observed]
 ## Claude Code CLI Containment
 
 The Claude Code engine runs each review pass as a single stateless
-`claude -p --output-format json` subprocess fed the task on stdin. The argv and child
-environment are built to keep an untrusted PR (the review input) from turning that
-subprocess into code execution or credential exfiltration.
+`claude -p --output-format stream-json --verbose` subprocess fed the task on stdin.
+The JSONL stream makes tool activity observable while the pass runs instead of leaving
+only a periodic heartbeat until the final result. The incremental decoder emits only
+bounded lifecycle metadata and read-tool names with confined repo-relative targets;
+raw assistant text, tool results, grep patterns, and attempted host paths never reach
+the progress log because model output is untrusted and may contain source secrets or
+terminal/log-injection payloads. Every line is tagged with the stable agent bucket by
+the review pipeline, so concurrent passes remain attributable [observed]
+`claude-code.ts:345-503`, `review.ts:184-190,698-704`; tests in
+`claude-code.test.ts` and `review-internals.test.ts`. The argv and child environment
+are built to keep an untrusted PR (the review input) from turning that subprocess into
+code execution or credential exfiltration.
 
 **Flags.** `--safe-mode` disables CLAUDE.md/hooks/MCP/plugins while keeping OAuth;
 `--bare` is deliberately **not** used because bare mode ignores
@@ -246,6 +255,14 @@ unbounded ([observed] `exec.ts:143-148, 162-189`). A timeout never throws synchr
 child resolves with `timedOut: true` in the result regardless of the `check` flag, so
 callers get one consistent shape to distinguish "our own deadline fired" from a real
 command failure ([observed] `exec.ts:71-87, 181-189, 230-250`).
+
+**Structured stdout observation stays inside the capture bound.** Spawn/input callers
+may observe stdout chunks as they arrive, but only the bytes admitted by `maxBuffer`;
+the observer is best-effort and its exceptions cannot affect the child. Claude uses
+this seam to decode `stream-json` without piping raw subprocess output to the terminal,
+while the complete bounded stdout remains available for final-result parsing
+([observed] `exec.ts` `RunOptions.onStdout` / `runWithInput`; `claude-code.ts`
+`createClaudeActivityStream`).
 
 ## Retry Taxonomy
 

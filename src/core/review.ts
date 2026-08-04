@@ -181,6 +181,14 @@ export function effectiveConcurrency(
   return 6;
 }
 
+/** Prefix live model activity with its stable agent bucket and optional pass label. */
+export function formatAgentActivity(agent: string, label: string, line: string): string {
+  const pass =
+    label === agent ? "" : label.startsWith(`${agent} `) ? label.slice(agent.length).trim() : label;
+  const activity = line.replace(/[\r\n]+/g, " ").trim();
+  return `  [${agent}] ${pass ? `${pass}: ` : ""}${activity}`;
+}
+
 export async function runReview(
   source: ReviewSource,
   options: ReviewRunOptions,
@@ -463,7 +471,9 @@ export async function runReview(
     let selectedAgents = explicitAgents ?? config.agents;
     if (!explicitAgents && options.route) {
       progress("Routing: selecting relevant agents…");
-      const routed = await routeAgents(handle, config, workspace.files);
+      const routed = await routeAgents(handle, config, workspace.files, (line) =>
+        progress(formatAgentActivity("router", "router", line)),
+      );
       selectedAgents = routed.agents;
       progress(
         routed.routed
@@ -688,7 +698,7 @@ export async function runReview(
             system: task.system,
             text: buildTaskText(task),
             title: task.title,
-            onActivity: (line) => progress(`  ${task.label}: ${line}`),
+            onActivity: (line) => progress(formatAgentActivity(task.bucket, task.label, line)),
             maxWaitMs: task.maxWaitMs,
             maxToolCalls: task.maxToolCalls,
             finalizeOnTimeout: true,
@@ -883,7 +893,15 @@ export async function runReview(
           tokens: coordinatorTokens,
           truncated: coordinatorTruncated,
           model: coordinatorModel,
-        } = await coordinate(handle, config, metadata, agentFindings, coverageNotes, stackManifest);
+        } = await coordinate(
+          handle,
+          config,
+          metadata,
+          agentFindings,
+          coverageNotes,
+          stackManifest,
+          (line) => progress(formatAgentActivity("coordinator", "coordinator", line)),
+        );
         agentCosts["coordinator"] = cost;
         trackTokens("coordinator", coordinatorTokens);
         trackModel("coordinator", config.coordinator.model, coordinatorModel);
@@ -978,7 +996,9 @@ export async function runReview(
         const confirmation = await confirmStackRequalifications(
           grounded,
           options.stackConfirm.maxConfirmations,
-          patchConfirmer(handle, source),
+          patchConfirmer(handle, source, (line) =>
+            progress(formatAgentActivity(STACK_VERIFIER_AGENT, STACK_VERIFIER_AGENT, line)),
+          ),
           progress,
         );
         grounded = confirmation.findings;

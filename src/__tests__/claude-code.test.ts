@@ -9,11 +9,13 @@ import {
   assertClaudeModels,
   buildClaudeArgs,
   buildEngineMap,
+  claudeActivities,
   claudeCodePromptAndParse,
   claudeSubscriptionActive,
   claudeTemperatureNote,
   claudeTokenCredential,
   classifyClaudeError,
+  createClaudeActivityStream,
   claudeModelId,
   claudeModelMatches,
   engineForModel,
@@ -50,7 +52,7 @@ async function fakeClaude(script: string): Promise<{ bin: string; cleanup: () =>
 }
 
 /**
- * A fake `claude` that returns a different canned `--output-format json` body on
+ * A fake `claude` that returns a different canned final-result body on
  * each successive invocation (tracked via a counter file, since childEnv is fixed
  * for the whole test) and logs each call's stdin (the prompt actually sent) to
  * `<dir>/stdin.<n>` via `stdinLog(n)` — so a corrective-retry test can assert what
@@ -213,7 +215,7 @@ test("buildClaudeArgs: read-only, trust-isolated, subscription argv; never --bar
     maxTurns: 60,
   });
   const joined = args.join(" ");
-  expect(joined).toContain("--output-format json");
+  expect(joined).toContain("--output-format stream-json --verbose");
   expect(joined).toContain("--model claude-opus-5");
   expect(joined).toContain("--append-system-prompt SYS");
   // Read, Grep, AND Glob are all path-scoped to the review tree — a bare Grep
@@ -262,6 +264,112 @@ test("parseClaudeResult: success maps text/cost/tokens/model", () => {
   expect(r.modelOutputTokens).toEqual({ "claude-opus-5-20250101": 200 });
 });
 
+test("parseClaudeResult: reads the final result from stream-json JSONL", () => {
+  const stdout = [
+    JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5" }),
+    JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "tool-1", name: "Read", input: {} }] },
+    }),
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "the findings",
+      total_cost_usd: 0.02,
+      usage: { input_tokens: 12, output_tokens: 34 },
+    }),
+  ].join("\n");
+  const result = parseClaudeResult(stdout);
+  expect(result.isError).toBe(false);
+  expect(result.text).toBe("the findings");
+  expect(result.cost).toBe(0.02);
+  expect(result.tokens).toEqual({
+    input: 12,
+    output: 34,
+    cache: { write: undefined, read: undefined },
+  });
+});
+
+test("claudeActivities: reports lifecycle and safe tool targets, never raw text/results/patterns", () => {
+  expect(
+    claudeActivities({ type: "system", subtype: "init", model: "claude-opus-5" }, "/repo"),
+  ).toEqual([{ line: "started claude-opus-5" }]);
+  expect(
+    claudeActivities(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "secret reasoning" },
+            {
+              type: "tool_use",
+              id: "read-1",
+              name: "Read",
+              input: { file_path: "/repo/src/auth.ts" },
+            },
+            {
+              type: "tool_use",
+              id: "grep-1",
+              name: "Grep",
+              input: { path: "/repo/src", pattern: "DO_NOT_LOG_THIS" },
+            },
+            {
+              type: "tool_use",
+              id: "outside-1",
+              name: "Read",
+              input: { file_path: "/etc/passwd\nforged log line" },
+            },
+            {
+              type: "tool_use",
+              id: "glob-1",
+              name: "Glob",
+              input: { pattern: "SECRET_PATTERN" },
+            },
+          ],
+        },
+      },
+      "/repo",
+    ),
+  ).toEqual([
+    { key: "read-1", line: "Read src/auth.ts" },
+    { key: "grep-1", line: "Grep src" },
+    { key: "outside-1", line: "Read" },
+    { key: "glob-1", line: "Glob" },
+  ]);
+  expect(
+    claudeActivities(
+      { type: "result", is_error: false, duration_ms: 12_400, num_turns: 3 },
+      "/repo",
+    ),
+  ).toEqual([{ line: "completed (12s, 3 turn(s))" }]);
+  expect(
+    claudeActivities(
+      { type: "user", message: { content: [{ type: "tool_result", content: "SECRET" }] } },
+      "/repo",
+    ),
+  ).toEqual([]);
+});
+
+test("createClaudeActivityStream: handles chunk boundaries and dedupes repeated tool ids", () => {
+  const lines: string[] = [];
+  const stream = createClaudeActivityStream("/repo", (line) => lines.push(line));
+  const init = `${JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5" })}\n`;
+  const tool = JSON.stringify({
+    type: "assistant",
+    message: {
+      content: [
+        { type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "/repo/a.ts" } },
+      ],
+    },
+  });
+  stream.push(init.slice(0, 15));
+  stream.push(`${init.slice(15)}${tool}\n${tool.slice(0, 20)}`);
+  stream.push(tool.slice(20));
+  stream.finish();
+  expect(lines).toEqual(["started claude-opus-5", "Read a.ts"]);
+});
+
 test("pickAnsweringModel: prefers the requested family over key order; else max output", () => {
   // The CLI bills its internal helper (haiku) in modelUsage too, often FIRST —
   // key order is meaningless. Family match must win.
@@ -299,6 +407,13 @@ test("parseClaudeResult: unparseable stdout is an error, not a throw", () => {
   const r = parseClaudeResult("not json at all");
   expect(r.isError).toBe(true);
   expect(r.errorText).toBe("not json at all");
+});
+
+test("parseClaudeResult: a stream without a final result is an error", () => {
+  const stdout = JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5" });
+  const result = parseClaudeResult(stdout);
+  expect(result.isError).toBe(true);
+  expect(result.errorText).toBe(stdout);
 });
 
 test("classifyClaudeError: rate-limit / auth / usage-limit / other", () => {
@@ -738,6 +853,53 @@ test("runClaudePrompt: a usage-limit result throws the non-retryable, reset-time
         title: "t",
       }),
     ).rejects.toThrow(/usage limit reached; resets/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runClaudePrompt: streams safe tool activity while preserving the final result", async () => {
+  const body = [
+    JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5" }),
+    JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "read-1",
+            name: "Read",
+            input: { file_path: process.cwd() + "/src/core/auth.ts" },
+          },
+        ],
+      },
+    }),
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "the findings",
+      duration_ms: 2500,
+      num_turns: 2,
+      total_cost_usd: 0.01,
+    }),
+  ].join("\n");
+  const { bin, cleanup } = await fakeClaude(`#!/bin/sh\ncat > /dev/null\nprintf '%s' '${body}'\n`);
+  try {
+    const activity: string[] = [];
+    const result = await runClaudePrompt(testHandle(bin), {
+      agent: "reviewer",
+      system: "SYS",
+      text: "hi",
+      title: "t",
+      onActivity: (line) => activity.push(line),
+    });
+    expect(result.text).toBe("the findings");
+    expect(activity).toEqual([
+      "started claude-opus-5",
+      "Read src/core/auth.ts",
+      "completed (3s, 2 turn(s))",
+    ]);
   } finally {
     await cleanup();
   }

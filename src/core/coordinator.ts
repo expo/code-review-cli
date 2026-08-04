@@ -35,6 +35,7 @@ export async function coordinate(
   agentFindings: Record<string, Finding[]>,
   coverageNotes: string[] = [],
   stackManifest?: StackManifest | null,
+  onActivity?: (line: string) => void,
 ): Promise<CoordinationResult> {
   const system = buildCoordinatorSystem(config);
   const text = buildCoordinatorTask(metadata, agentFindings, coverageNotes, stackManifest);
@@ -47,6 +48,7 @@ export async function coordinate(
       title: "review-coordinator",
       maxWaitMs: COORDINATOR_TIMEOUT_MS,
       finalizeOnTimeout: true,
+      onActivity,
     },
     parseCoordinatorOutput,
   );

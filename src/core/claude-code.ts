@@ -20,7 +20,7 @@ import { RateLimitWatch } from "./throttle.js";
 
 /**
  * The Claude Code CLI review engine. Runs each pass as a single `claude -p
- * --output-format json` subprocess on the user's Claude Max/Team subscription,
+ * --output-format stream-json --verbose` subprocess on the user's Claude Max/Team subscription,
  * bypassing OpenCode entirely (which cannot use Anthropic subscription OAuth).
  * The seam functions in opencode.ts dispatch here on `handle.engine`.
  *
@@ -66,9 +66,9 @@ const CLAUDE_MAX_TURNS = 60;
 /** Fallback per-pass ceiling when a caller passes no maxWaitMs. */
 const DEFAULT_MAX_WAIT_MS = 8 * 60 * 1000;
 /**
- * A stateless `claude -p` pass emits no incremental tool lines to the caller, so a
- * long pass would look hung. Emit a "still working" heartbeat this often (matching
- * opencode.ts's HEARTBEAT_MS) to keep the progress signal alive.
+ * Emit a "still working" heartbeat after this long with no structured stream
+ * activity (matching opencode.ts's HEARTBEAT_MS), so a thinking stretch still has
+ * a progress signal between tool calls.
  */
 const CLAUDE_HEARTBEAT_MS = 45_000;
 
@@ -305,7 +305,8 @@ export function buildClaudeArgs(opts: {
   return [
     "-p",
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
     "--model",
     opts.model,
     "--append-system-prompt",
@@ -333,6 +334,177 @@ export interface ClaudeResult {
   errorText: string;
 }
 
+type JsonRecord = Record<string, unknown>;
+
+function jsonRecord(value: unknown): JsonRecord | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : null;
+}
+
+/** The final result object from either legacy single JSON or JSONL stream output. */
+function finalClaudeResult(stdout: string): JsonRecord | null {
+  try {
+    const parsed = jsonRecord(JSON.parse(stdout));
+    return parsed?.type === "result" ? parsed : null;
+  } catch {
+    let result: JsonRecord | null = null;
+    for (const line of stdout.split(/\r?\n/)) {
+      if (!line.trim()) {
+        continue;
+      }
+      try {
+        const event = jsonRecord(JSON.parse(line));
+        if (event?.type === "result") {
+          result = event;
+        }
+      } catch {
+        // A malformed/non-JSON line cannot be the structured final result.
+      }
+    }
+    return result;
+  }
+}
+
+const MAX_ACTIVITY_DETAIL = 180;
+
+/** Collapse control/newline injection and bound provider/model-originated log text. */
+function safeActivityDetail(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const withoutControls = [...value]
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      return code <= 0x1f || (code >= 0x7f && code <= 0x9f) ? " " : char;
+    })
+    .join("");
+  const clean = withoutControls.replace(/\s+/g, " ").trim();
+  if (!clean) {
+    return undefined;
+  }
+  return clean.length > MAX_ACTIVITY_DETAIL ? `${clean.slice(0, MAX_ACTIVITY_DETAIL - 1)}…` : clean;
+}
+
+/** Render an in-tree tool target without exposing attempted host paths. */
+function activityPath(value: unknown, cwd: string): string | undefined {
+  const candidate = safeActivityDetail(value);
+  if (!candidate) {
+    return undefined;
+  }
+  const root = path.resolve(cwd);
+  const absolute = path.resolve(root, candidate);
+  if (absolute !== root && !pathInside(absolute, root)) {
+    return undefined;
+  }
+  const relative = path.relative(root, absolute).replace(/\\/g, "/");
+  return relative || ".";
+}
+
+interface ClaudeActivity {
+  /** Stable tool-use id; repeated assistant events with the same id log once. */
+  key?: string;
+  line: string;
+}
+
+/**
+ * Convert one Claude stream event into safe progress metadata. Raw assistant text,
+ * tool results, and grep patterns are deliberately never logged: PR/model content is
+ * untrusted and may contain secrets or terminal-control/log-injection payloads.
+ */
+// @ref LLP 0003#claude-code-cli-containment [implements] — stream only bounded lifecycle/tool metadata; raw model text and tool results never become progress logs
+export function claudeActivities(eventValue: unknown, cwd: string): ClaudeActivity[] {
+  const event = jsonRecord(eventValue);
+  if (!event) {
+    return [];
+  }
+  if (event.type === "system" && event.subtype === "init") {
+    const model = safeActivityDetail(event.model);
+    return [{ line: model ? `started ${model}` : "started" }];
+  }
+  if (event.type === "result") {
+    if (event.is_error === true) {
+      return [];
+    }
+    const duration =
+      typeof event.duration_ms === "number"
+        ? `${Math.max(0, Math.round(event.duration_ms / 1000))}s`
+        : null;
+    const turns = typeof event.num_turns === "number" ? `${event.num_turns} turn(s)` : null;
+    const detail = [duration, turns].filter(Boolean).join(", ");
+    return [{ line: detail ? `completed (${detail})` : "completed" }];
+  }
+  if (event.type !== "assistant") {
+    return [];
+  }
+  const message = jsonRecord(event.message);
+  const content = Array.isArray(message?.content) ? message.content : [];
+  const activities: ClaudeActivity[] = [];
+  for (const value of content) {
+    const block = jsonRecord(value);
+    if (block?.type !== "tool_use" || typeof block.name !== "string") {
+      continue;
+    }
+    const input = jsonRecord(block.input) ?? {};
+    const key = typeof block.id === "string" ? block.id : undefined;
+    if (block.name === "Read") {
+      const target = activityPath(input.file_path, cwd);
+      activities.push({ key, line: target ? `Read ${target}` : "Read" });
+    } else if (block.name === "Grep") {
+      const target = activityPath(input.path, cwd);
+      activities.push({ key, line: target ? `Grep ${target}` : "Grep" });
+    } else if (block.name === "Glob") {
+      const target = activityPath(input.path, cwd);
+      activities.push({ key, line: target && target !== "." ? `Glob ${target}` : "Glob" });
+    }
+  }
+  return activities;
+}
+
+/** Incremental JSONL decoder for Claude's stream-json stdout. */
+export function createClaudeActivityStream(
+  cwd: string,
+  onActivity: (line: string) => void,
+): { push: (chunk: string) => void; finish: () => void } {
+  let buffered = "";
+  const reported = new Set<string>();
+  const consume = (line: string): void => {
+    if (!line.trim()) {
+      return;
+    }
+    try {
+      for (const activity of claudeActivities(JSON.parse(line), cwd)) {
+        if (activity.key && reported.has(activity.key)) {
+          continue;
+        }
+        if (activity.key) {
+          reported.add(activity.key);
+        }
+        onActivity(activity.line);
+      }
+    } catch {
+      // Ignore malformed progress events; final result parsing still reports errors.
+    }
+  };
+  return {
+    push(chunk: string): void {
+      buffered += chunk;
+      for (;;) {
+        const newline = buffered.indexOf("\n");
+        if (newline < 0) {
+          break;
+        }
+        consume(buffered.slice(0, newline).replace(/\r$/, ""));
+        buffered = buffered.slice(newline + 1);
+      }
+    },
+    finish(): void {
+      consume(buffered);
+      buffered = "";
+    },
+  };
+}
+
 /**
  * The model that actually answered, out of the result's modelUsage keys. The CLI
  * also bills its own internal helper calls there (a haiku entry appears alongside
@@ -353,14 +525,13 @@ export function pickAnsweringModel(
 }
 
 /**
- * Parse the `--output-format json` result object. Keys off `is_error` / a parse
+ * Parse the final result from `--output-format stream-json` JSONL (also accepts the
+ * former single JSON object for compatibility/tests). Keys off `is_error` / a parse
  * failure, NOT `subtype` — `subtype` stays `"success"` on some API errors.
  */
 export function parseClaudeResult(stdout: string): ClaudeResult {
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(stdout) as Record<string, unknown>;
-  } catch {
+  const parsed = finalClaudeResult(stdout);
+  if (!parsed) {
     return {
       text: "",
       cost: 0,
@@ -507,14 +678,25 @@ export async function runClaudePrompt(
   // stateless analogue of OpenCode's mid-run tool-call cap).
   const maxTurns =
     args.maxToolCalls != null && args.maxToolCalls > 0 ? args.maxToolCalls : undefined;
-  // A stateless `claude -p` pass streams nothing back, so emit a heartbeat while it
-  // runs or a long pass looks hung (cleared in finally, whatever the outcome).
+  // Stream safe structured activity. The heartbeat fires only after a quiet window,
+  // rather than on a fixed cadence that can land immediately after a tool line.
   const heartbeatStart = Date.now();
+  let lastStreamActivityAt = heartbeatStart;
+  const emitActivity = (line: string): void => {
+    lastStreamActivityAt = Date.now();
+    args.onActivity?.(line);
+  };
+  const activityStream = args.onActivity
+    ? createClaudeActivityStream(process.cwd(), emitActivity)
+    : undefined;
   const heartbeat = args.onActivity
     ? setInterval(() => {
-        args.onActivity?.(
-          `still working… ${Math.round((Date.now() - heartbeatStart) / 1000)}s elapsed`,
-        );
+        if (Date.now() - lastStreamActivityAt >= CLAUDE_HEARTBEAT_MS) {
+          args.onActivity?.(
+            `still working… ${Math.round((Date.now() - heartbeatStart) / 1000)}s elapsed ` +
+              `(no new activity for ${Math.round((Date.now() - lastStreamActivityAt) / 1000)}s)`,
+          );
+        }
       }, CLAUDE_HEARTBEAT_MS)
     : undefined;
   heartbeat?.unref?.();
@@ -535,9 +717,11 @@ export async function runClaudePrompt(
         cwd: process.cwd(),
         timeout: maxWaitMs,
         check: false,
+        onStdout: activityStream?.push,
       },
     );
   } finally {
+    activityStream?.finish();
     if (heartbeat) {
       clearInterval(heartbeat);
     }

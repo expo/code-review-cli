@@ -11,6 +11,7 @@ import {
   formatUsageSummary,
   renderUsageMarkdown,
   effectiveConcurrency,
+  formatAgentActivity,
 } from "../core/review.js";
 import type { LoadedConfig } from "../config/schema.js";
 import type { PatchWorkspaceFile } from "../core/noise.js";
@@ -49,6 +50,18 @@ test("chunkByLines: caps by maxFiles", () => {
 test("chunkByLines: a single over-budget file is its own chunk", () => {
   const chunks = chunkByLines([wf("big", 5000), wf("small", 10)], 1000, 20);
   expect(chunks.map((c) => c.map((f) => f.path))).toEqual([["big"], ["small"]]);
+});
+
+test("formatAgentActivity: stable agent tag leads every line and pass detail stays visible", () => {
+  expect(formatAgentActivity("security", "security", "Read src/auth.ts")).toBe(
+    "  [security] Read src/auth.ts",
+  );
+  expect(formatAgentActivity("correctness", "correctness [2/3]", "Grep src")).toBe(
+    "  [correctness] [2/3]: Grep src",
+  );
+  expect(formatAgentActivity("cross-cutting", "cross-file", "still working…\n45s")).toBe(
+    "  [cross-cutting] cross-file: still working… 45s",
+  );
 });
 
 test("applyReviewPolicy: drops suggestions, sorts by severity", () => {
