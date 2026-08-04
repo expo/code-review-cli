@@ -37,13 +37,14 @@
 
   // Anthropic models always run through the Claude Code CLI (`claude -p`) — the
   // engine is inferred per agent from its model, so this entry only supplies the
-  // credential. In CI the tokenEnv holds a token minted by `claude setup-token`
-  // (an `sk-ant-oat…` subscription token; an `sk-ant-api…` Console key works too);
-  // locally an active `claude` login is enough — the entry could even be omitted.
-  // ECR_EXPECTED_TOKEN_ENV (repo variable) must equal this tokenEnv.
+  // credential. In CI the tokenEnv holds the shared review credential (an
+  // `sk-ant-oat…` token minted by `claude setup-token`, or an `sk-ant-api…`
+  // Console key); locally an active `claude` login is enough — the entry could
+  // even be omitted. ECR_EXPECTED_TOKEN_ENV (repo variable / workflow fallback)
+  // must equal this tokenEnv.
   "auth": {
     "providers": {
-      "anthropic": { "tokenEnv": "CLAUDE_CODE_OAUTH_TOKEN" }
+      "anthropic": { "tokenEnv": "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN" }
     }
   }
 }

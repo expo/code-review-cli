@@ -68,7 +68,7 @@ jobs:
       # source, so the guard runs from that same base source — same engine as `ci`.
       - name: Guard config tokenEnv
         env:
-          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CLAUDE_CODE_OAUTH_TOKEN' }}
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CLAUDE_CODE_REVIEW_SHARED_API_TOKEN' }}
         run: bun run src/cli.ts verify-config
 
       - name: Run AI review
@@ -83,10 +83,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Layer-1 auth lock: `ecr ci` re-checks the honored tokenEnv at runtime,
           # catching what the guard step above can't. Keep in sync with the guard.
-          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CLAUDE_CODE_OAUTH_TOKEN' }}
-          # Claude Max/Team subscription token minted by `claude setup-token`
-          # (~1 year lifetime). The claude-code engine forwards it to the Claude
-          # Code CLI as the only credential (any ANTHROPIC_* key is stripped).
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CLAUDE_CODE_REVIEW_SHARED_API_TOKEN' }}
+          # Shared Anthropic review credential. The claude-code engine forwards
+          # it to the Claude Code CLI as the only credential (any ambient
+          # ANTHROPIC_* key is stripped). A setup-token or Console key both work.
+          CLAUDE_CODE_REVIEW_SHARED_API_TOKEN: ${{ secrets.CLAUDE_CODE_REVIEW_SHARED_API_TOKEN }}
           # Optional: override the model for every agent.
           REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}
