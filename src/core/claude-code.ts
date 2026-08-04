@@ -334,6 +334,9 @@ export interface ClaudeResult {
   errorText: string;
 }
 
+const CLAUDE_STREAM_MISSING_RESULT = "Claude Code stream ended without a final result event";
+const CLAUDE_RESULT_MISSING_ERROR = "Claude Code returned an error without a message";
+
 type JsonRecord = Record<string, unknown>;
 
 function jsonRecord(value: unknown): JsonRecord | null {
@@ -532,13 +535,17 @@ export function pickAnsweringModel(
 export function parseClaudeResult(stdout: string): ClaudeResult {
   const parsed = finalClaudeResult(stdout);
   if (!parsed) {
+    // The stream may contain assistant text and tool results sourced from the
+    // untrusted review tree. Never turn that transcript into an error message or
+    // feed it to provider-error classification.
+    // @ref LLP 0003#claude-code-cli-containment [constrained-by] — raw JSONL transcript content must never reach logs or error classifiers
     return {
       text: "",
       cost: 0,
       tokens: {},
       modelOutputTokens: {},
       isError: true,
-      errorText: stdout.trim(),
+      errorText: CLAUDE_STREAM_MISSING_RESULT,
     };
   }
   const usage = (parsed.usage ?? {}) as Record<string, unknown>;
@@ -565,7 +572,9 @@ export function parseClaudeResult(stdout: string): ClaudeResult {
     tokens,
     modelOutputTokens,
     isError,
-    errorText: isError ? result || stdout.trim() : "",
+    // Only the final result event's explicit error text is safe to classify and
+    // surface. Falling back to stdout would expose the full JSONL transcript.
+    errorText: isError ? result || CLAUDE_RESULT_MISSING_ERROR : "",
   };
 }
 

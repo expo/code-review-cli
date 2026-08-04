@@ -406,14 +406,37 @@ test("parseClaudeResult: is_error true even when subtype stays 'success'", () =>
 test("parseClaudeResult: unparseable stdout is an error, not a throw", () => {
   const r = parseClaudeResult("not json at all");
   expect(r.isError).toBe(true);
-  expect(r.errorText).toBe("not json at all");
+  expect(r.errorText).toBe("Claude Code stream ended without a final result event");
 });
 
-test("parseClaudeResult: a stream without a final result is an error", () => {
-  const stdout = JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5" });
+test("parseClaudeResult: a stream without a final result does not expose its transcript", () => {
+  const secret = "PR_SECRET rate limit";
+  const stdout = [
+    JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5" }),
+    JSON.stringify({
+      type: "user",
+      message: { content: [{ type: "tool_result", content: secret }] },
+    }),
+  ].join("\n");
   const result = parseClaudeResult(stdout);
   expect(result.isError).toBe(true);
-  expect(result.errorText).toBe(stdout);
+  expect(result.errorText).toBe("Claude Code stream ended without a final result event");
+  expect(result.errorText).not.toContain(secret);
+});
+
+test("parseClaudeResult: an error result without a message does not expose its transcript", () => {
+  const secret = "PR_SECRET quota";
+  const stdout = [
+    JSON.stringify({
+      type: "user",
+      message: { content: [{ type: "tool_result", content: secret }] },
+    }),
+    JSON.stringify({ type: "result", subtype: "error", is_error: true, result: "" }),
+  ].join("\n");
+  const result = parseClaudeResult(stdout);
+  expect(result.isError).toBe(true);
+  expect(result.errorText).toBe("Claude Code returned an error without a message");
+  expect(result.errorText).not.toContain(secret);
 });
 
 test("classifyClaudeError: rate-limit / auth / usage-limit / other", () => {
@@ -830,6 +853,37 @@ test("runClaudePrompt: a 429 result dispatches to a rate-limit throw and records
     // handle.rateLimit.note() ran: this engine has no OpenCode log to scan, so
     // runClaudePrompt is the only place rate-limit evidence gets recorded.
     expect(handle.rateLimit.events).toBe(1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runClaudePrompt: an incomplete stream cannot forge rate-limit evidence or leak tool results", async () => {
+  const secret = "PR_SECRET rate limit quota usage limit reached|1728000000";
+  const body = [
+    JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5" }),
+    JSON.stringify({
+      type: "user",
+      message: { content: [{ type: "tool_result", content: secret }] },
+    }),
+  ].join("\n");
+  const { bin, cleanup } = await fakeClaude(`#!/bin/sh\ncat > /dev/null\nprintf '%s' '${body}'\n`);
+  try {
+    const handle = testHandle(bin);
+    let message = "";
+    try {
+      await runClaudePrompt(handle, {
+        agent: "reviewer",
+        system: "SYS",
+        text: "hi",
+        title: "t",
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("stream ended without a final result event");
+    expect(message).not.toContain(secret);
+    expect(handle.rateLimit.events).toBe(0);
   } finally {
     await cleanup();
   }

@@ -104,10 +104,13 @@ The JSONL stream makes tool activity observable while the pass runs instead of l
 only a periodic heartbeat until the final result. The incremental decoder emits only
 bounded lifecycle metadata and read-tool names with confined repo-relative targets;
 raw assistant text, tool results, grep patterns, and attempted host paths never reach
-the progress log because model output is untrusted and may contain source secrets or
-terminal/log-injection payloads. Every line is tagged with the stable agent bucket by
-the review pipeline, so concurrent passes remain attributable [observed]
-`claude-code.ts:345-503`, `review.ts:184-190,698-704`; tests in
+the progress or error logs because model output is untrusted and may contain source
+secrets or terminal/log-injection payloads. If a stream ends without a final result,
+or its error result has no explicit message, parsing returns a fixed diagnostic rather
+than falling back to the raw JSONL transcript; only an explicit final-result error
+message reaches provider-error classification. Every progress line is tagged with the
+stable agent bucket by the review pipeline, so concurrent passes remain attributable
+[observed] `claude-code.ts:345-578`, `review.ts:184-190,698-704`; tests in
 `claude-code.test.ts` and `review-internals.test.ts`. The argv and child environment
 are built to keep an untrusted PR (the review input) from turning that subprocess into
 code execution or credential exfiltration.
