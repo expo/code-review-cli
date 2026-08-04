@@ -70,6 +70,14 @@ test("review state (review + dismissals) round-trips via parseReviewState", () =
   expect(state!.review.findings.length).toBe(1);
 });
 
+test("review input hash round-trips only in hidden comment state", () => {
+  const inputHash = "a".repeat(64);
+  const body = renderMarkdown(base, "tag", [], undefined, [], [], inputHash);
+  expect(parseReviewState(body, "tag")!.inputHash).toBe(inputHash);
+  expect(Buffer.from(inputHash).toString("base64")).not.toBe(inputHash);
+  expect(body).not.toContain(inputHash);
+});
+
 test("links a finding location to the PR diff line when the line is in the diff", () => {
   const out = renderMarkdown(
     { ...base, findings: [finding({ file: "src/a.ts", line: 12 })] },

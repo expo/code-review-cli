@@ -316,6 +316,11 @@ Ownership is enforced with CODEOWNERS: `/.expo-code-review/routing.jsonc @your-i
 - **Reporter** — posts/updates a single fingerprinted PR comment (CI), or prints
   a grouped summary (local). Findings below the configured severity floor are
   suppressed.
+- **Whole-review reuse** — automated CI stores a hash of each review job's inputs
+  in the hidden state of that comment. If a restack leaves a scope's files and
+  review configuration unchanged, its complete prior result is reused. Manual
+  `/review`, partial/failed reviews, stack-aware review, and model-adjudicated
+  feedback always run fresh.
 
 Built on the [OpenCode](https://opencode.ai) SDK, which spawns the model provider
 and applies the provider's prompt caching automatically.

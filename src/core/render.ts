@@ -206,6 +206,7 @@ export function renderMarkdown(
   link?: LinkContext,
   feedback: FeedbackRecord[] = [],
   pins: FeedbackPin[] = [],
+  inputHash?: string,
 ): string {
   const dismissedByFp = new Map(dismissed.map((record) => [record.fp, record]));
   const withFp = review.findings.map((finding) => ({ finding, fp: fingerprintFinding(finding) }));
@@ -283,7 +284,9 @@ export function renderMarkdown(
   const fingerprints = review.findings.map(fingerprintFinding);
   lines.push("", `<!-- ${tag}:fingerprints=${JSON.stringify(fingerprints)} -->`);
   lines.push(
-    `<!-- ${tag}:state=${encodeState(reviewState({ review, dismissed }, feedbackByFp, pins))} -->`,
+    `<!-- ${tag}:state=${encodeState(
+      reviewState({ review, dismissed, ...(inputHash ? { inputHash } : {}) }, feedbackByFp, pins),
+    )} -->`,
   );
   return lines.join("\n");
 }
@@ -490,6 +493,8 @@ export interface ScopeReviewResult {
   /** config '.' → un-namespaced fingerprints (dismissal carry-over). */
   isDefault: boolean;
   review: CoordinatorOutput;
+  /** Hash of the complete input that produced `review`; absent means do not reuse. */
+  inputHash?: string;
 }
 
 /** The machine-readable state embedded in the reviewer's comment. */
@@ -497,6 +502,8 @@ export interface ReviewState {
   /** v1 field, kept: the aggregate stores the MERGED output here. */
   review: CoordinatorOutput;
   dismissed: DismissalRecord[];
+  /** v5: legacy/single-scope review-result cache key. */
+  inputHash?: string;
   /** v2: present only on aggregate comments (routing, comment:'single'). */
   scopes?: ScopeReviewResult[];
   /** v3: author replies matched to the findings shown in this comment. */
@@ -730,7 +737,7 @@ export function renderAggregateMarkdown(
     // across re-renders. The per-scope data (`scopes`) plus a merged v1 `review`
     // keep both v2 and v1 consumers working.
     const stateScopes: ScopeReviewResult[] = rendered.map(
-      ({ result, shown, requalified, dropped }) => {
+      ({ result, shown, hidden, requalified, requalifiedHidden, dropped }) => {
         // @ref LLP 0011#suppression-is-never-silent — strip any per-scope `feedback`
         // a freshly-reviewed scope's ReviewRunResult carries: the top-level feedback
         // array (reviewState below) is the single source of truth. A stale per-scope
@@ -742,6 +749,13 @@ export function renderAggregateMarkdown(
         return {
           scope: result.scope,
           isDefault: result.isDefault,
+          // A truncated state is not the full result and therefore cannot be a cache
+          // source. Omit its hash so the next run retries instead of reusing a subset.
+          ...(hidden === 0 && requalifiedHidden === 0
+            ? result.inputHash
+              ? { inputHash: result.inputHash }
+              : {}
+            : {}),
           // Requalified findings ride the embedded state (like dismissed ones) so a
           // re-render (/dismiss) round-trips them and the addressed section persists.
           // Under truncation they are trimmed exactly like `shown` — state bytes count

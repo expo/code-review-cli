@@ -23,12 +23,13 @@ import { repoRoot, resolveTrustedTool, run } from "../core/exec.js";
 import { errorMessage, publicFailureReason } from "../core/util.js";
 import { readContextFile } from "../core/context-file.js";
 import { buildDiffLineIndex } from "../core/render.js";
-import type { LinkContext, ScopeReviewResult } from "../core/render.js";
+import type { LinkContext, ReviewState, ScopeReviewResult } from "../core/render.js";
 import type { CoordinatorOutput, FeedbackPin, FeedbackRecord, Finding } from "../core/schema.js";
 import { applyPins, collectPins, scopedFingerprint } from "../core/schema.js";
 import { dropStaleVerdict, feedbackApplied, feedbackNeedsRunSeam } from "../core/adjudicate.js";
 import { runReview } from "../core/review.js";
 import type { ReviewRunOptions, ReviewRunResult } from "../core/review.js";
+import { reviewCanBeReused, reviewInputHash, reviewMatchesInput } from "../core/review-cache.js";
 import { GitHubPRSource } from "../sources/github-pr.js";
 import { memoizeSource, stackConfirmFromConfig, stackWalkFromConfig } from "../sources/source.js";
 import type { PreparedReadRoot, ReviewSource, StackWalkOptions } from "../sources/source.js";
@@ -540,9 +541,11 @@ async function runLegacyCi(
   // unchanged (see mergeFeedback). Memoized on the source — no extra API call. A
   // metadata failure leaves it unknown, which re-judges replies instead of trusting a
   // verdict against source we cannot pin.
+  let metadata: Awaited<ReturnType<ReviewSource["getMetadata"]>> | undefined;
   let headSha: string | undefined;
   try {
-    headSha = (await source.getMetadata()).headOid;
+    metadata = await source.getMetadata();
+    headSha = metadata.headOid;
   } catch {
     // leave headSha unset → stored verdicts do not carry (fail safe, costs budget only)
   }
@@ -569,24 +572,76 @@ async function runLegacyCi(
     );
   }
 
+  const stack = resolveStackWalk(config.stack, noStackAware);
+  const stackConfirm = resolveStackConfirm(config.stack, noStackAware);
+  const feedback = adjudicationSeam(config, reporter);
+  // Dynamic stack context and model-backed reply adjudication have inputs outside
+  // the scoped diff. Keep those paths fresh until their inputs join the cache key.
+  // A maintainer's explicit /review is also always a real rerun.
+  const cacheAllowed = !bypassTriggerGate && !stack && !feedback && metadata !== undefined;
+  let inputHash: string | undefined;
+
   try {
+    if (cacheAllowed) {
+      try {
+        const prepared = await source.prepareReadRootAsync?.();
+        try {
+          inputHash = await reviewInputHash({
+            files: await source.getChangedFiles(),
+            config,
+            metadata: metadata!,
+            readRoot: prepared?.dir ?? cwd,
+            agents,
+            route,
+            contextText,
+          });
+        } finally {
+          await prepared?.cleanup();
+        }
+      } catch (error) {
+        process.stderr.write(
+          `CI reviewer: could not hash the review input (continuing fresh): ${errorMessage(error)}\n`,
+        );
+      }
+      if (inputHash) {
+        try {
+          const prior = await reporter.readState();
+          if (prior && reviewMatchesInput(prior.review, prior.inputHash, inputHash)) {
+            await reporter.report(prior.review, undefined, inputHash);
+            process.stderr.write(
+              "CI reviewer: unchanged review input; reused the previous result.\n",
+            );
+            return;
+          }
+        } catch (error) {
+          process.stderr.write(
+            `CI reviewer: could not read the previous review cache (continuing fresh): ${errorMessage(error)}\n`,
+          );
+        }
+      }
+    }
+
     const review = await runReview(source, {
       config,
       mode: "ci",
       agents,
       route,
       contextText,
-      stack: resolveStackWalk(config.stack, noStackAware),
-      stackConfirm: resolveStackConfirm(config.stack, noStackAware),
+      stack,
+      stackConfirm,
       runsDir: workspaceRunsDir(cwd),
       // Adjudicate mode judges the matched replies against the source before the
       // comment is rendered; annotate mode lets the reporter match them at report
       // time. Either way the feedback path is fail-open (runReview swallows its own
       // errors), so it never fails the PR's checks.
-      feedback: adjudicationSeam(config, reporter),
+      feedback,
       onProgress: (message) => process.stderr.write(`${message}\n`),
     });
-    await reporter.report(review, review.feedback);
+    await reporter.report(
+      review,
+      review.feedback,
+      inputHash && reviewCanBeReused(review) ? inputHash : undefined,
+    );
     process.stderr.write(`CI reviewer: posted review (${review.decision}).\n`);
   } catch (error) {
     // A reviewer failure must never fail the PR's checks — but it must also not be
@@ -763,13 +818,14 @@ async function runRoutedCi(
   };
   // The reviewed head OID also binds each adjudication verdict to the source it judged
   // (see mergeFeedback); unresolved leaves it unknown, so verdicts are re-judged.
+  let metadata: Awaited<ReturnType<ReviewSource["getMetadata"]>> | undefined;
   let headSha: string | undefined;
   try {
-    const { baseOid, headOid } = await source.getMetadata();
-    if (baseOid) {
-      link.baseSha = baseOid;
+    metadata = await source.getMetadata();
+    if (metadata.baseOid) {
+      link.baseSha = metadata.baseOid;
     }
-    headSha = headOid;
+    headSha = metadata.headOid;
   } catch {
     // leave baseSha unset → out-of-diff findings degrade to plain text
   }
@@ -824,11 +880,42 @@ async function runRoutedCi(
     reporterFor(scopedCommentTag(rootTag, name), true),
   );
 
+  const cacheAllowed =
+    !bypassTriggerGate &&
+    !stackWalk &&
+    !feedbackNeedsRunSeam(rootConfig.feedback) &&
+    metadata !== undefined;
+  let cacheReadRoot: string | undefined;
+  if (cacheAllowed) {
+    try {
+      const prepared = await source.prepareReadRootAsync?.();
+      cacheReadRoot = prepared?.dir ?? cwd;
+      await prepared?.cleanup();
+    } catch (error) {
+      // The fresh run will retry the same materialization and apply CI's ordinary
+      // fail-closed behavior. Cache setup itself never changes that outcome.
+      process.stderr.write(
+        `CI reviewer: could not prepare the review cache input (continuing fresh): ${errorMessage(error)}\n`,
+      );
+    }
+  }
+  let priorAggregateState: ReviewState | null = null;
+  if (cacheReadRoot && mode === "single") {
+    try {
+      priorAggregateState = await singleModeReporter!.readState();
+    } catch (error) {
+      process.stderr.write(
+        `CI reviewer: could not read the previous aggregate cache (continuing fresh): ${errorMessage(error)}\n`,
+      );
+    }
+  }
+
   const results: ScopeReviewResult[] = [];
   for (const scope of active) {
     const scopeDef = manifest.scopes.find((entry) => entry.name === scope.name)!;
     const isDefault = scope.configDir === ".";
     let review: CoordinatorOutput;
+    let inputHash: string | undefined;
     try {
       // A scope whose config dir doesn't exist at the TRUSTED base commit is a
       // scope this PR introduces: review it with the root config rather than
@@ -858,27 +945,66 @@ async function runRoutedCi(
               : undefined,
           )
         : undefined;
-      review = await runReview(source, {
-        config,
-        mode: "ci",
-        agents,
-        route,
-        includePaths: scope.files,
-        contextText,
-        stack: stackWalk,
-        stackConfirm,
-        passesBudgetMs: budget,
-        runsDir: workspaceRunsDir(cwd),
-        feedback: feedbackSeam,
-        onProgress: (message) => process.stderr.write(`[${scope.name}] ${message}\n`),
-      });
+      let cached: ScopeReviewResult | ReviewState | undefined;
+      if (cacheReadRoot) {
+        try {
+          const included = new Set(scope.files);
+          inputHash = await reviewInputHash({
+            files: changed.filter((file) => included.has(file.path)),
+            config,
+            metadata: metadata!,
+            readRoot: cacheReadRoot,
+            agents,
+            route,
+            contextText,
+          });
+          if (mode === "single") {
+            cached = priorAggregateState?.scopes?.find((entry) => entry.scope === scope.name);
+          } else {
+            cached = (await scopeReporter(scope.name).readState()) ?? undefined;
+          }
+        } catch (error) {
+          inputHash = undefined;
+          process.stderr.write(
+            `CI reviewer: [${scope.name}] could not use the previous cache (continuing fresh): ${errorMessage(error)}\n`,
+          );
+        }
+      }
+
+      if (cached && reviewMatchesInput(cached.review, cached.inputHash, inputHash!)) {
+        review = cached.review;
+        process.stderr.write(
+          `CI reviewer: [${scope.name}] unchanged review input; reused the previous result.\n`,
+        );
+      } else {
+        review = await runReview(source, {
+          config,
+          mode: "ci",
+          agents,
+          route,
+          includePaths: scope.files,
+          contextText,
+          stack: stackWalk,
+          stackConfirm,
+          passesBudgetMs: budget,
+          runsDir: workspaceRunsDir(cwd),
+          feedback: feedbackSeam,
+          onProgress: (message) => process.stderr.write(`[${scope.name}] ${message}\n`),
+        });
+      }
     } catch (error) {
       process.stderr.write(
         `CI reviewer: [${scope.name}] failed (non-blocking): ${errorMessage(error)}\n`,
       );
       review = failureReview(scope.name, publicFailureReason(error));
+      inputHash = undefined;
     }
-    results.push({ scope: scope.name, isDefault, review });
+    results.push({
+      scope: scope.name,
+      isDefault,
+      review,
+      ...(inputHash && reviewCanBeReused(review) ? { inputHash } : {}),
+    });
   }
 
   if (mode === "single") {
@@ -888,7 +1014,7 @@ async function runRoutedCi(
       // A partial run (--scopes) is authoritative ONLY for the named scopes: merge
       // the other scopes' previous results out of the existing aggregate comment's
       // state so re-running one scope doesn't silently discard the rest.
-      const prior = (await aggregate.readState())?.scopes ?? [];
+      const prior = (priorAggregateState ?? (await aggregate.readState()))?.scopes ?? [];
       finalResults = mergePartialAggregate(
         results,
         prior,
@@ -947,7 +1073,11 @@ async function runRoutedCi(
       const reporter = scopeReporter(scope.name);
       const result = results.find((entry) => entry.scope === scope.name);
       if (result) {
-        await reporter.report(result.review, (result.review as ReviewRunResult).feedback);
+        await reporter.report(
+          result.review,
+          (result.review as ReviewRunResult).feedback,
+          result.inputHash,
+        );
       } else {
         // A reconciled scope with zero matched files gets its stale comment deleted.
         await reporter.clear();
