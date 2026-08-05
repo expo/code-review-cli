@@ -71,17 +71,23 @@ test("run with input: timeout kills the whole process group, not just the direct
 
 test("run with input: escalates to SIGKILL after the grace period when the child traps SIGTERM", async () => {
   const started = Date.now();
-  const result = await run(
-    "node",
-    ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"],
-    { input: "", timeout: 250, check: true },
-  );
+  // The deadline timer starts at spawn, so the child must have SIGTERM ignored
+  // before it fires or the default disposition kills it and this never reaches
+  // the escalation path. `sh` with an ignoring `trap` is the cheapest way there:
+  // it boots in ~1ms (a node runtime takes far longer, and lost this race on a
+  // loaded CI runner), and an *ignored* signal survives `exec` where an
+  // installed handler would not — so the `sleep` holding the group ignores it too.
+  const result = await run("sh", ["-c", 'trap "" TERM; exec sleep 30'], {
+    input: "",
+    timeout: 1000,
+    check: true,
+  });
   expect(result.timedOut).toBe(true);
-  // SIGTERM alone never ends a process that traps it; only the 5s grace-timer
+  // SIGTERM alone never ends a process that ignores it; only the 5s grace-timer
   // SIGKILL escalation does, so a duration past that proves the path fired.
-  expect(Date.now() - started).toBeGreaterThanOrEqual(5000);
-  expect(Date.now() - started).toBeLessThan(10_000);
-}, 10_000);
+  expect(Date.now() - started).toBeGreaterThanOrEqual(6000);
+  expect(Date.now() - started).toBeLessThan(14_000);
+}, 20_000);
 
 test("run without input: timeout resolves timedOut too (execFile path, same contract)", async () => {
   const started = Date.now();
