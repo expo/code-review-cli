@@ -1010,14 +1010,13 @@ export async function withTransientRetry<T>(
 }
 
 /**
- * Prompt an agent and parse its reply. On a JSON-parse failure, first retry in
- * the SAME session: the model still holds all the file context it read, so the
- * corrective is a cache read and a cheap re-emit — and better for recall than
- * re-investigating from scratch (the usual failure is a truncated/malformed reply
- * after a sound investigation). Only if that also fails do we fall back to a fresh
- * session as a clean-slate last resort. A timeout is NOT a parse failure:
- * promptAgent throws AgentTimeoutError, which propagates so the caller abandons
- * the task instead of retrying a non-convergent run.
+ * Prompt an agent and parse its reply. Claude-routed production parsers hand their
+ * JSON Schema to the CLI, which repairs validation failures in-session before
+ * returning. OpenCode retries a JSON-parse failure in the SAME session: the model
+ * still holds all the file context it read, so the corrective is a cheap cache-read
+ * re-emit with better recall than re-investigating. Only if that also fails does it
+ * use a fresh session. A timeout is NOT a parse failure: AgentTimeoutError propagates
+ * so the caller abandons the non-convergent task.
  */
 export async function promptAndParse<T>(
   handle: OpencodeHandle,
@@ -1031,12 +1030,16 @@ export async function promptAndParse<T>(
     maxToolCalls?: number;
     finalizeOnTimeout?: boolean;
   },
-  parse: (text: string) => T,
+  parse: ((text: string) => T) & { jsonSchema?: Record<string, unknown> },
 ): Promise<{ value: T; cost: number; truncated: boolean; tokens: TokenUsage; model?: string }> {
   const dispatch = resolveEngineDispatch(handle, args.agent);
   if (dispatch.engine === CLAUDE_CODE_ENGINE) {
     const { claudeCodePromptAndParse } = await import("./claude-code.js");
-    return claudeCodePromptAndParse(dispatch.claudeHandle, args, parse);
+    return claudeCodePromptAndParse(
+      dispatch.claudeHandle,
+      { ...args, jsonSchema: parse.jsonSchema },
+      parse,
+    );
   }
   let cost = 0;
   let truncated = false;

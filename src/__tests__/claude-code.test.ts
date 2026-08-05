@@ -27,7 +27,14 @@ import {
   usageLimitResetMs,
 } from "../core/claude-code.js";
 import type { ClaudeCodeHandle } from "../core/claude-code.js";
-import { AgentTimeoutError, CLAUDE_CODE_ENGINE, isTransientApiError } from "../core/opencode.js";
+import {
+  AgentTimeoutError,
+  CLAUDE_CODE_ENGINE,
+  isTransientApiError,
+  promptAndParse,
+} from "../core/opencode.js";
+import type { OpencodeHandle } from "../core/opencode.js";
+import { parseReviewerOutput } from "../core/schema.js";
 import { RateLimitWatch } from "../core/throttle.js";
 import type { AuthConfigEntry, LoadedConfig } from "../config/schema.js";
 
@@ -62,6 +69,7 @@ async function fakeClaude(script: string): Promise<{ bin: string; cleanup: () =>
 async function sequencedFakeClaude(outputs: string[]): Promise<{
   bin: string;
   stdinLog: (n: number) => Promise<string>;
+  argsLog: (n: number) => Promise<string>;
   cleanup: () => Promise<void>;
 }> {
   const dir = await mkdtemp(path.join(tmpdir(), "ecr-claude-code-test-"));
@@ -78,6 +86,7 @@ async function sequencedFakeClaude(outputs: string[]): Promise<{
     "COUNT=$((COUNT + 1))",
     'echo "$COUNT" > "$COUNT_FILE"',
     `cat > "${dir}/stdin.$COUNT"`,
+    `printf '%s\n' "$@" > "${dir}/args.$COUNT"`,
     `if [ "$COUNT" -gt ${outputs.length} ]; then COUNT=${outputs.length}; fi`,
     `cat "${dir}/out.$COUNT"`,
     "",
@@ -87,6 +96,7 @@ async function sequencedFakeClaude(outputs: string[]): Promise<{
   return {
     bin,
     stdinLog: (n: number) => readFile(path.join(dir, `stdin.${n}`), "utf8"),
+    argsLog: (n: number) => readFile(path.join(dir, `args.${n}`), "utf8"),
     cleanup: () => rm(dir, { recursive: true, force: true }),
   };
 }
@@ -208,16 +218,25 @@ test("claudeModelMatches: dated-suffix family match; cross-family mismatch", () 
 });
 
 test("buildClaudeArgs: read-only, trust-isolated, subscription argv; never --bare", () => {
+  const jsonSchema = {
+    type: "object",
+    properties: { title: { type: "string" } },
+    required: ["title"],
+  };
   const args = buildClaudeArgs({
     model: "claude-opus-5",
     system: "SYS",
     cwd: "/work/repo",
     maxTurns: 60,
+    jsonSchema,
   });
   const joined = args.join(" ");
   expect(joined).toContain("--output-format stream-json --verbose");
   expect(joined).toContain("--model claude-opus-5");
   expect(joined).toContain("--append-system-prompt SYS");
+  const schemaIndex = args.indexOf("--json-schema");
+  expect(schemaIndex).toBeGreaterThan(-1);
+  expect(JSON.parse(args[schemaIndex + 1]!)).toEqual(jsonSchema);
   // Read, Grep, AND Glob are all path-scoped to the review tree — a bare Grep
   // would read arbitrary files (credentials, /proc/self/environ) despite the
   // scoped Read, defeating the whole exfiltration defense.
@@ -262,6 +281,8 @@ test("parseClaudeResult: success maps text/cost/tokens/model", () => {
   expect(r.cost).toBe(0.0123);
   expect(r.tokens).toEqual({ input: 100, output: 200, cache: { write: 50, read: 30 } });
   expect(r.modelOutputTokens).toEqual({ "claude-opus-5-20250101": 200 });
+  expect(r.hasStructuredOutput).toBe(false);
+  expect(r.structuredOutputFailure).toBe(false);
 });
 
 test("parseClaudeResult: reads the final result from stream-json JSONL", () => {
@@ -289,6 +310,36 @@ test("parseClaudeResult: reads the final result from stream-json JSONL", () => {
     output: 34,
     cache: { write: undefined, read: undefined },
   });
+});
+
+test("parseClaudeResult: prefers provider-validated structured_output", () => {
+  const stdout = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    // Keep a conflicting text result to prove the structured object wins.
+    result: '{"title":"wrong"}',
+    structured_output: { title: "validated" },
+  });
+  const result = parseClaudeResult(stdout);
+  expect(result.isError).toBe(false);
+  expect(JSON.parse(result.text)).toEqual({ title: "validated" });
+  expect(result.hasStructuredOutput).toBe(true);
+});
+
+test("parseClaudeResult: an error ignores stale structured_output", () => {
+  const stdout = JSON.stringify({
+    type: "result",
+    subtype: "error_max_structured_output_retries",
+    is_error: true,
+    result: "Could not produce valid structured output",
+    structured_output: { title: "PR_SECRET rate limit" },
+  });
+  const result = parseClaudeResult(stdout);
+  expect(result.isError).toBe(true);
+  expect(result.errorText).toBe("Could not produce valid structured output");
+  expect(result.errorText).not.toContain("PR_SECRET");
+  expect(result.structuredOutputFailure).toBe(true);
 });
 
 test("claudeActivities: reports lifecycle and safe tool targets, never raw text/results/patterns", () => {
@@ -984,6 +1035,146 @@ test("claudeCodePromptAndParse: a parseable first reply returns immediately with
       reasoning: 0,
       cache: { read: 0, write: 0 },
     });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("promptAndParse: a Claude-routed production parser forwards its JSON Schema", async () => {
+  const body = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: '{"findings":[]}',
+    structured_output: { findings: [] },
+  });
+  const { bin, argsLog, cleanup } = await sequencedFakeClaude([body]);
+  try {
+    const output = await promptAndParse(
+      testHandle(bin) as unknown as OpencodeHandle,
+      { agent: "reviewer", system: "SYS", text: "hi", title: "t" },
+      parseReviewerOutput,
+    );
+    expect(output.value).toEqual({ findings: [] });
+
+    const args = (await argsLog(1)).split("\n");
+    const schemaIndex = args.indexOf("--json-schema");
+    expect(schemaIndex).toBeGreaterThan(-1);
+    const schema = JSON.parse(args[schemaIndex + 1]!) as {
+      properties: { findings: { items: { required: string[] } } };
+    };
+    expect(schema.properties.findings.items.required).toContain("title");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("promptAndParse: Claude structured-output exhaustion retries once and preserves usage", async () => {
+  const exhausted = JSON.stringify({
+    type: "result",
+    subtype: "error_max_structured_output_retries",
+    is_error: true,
+    result: "Could not produce valid structured output",
+    total_cost_usd: 0.01,
+    usage: { input_tokens: 5, output_tokens: 7 },
+  });
+  const recovered = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "ignored in structured mode",
+    structured_output: { findings: [] },
+    total_cost_usd: 0.03,
+    usage: { input_tokens: 11, output_tokens: 13 },
+  });
+  const { bin, stdinLog, cleanup } = await sequencedFakeClaude([exhausted, recovered]);
+  try {
+    const activity: string[] = [];
+    const output = await promptAndParse(
+      testHandle(bin) as unknown as OpencodeHandle,
+      {
+        agent: "security",
+        system: "SYS",
+        text: "review",
+        title: "security review",
+        onActivity: (line) => activity.push(line),
+      },
+      parseReviewerOutput,
+    );
+    expect(output.value).toEqual({ findings: [] });
+    expect(output.cost).toBeCloseTo(0.04);
+    expect(output.tokens).toEqual({
+      input: 16,
+      output: 20,
+      reasoning: 0,
+      cache: { read: 0, write: 0 },
+    });
+    expect(activity).toContain("structured output validation failed — retrying once");
+    expect(await stdinLog(2)).toContain("IMPORTANT: reply with ONLY the single JSON object");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("claudeCodePromptAndParse: schema mode never accepts result text without structured_output", async () => {
+  const unvalidated = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: JSON.stringify({ ok: "unvalidated" }),
+  });
+  const validated = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: JSON.stringify({ ok: "wrong-channel" }),
+    structured_output: { ok: "validated" },
+  });
+  const { bin, cleanup } = await sequencedFakeClaude([unvalidated, validated]);
+  try {
+    const output = await claudeCodePromptAndParse(
+      testHandle(bin),
+      {
+        agent: "reviewer",
+        system: "SYS",
+        text: "hi",
+        title: "t",
+        jsonSchema: {
+          type: "object",
+          properties: { ok: { type: "string" } },
+          required: ["ok"],
+        },
+      },
+      (text) => JSON.parse(text) as { ok: string },
+    );
+    expect(output.value).toEqual({ ok: "validated" });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("claudeCodePromptAndParse: repeated structured-output exhaustion fails explicitly", async () => {
+  const exhausted = JSON.stringify({
+    type: "result",
+    subtype: "error_max_structured_output_retries",
+    is_error: true,
+    result: "Could not produce valid structured output",
+  });
+  const { bin, cleanup } = await sequencedFakeClaude([exhausted, exhausted]);
+  try {
+    await expect(
+      claudeCodePromptAndParse(
+        testHandle(bin),
+        {
+          agent: "security",
+          system: "SYS",
+          text: "review",
+          title: "security review",
+          jsonSchema: { type: "object", required: ["findings"] },
+        },
+        parseReviewerOutput,
+      ),
+    ).rejects.toThrow(/could not satisfy its required JSON Schema after retries/);
   } finally {
     await cleanup();
   }

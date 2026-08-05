@@ -112,10 +112,6 @@ export const VerdictSchema = z.object({
 });
 export type Verdict = z.infer<typeof VerdictSchema>;
 
-export function parseVerdict(text: string): Verdict {
-  return VerdictSchema.parse(extractJsonObject(text));
-}
-
 /**
  * A stack verifier's verdict on whether a later stacked PR's patch actually
  * addresses an absence-style finding (v2 patch confirmation). Fails toward
@@ -128,21 +124,16 @@ export const StackVerdictSchema = z.object({
 });
 export type StackVerdict = z.infer<typeof StackVerdictSchema>;
 
-export function parseStackVerdict(text: string): StackVerdict {
-  return StackVerdictSchema.parse(extractJsonObject(text));
-}
-
 // @ref LLP 0011#attribution-and-identity [implements] — `agent` is engine-populated, so the model-facing schema drops it at the parse boundary instead of trusting call sites to strip it
 /**
  * The finding shape a MODEL may emit: `FindingSchema` minus the engine-only `agent`.
  * Both model outputs parse through this, so an `agent` a reviewer pass or the
  * coordinator invented is dropped where model JSON becomes typed data — the engine's own
- * fingerprint lookup is then the only thing that can set it. The transform re-widens the
- * result to `Finding` so downstream code (which does set `agent`) needs no change.
+ * fingerprint lookup is then the only thing that can set it. This schema deliberately
+ * has no Zod transform: the Claude runtime converts it to JSON Schema so the provider
+ * can enforce the same contract before the local parse boundary checks it again.
  */
-const ModelFindingSchema = FindingSchema.omit({ agent: true }).transform(
-  (finding): Finding => finding,
-);
+const ModelFindingSchema = FindingSchema.omit({ agent: true });
 
 /** Shape each sub-reviewer must emit. */
 export const ReviewerOutputSchema = z.object({
@@ -151,10 +142,13 @@ export const ReviewerOutputSchema = z.object({
 export type ReviewerOutput = z.infer<typeof ReviewerOutputSchema>;
 
 /** Mode-agnostic coordinator result; each Reporter decides how to render it. */
-export const CoordinatorOutputSchema = z.object({
+const CoordinatorModelOutputSchema = z.object({
   decision: z.enum(DECISIONS),
   findings: z.array(ModelFindingSchema).default([]),
   summary: z.string(),
+});
+
+export const CoordinatorOutputSchema = CoordinatorModelOutputSchema.extend({
   /**
    * Human-readable notes about reduced coverage (e.g. a review pass that hit its
    * time limit and returned partial findings, or was skipped). Populated by the
@@ -358,10 +352,6 @@ export const AdjudicationSchema = z.object({
 });
 export type Adjudication = z.infer<typeof AdjudicationSchema>;
 
-export function parseAdjudication(text: string): Adjudication {
-  return AdjudicationSchema.parse(extractJsonObject(text));
-}
-
 /** Minimum normalized evidence length to key a fingerprint on the code (below
  * this we fall back to the title). */
 const MIN_FP_EVIDENCE_LEN = 12;
@@ -442,14 +432,31 @@ export const RouteOutputSchema = z.object({
 });
 export type RouteOutput = z.infer<typeof RouteOutputSchema>;
 
-export function parseRouteOutput(text: string): RouteOutput {
-  return RouteOutputSchema.parse(extractJsonObject(text));
+type JsonSchema = Record<string, unknown>;
+type StructuredParser<T> = ((text: string) => T) & { jsonSchema: JsonSchema };
+
+/**
+ * Bind local Zod validation to the draft-07 JSON Schema Claude Code consumes.
+ * Local parsing remains authoritative; provider-side validation is a reliability
+ * layer that repairs malformed output before it reaches this trust boundary.
+ */
+// @ref LLP 0003#retry-taxonomy [implements] — Claude receives the same contract as the local parser and repairs mismatches in-session
+function structuredParser<T>(
+  parseSchema: z.ZodType<T>,
+  outputSchema: z.ZodType = parseSchema,
+): StructuredParser<T> {
+  const parser = ((text: string): T =>
+    parseSchema.parse(extractJsonObject(text))) as StructuredParser<T>;
+  parser.jsonSchema = z.toJSONSchema(outputSchema, { target: "draft-7" }) as JsonSchema;
+  return parser;
 }
 
-export function parseReviewerOutput(text: string): ReviewerOutput {
-  return ReviewerOutputSchema.parse(extractJsonObject(text));
-}
-
-export function parseCoordinatorOutput(text: string): CoordinatorOutput {
-  return CoordinatorOutputSchema.parse(extractJsonObject(text));
-}
+export const parseVerdict = structuredParser(VerdictSchema);
+export const parseStackVerdict = structuredParser(StackVerdictSchema);
+export const parseAdjudication = structuredParser(AdjudicationSchema);
+export const parseRouteOutput = structuredParser(RouteOutputSchema);
+export const parseReviewerOutput = structuredParser(ReviewerOutputSchema);
+export const parseCoordinatorOutput = structuredParser(
+  CoordinatorOutputSchema,
+  CoordinatorModelOutputSchema,
+);

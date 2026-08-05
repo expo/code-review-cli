@@ -59,6 +59,8 @@ export interface ClaudePromptArgs {
   maxWaitMs?: number;
   maxToolCalls?: number;
   finalizeOnTimeout?: boolean;
+  /** Provider-enforced output contract, generated from the local Zod parser. */
+  jsonSchema?: Record<string, unknown>;
 }
 
 /** Coarse per-pass wander bound; the review's own maxWaitMs is the real ceiling. */
@@ -289,6 +291,7 @@ export function buildClaudeArgs(opts: {
    */
   tools?: readonly string[];
   maxTurns?: number;
+  jsonSchema?: Record<string, unknown>;
 }): string[] {
   // Permission rules are gitignore-style with forward slashes; a Windows cwd
   // (`C:\Users\dev\repo`) must be normalized or every rule silently matches
@@ -311,6 +314,7 @@ export function buildClaudeArgs(opts: {
     opts.model,
     "--append-system-prompt",
     opts.system,
+    ...(opts.jsonSchema ? ["--json-schema", JSON.stringify(opts.jsonSchema)] : []),
     ...(enabled.length > 0 ? ["--allowedTools", ...enabled.map(scope)] : []),
     "--disallowedTools",
     ...deniedReadTools,
@@ -332,6 +336,10 @@ export interface ClaudeResult {
   modelOutputTokens: Record<string, number>;
   isError: boolean;
   errorText: string;
+  /** Whether the final result carried the object validated by `--json-schema`. */
+  hasStructuredOutput: boolean;
+  /** Claude Code exhausted its own in-session structured-output repair attempts. */
+  structuredOutputFailure: boolean;
 }
 
 const CLAUDE_STREAM_MISSING_RESULT = "Claude Code stream ended without a final result event";
@@ -546,6 +554,8 @@ export function parseClaudeResult(stdout: string): ClaudeResult {
       modelOutputTokens: {},
       isError: true,
       errorText: CLAUDE_STREAM_MISSING_RESULT,
+      hasStructuredOutput: false,
+      structuredOutputFailure: false,
     };
   }
   const usage = (parsed.usage ?? {}) as Record<string, unknown>;
@@ -564,8 +574,17 @@ export function parseClaudeResult(stdout: string): ClaudeResult {
   for (const [key, value] of Object.entries(modelUsage)) {
     modelOutputTokens[key] = num((value as Record<string, unknown> | null)?.outputTokens) ?? 0;
   }
-  const result = typeof parsed.result === "string" ? parsed.result : "";
   const isError = parsed.is_error === true;
+  const hasStructuredOutput = parsed.structured_output !== undefined;
+  // `--json-schema` returns a provider-validated object in `structured_output`.
+  // Serialize it back through the existing local parser so Zod remains the final
+  // trust boundary. Ignore any stale/retracted structured value on an error result;
+  // error classification must use only the CLI's explicit final error message.
+  const structured =
+    isError || parsed.structured_output === undefined
+      ? undefined
+      : JSON.stringify(parsed.structured_output);
+  const result = structured ?? (typeof parsed.result === "string" ? parsed.result : "");
   return {
     text: result,
     cost: num(parsed.total_cost_usd) ?? 0,
@@ -575,7 +594,20 @@ export function parseClaudeResult(stdout: string): ClaudeResult {
     // Only the final result event's explicit error text is safe to classify and
     // surface. Falling back to stdout would expose the full JSONL transcript.
     errorText: isError ? result || CLAUDE_RESULT_MISSING_ERROR : "",
+    hasStructuredOutput,
+    structuredOutputFailure: parsed.subtype === "error_max_structured_output_retries",
   };
+}
+
+/**
+ * A provider-side schema failure that spent tokens and may be retried once from a
+ * clean process. Carrying the attempt lets the caller retain honest run metrics.
+ */
+class ClaudeStructuredOutputError extends Error {
+  constructor(readonly result: PromptResult) {
+    super("Claude Code could not produce output matching the required JSON Schema");
+    this.name = "ClaudeStructuredOutputError";
+  }
 }
 
 /** Classify a Claude Code failure so the caller can pick backoff vs. hard fail. */
@@ -719,6 +751,7 @@ export async function runClaudePrompt(
         cwd: process.cwd(),
         tools,
         maxTurns,
+        jsonSchema: args.jsonSchema,
       }),
       {
         input: args.text,
@@ -755,6 +788,31 @@ export async function runClaudePrompt(
   }
 
   const parsed = parseClaudeResult(result.stdout);
+  const answered = pickAnsweringModel(configuredModel, parsed.modelOutputTokens);
+  const model = answered
+    ? claudeModelMatches(configuredModel, answered)
+      ? configuredModel
+      : `anthropic/${answered}`
+    : configuredModel;
+  const promptResult: PromptResult = {
+    text: parsed.text,
+    cost: parsed.cost,
+    sessionID: "",
+    tokens: parsed.tokens,
+    model,
+  };
+
+  // A schema-requesting caller must receive the provider-validated object, never a
+  // parseable-looking fallback from `result`. Claude repairs schema mismatches in
+  // session first; its documented exhaustion result gets one clean-process retry in
+  // claudeCodePromptAndParse. A success that omits structured_output is treated the
+  // same way because it did not honor the requested provider contract.
+  if (
+    args.jsonSchema &&
+    (parsed.structuredOutputFailure || (!parsed.isError && !parsed.hasStructuredOutput))
+  ) {
+    throw new ClaudeStructuredOutputError(promptResult);
+  }
   if (parsed.isError) {
     const kind = classifyClaudeError(parsed.errorText);
     if (kind === "rate-limit" || kind === "usage-limit") {
@@ -782,29 +840,23 @@ export async function runClaudePrompt(
     );
   }
 
-  const answered = pickAnsweringModel(configuredModel, parsed.modelOutputTokens);
-  const model = answered
-    ? claudeModelMatches(configuredModel, answered)
-      ? configuredModel
-      : `anthropic/${answered}`
-    : configuredModel;
-  return { text: parsed.text, cost: parsed.cost, sessionID: "", tokens: parsed.tokens, model };
+  return promptResult;
 }
 
 /**
- * The claude analogue of opencode.ts's CORRECTIVE. NOT shared: that one says
- * "your previous reply could not be parsed", which is true in OpenCode's
- * same-session follow-up but false here — each `claude -p` invocation is a fresh
- * stateless process with no previous reply to reference.
+ * Last-resort correction for a no-schema caller or disagreement between the
+ * provider's JSON Schema validator and our local parser. Production parsers pass
+ * `--json-schema`, so Claude Code already performs validation-aware repair inside
+ * the original session before this fresh-process fallback is needed.
  */
 const CLAUDE_CORRECTIVE =
   "\n\nIMPORTANT: reply with ONLY the single JSON object described above — no prose, " +
   "no code fences, no partial output.";
 
 /**
- * Prompt via the Claude Code CLI and parse the reply, mirroring OpenCode's
- * promptAndParse: transient retry on the first call, then one corrective re-run
- * (a fresh process — the diff is inlined, so re-read is a cache hit).
+ * Prompt via the Claude Code CLI and parse the provider-validated structured
+ * result locally. Transient failures retry first; a remaining local parse failure
+ * gets one fresh-process corrective as defense in depth.
  */
 export async function claudeCodePromptAndParse<T>(
   handle: ClaudeCodeHandle,
@@ -820,24 +872,47 @@ export async function claudeCodePromptAndParse<T>(
     model = result.model ?? model;
   };
 
-  const first = await withTransientRetry(`Agent "${args.agent}"`, args.onActivity, () =>
-    runClaudePrompt(handle, args),
-  );
-  record(first);
+  let first: PromptResult | undefined;
   try {
-    return { value: parse(first.text), cost, truncated: false, tokens, model };
-  } catch {
-    const retry = await runClaudePrompt(handle, { ...args, text: args.text + CLAUDE_CORRECTIVE });
-    record(retry);
+    first = await withTransientRetry(`Agent "${args.agent}"`, args.onActivity, () =>
+      runClaudePrompt(handle, args),
+    );
+    record(first);
     try {
-      return { value: parse(retry.text), cost, truncated: false, tokens, model };
-    } catch (finalError) {
-      throw new Error(
-        `Agent "${args.agent}" did not return parseable JSON after retries: ${
-          finalError instanceof Error ? finalError.message : String(finalError)
-        }`,
-      );
+      return { value: parse(first.text), cost, truncated: false, tokens, model };
+    } catch {
+      // Provider validation and local Zod validation disagreed. Retry once from a
+      // clean process rather than accepting an object the trust boundary rejected.
     }
+  } catch (error) {
+    if (!(error instanceof ClaudeStructuredOutputError)) {
+      throw error;
+    }
+    record(error.result);
+    args.onActivity?.("structured output validation failed — retrying once");
+  }
+
+  let retry: PromptResult;
+  try {
+    retry = await runClaudePrompt(handle, { ...args, text: args.text + CLAUDE_CORRECTIVE });
+  } catch (error) {
+    if (!(error instanceof ClaudeStructuredOutputError)) {
+      throw error;
+    }
+    record(error.result);
+    throw new Error(
+      `Agent "${args.agent}" could not satisfy its required JSON Schema after retries`,
+    );
+  }
+  record(retry);
+  try {
+    return { value: parse(retry.text), cost, truncated: false, tokens, model };
+  } catch (finalError) {
+    throw new Error(
+      `Agent "${args.agent}" did not return parseable JSON after retries: ${
+        finalError instanceof Error ? finalError.message : String(finalError)
+      }`,
+    );
   }
 }
 

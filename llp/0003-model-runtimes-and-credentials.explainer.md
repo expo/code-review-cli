@@ -115,6 +115,19 @@ stable agent bucket by the review pipeline, so concurrent passes remain attribut
 are built to keep an untrusted PR (the review input) from turning that subprocess into
 code execution or credential exfiltration.
 
+Every production structured-output parser carries a draft-07 JSON Schema generated
+from the same Zod contract used at the local trust boundary. The Claude runtime passes
+that schema through `--json-schema`; Claude Code validates the final `StructuredOutput`
+tool call and re-prompts inside the original session when a required field or type is
+wrong. The validated `structured_output` object is then serialized through the local
+Zod parser again — provider validation improves reliability but never replaces local
+validation. If Claude exhausts its in-session structured-output retries (or claims
+success without returning `structured_output`), the runtime makes one clean-process
+attempt and accounts for both attempts; it never accepts unvalidated fallback text
+[observed] `schema.ts` `structuredParser`; `opencode.ts` `promptAndParse`;
+`claude-code.ts` `buildClaudeArgs`, `parseClaudeResult`, `runClaudePrompt`,
+`claudeCodePromptAndParse`.
+
 **Flags.** `--safe-mode` disables CLAUDE.md/hooks/MCP/plugins while keeping OAuth;
 `--bare` is deliberately **not** used because bare mode ignores
 `CLAUDE_CODE_OAUTH_TOKEN` and keychain OAuth and would break subscription auth. Also
@@ -291,12 +304,21 @@ retry, because re-sending the whole context into a limited account only makes it
 always capped at half the pass's own `maxWaitMs` so it can never outlast the deadline it
 protects ([observed] `opencode.ts:552-555`).
 
-**JSON-parse failure — same-session corrective first.** A reply that will not parse is
+**JSON-parse failure — same-session corrective first.** Claude Code receives the local
+parser's draft-07 JSON Schema and performs validation-aware retries inside the original
+session before returning `structured_output`; this retains the investigation context
+and names the exact missing field/type to the model. Local Zod validation still runs on
+the provider-validated object. If those in-session repairs are exhausted, Claude gets
+one fresh-process corrective attempt; both attempts remain in cost/token accounting.
+OpenCode has no equivalent structured-output seam, so a reply that will not parse is
 retried in the **same** OpenCode session first: the model still holds all the file
-context it read, so the corrective is a cheap cache-read re-emit with better recall than
-re-investigating; only if that also fails does it fall back to a fresh session. Parse
-failure and timeout are handled by entirely separate mechanisms and must not be
-conflated ([observed] `opencode.ts:994-1003`).
+context it read, making the corrective a cheap cache-read
+re-emit with better recall than re-investigating; only if that also fails does it fall
+back to a fresh session. Claude's legacy/no-schema path retains one fresh-process
+corrective as defense in depth. Parse failure and timeout are handled by entirely
+separate mechanisms and must not be conflated ([observed] `schema.ts`
+`structuredParser`; `claude-code.ts` `claudeCodePromptAndParse`; `opencode.ts`
+`promptAndParse`).
 
 **Finalize and corrective prompts run with every tool disabled.** The "stop and return
 what you have" finalize and the "re-emit valid JSON" corrective are sent with `NO_TOOLS`
