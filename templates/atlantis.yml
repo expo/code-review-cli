@@ -81,6 +81,11 @@ jobs:
           # disable setup-node's auto package-manager cache.
           package-manager-cache: false
 
+      # The anthropic/… models run through the Claude Code CLI (claude-code
+      # engine). Pinned exactly — see workflow.yml (expo-code-review.yml).
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.212
+
       # SECURITY: the base-ref checkout includes every .expo-code-review/ config,
       # whose auth.tokenEnv names the forwarded model credential. `ecr verify-config`
       # sweeps every config and refuses unless tokenEnv appears exactly once, in a
@@ -89,7 +94,7 @@ jobs:
       # @ref LLP 0009#guard-step-ordering-and-job-budgets [implements] — same $ECR_VERSION feeds guard and review
       - name: Guard config tokenEnv (root + routing + all scopes)
         env:
-          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'OPENAI_API_KEY' }}
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CLAUDE_CODE_REVIEW_SHARED_API_TOKEN' }}
         run: npx --yes -p "@expo/code-review-cli@$ECR_VERSION" ecr verify-config
 
       # Running via `issue_comment` makes this a manual /review, which the CLI detects
@@ -101,10 +106,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Layer-1 auth lock: keep in sync with the guard's EXPECTED.
-          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'OPENAI_API_KEY' }}
-          # OpenAI API key — the env var named by auth.tokenEnv in config.jsonc.
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # Optional: override the model for every agent (uses your OpenCode login).
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CLAUDE_CODE_REVIEW_SHARED_API_TOKEN' }}
+          # Anthropic review credential — the env var named by auth.tokenEnv in
+          # config.jsonc (see workflow.yml for the accepted token shapes).
+          CLAUDE_CODE_REVIEW_SHARED_API_TOKEN: ${{ secrets.CLAUDE_CODE_REVIEW_SHARED_API_TOKEN }}
+          # Optional: override the model for every agent.
           REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}
         run: |
           # Build the flags as a bash array so the path never word-splits.
