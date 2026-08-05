@@ -159,6 +159,7 @@ export async function verifyFindings(
             title: `verify-${index}`,
             maxWaitMs: VERIFY_TIMEOUT_MS,
             finalizeOnTimeout: true,
+            onActivity: (line) => onProgress?.(`  [verifier] #${index + 1}: ${line}`),
           },
           parseVerdict,
         );

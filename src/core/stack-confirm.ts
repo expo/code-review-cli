@@ -156,7 +156,11 @@ export async function confirmStackRequalifications(
  * it into the no-tools stack verifier, and require `addressed: true`. The patch is
  * inlined, never materialized — there is no disk read and no tool use at all.
  */
-export function patchConfirmer(handle: OpencodeHandle, source: ReviewSource): ConfirmOne {
+export function patchConfirmer(
+  handle: OpencodeHandle,
+  source: ReviewSource,
+  onActivity?: (line: string) => void,
+): ConfirmOne {
   // Per-run patch memo: distinct findings citing the same (prNumber, file) each get
   // their own verdict but share one gh fetch. The source fails open to null (never
   // rejects), so memoizing the promise is safe.
@@ -186,6 +190,7 @@ export function patchConfirmer(handle: OpencodeHandle, source: ReviewSource): Co
         // A timeout here throws AgentTimeoutError, which the caller catches and STRIPS
         // (fail toward blocking) — so no finalize salvage, unlike the main verifier.
         finalizeOnTimeout: false,
+        onActivity: (line) => onActivity?.(`PR #${prNumber}: ${line}`),
       },
       parseStackVerdict,
     );

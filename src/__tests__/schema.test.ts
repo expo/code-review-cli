@@ -5,6 +5,7 @@ import {
   fingerprintFinding,
   parseCoordinatorOutput,
   parseReviewerOutput,
+  parseVerdict,
 } from "../core/schema.js";
 import type { Finding } from "../core/schema.js";
 
@@ -78,6 +79,31 @@ test("a forged `agent` in model output is dropped at the parse boundary", () => 
     return agent ? { ...f, agent } : f;
   });
   expect(attributed[0]!.agent).toBe("correctness");
+});
+
+test("structured parsers expose draft-07 contracts for provider-side validation", () => {
+  const reviewer = parseReviewerOutput.jsonSchema as {
+    $schema: string;
+    properties: {
+      findings: { items: { properties: Record<string, unknown>; required: string[] } };
+    };
+  };
+  expect(reviewer.$schema).toBe("http://json-schema.org/draft-07/schema#");
+  expect(reviewer.properties.findings.items.required).toContain("title");
+  expect(reviewer.properties.findings.items.properties.agent).toBeUndefined();
+
+  const coordinator = parseCoordinatorOutput.jsonSchema as {
+    properties: Record<string, unknown>;
+    required: string[];
+  };
+  expect(coordinator.required).toEqual(["decision", "findings", "summary"]);
+  expect(coordinator.properties.incomplete).toBeUndefined();
+  expect(coordinator.properties.couldNotComplete).toBeUndefined();
+
+  expect(parseVerdict.jsonSchema).toMatchObject({
+    type: "object",
+    required: ["verified", "reason"],
+  });
 });
 
 test("extractJsonObject: an empty response names the cause instead of 'undefined'", () => {

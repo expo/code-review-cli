@@ -21,6 +21,27 @@ test("run with input: feeds stdin through the spawn path", async () => {
   expect(result.overflowed).toBeFalsy();
 });
 
+test("run with input: observes admitted stdout incrementally without changing capture", async () => {
+  const observed: string[] = [];
+  const result = await run("sh", ["-c", "printf first; sleep 0.05; printf second"], {
+    input: "",
+    onStdout: (chunk) => observed.push(chunk),
+  });
+  expect(result.stdout).toBe("firstsecond");
+  expect(observed.join("")).toBe(result.stdout);
+});
+
+test("run with input: a stdout observer failure never breaks the command", async () => {
+  const result = await run("printf", ["safe"], {
+    input: "",
+    onStdout: () => {
+      throw new Error("observer failed");
+    },
+  });
+  expect(result.stdout).toBe("safe");
+  expect(result.code).toBe(0);
+});
+
 test("run with input: timeout kills the child and resolves timedOut (no throw)", async () => {
   const started = Date.now();
   const result = await run("sleep", ["30"], { input: "", timeout: 250, check: true });
@@ -70,12 +91,17 @@ test("run without input: timeout resolves timedOut too (execFile path, same cont
 });
 
 test("run with input: maxBuffer overflow is flagged, not silently truncated", async () => {
+  let observed = "";
   const result = await run("sh", ["-c", "head -c 100000 /dev/zero | tr '\\0' 'x'"], {
     input: "",
     maxBuffer: 1024,
     check: false,
+    onStdout: (chunk) => {
+      observed += chunk;
+    },
   });
   expect(result.overflowed).toBe(true);
+  expect(observed.length).toBe(1024);
 });
 
 test("run with input: check=false returns a non-zero exit instead of throwing", async () => {

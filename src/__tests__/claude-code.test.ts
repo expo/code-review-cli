@@ -9,11 +9,13 @@ import {
   assertClaudeModels,
   buildClaudeArgs,
   buildEngineMap,
+  claudeActivities,
   claudeCodePromptAndParse,
   claudeSubscriptionActive,
   claudeTemperatureNote,
   claudeTokenCredential,
   classifyClaudeError,
+  createClaudeActivityStream,
   claudeModelId,
   claudeModelMatches,
   engineForModel,
@@ -25,7 +27,14 @@ import {
   usageLimitResetMs,
 } from "../core/claude-code.js";
 import type { ClaudeCodeHandle } from "../core/claude-code.js";
-import { AgentTimeoutError, CLAUDE_CODE_ENGINE, isTransientApiError } from "../core/opencode.js";
+import {
+  AgentTimeoutError,
+  CLAUDE_CODE_ENGINE,
+  isTransientApiError,
+  promptAndParse,
+} from "../core/opencode.js";
+import type { OpencodeHandle } from "../core/opencode.js";
+import { parseReviewerOutput } from "../core/schema.js";
 import { RateLimitWatch } from "../core/throttle.js";
 import type { AuthConfigEntry, LoadedConfig } from "../config/schema.js";
 
@@ -50,7 +59,7 @@ async function fakeClaude(script: string): Promise<{ bin: string; cleanup: () =>
 }
 
 /**
- * A fake `claude` that returns a different canned `--output-format json` body on
+ * A fake `claude` that returns a different canned final-result body on
  * each successive invocation (tracked via a counter file, since childEnv is fixed
  * for the whole test) and logs each call's stdin (the prompt actually sent) to
  * `<dir>/stdin.<n>` via `stdinLog(n)` — so a corrective-retry test can assert what
@@ -60,6 +69,7 @@ async function fakeClaude(script: string): Promise<{ bin: string; cleanup: () =>
 async function sequencedFakeClaude(outputs: string[]): Promise<{
   bin: string;
   stdinLog: (n: number) => Promise<string>;
+  argsLog: (n: number) => Promise<string>;
   cleanup: () => Promise<void>;
 }> {
   const dir = await mkdtemp(path.join(tmpdir(), "ecr-claude-code-test-"));
@@ -76,6 +86,7 @@ async function sequencedFakeClaude(outputs: string[]): Promise<{
     "COUNT=$((COUNT + 1))",
     'echo "$COUNT" > "$COUNT_FILE"',
     `cat > "${dir}/stdin.$COUNT"`,
+    `printf '%s\n' "$@" > "${dir}/args.$COUNT"`,
     `if [ "$COUNT" -gt ${outputs.length} ]; then COUNT=${outputs.length}; fi`,
     `cat "${dir}/out.$COUNT"`,
     "",
@@ -85,6 +96,7 @@ async function sequencedFakeClaude(outputs: string[]): Promise<{
   return {
     bin,
     stdinLog: (n: number) => readFile(path.join(dir, `stdin.${n}`), "utf8"),
+    argsLog: (n: number) => readFile(path.join(dir, `args.${n}`), "utf8"),
     cleanup: () => rm(dir, { recursive: true, force: true }),
   };
 }
@@ -206,16 +218,25 @@ test("claudeModelMatches: dated-suffix family match; cross-family mismatch", () 
 });
 
 test("buildClaudeArgs: read-only, trust-isolated, subscription argv; never --bare", () => {
+  const jsonSchema = {
+    type: "object",
+    properties: { title: { type: "string" } },
+    required: ["title"],
+  };
   const args = buildClaudeArgs({
     model: "claude-opus-5",
     system: "SYS",
     cwd: "/work/repo",
     maxTurns: 60,
+    jsonSchema,
   });
   const joined = args.join(" ");
-  expect(joined).toContain("--output-format json");
+  expect(joined).toContain("--output-format stream-json --verbose");
   expect(joined).toContain("--model claude-opus-5");
   expect(joined).toContain("--append-system-prompt SYS");
+  const schemaIndex = args.indexOf("--json-schema");
+  expect(schemaIndex).toBeGreaterThan(-1);
+  expect(JSON.parse(args[schemaIndex + 1]!)).toEqual(jsonSchema);
   // Read, Grep, AND Glob are all path-scoped to the review tree — a bare Grep
   // would read arbitrary files (credentials, /proc/self/environ) despite the
   // scoped Read, defeating the whole exfiltration defense.
@@ -260,6 +281,144 @@ test("parseClaudeResult: success maps text/cost/tokens/model", () => {
   expect(r.cost).toBe(0.0123);
   expect(r.tokens).toEqual({ input: 100, output: 200, cache: { write: 50, read: 30 } });
   expect(r.modelOutputTokens).toEqual({ "claude-opus-5-20250101": 200 });
+  expect(r.hasStructuredOutput).toBe(false);
+  expect(r.structuredOutputFailure).toBe(false);
+});
+
+test("parseClaudeResult: reads the final result from stream-json JSONL", () => {
+  const stdout = [
+    JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5" }),
+    JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "tool-1", name: "Read", input: {} }] },
+    }),
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "the findings",
+      total_cost_usd: 0.02,
+      usage: { input_tokens: 12, output_tokens: 34 },
+    }),
+  ].join("\n");
+  const result = parseClaudeResult(stdout);
+  expect(result.isError).toBe(false);
+  expect(result.text).toBe("the findings");
+  expect(result.cost).toBe(0.02);
+  expect(result.tokens).toEqual({
+    input: 12,
+    output: 34,
+    cache: { write: undefined, read: undefined },
+  });
+});
+
+test("parseClaudeResult: prefers provider-validated structured_output", () => {
+  const stdout = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    // Keep a conflicting text result to prove the structured object wins.
+    result: '{"title":"wrong"}',
+    structured_output: { title: "validated" },
+  });
+  const result = parseClaudeResult(stdout);
+  expect(result.isError).toBe(false);
+  expect(JSON.parse(result.text)).toEqual({ title: "validated" });
+  expect(result.hasStructuredOutput).toBe(true);
+});
+
+test("parseClaudeResult: an error ignores stale structured_output", () => {
+  const stdout = JSON.stringify({
+    type: "result",
+    subtype: "error_max_structured_output_retries",
+    is_error: true,
+    result: "Could not produce valid structured output",
+    structured_output: { title: "PR_SECRET rate limit" },
+  });
+  const result = parseClaudeResult(stdout);
+  expect(result.isError).toBe(true);
+  expect(result.errorText).toBe("Could not produce valid structured output");
+  expect(result.errorText).not.toContain("PR_SECRET");
+  expect(result.structuredOutputFailure).toBe(true);
+});
+
+test("claudeActivities: reports lifecycle and safe tool targets, never raw text/results/patterns", () => {
+  expect(
+    claudeActivities({ type: "system", subtype: "init", model: "claude-opus-5" }, "/repo"),
+  ).toEqual([{ line: "started claude-opus-5" }]);
+  expect(
+    claudeActivities(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "secret reasoning" },
+            {
+              type: "tool_use",
+              id: "read-1",
+              name: "Read",
+              input: { file_path: "/repo/src/auth.ts" },
+            },
+            {
+              type: "tool_use",
+              id: "grep-1",
+              name: "Grep",
+              input: { path: "/repo/src", pattern: "DO_NOT_LOG_THIS" },
+            },
+            {
+              type: "tool_use",
+              id: "outside-1",
+              name: "Read",
+              input: { file_path: "/etc/passwd\nforged log line" },
+            },
+            {
+              type: "tool_use",
+              id: "glob-1",
+              name: "Glob",
+              input: { pattern: "SECRET_PATTERN" },
+            },
+          ],
+        },
+      },
+      "/repo",
+    ),
+  ).toEqual([
+    { key: "read-1", line: "Read src/auth.ts" },
+    { key: "grep-1", line: "Grep src" },
+    { key: "outside-1", line: "Read" },
+    { key: "glob-1", line: "Glob" },
+  ]);
+  expect(
+    claudeActivities(
+      { type: "result", is_error: false, duration_ms: 12_400, num_turns: 3 },
+      "/repo",
+    ),
+  ).toEqual([{ line: "completed (12s, 3 turn(s))" }]);
+  expect(
+    claudeActivities(
+      { type: "user", message: { content: [{ type: "tool_result", content: "SECRET" }] } },
+      "/repo",
+    ),
+  ).toEqual([]);
+});
+
+test("createClaudeActivityStream: handles chunk boundaries and dedupes repeated tool ids", () => {
+  const lines: string[] = [];
+  const stream = createClaudeActivityStream("/repo", (line) => lines.push(line));
+  const init = `${JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5" })}\n`;
+  const tool = JSON.stringify({
+    type: "assistant",
+    message: {
+      content: [
+        { type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "/repo/a.ts" } },
+      ],
+    },
+  });
+  stream.push(init.slice(0, 15));
+  stream.push(`${init.slice(15)}${tool}\n${tool.slice(0, 20)}`);
+  stream.push(tool.slice(20));
+  stream.finish();
+  expect(lines).toEqual(["started claude-opus-5", "Read a.ts"]);
 });
 
 test("pickAnsweringModel: prefers the requested family over key order; else max output", () => {
@@ -298,7 +457,37 @@ test("parseClaudeResult: is_error true even when subtype stays 'success'", () =>
 test("parseClaudeResult: unparseable stdout is an error, not a throw", () => {
   const r = parseClaudeResult("not json at all");
   expect(r.isError).toBe(true);
-  expect(r.errorText).toBe("not json at all");
+  expect(r.errorText).toBe("Claude Code stream ended without a final result event");
+});
+
+test("parseClaudeResult: a stream without a final result does not expose its transcript", () => {
+  const secret = "PR_SECRET rate limit";
+  const stdout = [
+    JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5" }),
+    JSON.stringify({
+      type: "user",
+      message: { content: [{ type: "tool_result", content: secret }] },
+    }),
+  ].join("\n");
+  const result = parseClaudeResult(stdout);
+  expect(result.isError).toBe(true);
+  expect(result.errorText).toBe("Claude Code stream ended without a final result event");
+  expect(result.errorText).not.toContain(secret);
+});
+
+test("parseClaudeResult: an error result without a message does not expose its transcript", () => {
+  const secret = "PR_SECRET quota";
+  const stdout = [
+    JSON.stringify({
+      type: "user",
+      message: { content: [{ type: "tool_result", content: secret }] },
+    }),
+    JSON.stringify({ type: "result", subtype: "error", is_error: true, result: "" }),
+  ].join("\n");
+  const result = parseClaudeResult(stdout);
+  expect(result.isError).toBe(true);
+  expect(result.errorText).toBe("Claude Code returned an error without a message");
+  expect(result.errorText).not.toContain(secret);
 });
 
 test("classifyClaudeError: rate-limit / auth / usage-limit / other", () => {
@@ -663,17 +852,25 @@ test("runClaudePrompt: our own deadline kills the child and throws AgentTimeoutE
   }
 });
 
-test("runClaudePrompt: a non-timeout signal throws a crash error naming the signal", async () => {
-  const { bin, cleanup } = await fakeClaude("#!/bin/sh\ncat > /dev/null\nkill -9 $$\n");
+test("runClaudePrompt: a non-timeout signal names the signal without exposing stderr", async () => {
+  const secret = "PR_SECRET from stderr";
+  const { bin, cleanup } = await fakeClaude(
+    `#!/bin/sh\ncat > /dev/null\nprintf '%s' '${secret}' >&2\nkill -9 $$\n`,
+  );
   try {
-    await expect(
-      runClaudePrompt(testHandle(bin), {
+    let message = "";
+    try {
+      await runClaudePrompt(testHandle(bin), {
         agent: "reviewer",
         system: "SYS",
         text: "hi",
         title: "t",
-      }),
-    ).rejects.toThrow(/killed by signal SIGKILL/);
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("killed by signal SIGKILL");
+    expect(message).not.toContain(secret);
   } finally {
     await cleanup();
   }
@@ -720,6 +917,115 @@ test("runClaudePrompt: a 429 result dispatches to a rate-limit throw and records
   }
 });
 
+test("runClaudePrompt: an incomplete stream cannot forge rate-limit evidence or leak tool results", async () => {
+  const secret = "PR_SECRET rate limit quota usage limit reached|1728000000";
+  const body = [
+    JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5" }),
+    JSON.stringify({
+      type: "user",
+      message: { content: [{ type: "tool_result", content: secret }] },
+    }),
+  ].join("\n");
+  const { bin, cleanup } = await fakeClaude(`#!/bin/sh\ncat > /dev/null\nprintf '%s' '${body}'\n`);
+  try {
+    const handle = testHandle(bin);
+    let message = "";
+    try {
+      await runClaudePrompt(handle, {
+        agent: "reviewer",
+        system: "SYS",
+        text: "hi",
+        title: "t",
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("stream ended without a final result event");
+    expect(message).toContain("Claude Code exited with code 0");
+    expect(message).not.toContain(secret);
+    expect(handle.rateLimit.events).toBe(0);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runClaudePrompt: an early bad-flag failure reports a safe fixed diagnostic", async () => {
+  const secret = "PR_SECRET from stderr";
+  const { bin, cleanup } = await fakeClaude(
+    `#!/bin/sh\ncat > /dev/null\nprintf '%s' "error: unknown option '--json-schema' ${secret}" >&2\nexit 2\n`,
+  );
+  try {
+    let message = "";
+    try {
+      await runClaudePrompt(testHandle(bin), {
+        agent: "reviewer",
+        system: "SYS",
+        text: "hi",
+        title: "t",
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("Claude Code exited with code 2");
+    expect(message).toContain("CLI rejected its arguments");
+    expect(message).toContain("verify the pinned @anthropic-ai/claude-code version");
+    expect(message).not.toContain("--json-schema");
+    expect(message).not.toContain(secret);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runClaudePrompt: an early auth failure names the fix without copying stderr", async () => {
+  const secret = "PR_SECRET from auth stderr";
+  const { bin, cleanup } = await fakeClaude(
+    `#!/bin/sh\ncat > /dev/null\nprintf '%s' 'OAuth authentication failed: ${secret}' >&2\nexit 1\n`,
+  );
+  try {
+    let message = "";
+    try {
+      await runClaudePrompt(testHandle(bin), {
+        agent: "reviewer",
+        system: "SYS",
+        text: "hi",
+        title: "t",
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("Claude Code exited with code 1");
+    expect(message).toContain("authentication failed before a result was emitted");
+    expect(message).toContain("`claude auth status` and `ecr doctor`");
+    expect(message).not.toContain(secret);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runClaudePrompt: unknown early stderr is never copied into the failure", async () => {
+  const secret = "PR_SECRET arbitrary diagnostic";
+  const { bin, cleanup } = await fakeClaude(
+    `#!/bin/sh\ncat > /dev/null\nprintf '%s' '${secret}' >&2\nexit 7\n`,
+  );
+  try {
+    let message = "";
+    try {
+      await runClaudePrompt(testHandle(bin), {
+        agent: "reviewer",
+        system: "SYS",
+        text: "hi",
+        title: "t",
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("Claude Code exited with code 7");
+    expect(message).not.toContain(secret);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("runClaudePrompt: a usage-limit result throws the non-retryable, reset-time-carrying message", async () => {
   const body = JSON.stringify({
     type: "result",
@@ -738,6 +1044,53 @@ test("runClaudePrompt: a usage-limit result throws the non-retryable, reset-time
         title: "t",
       }),
     ).rejects.toThrow(/usage limit reached; resets/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runClaudePrompt: streams safe tool activity while preserving the final result", async () => {
+  const body = [
+    JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5" }),
+    JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "read-1",
+            name: "Read",
+            input: { file_path: process.cwd() + "/src/core/auth.ts" },
+          },
+        ],
+      },
+    }),
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "the findings",
+      duration_ms: 2500,
+      num_turns: 2,
+      total_cost_usd: 0.01,
+    }),
+  ].join("\n");
+  const { bin, cleanup } = await fakeClaude(`#!/bin/sh\ncat > /dev/null\nprintf '%s' '${body}'\n`);
+  try {
+    const activity: string[] = [];
+    const result = await runClaudePrompt(testHandle(bin), {
+      agent: "reviewer",
+      system: "SYS",
+      text: "hi",
+      title: "t",
+      onActivity: (line) => activity.push(line),
+    });
+    expect(result.text).toBe("the findings");
+    expect(activity).toEqual([
+      "started claude-opus-5",
+      "Read src/core/auth.ts",
+      "completed (3s, 2 turn(s))",
+    ]);
   } finally {
     await cleanup();
   }
@@ -768,6 +1121,146 @@ test("claudeCodePromptAndParse: a parseable first reply returns immediately with
       reasoning: 0,
       cache: { read: 0, write: 0 },
     });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("promptAndParse: a Claude-routed production parser forwards its JSON Schema", async () => {
+  const body = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: '{"findings":[]}',
+    structured_output: { findings: [] },
+  });
+  const { bin, argsLog, cleanup } = await sequencedFakeClaude([body]);
+  try {
+    const output = await promptAndParse(
+      testHandle(bin) as unknown as OpencodeHandle,
+      { agent: "reviewer", system: "SYS", text: "hi", title: "t" },
+      parseReviewerOutput,
+    );
+    expect(output.value).toEqual({ findings: [] });
+
+    const args = (await argsLog(1)).split("\n");
+    const schemaIndex = args.indexOf("--json-schema");
+    expect(schemaIndex).toBeGreaterThan(-1);
+    const schema = JSON.parse(args[schemaIndex + 1]!) as {
+      properties: { findings: { items: { required: string[] } } };
+    };
+    expect(schema.properties.findings.items.required).toContain("title");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("promptAndParse: Claude structured-output exhaustion retries once and preserves usage", async () => {
+  const exhausted = JSON.stringify({
+    type: "result",
+    subtype: "error_max_structured_output_retries",
+    is_error: true,
+    result: "Could not produce valid structured output",
+    total_cost_usd: 0.01,
+    usage: { input_tokens: 5, output_tokens: 7 },
+  });
+  const recovered = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "ignored in structured mode",
+    structured_output: { findings: [] },
+    total_cost_usd: 0.03,
+    usage: { input_tokens: 11, output_tokens: 13 },
+  });
+  const { bin, stdinLog, cleanup } = await sequencedFakeClaude([exhausted, recovered]);
+  try {
+    const activity: string[] = [];
+    const output = await promptAndParse(
+      testHandle(bin) as unknown as OpencodeHandle,
+      {
+        agent: "security",
+        system: "SYS",
+        text: "review",
+        title: "security review",
+        onActivity: (line) => activity.push(line),
+      },
+      parseReviewerOutput,
+    );
+    expect(output.value).toEqual({ findings: [] });
+    expect(output.cost).toBeCloseTo(0.04);
+    expect(output.tokens).toEqual({
+      input: 16,
+      output: 20,
+      reasoning: 0,
+      cache: { read: 0, write: 0 },
+    });
+    expect(activity).toContain("structured output validation failed — retrying once");
+    expect(await stdinLog(2)).toContain("IMPORTANT: reply with ONLY the single JSON object");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("claudeCodePromptAndParse: schema mode never accepts result text without structured_output", async () => {
+  const unvalidated = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: JSON.stringify({ ok: "unvalidated" }),
+  });
+  const validated = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: JSON.stringify({ ok: "wrong-channel" }),
+    structured_output: { ok: "validated" },
+  });
+  const { bin, cleanup } = await sequencedFakeClaude([unvalidated, validated]);
+  try {
+    const output = await claudeCodePromptAndParse(
+      testHandle(bin),
+      {
+        agent: "reviewer",
+        system: "SYS",
+        text: "hi",
+        title: "t",
+        jsonSchema: {
+          type: "object",
+          properties: { ok: { type: "string" } },
+          required: ["ok"],
+        },
+      },
+      (text) => JSON.parse(text) as { ok: string },
+    );
+    expect(output.value).toEqual({ ok: "validated" });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("claudeCodePromptAndParse: repeated structured-output exhaustion fails explicitly", async () => {
+  const exhausted = JSON.stringify({
+    type: "result",
+    subtype: "error_max_structured_output_retries",
+    is_error: true,
+    result: "Could not produce valid structured output",
+  });
+  const { bin, cleanup } = await sequencedFakeClaude([exhausted, exhausted]);
+  try {
+    await expect(
+      claudeCodePromptAndParse(
+        testHandle(bin),
+        {
+          agent: "security",
+          system: "SYS",
+          text: "review",
+          title: "security review",
+          jsonSchema: { type: "object", required: ["findings"] },
+        },
+        parseReviewerOutput,
+      ),
+    ).rejects.toThrow(/could not satisfy its required JSON Schema after retries/);
   } finally {
     await cleanup();
   }

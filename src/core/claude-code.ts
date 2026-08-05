@@ -20,7 +20,7 @@ import { RateLimitWatch } from "./throttle.js";
 
 /**
  * The Claude Code CLI review engine. Runs each pass as a single `claude -p
- * --output-format json` subprocess on the user's Claude Max/Team subscription,
+ * --output-format stream-json --verbose` subprocess on the user's Claude Max/Team subscription,
  * bypassing OpenCode entirely (which cannot use Anthropic subscription OAuth).
  * The seam functions in opencode.ts dispatch here on `handle.engine`.
  *
@@ -59,6 +59,8 @@ export interface ClaudePromptArgs {
   maxWaitMs?: number;
   maxToolCalls?: number;
   finalizeOnTimeout?: boolean;
+  /** Provider-enforced output contract, generated from the local Zod parser. */
+  jsonSchema?: Record<string, unknown>;
 }
 
 /** Coarse per-pass wander bound; the review's own maxWaitMs is the real ceiling. */
@@ -66,9 +68,9 @@ const CLAUDE_MAX_TURNS = 60;
 /** Fallback per-pass ceiling when a caller passes no maxWaitMs. */
 const DEFAULT_MAX_WAIT_MS = 8 * 60 * 1000;
 /**
- * A stateless `claude -p` pass emits no incremental tool lines to the caller, so a
- * long pass would look hung. Emit a "still working" heartbeat this often (matching
- * opencode.ts's HEARTBEAT_MS) to keep the progress signal alive.
+ * Emit a "still working" heartbeat after this long with no structured stream
+ * activity (matching opencode.ts's HEARTBEAT_MS), so a thinking stretch still has
+ * a progress signal between tool calls.
  */
 const CLAUDE_HEARTBEAT_MS = 45_000;
 
@@ -289,6 +291,7 @@ export function buildClaudeArgs(opts: {
    */
   tools?: readonly string[];
   maxTurns?: number;
+  jsonSchema?: Record<string, unknown>;
 }): string[] {
   // Permission rules are gitignore-style with forward slashes; a Windows cwd
   // (`C:\Users\dev\repo`) must be normalized or every rule silently matches
@@ -305,11 +308,13 @@ export function buildClaudeArgs(opts: {
   return [
     "-p",
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
     "--model",
     opts.model,
     "--append-system-prompt",
     opts.system,
+    ...(opts.jsonSchema ? ["--json-schema", JSON.stringify(opts.jsonSchema)] : []),
     ...(enabled.length > 0 ? ["--allowedTools", ...enabled.map(scope)] : []),
     "--disallowedTools",
     ...deniedReadTools,
@@ -331,6 +336,184 @@ export interface ClaudeResult {
   modelOutputTokens: Record<string, number>;
   isError: boolean;
   errorText: string;
+  /** Whether the final result carried the object validated by `--json-schema`. */
+  hasStructuredOutput: boolean;
+  /** Claude Code exhausted its own in-session structured-output repair attempts. */
+  structuredOutputFailure: boolean;
+}
+
+const CLAUDE_STREAM_MISSING_RESULT = "Claude Code stream ended without a final result event";
+const CLAUDE_RESULT_MISSING_ERROR = "Claude Code returned an error without a message";
+
+type JsonRecord = Record<string, unknown>;
+
+function jsonRecord(value: unknown): JsonRecord | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : null;
+}
+
+/** The final result object from either legacy single JSON or JSONL stream output. */
+function finalClaudeResult(stdout: string): JsonRecord | null {
+  try {
+    const parsed = jsonRecord(JSON.parse(stdout));
+    return parsed?.type === "result" ? parsed : null;
+  } catch {
+    let result: JsonRecord | null = null;
+    for (const line of stdout.split(/\r?\n/)) {
+      if (!line.trim()) {
+        continue;
+      }
+      try {
+        const event = jsonRecord(JSON.parse(line));
+        if (event?.type === "result") {
+          result = event;
+        }
+      } catch {
+        // A malformed/non-JSON line cannot be the structured final result.
+      }
+    }
+    return result;
+  }
+}
+
+const MAX_ACTIVITY_DETAIL = 180;
+
+/** Collapse control/newline injection and bound provider/model-originated log text. */
+function safeActivityDetail(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const withoutControls = [...value]
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      return code <= 0x1f || (code >= 0x7f && code <= 0x9f) ? " " : char;
+    })
+    .join("");
+  const clean = withoutControls.replace(/\s+/g, " ").trim();
+  if (!clean) {
+    return undefined;
+  }
+  return clean.length > MAX_ACTIVITY_DETAIL ? `${clean.slice(0, MAX_ACTIVITY_DETAIL - 1)}…` : clean;
+}
+
+/** Render an in-tree tool target without exposing attempted host paths. */
+function activityPath(value: unknown, cwd: string): string | undefined {
+  const candidate = safeActivityDetail(value);
+  if (!candidate) {
+    return undefined;
+  }
+  const root = path.resolve(cwd);
+  const absolute = path.resolve(root, candidate);
+  if (absolute !== root && !pathInside(absolute, root)) {
+    return undefined;
+  }
+  const relative = path.relative(root, absolute).replace(/\\/g, "/");
+  return relative || ".";
+}
+
+interface ClaudeActivity {
+  /** Stable tool-use id; repeated assistant events with the same id log once. */
+  key?: string;
+  line: string;
+}
+
+/**
+ * Convert one Claude stream event into safe progress metadata. Raw assistant text,
+ * tool results, and grep patterns are deliberately never logged: PR/model content is
+ * untrusted and may contain secrets or terminal-control/log-injection payloads.
+ */
+// @ref LLP 0003#claude-code-cli-containment [implements] — stream only bounded lifecycle/tool metadata; raw model text and tool results never become progress logs
+export function claudeActivities(eventValue: unknown, cwd: string): ClaudeActivity[] {
+  const event = jsonRecord(eventValue);
+  if (!event) {
+    return [];
+  }
+  if (event.type === "system" && event.subtype === "init") {
+    const model = safeActivityDetail(event.model);
+    return [{ line: model ? `started ${model}` : "started" }];
+  }
+  if (event.type === "result") {
+    if (event.is_error === true) {
+      return [];
+    }
+    const duration =
+      typeof event.duration_ms === "number"
+        ? `${Math.max(0, Math.round(event.duration_ms / 1000))}s`
+        : null;
+    const turns = typeof event.num_turns === "number" ? `${event.num_turns} turn(s)` : null;
+    const detail = [duration, turns].filter(Boolean).join(", ");
+    return [{ line: detail ? `completed (${detail})` : "completed" }];
+  }
+  if (event.type !== "assistant") {
+    return [];
+  }
+  const message = jsonRecord(event.message);
+  const content = Array.isArray(message?.content) ? message.content : [];
+  const activities: ClaudeActivity[] = [];
+  for (const value of content) {
+    const block = jsonRecord(value);
+    if (block?.type !== "tool_use" || typeof block.name !== "string") {
+      continue;
+    }
+    const input = jsonRecord(block.input) ?? {};
+    const key = typeof block.id === "string" ? block.id : undefined;
+    if (block.name === "Read") {
+      const target = activityPath(input.file_path, cwd);
+      activities.push({ key, line: target ? `Read ${target}` : "Read" });
+    } else if (block.name === "Grep") {
+      const target = activityPath(input.path, cwd);
+      activities.push({ key, line: target ? `Grep ${target}` : "Grep" });
+    } else if (block.name === "Glob") {
+      const target = activityPath(input.path, cwd);
+      activities.push({ key, line: target && target !== "." ? `Glob ${target}` : "Glob" });
+    }
+  }
+  return activities;
+}
+
+/** Incremental JSONL decoder for Claude's stream-json stdout. */
+export function createClaudeActivityStream(
+  cwd: string,
+  onActivity: (line: string) => void,
+): { push: (chunk: string) => void; finish: () => void } {
+  let buffered = "";
+  const reported = new Set<string>();
+  const consume = (line: string): void => {
+    if (!line.trim()) {
+      return;
+    }
+    try {
+      for (const activity of claudeActivities(JSON.parse(line), cwd)) {
+        if (activity.key && reported.has(activity.key)) {
+          continue;
+        }
+        if (activity.key) {
+          reported.add(activity.key);
+        }
+        onActivity(activity.line);
+      }
+    } catch {
+      // Ignore malformed progress events; final result parsing still reports errors.
+    }
+  };
+  return {
+    push(chunk: string): void {
+      buffered += chunk;
+      for (;;) {
+        const newline = buffered.indexOf("\n");
+        if (newline < 0) {
+          break;
+        }
+        consume(buffered.slice(0, newline).replace(/\r$/, ""));
+        buffered = buffered.slice(newline + 1);
+      }
+    },
+    finish(): void {
+      consume(buffered);
+      buffered = "";
+    },
+  };
 }
 
 /**
@@ -353,21 +536,26 @@ export function pickAnsweringModel(
 }
 
 /**
- * Parse the `--output-format json` result object. Keys off `is_error` / a parse
+ * Parse the final result from `--output-format stream-json` JSONL (also accepts the
+ * former single JSON object for compatibility/tests). Keys off `is_error` / a parse
  * failure, NOT `subtype` — `subtype` stays `"success"` on some API errors.
  */
 export function parseClaudeResult(stdout: string): ClaudeResult {
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(stdout) as Record<string, unknown>;
-  } catch {
+  const parsed = finalClaudeResult(stdout);
+  if (!parsed) {
+    // The stream may contain assistant text and tool results sourced from the
+    // untrusted review tree. Never turn that transcript into an error message or
+    // feed it to provider-error classification.
+    // @ref LLP 0003#claude-code-cli-containment [constrained-by] — raw JSONL transcript content must never reach logs or error classifiers
     return {
       text: "",
       cost: 0,
       tokens: {},
       modelOutputTokens: {},
       isError: true,
-      errorText: stdout.trim(),
+      errorText: CLAUDE_STREAM_MISSING_RESULT,
+      hasStructuredOutput: false,
+      structuredOutputFailure: false,
     };
   }
   const usage = (parsed.usage ?? {}) as Record<string, unknown>;
@@ -386,16 +574,40 @@ export function parseClaudeResult(stdout: string): ClaudeResult {
   for (const [key, value] of Object.entries(modelUsage)) {
     modelOutputTokens[key] = num((value as Record<string, unknown> | null)?.outputTokens) ?? 0;
   }
-  const result = typeof parsed.result === "string" ? parsed.result : "";
   const isError = parsed.is_error === true;
+  const hasStructuredOutput = parsed.structured_output !== undefined;
+  // `--json-schema` returns a provider-validated object in `structured_output`.
+  // Serialize it back through the existing local parser so Zod remains the final
+  // trust boundary. Ignore any stale/retracted structured value on an error result;
+  // error classification must use only the CLI's explicit final error message.
+  const structured =
+    isError || parsed.structured_output === undefined
+      ? undefined
+      : JSON.stringify(parsed.structured_output);
+  const result = structured ?? (typeof parsed.result === "string" ? parsed.result : "");
   return {
     text: result,
     cost: num(parsed.total_cost_usd) ?? 0,
     tokens,
     modelOutputTokens,
     isError,
-    errorText: isError ? result || stdout.trim() : "",
+    // Only the final result event's explicit error text is safe to classify and
+    // surface. Falling back to stdout would expose the full JSONL transcript.
+    errorText: isError ? result || CLAUDE_RESULT_MISSING_ERROR : "",
+    hasStructuredOutput,
+    structuredOutputFailure: parsed.subtype === "error_max_structured_output_retries",
   };
+}
+
+/**
+ * A provider-side schema failure that spent tokens and may be retried once from a
+ * clean process. Carrying the attempt lets the caller retain honest run metrics.
+ */
+class ClaudeStructuredOutputError extends Error {
+  constructor(readonly result: PromptResult) {
+    super("Claude Code could not produce output matching the required JSON Schema");
+    this.name = "ClaudeStructuredOutputError";
+  }
 }
 
 /** Classify a Claude Code failure so the caller can pick backoff vs. hard fail. */
@@ -489,6 +701,40 @@ export function claudeTemperatureNote(
 }
 
 /**
+ * Preserve actionable process diagnostics without copying arbitrary stderr into a
+ * public Actions log. A non-empty stream may already contain model/tool content, so
+ * stderr is not even classified in that case. With no stream, recognize only fixed
+ * CLI/setup categories and never interpolate the matched text.
+ */
+// @ref LLP 0003#claude-code-cli-containment [constrained-by] — stderr may reflect untrusted tree content; expose only exit metadata and fixed allowlisted categories
+function claudeExitDiagnostic(result: { stdout: string; stderr: string; code: number }): string {
+  const exit = `Claude Code exited with code ${result.code}`;
+  if (result.stdout.trim() !== "") {
+    return exit;
+  }
+
+  if (/unknown (?:option|argument)|unrecognized option|unexpected argument/i.test(result.stderr)) {
+    return (
+      `${exit}; the CLI rejected its arguments — verify the pinned ` +
+      "@anthropic-ai/claude-code version supports the configured flags"
+    );
+  }
+  if (/authentication|oauth|api.?key|unauthorized|\b401\b|\b403\b/i.test(result.stderr)) {
+    return (
+      `${exit}; authentication failed before a result was emitted — check ` +
+      "`claude auth status` and `ecr doctor`"
+    );
+  }
+  if (/\bENOENT\b|command not found|no such file or directory/i.test(result.stderr)) {
+    return `${exit}; the Claude Code executable or one of its required files was not found`;
+  }
+  if (/\bEACCES\b/i.test(result.stderr)) {
+    return `${exit}; the Claude Code executable could not be launched due to permissions`;
+  }
+  return exit;
+}
+
+/**
  * One prompt → text/cost/tokens/model, as a single `claude -p` subprocess (the
  * Claude analogue of OpenCode's promptAgent; no sessions/polling).
  */
@@ -507,14 +753,25 @@ export async function runClaudePrompt(
   // stateless analogue of OpenCode's mid-run tool-call cap).
   const maxTurns =
     args.maxToolCalls != null && args.maxToolCalls > 0 ? args.maxToolCalls : undefined;
-  // A stateless `claude -p` pass streams nothing back, so emit a heartbeat while it
-  // runs or a long pass looks hung (cleared in finally, whatever the outcome).
+  // Stream safe structured activity. The heartbeat fires only after a quiet window,
+  // rather than on a fixed cadence that can land immediately after a tool line.
   const heartbeatStart = Date.now();
+  let lastStreamActivityAt = heartbeatStart;
+  const emitActivity = (line: string): void => {
+    lastStreamActivityAt = Date.now();
+    args.onActivity?.(line);
+  };
+  const activityStream = args.onActivity
+    ? createClaudeActivityStream(process.cwd(), emitActivity)
+    : undefined;
   const heartbeat = args.onActivity
     ? setInterval(() => {
-        args.onActivity?.(
-          `still working… ${Math.round((Date.now() - heartbeatStart) / 1000)}s elapsed`,
-        );
+        if (Date.now() - lastStreamActivityAt >= CLAUDE_HEARTBEAT_MS) {
+          args.onActivity?.(
+            `still working… ${Math.round((Date.now() - heartbeatStart) / 1000)}s elapsed ` +
+              `(no new activity for ${Math.round((Date.now() - lastStreamActivityAt) / 1000)}s)`,
+          );
+        }
       }, CLAUDE_HEARTBEAT_MS)
     : undefined;
   heartbeat?.unref?.();
@@ -528,6 +785,7 @@ export async function runClaudePrompt(
         cwd: process.cwd(),
         tools,
         maxTurns,
+        jsonSchema: args.jsonSchema,
       }),
       {
         input: args.text,
@@ -535,9 +793,11 @@ export async function runClaudePrompt(
         cwd: process.cwd(),
         timeout: maxWaitMs,
         check: false,
+        onStdout: activityStream?.push,
       },
     );
   } finally {
+    activityStream?.finish();
     if (heartbeat) {
       clearInterval(heartbeat);
     }
@@ -551,9 +811,7 @@ export async function runClaudePrompt(
   // A non-timeout signal is a crash (SIGSEGV, OOM SIGKILL, external kill), not a
   // timeout — surface it as a hard error rather than the subdivide/retry path.
   if (result.signal) {
-    throw new Error(
-      `Claude Code was killed by signal ${result.signal}: ${result.stderr.trim() || "(no output)"}`,
-    );
+    throw new Error(`Claude Code was killed by signal ${result.signal}`);
   }
   // Truncated output can't be parsed as JSON; report the cause plainly instead of
   // letting it fall through as a generic parse failure.
@@ -562,6 +820,31 @@ export async function runClaudePrompt(
   }
 
   const parsed = parseClaudeResult(result.stdout);
+  const answered = pickAnsweringModel(configuredModel, parsed.modelOutputTokens);
+  const model = answered
+    ? claudeModelMatches(configuredModel, answered)
+      ? configuredModel
+      : `anthropic/${answered}`
+    : configuredModel;
+  const promptResult: PromptResult = {
+    text: parsed.text,
+    cost: parsed.cost,
+    sessionID: "",
+    tokens: parsed.tokens,
+    model,
+  };
+
+  // A schema-requesting caller must receive the provider-validated object, never a
+  // parseable-looking fallback from `result`. Claude repairs schema mismatches in
+  // session first; its documented exhaustion result gets one clean-process retry in
+  // claudeCodePromptAndParse. A success that omits structured_output is treated the
+  // same way because it did not honor the requested provider contract.
+  if (
+    args.jsonSchema &&
+    (parsed.structuredOutputFailure || (!parsed.isError && !parsed.hasStructuredOutput))
+  ) {
+    throw new ClaudeStructuredOutputError(promptResult);
+  }
   if (parsed.isError) {
     const kind = classifyClaudeError(parsed.errorText);
     if (kind === "rate-limit" || kind === "usage-limit") {
@@ -581,37 +864,33 @@ export async function runClaudePrompt(
           "`ecr doctor`.",
       );
     }
+    const needsProcessDiagnostic =
+      parsed.errorText === CLAUDE_STREAM_MISSING_RESULT ||
+      parsed.errorText === CLAUDE_RESULT_MISSING_ERROR;
     throw new Error(
-      parsed.errorText ||
-        `claude exited with code ${result.code}: ${
-          result.stderr.trim() || result.stdout.trim() || "(no output)"
-        }`,
+      needsProcessDiagnostic
+        ? `${parsed.errorText} (${claudeExitDiagnostic(result)})`
+        : parsed.errorText,
     );
   }
 
-  const answered = pickAnsweringModel(configuredModel, parsed.modelOutputTokens);
-  const model = answered
-    ? claudeModelMatches(configuredModel, answered)
-      ? configuredModel
-      : `anthropic/${answered}`
-    : configuredModel;
-  return { text: parsed.text, cost: parsed.cost, sessionID: "", tokens: parsed.tokens, model };
+  return promptResult;
 }
 
 /**
- * The claude analogue of opencode.ts's CORRECTIVE. NOT shared: that one says
- * "your previous reply could not be parsed", which is true in OpenCode's
- * same-session follow-up but false here — each `claude -p` invocation is a fresh
- * stateless process with no previous reply to reference.
+ * Last-resort correction for a no-schema caller or disagreement between the
+ * provider's JSON Schema validator and our local parser. Production parsers pass
+ * `--json-schema`, so Claude Code already performs validation-aware repair inside
+ * the original session before this fresh-process fallback is needed.
  */
 const CLAUDE_CORRECTIVE =
   "\n\nIMPORTANT: reply with ONLY the single JSON object described above — no prose, " +
   "no code fences, no partial output.";
 
 /**
- * Prompt via the Claude Code CLI and parse the reply, mirroring OpenCode's
- * promptAndParse: transient retry on the first call, then one corrective re-run
- * (a fresh process — the diff is inlined, so re-read is a cache hit).
+ * Prompt via the Claude Code CLI and parse the provider-validated structured
+ * result locally. Transient failures retry first; a remaining local parse failure
+ * gets one fresh-process corrective as defense in depth.
  */
 export async function claudeCodePromptAndParse<T>(
   handle: ClaudeCodeHandle,
@@ -627,24 +906,47 @@ export async function claudeCodePromptAndParse<T>(
     model = result.model ?? model;
   };
 
-  const first = await withTransientRetry(`Agent "${args.agent}"`, args.onActivity, () =>
-    runClaudePrompt(handle, args),
-  );
-  record(first);
+  let first: PromptResult | undefined;
   try {
-    return { value: parse(first.text), cost, truncated: false, tokens, model };
-  } catch {
-    const retry = await runClaudePrompt(handle, { ...args, text: args.text + CLAUDE_CORRECTIVE });
-    record(retry);
+    first = await withTransientRetry(`Agent "${args.agent}"`, args.onActivity, () =>
+      runClaudePrompt(handle, args),
+    );
+    record(first);
     try {
-      return { value: parse(retry.text), cost, truncated: false, tokens, model };
-    } catch (finalError) {
-      throw new Error(
-        `Agent "${args.agent}" did not return parseable JSON after retries: ${
-          finalError instanceof Error ? finalError.message : String(finalError)
-        }`,
-      );
+      return { value: parse(first.text), cost, truncated: false, tokens, model };
+    } catch {
+      // Provider validation and local Zod validation disagreed. Retry once from a
+      // clean process rather than accepting an object the trust boundary rejected.
     }
+  } catch (error) {
+    if (!(error instanceof ClaudeStructuredOutputError)) {
+      throw error;
+    }
+    record(error.result);
+    args.onActivity?.("structured output validation failed — retrying once");
+  }
+
+  let retry: PromptResult;
+  try {
+    retry = await runClaudePrompt(handle, { ...args, text: args.text + CLAUDE_CORRECTIVE });
+  } catch (error) {
+    if (!(error instanceof ClaudeStructuredOutputError)) {
+      throw error;
+    }
+    record(error.result);
+    throw new Error(
+      `Agent "${args.agent}" could not satisfy its required JSON Schema after retries`,
+    );
+  }
+  record(retry);
+  try {
+    return { value: parse(retry.text), cost, truncated: false, tokens, model };
+  } catch (finalError) {
+    throw new Error(
+      `Agent "${args.agent}" did not return parseable JSON after retries: ${
+        finalError instanceof Error ? finalError.message : String(finalError)
+      }`,
+    );
   }
 }
 

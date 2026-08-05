@@ -21,6 +21,7 @@ export async function routeAgents(
   handle: OpencodeHandle,
   config: LoadedConfig,
   files: PatchWorkspaceFile[],
+  onActivity?: (line: string) => void,
 ): Promise<RouteResult> {
   const always = config.agents.filter((agent) => agent.alwaysRun);
   try {
@@ -31,6 +32,7 @@ export async function routeAgents(
         system: buildRouterSystem(),
         text: buildRouterTask(config.agents, files),
         title: "route",
+        onActivity,
       },
       parseRouteOutput,
     );

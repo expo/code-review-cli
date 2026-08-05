@@ -99,9 +99,38 @@ oversight, and must not be silently reintroduced as a "fix" ([observed]
 ## Claude Code CLI Containment
 
 The Claude Code engine runs each review pass as a single stateless
-`claude -p --output-format json` subprocess fed the task on stdin. The argv and child
-environment are built to keep an untrusted PR (the review input) from turning that
-subprocess into code execution or credential exfiltration.
+`claude -p --output-format stream-json --verbose` subprocess fed the task on stdin.
+The JSONL stream makes tool activity observable while the pass runs instead of leaving
+only a periodic heartbeat until the final result. The incremental decoder emits only
+bounded lifecycle metadata and read-tool names with confined repo-relative targets;
+raw assistant text, tool results, grep patterns, and attempted host paths never reach
+the progress or error logs because model output is untrusted and may contain source
+secrets or terminal/log-injection payloads. If a stream ends without a final result,
+or its error result has no explicit message, parsing returns a fixed diagnostic rather
+than falling back to the raw JSONL transcript. The fixed diagnostic carries the child
+exit code and may derive an actionable, fixed category from stderr only when no stream
+was emitted (rejected flags, authentication, or launch failure); arbitrary stderr is
+never copied into logs, and only an explicit final-result error message reaches
+provider-error classification. Every task-specific progress line is tagged with the
+stable agent bucket by the review pipeline, so concurrent passes remain attributable
+[observed] `claude-code.ts` `claudeExitDiagnostic`/`runClaudePrompt`, `review.ts`
+`formatAgentActivity`/`taskProgress`; tests in
+`claude-code.test.ts` and `review-internals.test.ts`. The argv and child environment
+are built to keep an untrusted PR (the review input) from turning that subprocess into
+code execution or credential exfiltration.
+
+Every production structured-output parser carries a draft-07 JSON Schema generated
+from the same Zod contract used at the local trust boundary. The Claude runtime passes
+that schema through `--json-schema`; Claude Code validates the final `StructuredOutput`
+tool call and re-prompts inside the original session when a required field or type is
+wrong. The validated `structured_output` object is then serialized through the local
+Zod parser again — provider validation improves reliability but never replaces local
+validation. If Claude exhausts its in-session structured-output retries (or claims
+success without returning `structured_output`), the runtime makes one clean-process
+attempt and accounts for both attempts; it never accepts unvalidated fallback text
+[observed] `schema.ts` `structuredParser`; `opencode.ts` `promptAndParse`;
+`claude-code.ts` `buildClaudeArgs`, `parseClaudeResult`, `runClaudePrompt`,
+`claudeCodePromptAndParse`.
 
 **Flags.** `--safe-mode` disables CLAUDE.md/hooks/MCP/plugins while keeping OAuth;
 `--bare` is deliberately **not** used because bare mode ignores
@@ -247,6 +276,14 @@ child resolves with `timedOut: true` in the result regardless of the `check` fla
 callers get one consistent shape to distinguish "our own deadline fired" from a real
 command failure ([observed] `exec.ts:71-87, 181-189, 230-250`).
 
+**Structured stdout observation stays inside the capture bound.** Spawn/input callers
+may observe stdout chunks as they arrive, but only the bytes admitted by `maxBuffer`;
+the observer is best-effort and its exceptions cannot affect the child. Claude uses
+this seam to decode `stream-json` without piping raw subprocess output to the terminal,
+while the complete bounded stdout remains available for final-result parsing
+([observed] `exec.ts` `RunOptions.onStdout` / `runWithInput`; `claude-code.ts`
+`createClaudeActivityStream`).
+
 ## Retry Taxonomy
 
 The runtime tells apart five failure classes and handles each differently. Conflating
@@ -271,12 +308,21 @@ retry, because re-sending the whole context into a limited account only makes it
 always capped at half the pass's own `maxWaitMs` so it can never outlast the deadline it
 protects ([observed] `opencode.ts:552-555`).
 
-**JSON-parse failure — same-session corrective first.** A reply that will not parse is
+**JSON-parse failure — same-session corrective first.** Claude Code receives the local
+parser's draft-07 JSON Schema and performs validation-aware retries inside the original
+session before returning `structured_output`; this retains the investigation context
+and names the exact missing field/type to the model. Local Zod validation still runs on
+the provider-validated object. If those in-session repairs are exhausted, Claude gets
+one fresh-process corrective attempt; both attempts remain in cost/token accounting.
+OpenCode has no equivalent structured-output seam, so a reply that will not parse is
 retried in the **same** OpenCode session first: the model still holds all the file
-context it read, so the corrective is a cheap cache-read re-emit with better recall than
-re-investigating; only if that also fails does it fall back to a fresh session. Parse
-failure and timeout are handled by entirely separate mechanisms and must not be
-conflated ([observed] `opencode.ts:994-1003`).
+context it read, making the corrective a cheap cache-read
+re-emit with better recall than re-investigating; only if that also fails does it fall
+back to a fresh session. Claude's legacy/no-schema path retains one fresh-process
+corrective as defense in depth. Parse failure and timeout are handled by entirely
+separate mechanisms and must not be conflated ([observed] `schema.ts`
+`structuredParser`; `claude-code.ts` `claudeCodePromptAndParse`; `opencode.ts`
+`promptAndParse`).
 
 **Finalize and corrective prompts run with every tool disabled.** The "stop and return
 what you have" finalize and the "re-emit valid JSON" corrective are sent with `NO_TOOLS`

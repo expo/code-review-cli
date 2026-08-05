@@ -31,6 +31,12 @@ export interface RunOptions {
   killSignal?: NodeJS.Signals;
   /** When set, write this to the child's stdin (routes through spawn, not execFile). */
   input?: string;
+  /**
+   * Best-effort observer for captured stdout chunks on the spawn/input path. Only
+   * bytes admitted by maxBuffer are observed; callback failures never affect the
+   * child process. Intended for structured incremental output, not raw log piping.
+   */
+  onStdout?: (chunk: string) => void;
 }
 
 /**
@@ -205,7 +211,16 @@ function runWithInput(
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
+      const before = stdout.length;
       stdout = cap(stdout, chunk);
+      const admitted = stdout.length - before;
+      if (admitted > 0 && options.onStdout) {
+        try {
+          options.onStdout(chunk.slice(0, admitted));
+        } catch {
+          // Observability must never break the command whose output it observes.
+        }
+      }
     });
     child.stderr.on("data", (chunk: string) => {
       stderr = cap(stderr, chunk);
