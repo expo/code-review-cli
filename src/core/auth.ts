@@ -21,7 +21,9 @@ const PROVIDER_KEY_ENV: Record<string, string> = {
  * Provider-owned credential env vars BEYOND the x-api-key ones above: Anthropic's
  * OAuth/subscription bearer envs. CLAUDE_CODE_OAUTH_TOKEN holds the long-lived (1-year)
  * Claude Max/Team subscription token that `ecr setup-auth`/`claude setup-token` export,
- * and ANTHROPIC_AUTH_TOKEN is Anthropic's documented bearer var. They belong to
+ * ANTHROPIC_AUTH_TOKEN is Anthropic's documented bearer var, and
+ * CLAUDE_CODE_REVIEW_SHARED_API_TOKEN is the SCAFFOLDED DEFAULT tokenEnv (see
+ * templates/config.jsonc) — it always holds an Anthropic credential. They belong to
  * anthropic, so the cross-provider guard below refuses a non-anthropic entry that names
  * one — without this, `{provider:"openai", tokenEnv:"CLAUDE_CODE_OAUTH_TOKEN"}` passes
  * (neither a FORBIDDEN secret nor a PROVIDER_KEY_ENV value) and prepareAuth forwards the
@@ -31,6 +33,7 @@ const PROVIDER_KEY_ENV: Record<string, string> = {
 const ANTHROPIC_TOKEN_ENVS: Record<string, string> = {
   CLAUDE_CODE_OAUTH_TOKEN: "anthropic",
   ANTHROPIC_AUTH_TOKEN: "anthropic",
+  CLAUDE_CODE_REVIEW_SHARED_API_TOKEN: "anthropic",
 };
 
 /**
