@@ -107,10 +107,14 @@ raw assistant text, tool results, grep patterns, and attempted host paths never 
 the progress or error logs because model output is untrusted and may contain source
 secrets or terminal/log-injection payloads. If a stream ends without a final result,
 or its error result has no explicit message, parsing returns a fixed diagnostic rather
-than falling back to the raw JSONL transcript; only an explicit final-result error
-message reaches provider-error classification. Every progress line is tagged with the
+than falling back to the raw JSONL transcript. The fixed diagnostic carries the child
+exit code and may derive an actionable, fixed category from stderr only when no stream
+was emitted (rejected flags, authentication, or launch failure); arbitrary stderr is
+never copied into logs, and only an explicit final-result error message reaches
+provider-error classification. Every task-specific progress line is tagged with the
 stable agent bucket by the review pipeline, so concurrent passes remain attributable
-[observed] `claude-code.ts:345-578`, `review.ts:184-190,698-704`; tests in
+[observed] `claude-code.ts` `claudeExitDiagnostic`/`runClaudePrompt`, `review.ts`
+`formatAgentActivity`/`taskProgress`; tests in
 `claude-code.test.ts` and `review-internals.test.ts`. The argv and child environment
 are built to keep an untrusted PR (the review input) from turning that subprocess into
 code execution or credential exfiltration.

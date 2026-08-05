@@ -701,6 +701,40 @@ export function claudeTemperatureNote(
 }
 
 /**
+ * Preserve actionable process diagnostics without copying arbitrary stderr into a
+ * public Actions log. A non-empty stream may already contain model/tool content, so
+ * stderr is not even classified in that case. With no stream, recognize only fixed
+ * CLI/setup categories and never interpolate the matched text.
+ */
+// @ref LLP 0003#claude-code-cli-containment [constrained-by] — stderr may reflect untrusted tree content; expose only exit metadata and fixed allowlisted categories
+function claudeExitDiagnostic(result: { stdout: string; stderr: string; code: number }): string {
+  const exit = `Claude Code exited with code ${result.code}`;
+  if (result.stdout.trim() !== "") {
+    return exit;
+  }
+
+  if (/unknown (?:option|argument)|unrecognized option|unexpected argument/i.test(result.stderr)) {
+    return (
+      `${exit}; the CLI rejected its arguments — verify the pinned ` +
+      "@anthropic-ai/claude-code version supports the configured flags"
+    );
+  }
+  if (/authentication|oauth|api.?key|unauthorized|\b401\b|\b403\b/i.test(result.stderr)) {
+    return (
+      `${exit}; authentication failed before a result was emitted — check ` +
+      "`claude auth status` and `ecr doctor`"
+    );
+  }
+  if (/\bENOENT\b|command not found|no such file or directory/i.test(result.stderr)) {
+    return `${exit}; the Claude Code executable or one of its required files was not found`;
+  }
+  if (/\bEACCES\b/i.test(result.stderr)) {
+    return `${exit}; the Claude Code executable could not be launched due to permissions`;
+  }
+  return exit;
+}
+
+/**
  * One prompt → text/cost/tokens/model, as a single `claude -p` subprocess (the
  * Claude analogue of OpenCode's promptAgent; no sessions/polling).
  */
@@ -777,9 +811,7 @@ export async function runClaudePrompt(
   // A non-timeout signal is a crash (SIGSEGV, OOM SIGKILL, external kill), not a
   // timeout — surface it as a hard error rather than the subdivide/retry path.
   if (result.signal) {
-    throw new Error(
-      `Claude Code was killed by signal ${result.signal}: ${result.stderr.trim() || "(no output)"}`,
-    );
+    throw new Error(`Claude Code was killed by signal ${result.signal}`);
   }
   // Truncated output can't be parsed as JSON; report the cause plainly instead of
   // letting it fall through as a generic parse failure.
@@ -832,11 +864,13 @@ export async function runClaudePrompt(
           "`ecr doctor`.",
       );
     }
+    const needsProcessDiagnostic =
+      parsed.errorText === CLAUDE_STREAM_MISSING_RESULT ||
+      parsed.errorText === CLAUDE_RESULT_MISSING_ERROR;
     throw new Error(
-      parsed.errorText ||
-        `claude exited with code ${result.code}: ${
-          result.stderr.trim() || result.stdout.trim() || "(no output)"
-        }`,
+      needsProcessDiagnostic
+        ? `${parsed.errorText} (${claudeExitDiagnostic(result)})`
+        : parsed.errorText,
     );
   }
 

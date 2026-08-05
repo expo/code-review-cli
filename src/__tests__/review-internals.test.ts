@@ -62,6 +62,16 @@ test("formatAgentActivity: stable agent tag leads every line and pass detail sta
   expect(formatAgentActivity("cross-cutting", "cross-file", "still working…\n45s")).toBe(
     "  [cross-cutting] cross-file: still working… 45s",
   );
+  expect(formatAgentActivity("correctness", "correctness [1/2]", "FAILED (bad output)")).toBe(
+    "  [correctness] [1/2]: FAILED (bad output)",
+  );
+  expect(
+    formatAgentActivity(
+      "security",
+      "security [2/2]",
+      "exceeded 15m — retrying 3 files with a fast no-tools pass",
+    ),
+  ).toBe("  [security] [2/2]: exceeded 15m — retrying 3 files with a fast no-tools pass");
 });
 
 test("applyReviewPolicy: drops suggestions, sorts by severity", () => {

@@ -683,6 +683,8 @@ export async function runReview(
 
     let completedPasses = 0;
     let failedPasses = 0;
+    const taskProgress = (task: ReviewTask, line: string): void =>
+      progress(formatAgentActivity(task.bucket, task.label, line));
     // promptAndParse already retries internally (same-session corrective, then a
     // bounded fresh session). We do NOT wrap it in another retry loop. On a genuine
     // TIMEOUT, instead of dropping the work we break it into units that converge:
@@ -698,7 +700,7 @@ export async function runReview(
             system: task.system,
             text: buildTaskText(task),
             title: task.title,
-            onActivity: (line) => progress(formatAgentActivity(task.bucket, task.label, line)),
+            onActivity: (line) => taskProgress(task, line),
             maxWaitMs: task.maxWaitMs,
             maxToolCalls: task.maxToolCalls,
             finalizeOnTimeout: true,
@@ -717,7 +719,7 @@ export async function runReview(
         }
         completedPasses++;
         if (truncated) {
-          progress(`  ${task.label}: hit its budget — returned partial findings`);
+          taskProgress(task, "hit its budget — returned partial findings");
           incomplete.push(
             `${capitalize(task.coverageLabel)} ran out of time; its findings may be incomplete.`,
           );
@@ -727,7 +729,7 @@ export async function runReview(
         // Non-timeout errors are genuine failures — record and move on.
         if (!(error instanceof AgentTimeoutError)) {
           failedPasses++;
-          progress(`  ${task.label}: FAILED (${errorMessage(error)})`);
+          taskProgress(task, `FAILED (${errorMessage(error)})`);
           // An auth/permission failure hits every pass identically; push one shared,
           // actionable note (deduped into a single coverage line) instead of N generic
           // per-pass failures that bury the real, fixable cause.
@@ -755,8 +757,9 @@ export async function runReview(
           const mid = Math.ceil(task.files.length / 2);
           const left = task.files.slice(0, mid);
           const right = task.files.slice(mid);
-          progress(
-            `  ${task.label}: exceeded ${minutes}m — splitting into 2 smaller passes (${left.length} + ${right.length} files)`,
+          taskProgress(
+            task,
+            `exceeded ${minutes}m — splitting into 2 smaller passes (${left.length} + ${right.length} files)`,
           );
           const over: Partial<ReviewTask> = { depth: task.depth + 1, maxWaitMs: childCap };
           enqueue(childTask(task, left, `↳${left.length}f`, over));
@@ -769,8 +772,9 @@ export async function runReview(
         // without tools; it just can't open a caller outside the diff. A lighter
         // cross-file review beats the coverage gap it used to report.
         if (!task.fallback && remaining > FALLBACK_TIMEOUT_MS) {
-          progress(
-            `  ${task.label}: exceeded ${minutes}m — retrying ${filesLabel(task.files)} with a fast no-tools pass`,
+          taskProgress(
+            task,
+            `exceeded ${minutes}m — retrying ${filesLabel(task.files)} with a fast no-tools pass`,
           );
           enqueue(
             childTask(task, task.files, "(no-tools fallback)", {
@@ -792,8 +796,9 @@ export async function runReview(
         const couldStillReduce =
           (canSubdivide && task.depth < MAX_SUBDIVIDE_DEPTH) || !task.fallback;
         if (error.reason === "stall") {
-          progress(
-            `  ${task.label}: its model requests went silent (stalled) and did not recover — ` +
+          taskProgress(
+            task,
+            `its model requests went silent (stalled) and did not recover — ` +
               `most likely provider rate limiting; reporting a coverage gap`,
           );
           // Name the likely cause. OpenCode retries a 429 internally without surfacing
@@ -807,15 +812,17 @@ export async function runReview(
               `those changes were not fully reviewed.`,
           );
         } else if (couldStillReduce) {
-          progress(
-            `  ${task.label}: exceeded ${minutes}m and the run's time budget is spent — reporting a coverage gap`,
+          taskProgress(
+            task,
+            `exceeded ${minutes}m and the run's time budget is spent — reporting a coverage gap`,
           );
           incomplete.push(
             `${capitalize(task.coverageLabel)} timed out and the overall review budget was exhausted before it could be broken down further; those changes were not fully reviewed.`,
           );
         } else {
-          progress(
-            `  ${task.label}: exceeded ${minutes}m even at its smallest reviewable unit — reporting a coverage gap`,
+          taskProgress(
+            task,
+            `exceeded ${minutes}m even at its smallest reviewable unit — reporting a coverage gap`,
           );
           incomplete.push(
             `${capitalize(task.coverageLabel)} exceeded its time budget even after being reduced to its smallest reviewable unit; those changes were not fully reviewed.`,

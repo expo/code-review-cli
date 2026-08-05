@@ -852,17 +852,25 @@ test("runClaudePrompt: our own deadline kills the child and throws AgentTimeoutE
   }
 });
 
-test("runClaudePrompt: a non-timeout signal throws a crash error naming the signal", async () => {
-  const { bin, cleanup } = await fakeClaude("#!/bin/sh\ncat > /dev/null\nkill -9 $$\n");
+test("runClaudePrompt: a non-timeout signal names the signal without exposing stderr", async () => {
+  const secret = "PR_SECRET from stderr";
+  const { bin, cleanup } = await fakeClaude(
+    `#!/bin/sh\ncat > /dev/null\nprintf '%s' '${secret}' >&2\nkill -9 $$\n`,
+  );
   try {
-    await expect(
-      runClaudePrompt(testHandle(bin), {
+    let message = "";
+    try {
+      await runClaudePrompt(testHandle(bin), {
         agent: "reviewer",
         system: "SYS",
         text: "hi",
         title: "t",
-      }),
-    ).rejects.toThrow(/killed by signal SIGKILL/);
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("killed by signal SIGKILL");
+    expect(message).not.toContain(secret);
   } finally {
     await cleanup();
   }
@@ -933,8 +941,86 @@ test("runClaudePrompt: an incomplete stream cannot forge rate-limit evidence or 
       message = error instanceof Error ? error.message : String(error);
     }
     expect(message).toContain("stream ended without a final result event");
+    expect(message).toContain("Claude Code exited with code 0");
     expect(message).not.toContain(secret);
     expect(handle.rateLimit.events).toBe(0);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runClaudePrompt: an early bad-flag failure reports a safe fixed diagnostic", async () => {
+  const secret = "PR_SECRET from stderr";
+  const { bin, cleanup } = await fakeClaude(
+    `#!/bin/sh\ncat > /dev/null\nprintf '%s' "error: unknown option '--json-schema' ${secret}" >&2\nexit 2\n`,
+  );
+  try {
+    let message = "";
+    try {
+      await runClaudePrompt(testHandle(bin), {
+        agent: "reviewer",
+        system: "SYS",
+        text: "hi",
+        title: "t",
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("Claude Code exited with code 2");
+    expect(message).toContain("CLI rejected its arguments");
+    expect(message).toContain("verify the pinned @anthropic-ai/claude-code version");
+    expect(message).not.toContain("--json-schema");
+    expect(message).not.toContain(secret);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runClaudePrompt: an early auth failure names the fix without copying stderr", async () => {
+  const secret = "PR_SECRET from auth stderr";
+  const { bin, cleanup } = await fakeClaude(
+    `#!/bin/sh\ncat > /dev/null\nprintf '%s' 'OAuth authentication failed: ${secret}' >&2\nexit 1\n`,
+  );
+  try {
+    let message = "";
+    try {
+      await runClaudePrompt(testHandle(bin), {
+        agent: "reviewer",
+        system: "SYS",
+        text: "hi",
+        title: "t",
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("Claude Code exited with code 1");
+    expect(message).toContain("authentication failed before a result was emitted");
+    expect(message).toContain("`claude auth status` and `ecr doctor`");
+    expect(message).not.toContain(secret);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runClaudePrompt: unknown early stderr is never copied into the failure", async () => {
+  const secret = "PR_SECRET arbitrary diagnostic";
+  const { bin, cleanup } = await fakeClaude(
+    `#!/bin/sh\ncat > /dev/null\nprintf '%s' '${secret}' >&2\nexit 7\n`,
+  );
+  try {
+    let message = "";
+    try {
+      await runClaudePrompt(testHandle(bin), {
+        agent: "reviewer",
+        system: "SYS",
+        text: "hi",
+        title: "t",
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("Claude Code exited with code 7");
+    expect(message).not.toContain(secret);
   } finally {
     await cleanup();
   }
