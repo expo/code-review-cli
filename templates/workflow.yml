@@ -67,6 +67,13 @@ jobs:
           # to save an empty cache and error).
           package-manager-cache: false
 
+      # The anthropic/… models in .expo-code-review/config.jsonc run through the
+      # Claude Code CLI (the claude-code engine). Pinned exactly — an unpinned CLI
+      # would silently drift on every CI run; bump it deliberately. Remove this
+      # step if you switch every model to an OpenCode-served provider.
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.212
+
       # SECURITY: the TRUSTED BASE checkout above includes every
       # .expo-code-review/config.jsonc + routing.jsonc, whose auth.tokenEnv names the
       # env var the CLI forwards as the model credential. The canonical guard ships
@@ -87,7 +94,7 @@ jobs:
       - name: Guard config tokenEnv (root + routing + all scopes)
         env:
           # (Comma-separated set for a multi-credential auth.providers config.)
-          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'OPENAI_API_KEY' }}
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CLAUDE_CODE_REVIEW_SHARED_API_TOKEN' }}
         run: npx --yes -p "@expo/code-review-cli@$ECR_VERSION" ecr verify-config
 
       - name: Run AI review
@@ -101,12 +108,13 @@ jobs:
           # honor (root config.jsonc, or routing.jsonc defaults.auth) differs from
           # this — it catches what the guard step above can't. Keep it in sync
           # with the guard.
-          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'OPENAI_API_KEY' }}
-          # OpenAI API key — the env var named by auth.tokenEnv in config.jsonc.
-          # Store it as a repo secret; a project-scoped key restricted to model
-          # inference (with a spend limit) is all the reviewer needs.
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # Optional: override the model for every agent (uses your OpenCode login).
+          ECR_EXPECTED_TOKEN_ENV: ${{ vars.ECR_EXPECTED_TOKEN_ENV || 'CLAUDE_CODE_REVIEW_SHARED_API_TOKEN' }}
+          # Anthropic review credential — the env var named by auth.tokenEnv in
+          # config.jsonc. Store it as a repo secret: an `sk-ant-oat…` token minted
+          # by `claude setup-token`, or an `sk-ant-api…` Console key (the Claude
+          # Code CLI reads either).
+          CLAUDE_CODE_REVIEW_SHARED_API_TOKEN: ${{ secrets.CLAUDE_CODE_REVIEW_SHARED_API_TOKEN }}
+          # Optional: override the model for every agent.
           REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}
 
       # Observability: the per-run log (token/cache/cost totals + per-pass timing +

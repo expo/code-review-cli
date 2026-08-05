@@ -1,15 +1,17 @@
 // @ref LLP 0009#config-and-prompt-templates — root config: agent roster by filename, phase-1 defaults, auth
 {
-  // Default model for every agent. Override per-agent via frontmatter in the
-  // agent's markdown, or at runtime with the REVIEWER_MODEL env var
-  // (e.g. REVIEWER_MODEL=openai/gpt-5.4-mini).
-  "model": "openai/gpt-5.5",
+  // Default model for every agent. Anthropic models run through the Claude Code
+  // CLI engine (`claude -p`), inferred per agent from the model id — see `auth`
+  // below for the credential. Override per-agent via frontmatter in the agent's
+  // markdown, or at runtime with the REVIEWER_MODEL env var
+  // (e.g. REVIEWER_MODEL=anthropic/claude-haiku-4-5).
+  "model": "anthropic/claude-sonnet-5",
 
   // Agents: every markdown file in agents/ is one reviewer (id = filename).
   // Add or remove files to change the roster — no list needed here.
   // shared.md (prepended to every agent + coordinator) and coordinator.md are
   // reserved filenames. Per-agent overrides go in each file's YAML frontmatter,
-  // e.g. `---\nmodel: openai/gpt-5.5-pro\n---`.
+  // e.g. `---\nmodel: anthropic/claude-opus-5\n---`.
 
   // @ref LLP 0009#config-and-prompt-templates [implements] — suggestions off by default, not a schema limit
   "policy": {
@@ -46,49 +48,39 @@
   // HTML marker used to find + update the single PR comment. Keep it stable.
   "commentTag": "expo-ai-code-reviewer",
 
-  // How model credentials are provided. Default: an OpenAI API key.
+  // How model credentials are provided. Default: Anthropic via the Claude Code
+  // CLI. Anthropic models always run through that CLI — the engine is inferred
+  // per agent from the `anthropic/…` model id, so this entry only supplies the
+  // credential. In CI the tokenEnv holds the review credential (an `sk-ant-oat…`
+  // token minted by `claude setup-token`, or an `sk-ant-api…` Console key — the
+  // CLI reads either); locally an active `claude` login is enough, and the entry
+  // could even be omitted. ECR_EXPECTED_TOKEN_ENV (repo variable / workflow
+  // fallback) must equal this tokenEnv. `ecr setup-auth` walks you through it.
+  //
+  // Other providers run through OpenCode:
   //   "api-key": tokenEnv names the env var holding a provider API key. In CI,
-  //              store the key as a repo secret and pass it under that env var
-  //              (the scaffolded workflow does). If you omit `auth` entirely,
-  //              OpenCode's own login / ambient provider env vars are used.
-  // For Anthropic/Claude, see the dedicated block below (it now runs through the
-  // Claude Code CLI). For another provider, omit `auth` and set REVIEWER_MODEL
-  // after an `opencode auth login` for that provider.
+  //              store the key as a repo secret and pass it under that env var.
+  //   "auth": { "mode": "api-key", "provider": "openai", "tokenEnv": "OPENAI_API_KEY" }
   //
-  // MIXED setup (a ChatGPT/Codex subscription for the default models, plus a
-  // metered API key for pro-tier models the subscription doesn't offer): use the
-  // per-provider map instead, reference `openai-api/...` models in the frontmatter
-  // of the agents that need the pro tier, and set ECR_EXPECTED_TOKEN_ENV in the
-  // workflow to the comma-separated set of both env names.
+  //   ChatGPT/Codex subscription ("oauth"): tokenEnv holds the ACCESS token from
+  //   an `opencode auth login` ChatGPT sign-in — `ecr setup-auth` extracts it.
+  //   NEVER share the refresh token: it is single-use and dies on first rotation.
   //   "auth": { "providers": {
-  //     "openai":     { "mode": "oauth",   "tokenEnv": "CODEX_OAUTH_ACCESS_TOKEN" },
-  //     "openai-api": { "mode": "api-key", "tokenEnv": "OPENAI_API_KEY", "upstream": "openai" }
-  //   } }
-  // (openai oauth: tokenEnv holds the ACCESS token from an `opencode auth login`
-  // ChatGPT sign-in — `ecr setup-auth` extracts it. NEVER share the refresh
-  // token: it is single-use and dies on first rotation.)
-  //
-  // Anthropic runs through the Claude Code CLI, inferred from the model — set your
-  // models to "anthropic/…" (e.g. anthropic/claude-opus-5, anthropic/claude-sonnet-5)
-  // and run `claude setup-token`, exporting the token as CLAUDE_CODE_OAUTH_TOKEN (CI)
-  // or rely on your local `claude` login. An auth entry is OPTIONAL (tokenEnv just
-  // names the credential env); `ecr setup-auth` walks you through it.
-  //   "auth": { "providers": {
-  //     "anthropic": { "tokenEnv": "CLAUDE_CODE_OAUTH_TOKEN" }
+  //     "openai": { "mode": "oauth", "tokenEnv": "CODEX_OAUTH_ACCESS_TOKEN" }
   //   } }
   //
-  // MIXING engines is supported: the engine is inferred per agent from its model, so
-  // an anthropic entry may coexist with an openai (or any other) OpenCode provider.
-  // Each agent's `model` selects its engine — an `anthropic/…` agent runs through the
-  // Claude Code CLI while an `openai/…` agent runs through OpenCode, in the SAME run.
+  // MIXING engines is supported: the engine is inferred per agent from its model,
+  // so this anthropic entry may coexist with an openai (or any other) OpenCode
+  // provider — an `anthropic/…` agent runs through the Claude Code CLI while an
+  // `openai/…` agent runs through OpenCode, in the SAME run:
   //   "auth": { "providers": {
-  //     "anthropic": { "tokenEnv": "CLAUDE_CODE_OAUTH_TOKEN" },
+  //     "anthropic": { "tokenEnv": "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN" },
   //     "openai":    { "mode": "oauth", "tokenEnv": "CODEX_OAUTH_ACCESS_TOKEN" }
   //   } }
   "auth": {
-    "mode": "api-key",
-    "provider": "openai",
-    "tokenEnv": "OPENAI_API_KEY"
+    "providers": {
+      "anthropic": { "tokenEnv": "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN" }
+    }
   },
 
   // Stack-aware requalification (ROOT-ONLY; off by default). When on, `ecr ci` walks

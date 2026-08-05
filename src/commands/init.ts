@@ -27,9 +27,10 @@ Options:
   --no-workflow   Skip writing the CI workflows (review, command, and dismiss
                   under .github/workflows/)
   --token-env <name[,name…]>
-                  Env var(s) holding the model credential (default OPENAI_API_KEY,
-                  e.g. CLAUDE_CODE_OAUTH_TOKEN). The scaffolded workflows forward
-                  the matching repo secret(s) and expect this tokenEnv
+                  Env var(s) holding the model credential (default
+                  CLAUDE_CODE_REVIEW_SHARED_API_TOKEN, e.g. OPENAI_API_KEY). The
+                  scaffolded workflows forward the matching repo secret(s) and
+                  expect this tokenEnv
   --force         Overwrite existing files
   --force-workflows
                   Overwrite only the CI workflow files, keeping your customized
@@ -38,7 +39,7 @@ Options:
   -h, --help      Show this help
 `;
 
-const DEFAULT_TOKEN_ENV = "OPENAI_API_KEY";
+const DEFAULT_TOKEN_ENV = "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN";
 
 export async function initCommand(argv: string[]): Promise<void> {
   if (argv.includes("-h") || argv.includes("--help")) {
@@ -107,7 +108,7 @@ async function scaffold(argv: string[]): Promise<void> {
 
   // The reverse of the guard above: --force-workflows (or --force) always rewrites
   // the review workflows from the pristine template, which forwards the default
-  // OPENAI_API_KEY unless --token-env names the credential again. An adopter who
+  // Anthropic token env unless --token-env names the credential again. An adopter who
   // scaffolded with a non-default tokenEnv and later refreshes the workflow YAML
   // without re-passing --token-env would silently lose the forwarded secret, and
   // CI would keep passing the auth lock but run with an empty credential. Refuse
@@ -121,7 +122,7 @@ async function scaffold(argv: string[]): Promise<void> {
           `${baked}, but this run has no --token-env, so rewriting them would restore the ` +
           `default ${DEFAULT_TOKEN_ENV} and CI would run with an empty credential. Re-run with ` +
           `--token-env ${baked} to keep the current credential, or --token-env ${DEFAULT_TOKEN_ENV} ` +
-          `to reset to OpenAI on purpose.`,
+          `to reset to the default on purpose.`,
       );
     }
   }
@@ -226,14 +227,15 @@ async function scaffold(argv: string[]): Promise<void> {
   const steps = [
     `Customize ${CONFIG_DIRNAME}/agents/*.md (and shared.md, coordinator.md) for this repo.`,
     // --token-env only rewires the workflows; the scaffolded config.jsonc still
-    // declares OPENAI_API_KEY, and CI's `ecr verify-config` refuses to review
-    // until the config's tokenEnv set matches the workflow's expected set.
+    // declares the default Anthropic tokenEnv, and CI's `ecr verify-config`
+    // refuses to review until the config's tokenEnv set matches the workflow's
+    // expected set.
     ...(tokenEnvs.join(",") !== DEFAULT_TOKEN_ENV
       ? [
           `Point ${CONFIG_DIRNAME}/config.jsonc at ${tokenEnvs.length > 1 ? "these credentials" : "this credential"}: set \`auth\` (and \`model\`) per the file's comments — CI's \`ecr verify-config\` refuses to review until the config names ${names}.`,
         ]
       : []),
-    "Configure a model provider in OpenCode (or set REVIEWER_MODEL).",
+    "Log in with `claude` (or run `ecr setup-auth`) so local runs have a credential.",
     "Run `ecr doctor`, then `ecr review`.",
     withWorkflow
       ? `Add the ${names} repo secret${tokenEnvs.length > 1 ? "s" : ""} referenced by the workflow, then add an \`ai-review\` label to a PR.`
@@ -639,11 +641,14 @@ export function substituteTokenEnv(raw: string, tokenEnvs: string[]): string {
     return raw;
   }
   const expectedFallback = `vars.ECR_EXPECTED_TOKEN_ENV || '${DEFAULT_TOKEN_ENV}'`;
+  // Byte-identical to the credential block in templates/workflow.yml AND
+  // templates/command.yml (both flow through this function).
   const credentialBlock = [
-    "          # OpenAI API key — the env var named by auth.tokenEnv in config.jsonc.",
-    "          # Store it as a repo secret; a project-scoped key restricted to model",
-    "          # inference (with a spend limit) is all the reviewer needs.",
-    "          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}",
+    "          # Anthropic review credential — the env var named by auth.tokenEnv in",
+    "          # config.jsonc. Store it as a repo secret: an `sk-ant-oat…` token minted",
+    "          # by `claude setup-token`, or an `sk-ant-api…` Console key (the Claude",
+    "          # Code CLI reads either).",
+    "          CLAUDE_CODE_REVIEW_SHARED_API_TOKEN: ${{ secrets.CLAUDE_CODE_REVIEW_SHARED_API_TOKEN }}",
   ].join("\n");
   if (!raw.includes(expectedFallback) || !raw.includes(credentialBlock)) {
     throw new Error("workflow template drifted: tokenEnv markers not found (report this bug)");

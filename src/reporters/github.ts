@@ -468,7 +468,11 @@ export class GitHubReporter implements Reporter {
    * (annotate mode). Either way the feedback path fails soft — it never blocks the
    * comment from being posted.
    */
-  async report(review: CoordinatorOutput, feedback?: FeedbackRecord[]): Promise<void> {
+  async report(
+    review: CoordinatorOutput,
+    feedback?: FeedbackRecord[],
+    inputHash?: string,
+  ): Promise<void> {
     // Carry forward any per-PR dismissals recorded in the existing comment so they
     // survive re-reviews (a dismissed finding stays in the collapsed section).
     const existing = await this.findExistingComment();
@@ -487,7 +491,7 @@ export class GitHubReporter implements Reporter {
       : await this.computeFeedback(withFp, priorRecords, pinsIn);
     const link = await this.linkContextAsync();
     await this.upsertComment(
-      renderMarkdown(review, this.options.commentTag, dismissed, link, records, pins),
+      renderMarkdown(review, this.options.commentTag, dismissed, link, records, pins, inputHash),
     );
   }
 
@@ -834,6 +838,7 @@ export class GitHubReporter implements Reporter {
           link,
           next.feedback,
           next.pins,
+          state.inputHash,
         );
     await this.patchComment(existing.id, body);
     return {

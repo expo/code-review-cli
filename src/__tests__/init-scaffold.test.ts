@@ -132,7 +132,7 @@ test("init --token-env refuses when review workflows already exist without --for
     path.join(root, ".github", "workflows", "expo-code-review.yml"),
     "utf8",
   );
-  expect(text).toContain("OPENAI_API_KEY");
+  expect(text).toContain("CLAUDE_CODE_REVIEW_SHARED_API_TOKEN");
   expect(text).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
 });
 
@@ -143,7 +143,7 @@ test("init --token-env --force rewrites existing review workflows", async () => 
   for (const file of ["expo-code-review.yml", "expo-code-review-command.yml"]) {
     const text = await readFile(path.join(root, ".github", "workflows", file), "utf8");
     expect(text).toContain("CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}");
-    expect(text).not.toContain("OPENAI_API_KEY");
+    expect(text).not.toContain("CLAUDE_CODE_REVIEW_SHARED_API_TOKEN");
   }
 });
 
@@ -210,7 +210,7 @@ test("init --force-workflows refuses when only the forwarded secret line is non-
   // The fallback alone reads as default, so the guard must also see the secret line.
   const wf = path.join(root, ".github", "workflows", "expo-code-review.yml");
   const patched = (await readFile(wf, "utf8")).replaceAll(
-    "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}",
+    "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN: ${{ secrets.CLAUDE_CODE_REVIEW_SHARED_API_TOKEN }}",
     "ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}",
   );
   await writeFile(wf, patched, "utf8");
@@ -220,7 +220,7 @@ test("init --force-workflows refuses when only the forwarded secret line is non-
   process.exitCode = 0;
   expect(err).toContain("ANTHROPIC_API_KEY");
   expect(err).toContain("--token-env");
-  // Untouched: no silent reversion to the default OpenAI wiring.
+  // Untouched: no silent reversion to the default wiring.
   expect(await readFile(wf, "utf8")).toContain(
     "ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}",
   );
@@ -229,7 +229,7 @@ test("init --force-workflows refuses when only the forwarded secret line is non-
 test("init --force-workflows without --token-env is fine on a default-credential repo", async () => {
   const root = await freshRepo();
   await initCommand([]);
-  // Default OPENAI_API_KEY wiring: nothing to revert, so no refusal.
+  // Default credential wiring: nothing to revert, so no refusal.
   await initCommand(["--force-workflows"]);
   expect(process.exitCode ?? 0).toBe(0);
   expect(
@@ -240,8 +240,8 @@ test("init --force-workflows without --token-env is fine on a default-credential
 test("init --token-env prints the config.jsonc auth edit as a next step", async () => {
   await freshRepo();
   const out = await captureStdout(() => initCommand(["--token-env", "CLAUDE_CODE_OAUTH_TOKEN"]));
-  // The scaffolded config.jsonc still declares OPENAI_API_KEY, so without this
-  // step CI's verify-config fails and the user has no pointer to why.
+  // The scaffolded config.jsonc still declares the default tokenEnv, so without
+  // this step CI's verify-config fails and the user has no pointer to why.
   expect(out).toContain("config.jsonc at this credential");
   expect(out).toContain("refuses to review until the config names `CLAUDE_CODE_OAUTH_TOKEN`");
 });
@@ -275,7 +275,7 @@ test("substituteTokenEnv fails loudly when the template markers drift", () => {
 });
 
 test("parseTokenEnvs validates names and refuses well-known unrelated secrets", () => {
-  expect(parseTokenEnvs(undefined)).toEqual(["OPENAI_API_KEY"]);
+  expect(parseTokenEnvs(undefined)).toEqual(["CLAUDE_CODE_REVIEW_SHARED_API_TOKEN"]);
   expect(parseTokenEnvs("A_TOKEN, B_TOKEN")).toEqual(["A_TOKEN", "B_TOKEN"]);
   expect(() => parseTokenEnvs("lower_case")).toThrow(/UPPER_SNAKE_CASE/);
   expect(() => parseTokenEnvs("GH_TOKEN")).toThrow(/unrelated secret/);

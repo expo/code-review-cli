@@ -188,8 +188,14 @@ test("checkProviderAuth: FORBIDDEN + cross-provider guards still fire for an ant
 test("checkProviderAuth: a non-anthropic entry naming CLAUDE_CODE_OAUTH_TOKEN is refused", () => {
   // The long-lived Claude Max/Team subscription token would otherwise be forwarded to
   // a FOREIGN provider (here openai) as its bearer — it is neither in FORBIDDEN nor a
-  // PROVIDER_KEY_ENV value, so only the anthropic-owned guard catches it.
-  for (const tokenEnv of ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"]) {
+  // PROVIDER_KEY_ENV value, so only the anthropic-owned guard catches it. The
+  // scaffolded default CLAUDE_CODE_REVIEW_SHARED_API_TOKEN is anthropic-owned the
+  // same way: it always holds an Anthropic credential (templates/config.jsonc).
+  for (const tokenEnv of [
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN",
+  ]) {
     const r = checkProviderAuth(cfg({ mode: "api-key", provider: "openai", tokenEnv }), {
       [tokenEnv]: `sk-ant-oat01-${"x".repeat(95)}`,
     });
@@ -203,6 +209,16 @@ test("checkProviderAuth: an anthropic entry naming CLAUDE_CODE_OAUTH_TOKEN is st
   const r = checkProviderAuth(
     cfg({ mode: "oauth", provider: "anthropic", tokenEnv: "ANTHROPIC_AUTH_TOKEN" }),
     { ANTHROPIC_AUTH_TOKEN: `sk-ant-oat01-${"x".repeat(95)}` },
+  );
+  expect(r.ok).toBe(true);
+});
+
+test("checkProviderAuth: the scaffolded default setup (anthropic + shared token env) passes", () => {
+  // The exact shape `ecr init` scaffolds (templates/config.jsonc) — anthropic owns
+  // the shared env, so its own entry must not trip the ownership guard.
+  const r = checkProviderAuth(
+    cfg({ provider: "anthropic", tokenEnv: "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN" }),
+    { CLAUDE_CODE_REVIEW_SHARED_API_TOKEN: `sk-ant-oat01-${"x".repeat(95)}` },
   );
   expect(r.ok).toBe(true);
 });

@@ -87,13 +87,17 @@ test("aggregate: default scope uses plain fingerprints, non-default uses scoped 
 
 test("aggregate: state round-trips through parseReviewState (scopes intact); a v1 body still parses", () => {
   const results = [
-    scope("default", true, { findings: [finding({ title: "D" })] }),
-    scope("api", false, { findings: [finding({ title: "W" })] }),
+    {
+      ...scope("default", true, { findings: [finding({ title: "D" })] }),
+      inputHash: "a".repeat(64),
+    },
+    { ...scope("api", false, { findings: [finding({ title: "W" })] }), inputHash: "b".repeat(64) },
   ];
   const body = renderAggregateMarkdown(results, "tag", []);
   const state = parseReviewState(body, "tag");
   expect(state).not.toBeNull();
   expect(state!.scopes?.map((s) => s.scope)).toEqual(["default", "api"]);
+  expect(state!.scopes?.map((s) => s.inputHash)).toEqual(["a".repeat(64), "b".repeat(64)]);
 
   // A pre-routing v1 comment still parses (no scopes field).
   const v1 = renderMarkdown(review({ findings: [finding()] }), "tag");
@@ -249,7 +253,12 @@ test("aggregate: the /undismiss pin set survives a render with no records and a 
     }),
   );
   const big = renderAggregateMarkdown(
-    [scope("api", false, { decision: "request_changes", findings: [pinned, ...many] })],
+    [
+      {
+        ...scope("api", false, { decision: "request_changes", findings: [pinned, ...many] }),
+        inputHash: "c".repeat(64),
+      },
+    ],
     "tag",
     [],
     undefined,
@@ -259,4 +268,5 @@ test("aggregate: the /undismiss pin set survives a render with no records and a 
   );
   expect(big.length).toBeLessThan(65_000);
   expect(parseReviewState(big, "tag")!.pins).toEqual(pins);
+  expect(parseReviewState(big, "tag")!.scopes![0]!.inputHash).toBeUndefined();
 });
