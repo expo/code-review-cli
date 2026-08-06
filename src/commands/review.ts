@@ -4,10 +4,11 @@ import { loadRoutingManifest, resolveScopes, scopedCommentTag } from "../config/
 import { repoRoot, resolveRepo } from "../core/exec.js";
 import { errorMessage } from "../core/util.js";
 import { readContextFile } from "../core/context-file.js";
+import { writeDeferredReviewArtifact } from "../core/deferred-review.js";
 import { feedbackNeedsRunSeam } from "../core/adjudicate.js";
 import { runReview } from "../core/review.js";
 import { LocalGitSource } from "../sources/local-git.js";
-import { GitHubPRSource } from "../sources/github-pr.js";
+import { GitHubPRSource, isCommitOid } from "../sources/github-pr.js";
 import type { ReviewSource } from "../sources/source.js";
 import { memoizeSource, stackConfirmFromConfig, stackWalkFromConfig } from "../sources/source.js";
 import { TerminalReporter } from "../reporters/terminal.js";
@@ -17,7 +18,8 @@ const USAGE = `ecr review — AI code review, printed to your terminal
 
 Usage:
   ecr review [options]                 review local changes
-  ecr review --pr <n> [--post]         review a GitHub PR by number
+  ecr review --pr <n> [--post | --save-review]
+                                       review a GitHub PR by number
 
 Source (pick one):
   (default)          diff the working tree against the merge-base
@@ -33,6 +35,8 @@ Options:
   --post               with --pr: also post the result as the PR comment (needs
                        \`gh\` auth). Omit to only preview here; re-run with --post
                        to publish.
+  --save-review        with explicit --repo + --pr: save this exact preview as a
+                       postable artifact for a later \`ecr post-review\` command.
   --agents <a,b>       run only these agents (comma-separated ids); default: all
   --route              let the router pick relevant agents from the diff
   --scope <name>       review only this routing scope (needs a routing.jsonc);
@@ -57,13 +61,14 @@ principal here. In \`ecr ci\`, config loads from the PR's trusted base commit.
 Exit codes: 0 approve / approve-with-comments, 1 request-changes, 2 error.
 `;
 
-interface ReviewArgs {
+export interface ReviewArgs {
   base?: string;
   head?: string;
   staged: boolean;
   pr?: number;
   repo?: string;
   post: boolean;
+  saveReview: boolean;
   agents?: string[];
   route: boolean;
   scope?: string;
@@ -82,10 +87,11 @@ function requireValue(flag: string, value: string | undefined): string {
   return value;
 }
 
-function parseArgs(argv: string[]): ReviewArgs {
+export function parseReviewArgs(argv: string[]): ReviewArgs {
   const args: ReviewArgs = {
     staged: false,
     post: false,
+    saveReview: false,
     route: false,
     stackAware: false,
     json: false,
@@ -107,8 +113,8 @@ function parseArgs(argv: string[]): ReviewArgs {
       case "--pr": {
         const value = requireValue(arg, argv[++i]);
         const number = Number(value);
-        if (!Number.isInteger(number) || number <= 0) {
-          throw new Error(`--pr requires a positive PR number (got "${value}")`);
+        if (!Number.isSafeInteger(number) || number <= 0) {
+          throw new Error(`--pr requires a positive safe integer (got "${value}")`);
         }
         args.pr = number;
         break;
@@ -118,6 +124,9 @@ function parseArgs(argv: string[]): ReviewArgs {
         break;
       case "--post":
         args.post = true;
+        break;
+      case "--save-review":
+        args.saveReview = true;
         break;
       case "--agents":
         args.agents = requireValue(arg, argv[++i])
@@ -160,7 +169,7 @@ function parseArgs(argv: string[]): ReviewArgs {
 export async function reviewCommand(argv: string[]): Promise<void> {
   let args: ReviewArgs;
   try {
-    args = parseArgs(argv);
+    args = parseReviewArgs(argv);
   } catch (error) {
     process.stderr.write(`${errorMessage(error)}\n\n${USAGE}`);
     process.exitCode = 2;
@@ -173,7 +182,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
   }
 
   try {
-    validateArgs(args);
+    validateReviewArgs(args);
   } catch (error) {
     process.stderr.write(`${errorMessage(error)}\n\n${USAGE}`);
     process.exitCode = 2;
@@ -333,11 +342,16 @@ export async function reviewCommand(argv: string[]): Promise<void> {
     const config = await loadReviewConfig(cwd, { configDir: args.configDir });
     const source = makeSource();
 
-    // Build the PR reporter up front when posting, so adjudicate mode can judge the
+    // Build the PR reporter up front when posting OR saving a postable preview, so
+    // adjudicate mode can judge the
     // PR's replies against the source before the result is rendered. Feedback only
     // has replies to match when reviewing a PR and posting (the terminal preview never
-    // renders annotations), so it is wired only on the --post --pr path.
-    const { repo: postRepo, error: postRepoError } = await resolvePostRepo(args, cwd);
+    // renders annotations), so it is wired only when a later/current post is possible.
+    const { repo: postRepo, error: postRepoError } = await resolvePostRepo(
+      { ...args, post: args.post || args.saveReview },
+      cwd,
+    );
+    const headSha = postRepo != null && args.pr != null ? await reviewedHeadSha(source) : undefined;
     const reporter =
       postRepo != null && args.pr != null
         ? new GitHubReporter({
@@ -347,7 +361,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
             breakGlassMarker: config.breakGlassMarker,
             cwd,
             feedback: config.feedback,
-            headSha: await reviewedHeadSha(source),
+            headSha,
           })
         : null;
 
@@ -371,6 +385,22 @@ export async function reviewCommand(argv: string[]): Promise<void> {
 
     // Always print the result here first.
     await new TerminalReporter({ json: args.json, noFail: args.noFail }).report(review);
+
+    if (args.saveReview) {
+      if (postRepo == null || args.pr == null || !isCommitOid(headSha)) {
+        throw new Error(
+          `could not save a postable review: ${postRepoError ? errorMessage(postRepoError) : "the PR head commit could not be resolved"}`,
+        );
+      }
+      const artifactPath = await writeDeferredReviewArtifact(config, {
+        repo: postRepo,
+        pr: args.pr,
+        headSha,
+        review,
+        feedback: review.feedback,
+      });
+      process.stderr.write(`\nSaved postable review artifact: ${artifactPath}\n`);
+    }
 
     // Then, only if asked, publish the same result to the PR.
     if (args.pr != null && args.post) {
@@ -460,14 +490,23 @@ export async function resolvePostRepo(
 
 // @ref LLP 0007#ecr-review-local-trust-and-flag-rules [implements] — mutually exclusive flags rejected outright, never silently ignored
 /** Reject flag combinations that don't make sense together. */
-function validateArgs(args: ReviewArgs): void {
+export function validateReviewArgs(args: ReviewArgs): void {
   if (args.pr != null && (args.base || args.head || args.staged)) {
     throw new Error(
       "--pr reviews a PR by its diff and cannot be combined with --base/--head/--staged.",
     );
   }
-  if (args.pr == null && (args.repo || args.post)) {
-    throw new Error("--repo/--post only apply together with --pr.");
+  if (args.pr == null && (args.repo || args.post || args.saveReview)) {
+    throw new Error("--repo/--post/--save-review only apply together with --pr.");
+  }
+  if (args.saveReview && !args.repo) {
+    throw new Error("--save-review requires explicit --repo owner/repo.");
+  }
+  if (args.saveReview && args.post) {
+    throw new Error("--save-review and --post are mutually exclusive.");
+  }
+  if (args.saveReview && (args.scope || args.configDir)) {
+    throw new Error("--save-review does not support --scope or --config-dir.");
   }
   // Same rule as --repo/--post: the stack walk needs a PR to walk from, so a bare
   // --stack-aware would be silently ignored — reject it instead.

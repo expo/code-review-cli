@@ -35,6 +35,36 @@ Flag exclusivity is rejected outright, never silently resolved, because silently
 
 `--scope --post` posts under the derived marker `<rootTag>:<scope>`, taken from the ROOT config's tag via `scopedCommentTag(rootConfig.commentTag, scope)` [observed: `src/commands/review.ts:230`]. This is not a local convenience — it must match `ecr ci`'s per-scope derivation exactly, so a standalone local scope post and CI's per-scope post/clear/reconcile paths always target the identical comment. The schema ban on scope-level `commentTag` overrides (LLP 0006) is the only thing keeping the two derivations from ever diverging; relaxing that schema rule would silently break marker consistency between local and CI posts.
 
+## Deferred Review Posting
+
+`ecr review --save-review --repo owner/repo --pr N` separates the expensive model
+run from the outward-facing GitHub write without changing the review between them.
+After terminal preview it writes the exact verified `CoordinatorOutput` plus bounded
+feedback records to an owner-only, versioned artifact under
+`.expo-code-review/.runs/deferred/`. The artifact contains no credential. Saving is
+PR-only, requires an explicit repo, and is mutually exclusive with immediate
+`--post`; scopes and alternate config directories are rejected in v1 rather than
+silently producing an artifact the post command cannot faithfully reconstruct
+[observed: `src/commands/review.ts` `validateReviewArgs`,
+`writeDeferredReviewArtifact`].
+
+`ecr post-review --artifact P --repo owner/repo --pr N` performs no model call. It
+loads config from the local checkout (the terminal user remains the trust principal),
+strictly schema-validates and byte-caps the artifact, and requires four independent
+bindings before any GitHub write: artifact target equals the explicit argv repo/PR;
+the live PR head equals the reviewed 40-hex OID; the current comment tag,
+break-glass marker, and feedback policy hash to the stored posting-policy
+fingerprint; and the live break-glass check returns false. A break-glass API error
+fails closed on this deferred path. Only then does it pass the stored review through
+the ordinary `GitHubReporter`, preserving the single-comment lifecycle, dismissal
+state, hidden review trace, links, pins, and feedback merge [observed:
+`src/commands/post-review.ts`, `src/core/deferred-review.ts`].
+
+The explicit repo/PR is deliberately repeated at post time. An artifact is data, not
+authority: even a locally replaced artifact cannot redirect a generic “post this”
+command to another PR. Head and policy drift require a fresh preview instead of
+publishing stale findings or rendering them under rules the model run never saw.
+
 ## ecr ci: The Trusted-Root Run
 
 `ecr ci` runs inside GitHub Actions with credentials, reading content authored by whoever opened the PR (including a fork PR reachable through the not-fork-restricted `issue_comment` `/review` workflow). Its structure is dictated by that threat model (LLP 0001).

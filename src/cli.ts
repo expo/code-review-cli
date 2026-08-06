@@ -5,6 +5,7 @@ import { dismissCommand } from "./commands/dismiss.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { feedbackCommand } from "./commands/feedback.js";
 import { initCommand } from "./commands/init.js";
+import { postReviewCommand } from "./commands/post-review.js";
 import { refCheckCommand } from "./commands/ref-check.js";
 import { reviewCommand } from "./commands/review.js";
 import { setupAuthCommand } from "./commands/setup-auth.js";
@@ -14,6 +15,7 @@ const USAGE = `expo-code-review (ecr) — config-driven AI code reviewer
 
 Usage:
   ecr review [options]   Review local changes (default). See \`ecr review --help\`.
+  ecr post-review --artifact <path> --repo <owner/repo> --pr <n>   Post an exact saved preview.
   ecr ci                 Review the current PR and post a comment (GitHub Actions).
   ecr dismiss --pr <n> <id...>     Hide a finding on a PR (see \`ecr dismiss --help\`).
   ecr undismiss --pr <n> <id...>   Restore a dismissed finding.
@@ -47,6 +49,9 @@ async function main(): Promise<void> {
   switch (sub) {
     case "review":
       await reviewCommand(rest);
+      break;
+    case "post-review":
+      await postReviewCommand(rest);
       break;
     case "ci":
       await ciCommand(rest);

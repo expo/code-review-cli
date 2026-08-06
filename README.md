@@ -71,6 +71,9 @@ ecr review
 ecr review --pr 123
 # …and post it as the PR comment
 ecr review --pr 123 --post
+# Preview once, save the exact result, and post it later without another model run
+ecr review --repo owner/repo --pr 123 --save-review --json
+ecr post-review --artifact .expo-code-review/.runs/deferred/<artifact>.json --repo owner/repo --pr 123
 ```
 
 Options (most to least common):
@@ -79,6 +82,7 @@ Options (most to least common):
 | --- | --- |
 | `--pr <n>` | Review GitHub PR #n by number (diff fetched via `gh`, no checkout); not combinable with `--base`/`--head`/`--staged`. |
 | `--post` | With `--pr`, also post the result as the PR comment (needs `gh` auth). Omit to preview only; re-run with `--post` to publish. |
+| `--save-review` | With explicit `--repo` + `--pr`, save the exact preview as a private postable artifact. Mutually exclusive with `--post`. |
 | `--staged` | Review only staged changes (index vs HEAD; not combinable with `--base`/`--head`). |
 | `--base <ref>` | Base ref to diff against (default: merge-base with the default branch). |
 | `--head <ref>` | Head ref to diff (default: working tree, incl. uncommitted changes). |
@@ -111,6 +115,7 @@ is a ready example to adapt.
 | `ecr setup-auth [--yes]` | Walk through getting model credentials for local runs (ChatGPT/Claude sign-in and/or API keys), printing the `export` lines for your shell config. |
 | `ecr review [options]` | Review local changes and print an advisory review (default command). |
 | `ecr review --scope <name>` | Review only one routing scope over just that scope's changed files. |
+| `ecr post-review --artifact <path> --repo <owner/repo> --pr <n>` | Post an exact saved PR preview without re-running models; refuses target, head, config, or break-glass drift. |
 | `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
 | `ecr doctor [--list-scopes]` | Check environment, config, credentials, and (with a manifest) scopes. |
 | `ecr feedback [--repo <owner/repo>]` | Report which findings PR authors pushed back on, across history. See below. |
@@ -660,6 +665,12 @@ cost/latency/cache reuse over time. It also records the same bounded `reviewTrac
 that the PR comment embeds for machine consumers. The same totals are printed as a
 one-line summary to the terminal / CI job log at the end of each run, so cache reuse
 is visible even in CI (where the run log is ephemeral).
+
+`ecr review --save-review` additionally writes a versioned artifact under
+`.expo-code-review/.runs/deferred/` with owner-only permissions. It contains the
+verified final review and bounded feedback metadata, but no credential. `ecr
+post-review` schema-validates it and refuses to post if its explicit repo/PR, live
+head commit, or local comment-policy fingerprint no longer matches.
 
 </details>
 
