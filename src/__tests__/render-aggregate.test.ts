@@ -106,6 +106,32 @@ test("aggregate: state round-trips through parseReviewState (scopes intact); a v
   expect(v1State!.scopes).toBeUndefined();
 });
 
+test("aggregate: each scope keeps its hidden review trace across re-rendering", () => {
+  const results = [
+    scope("api", false, {
+      reviewTrace: {
+        version: 1,
+        trust: "unverified-model-diagnostics",
+        agents: {
+          security: {
+            checked: ["Traced authentication state through the API scope."],
+            uncertainties: [],
+          },
+        },
+      },
+    }),
+  ];
+  const body = renderAggregateMarkdown(results, "tag", []);
+  expect(body).not.toContain("Traced authentication state");
+  const state = parseReviewState(body, "tag")!;
+  expect(state.scopes![0]!.review.reviewTrace).toEqual(results[0]!.review.reviewTrace);
+
+  const rerendered = renderAggregateMarkdown(state.scopes!, "tag", []);
+  expect(parseReviewState(rerendered, "tag")!.scopes![0]!.review.reviewTrace).toEqual(
+    results[0]!.review.reviewTrace,
+  );
+});
+
 test("aggregate: a default-scope finding dismissed pre-routing (plain fp) lands in Dismissed (risk 9)", () => {
   const dFinding = finding({ title: "Carried", evidence: "const carriedOverDismissal = 1;" });
   const plainFp = fingerprintFinding(dFinding);

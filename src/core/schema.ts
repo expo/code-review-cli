@@ -135,11 +135,62 @@ export type StackVerdict = z.infer<typeof StackVerdictSchema>;
  */
 const ModelFindingSchema = FindingSchema.omit({ agent: true });
 
-/** Shape each sub-reviewer must emit. */
-export const ReviewerOutputSchema = z.object({
-  findings: z.array(ModelFindingSchema).default([]),
+/**
+ * Bounded, non-finding diagnostics a reviewer may leave for machine consumers.
+ * These notes explain what a clean pass actually checked without exposing a raw
+ * transcript or chain-of-thought. They remain unverified model output, so the
+ * engine labels the assembled trace with an explicit trust classification.
+ */
+export const REVIEW_TRACE_AGENT_LIMIT = 12;
+export const REVIEW_TRACE_CHECKED_LIMIT = 3;
+export const REVIEW_TRACE_UNCERTAINTY_LIMIT = 2;
+export const REVIEW_TRACE_NOTE_LIMIT = 240;
+export const REVIEW_TRACE_BYTES_LIMIT = 6_000;
+
+export const ReviewerTraceNotesSchema = z.object({
+  checked: z
+    .array(z.string().min(1).max(REVIEW_TRACE_NOTE_LIMIT))
+    .max(REVIEW_TRACE_CHECKED_LIMIT)
+    .default([]),
+  uncertainties: z
+    .array(z.string().min(1).max(REVIEW_TRACE_NOTE_LIMIT))
+    .max(REVIEW_TRACE_UNCERTAINTY_LIMIT)
+    .default([]),
 });
+export type ReviewerTraceNotes = z.infer<typeof ReviewerTraceNotesSchema>;
+
+/** Provider-facing shape each sub-reviewer is asked to emit. */
+const ReviewerModelOutputSchema = z.object({
+  findings: z.array(ModelFindingSchema).default([]),
+  trace: ReviewerTraceNotesSchema.optional(),
+});
+
+/**
+ * Local trust boundary for reviewer output. Findings stay strict, while diagnostics
+ * fail soft: a malformed optional trace must never discard otherwise valid findings
+ * or turn a clean pass into a coverage gap.
+ */
+export const ReviewerOutputSchema = z
+  .object({
+    findings: z.array(ModelFindingSchema).default([]),
+    trace: z.unknown().optional(),
+  })
+  .transform((output) => {
+    const trace = ReviewerTraceNotesSchema.safeParse(output.trace);
+    return {
+      findings: output.findings,
+      ...(trace.success ? { trace: trace.data } : {}),
+    };
+  });
 export type ReviewerOutput = z.infer<typeof ReviewerOutputSchema>;
+
+export const ReviewTraceSchema = z.object({
+  version: z.literal(1),
+  trust: z.literal("unverified-model-diagnostics"),
+  agents: z.record(z.string(), ReviewerTraceNotesSchema),
+  truncatedAgents: z.number().int().nonnegative().optional(),
+});
+export type ReviewTrace = z.infer<typeof ReviewTraceSchema>;
 
 /** Mode-agnostic coordinator result; each Reporter decides how to render it. */
 const CoordinatorModelOutputSchema = z.object({
@@ -174,6 +225,14 @@ export const CoordinatorOutputSchema = CoordinatorModelOutputSchema.extend({
   // Optional (like couldNotComplete) so every internal CoordinatorOutput literal stays
   // valid without restating an engine-owned field.
   setupNotes: z.array(z.string()).optional(),
+  /**
+   * Machine-readable reviewer diagnostics embedded in the hidden PR-comment state.
+   * Engine-owned and excluded from the coordinator's provider-side schema. It is not
+   * rendered as prose and must never affect the decision or finding set.
+   */
+  // Fail soft here too: the coordinator cannot author this engine field, and a
+  // malformed injected value must not fail consolidation before the engine strips it.
+  reviewTrace: ReviewTraceSchema.optional().catch(undefined),
 });
 export type CoordinatorOutput = z.infer<typeof CoordinatorOutputSchema>;
 
@@ -455,7 +514,10 @@ export const parseVerdict = structuredParser(VerdictSchema);
 export const parseStackVerdict = structuredParser(StackVerdictSchema);
 export const parseAdjudication = structuredParser(AdjudicationSchema);
 export const parseRouteOutput = structuredParser(RouteOutputSchema);
-export const parseReviewerOutput = structuredParser(ReviewerOutputSchema);
+export const parseReviewerOutput = structuredParser(
+  ReviewerOutputSchema,
+  ReviewerModelOutputSchema,
+);
 export const parseCoordinatorOutput = structuredParser(
   CoordinatorOutputSchema,
   CoordinatorModelOutputSchema,

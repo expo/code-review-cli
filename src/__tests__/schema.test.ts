@@ -86,11 +86,14 @@ test("structured parsers expose draft-07 contracts for provider-side validation"
     $schema: string;
     properties: {
       findings: { items: { properties: Record<string, unknown>; required: string[] } };
+      trace: { properties: Record<string, unknown> };
     };
   };
   expect(reviewer.$schema).toBe("http://json-schema.org/draft-07/schema#");
   expect(reviewer.properties.findings.items.required).toContain("title");
   expect(reviewer.properties.findings.items.properties.agent).toBeUndefined();
+  expect(reviewer.properties.trace.properties).toHaveProperty("checked");
+  expect(reviewer.properties.trace.properties).toHaveProperty("uncertainties");
 
   const coordinator = parseCoordinatorOutput.jsonSchema as {
     properties: Record<string, unknown>;
@@ -99,11 +102,56 @@ test("structured parsers expose draft-07 contracts for provider-side validation"
   expect(coordinator.required).toEqual(["decision", "findings", "summary"]);
   expect(coordinator.properties.incomplete).toBeUndefined();
   expect(coordinator.properties.couldNotComplete).toBeUndefined();
+  expect(coordinator.properties.reviewTrace).toBeUndefined();
 
   expect(parseVerdict.jsonSchema).toMatchObject({
     type: "object",
     required: ["verified", "reason"],
   });
+});
+
+test("reviewer trace parses bounded diagnostics and fails soft when malformed", () => {
+  const output = parseReviewerOutput(
+    JSON.stringify({
+      findings: [],
+      trace: {
+        checked: ["Traced the option through read and write paths."],
+        uncertainties: ["The platform callback order has no deterministic test."],
+      },
+    }),
+  );
+  expect(output.trace).toEqual({
+    checked: ["Traced the option through read and write paths."],
+    uncertainties: ["The platform callback order has no deterministic test."],
+  });
+  const malformed = parseReviewerOutput(
+    JSON.stringify({
+      findings: [
+        {
+          severity: "warning",
+          category: "quality",
+          file: "a.ts",
+          title: "Keep the real finding",
+          rationale: "r",
+        },
+      ],
+      trace: { checked: ["a", "b", "c", "d"], uncertainties: [] },
+    }),
+  );
+  expect(malformed.trace).toBeUndefined();
+  expect(malformed.findings.map((finding) => finding.title)).toEqual(["Keep the real finding"]);
+});
+
+test("a malformed coordinator-authored review trace is ignored, not a consolidation failure", () => {
+  const output = parseCoordinatorOutput(
+    JSON.stringify({
+      decision: "approve",
+      findings: [],
+      summary: "s",
+      reviewTrace: { version: 999, trust: "trust-me", agents: "bad" },
+    }),
+  );
+  expect(output.reviewTrace).toBeUndefined();
 });
 
 test("extractJsonObject: an empty response names the cause instead of 'undefined'", () => {

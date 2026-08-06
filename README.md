@@ -339,7 +339,18 @@ cache, in three places:
   run, so the step summary is where past runs' comments remain readable.
 - **`.expo-code-review/.runs/reviews.jsonl`** — one JSON line per run (uploaded as
   a CI artifact) with the same totals plus per-pass `agentTokens`, the raw
-  per-agent findings, coverage notes, and what the verifier dropped.
+  per-agent findings, bounded reviewer traces, coverage notes, and what the verifier
+  dropped.
+
+Each reviewer can also return a compact trace with up to three concrete checks and
+two unresolved questions. The reporter stores it only inside the existing base64
+`<!-- <commentTag>:state=… -->` comment marker as `review.reviewTrace`; it does not
+render in the visible review. Agents and other machine consumers can decode that
+state to see what a clean review covered. The payload declares
+`trust: "unverified-model-diagnostics"`: it contains bounded conclusions, never a
+raw transcript or chain-of-thought, and must not be treated as a verified finding.
+The engine sorts agent ids and caps the complete decoded trace at 6 KB so this hidden
+diagnostic cannot crowd visible findings out of GitHub's comment-size limit.
 
 **How the caching works.** Provider prompt caching is a *prefix match*: the
 provider caches the rendered prompt up to a point, and any byte change anywhere
@@ -645,9 +656,10 @@ variables: `ATLANTIS_BOT_LOGIN` (the Atlantis bot's comment login, e.g.
 Each run appends a JSON line to `.expo-code-review/.runs/reviews.jsonl` with the
 inputs, decision, finding count, duration, per-agent cost, and aggregate token
 usage (incl. prompt-cache read/write counts) — for auditing and measuring
-cost/latency/cache reuse over time. The same totals are printed as a one-line
-summary to the terminal / CI job log at the end of each run, so cache reuse is
-visible even in CI (where the run log is ephemeral).
+cost/latency/cache reuse over time. It also records the same bounded `reviewTrace`
+that the PR comment embeds for machine consumers. The same totals are printed as a
+one-line summary to the terminal / CI job log at the end of each run, so cache reuse
+is visible even in CI (where the run log is ephemeral).
 
 </details>
 

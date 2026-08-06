@@ -78,6 +78,29 @@ test("review input hash round-trips only in hidden comment state", () => {
   expect(body).not.toContain(inputHash);
 });
 
+test("review trace stays hidden and survives state-driven re-rendering", () => {
+  const review: CoordinatorOutput = {
+    ...base,
+    reviewTrace: {
+      version: 1,
+      trust: "unverified-model-diagnostics",
+      agents: {
+        correctness: {
+          checked: ["Traced the changed option through both public entry points."],
+          uncertainties: ["No deterministic test drives the platform callback."],
+        },
+      },
+    },
+  };
+  const body = renderMarkdown(review, "tag");
+  expect(body).not.toContain("Traced the changed option");
+  const state = parseReviewState(body, "tag")!;
+  expect(state.review.reviewTrace).toEqual(review.reviewTrace);
+
+  const rerendered = renderMarkdown(state.review, "tag", state.dismissed);
+  expect(parseReviewState(rerendered, "tag")!.review.reviewTrace).toEqual(review.reviewTrace);
+});
+
 test("links a finding location to the PR diff line when the line is in the diff", () => {
   const out = renderMarkdown(
     { ...base, findings: [finding({ file: "src/a.ts", line: 12 })] },

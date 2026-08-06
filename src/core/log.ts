@@ -2,7 +2,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import type { CoordinatorOutput, Finding, ReviewMetadata } from "./schema.js";
+import type { CoordinatorOutput, Finding, ReviewMetadata, ReviewTrace } from "./schema.js";
 import type { FilteredFile } from "./noise.js";
 import type { TokenUsage } from "./opencode.js";
 
@@ -41,6 +41,8 @@ export interface RunLogRecord {
   // the verifier rejected. Together these explain WHY the final finding set looks
   // the way it does.
   agentFindings?: Record<string, Finding[]>;
+  /** Bounded conclusion-only notes also embedded in the machine-readable comment state. */
+  reviewTrace?: ReviewTrace;
   coverageNotes?: string[];
   verifierDropped?: { finding: Finding; reason: string }[];
   /** Stack requalifications stripped by grounding/confirmation, with the strip reason

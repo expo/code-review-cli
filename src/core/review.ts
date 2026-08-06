@@ -41,8 +41,22 @@ import {
   buildReviewerTask,
   NO_TOOLS_INSTRUCTION,
 } from "./prompts.js";
-import { fingerprintFinding, isOverallRiskHandoff, parseReviewerOutput } from "./schema.js";
-import type { CoordinatorOutput, FeedbackRecord, Finding } from "./schema.js";
+import {
+  fingerprintFinding,
+  isOverallRiskHandoff,
+  parseReviewerOutput,
+  REVIEW_TRACE_AGENT_LIMIT,
+  REVIEW_TRACE_BYTES_LIMIT,
+  REVIEW_TRACE_CHECKED_LIMIT,
+  REVIEW_TRACE_UNCERTAINTY_LIMIT,
+} from "./schema.js";
+import type {
+  CoordinatorOutput,
+  FeedbackRecord,
+  Finding,
+  ReviewerTraceNotes,
+  ReviewTrace,
+} from "./schema.js";
 import { adjudicateFeedback } from "./adjudicate.js";
 import type { AdjudicationItem } from "./adjudicate.js";
 import { buildManifestMembership, manifestKey, normalizeManifestPath } from "./stack.js";
@@ -428,6 +442,10 @@ export async function runReview(
   // reviewers produced before the failure — partial findings are exactly what's
   // needed to debug a run that died mid-way.
   const agentFindings: Record<string, Finding[]> = {};
+  // Bounded, conclusion-only diagnostics for machine consumers of the hidden
+  // comment state. These are deliberately separate from findings: they never reach
+  // the coordinator, verification, policy, or decision paths.
+  const agentTrace: Record<string, ReviewerTraceNotes> = {};
   // First reviewer (by scheduling order) that produced each fingerprint, so a finding's
   // originating agent can be carried through the coordinator's merge/rewrite by matching
   // on fingerprint. Kept separate from agentFindings so the coordinator prompt and the
@@ -711,6 +729,9 @@ export async function runReview(
         trackTokens(task.bucket, tokens);
         trackModel(task.bucket, taskModel(task), model);
         (agentFindings[task.bucket] ??= []).push(...value.findings);
+        if (value.trace) {
+          mergeTraceNotes(agentTrace, task.bucket, value.trace);
+        }
         for (const finding of value.findings) {
           const fp = fingerprintFinding(finding);
           if (!agentByFp.has(fp)) {
@@ -1186,6 +1207,7 @@ export async function runReview(
       renderUsageMarkdown(agentTokens, agentCosts, tokenTotals, sum(agentCosts), agentModels),
     );
 
+    const reviewTrace = buildReviewTrace(agentTrace);
     await safeLog(logPath, {
       ...baseRecord,
       agentCosts,
@@ -1194,6 +1216,7 @@ export async function runReview(
       agentTokens,
       agentModels,
       agentFindings,
+      reviewTrace,
       coverageNotes,
       verifierDropped,
       requalificationStrips,
@@ -1211,7 +1234,14 @@ export async function runReview(
 
     // Engine-owned: overwrite whatever the coordinator may have emitted under this key,
     // so setup advice is always the checker's, never model text.
-    const reviewed = { ...output, setupNotes };
+    // `CoordinatorOutputSchema` knows the engine field so cached/embedded reviews can
+    // parse it, but the coordinator must never author it. Strip any model-supplied
+    // value and attach only the trace assembled from reviewer pass outputs.
+    const outputWithTrace = attachReviewTrace(output, reviewTrace);
+    const reviewed = {
+      ...outputWithTrace,
+      setupNotes,
+    };
     return feedbackRecords ? { ...reviewed, feedback: feedbackRecords } : reviewed;
   } catch (error) {
     await safeLog(logPath, {
@@ -1221,6 +1251,7 @@ export async function runReview(
       tokens: tokenTotals,
       agentTokens,
       agentFindings,
+      reviewTrace: buildReviewTrace(agentTrace),
       durationMs: Date.now() - started,
       decision: null,
       findingCount: 0,
@@ -1233,6 +1264,68 @@ export async function runReview(
     await auth.cleanup();
     await restoreCwd();
   }
+}
+
+export function mergeTraceNotes(
+  target: Record<string, ReviewerTraceNotes>,
+  agent: string,
+  notes: ReviewerTraceNotes,
+): void {
+  const current = target[agent] ?? { checked: [], uncertainties: [] };
+  const checked = [...new Set([...current.checked, ...notes.checked])].slice(
+    0,
+    REVIEW_TRACE_CHECKED_LIMIT,
+  );
+  const uncertainties = [...new Set([...current.uncertainties, ...notes.uncertainties])].slice(
+    0,
+    REVIEW_TRACE_UNCERTAINTY_LIMIT,
+  );
+  if (checked.length > 0 || uncertainties.length > 0) {
+    target[agent] = { checked, uncertainties };
+  }
+}
+
+export function buildReviewTrace(
+  agents: Record<string, ReviewerTraceNotes>,
+): ReviewTrace | undefined {
+  // Sorting makes the cap deterministic even though concurrent passes finish in a
+  // nondeterministic order. The byte ceiling protects GitHub's ~65k comment limit;
+  // the trace shares that body with visible findings and their durable state.
+  const entries = Object.entries(agents).sort(([left], [right]) => left.localeCompare(right));
+  if (entries.length === 0) {
+    return undefined;
+  }
+  const kept = entries.slice(0, REVIEW_TRACE_AGENT_LIMIT);
+  let truncatedAgents = entries.length - kept.length;
+  for (;;) {
+    const trace: ReviewTrace = {
+      version: 1,
+      trust: "unverified-model-diagnostics",
+      agents: Object.fromEntries(kept),
+      ...(truncatedAgents > 0 ? { truncatedAgents } : {}),
+    };
+    if (Buffer.byteLength(JSON.stringify(trace), "utf8") <= REVIEW_TRACE_BYTES_LIMIT) {
+      return trace;
+    }
+    if (kept.length === 0) {
+      return undefined;
+    }
+    kept.pop();
+    truncatedAgents++;
+  }
+}
+
+/**
+ * Replace any coordinator-authored trace with the engine-assembled value. The
+ * coordinator reads untrusted PR data, so its output can never populate this hidden
+ * machine-consumer channel even when it emits a locally schema-valid object.
+ */
+export function attachReviewTrace(
+  output: CoordinatorOutput,
+  reviewTrace: ReviewTrace | undefined,
+): CoordinatorOutput {
+  const { reviewTrace: _coordinatorTrace, ...withoutTrace } = output;
+  return { ...withoutTrace, ...(reviewTrace ? { reviewTrace } : {}) };
 }
 
 /**
