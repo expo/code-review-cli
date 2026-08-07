@@ -129,7 +129,7 @@ export function searchDocumentation(
     (options.platform === "all" || result.platform === options.platform) &&
     (!options.providers || options.providers.includes(result.provider as ProviderId)) &&
     (!options.sourceKinds || options.sourceKinds.includes(result.sourceKind as SourceKind)) &&
-    (!options.language || result.language === options.language || result.language == null);
+    (!options.language || result.language === options.language);
 
   const anchors = identifierAnchors(normalizedQuery);
   let matches = index.miniSearch.search(normalizedQuery, {

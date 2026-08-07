@@ -74,8 +74,11 @@ keeps distinct provenance and is never presented as an API contract.
 
 The built-in source catalog covers Apple, Android, platform releases, Swift
 Evolution, Media3, Glide, OkHttp, Kotlin coroutines, Gradle/AGP, selected JetBrains
-issues, Expo, React Native, Reanimated, Gesture Handler, Screens, and Worklets. A
-later design may let adopters select or add research capabilities through trusted
+issues, Expo, React Native, Reanimated, Gesture Handler, Screens, and Worklets.
+The canonical OkHttp host is backed by both the
+[maintainer's transfer announcement](https://jakewharton.com/the-lysine-contingency/)
+and [Commonhaus's project-transfer record](https://www.commonhaus.org/activity/315.html).
+A later design may let adopters select or add research capabilities through trusted
 root configuration, similar to agent files. That extension must not turn arbitrary
 PR-controlled URLs, commands, parsers, or executable plugins into review inputs. New
 remote sources still need an operator-controlled host/path allowlist and provenance

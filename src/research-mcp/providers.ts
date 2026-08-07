@@ -225,6 +225,9 @@ export const glideProvider = htmlProvider("glide", "android", "Glide documentati
 ]);
 
 // OkHttp moved from Square to the Commonhaus-backed Lysine organization in 2026.
+// The maintainer and Commonhaus independently document the transfer:
+// https://jakewharton.com/the-lysine-contingency/
+// https://www.commonhaus.org/activity/315.html
 // Use its canonical project domain instead of coupling trust to either GitHub owner name.
 export const okHttpProvider = htmlProvider("okhttp", "android", "OkHttp project documentation", [
   { hostname: "lysine.dev", prefixes: ["/okhttp"] },

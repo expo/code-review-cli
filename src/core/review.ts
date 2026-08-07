@@ -283,6 +283,9 @@ export async function runReview(
           ? "  research: no native platform identifiers found"
           : `  research: ${research.evidence.length} passage(s) from ${research.queries.length} bounded query(s)`,
       );
+      for (const warning of research.warnings) {
+        progress(`  research warning: ${warning}`);
+      }
     } catch (error) {
       // Documentation is supporting evidence, not a prerequisite for reviewing the
       // code. Fail open with a visible diagnostic; never weaken or skip the review.

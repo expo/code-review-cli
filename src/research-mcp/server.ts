@@ -33,7 +33,10 @@ export async function createDocumentationServer(indexPath: string) {
           .describe("Documentation platform to search"),
         query: z.string().min(1).max(300).describe(queryGuidance),
         limit: z.number().int().min(1).max(10).default(5),
-        language: z.enum(LANGUAGES).optional(),
+        language: z
+          .enum(LANGUAGES)
+          .optional()
+          .describe("Optional exact language tag; untagged documents are excluded"),
         providers: z
           .array(z.enum(PROVIDERS))
           .min(1)

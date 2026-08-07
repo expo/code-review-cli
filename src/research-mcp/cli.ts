@@ -12,7 +12,8 @@ function printHelp() {
   process.stderr.write(`review-research-mcp
 
 Usage:
-  review-research-mcp [serve] [--index PATH]
+  review-research-mcp [serve]
+  review-research-mcp serve [--index PATH]
   review-research-mcp update [--config PATH] [--output PATH]
                              [--platform apple|android|react-native] [--max-pages NUMBER]
 

@@ -174,3 +174,27 @@ test("search filters named corpora and provenance classes", () => {
     { provider: "glide", sourceKind: "official-guide" },
   ]);
 });
+
+test("a language filter excludes otherwise matching untagged documents", () => {
+  const index = buildSearchIndex(
+    [
+      ...chunks,
+      {
+        id: "apple:untagged",
+        platform: "apple",
+        title: "MainActor overview",
+        url: "https://developer.apple.com/documentation/swift/mainactor-overview",
+        passage: "Main actor dispatch queue behavior without language metadata.",
+        indexedAt: "2026-08-06T00:00:00.000Z",
+      },
+    ],
+    3,
+  );
+
+  const results = searchDocumentation(index, "MainActor dispatch queue", {
+    platform: "apple",
+    language: "swift",
+    limit: 5,
+  });
+  expect(results.map((result) => result.id)).toEqual(["apple:1"]);
+});

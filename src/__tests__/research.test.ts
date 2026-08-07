@@ -9,6 +9,7 @@ import {
   collectPlatformResearch,
   deriveResearchQueries,
   formatResearchEvidence,
+  researchChildEnvironment,
 } from "../core/research.js";
 import { buildSearchIndex, writeSearchIndex } from "../research-mcp/search-index.js";
 
@@ -155,6 +156,45 @@ test("multiline literals and block comments never become Expo Algolia queries", 
   expect(serialized).not.toContain("ReviewerHomeDirectory");
   expect(serialized).not.toContain("SecretCertificateIdentifier");
   expect(serialized).not.toContain("SwiftMultilinePrivateCredentialType");
+});
+
+test("an unpaired JSX apostrophe cannot expose a later string literal as a query", () => {
+  const queries = deriveResearchQueries([
+    {
+      path: "app/Camera.tsx",
+      patch: [
+        '+import { CameraView } from "expo-camera";',
+        "+return <Text>Don't expose the next line</Text>;",
+        "+const credential = 'AKIAIOSFODNN7EXAMPLE';",
+        "+const camera = CameraView;",
+      ].join("\n"),
+    },
+  ]);
+
+  expect(queries).toContainEqual({
+    platform: "react-native",
+    providers: ["expo"],
+    query: "CameraView",
+  });
+  expect(JSON.stringify(queries)).not.toContain("AKIAIOSFODNN7EXAMPLE");
+});
+
+test("research child environment forwards only locale and standard proxy variables", () => {
+  expect(
+    researchChildEnvironment({
+      HTTPS_PROXY: "http://proxy.example:8080",
+      no_proxy: "localhost",
+      SECRET_TOKEN: "must-not-be-forwarded",
+      PATH: "/private/bin",
+    }),
+  ).toMatchObject({
+    LANG: "C.UTF-8",
+    LC_ALL: "C.UTF-8",
+    HTTPS_PROXY: "http://proxy.example:8080",
+    no_proxy: "localhost",
+  });
+  expect(researchChildEnvironment({ SECRET_TOKEN: "nope" })).not.toHaveProperty("SECRET_TOKEN");
+  expect(researchChildEnvironment({ PATH: "/private/bin" })).not.toHaveProperty("PATH");
 });
 
 test("research index configuration is absolute, root-only, and required when enabled", () => {

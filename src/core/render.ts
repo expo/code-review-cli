@@ -348,7 +348,10 @@ function renderFindingLines(
     ...indentContinuation(stripStateMarkers(finding.rationale)),
   ];
   if (finding.suggestion) {
-    out.push(...indentContinuation(`_Suggestion:_ ${stripStateMarkers(finding.suggestion)}`));
+    // A rationale may end in raw HTML (`</details>`). GitHub requires a truly
+    // blank line before it resumes Markdown parsing; without this separator the
+    // suggestion's emphasis markers are rendered literally.
+    out.push("", ...indentContinuation(`**Suggestion:** ${stripStateMarkers(finding.suggestion)}`));
   }
   // Separator so a rationale ending in `</details>` cannot swallow the next
   // bullet. Findings are already loose list items, so this changes no spacing.

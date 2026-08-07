@@ -35,6 +35,7 @@ export interface ResearchEvidence {
 export interface ResearchRun {
   queries: ResearchQuery[];
   evidence: ResearchEvidence[];
+  warnings: string[];
   promptText: string;
 }
 
@@ -213,6 +214,17 @@ function analyzePatchLine(
     index++;
   }
 
+  // JavaScript/TypeScript, Swift, and Kotlin single/double-quoted strings do not
+  // continue onto the next physical line unless the final character escapes the
+  // newline. Reset malformed prose-like quotes (notably JSX apostrophes) here so
+  // they cannot invert how later patch lines are classified. Templates, triple
+  // quotes, and block comments intentionally retain their multiline state.
+  const continuesQuotedLine =
+    (state.mode === "single-quote" || state.mode === "double-quote") && state.escaped;
+  if ((state.mode === "single-quote" || state.mode === "double-quote") && !continuesQuotedLine) {
+    state.mode = "code";
+    state.moduleSpecifier = null;
+  }
   state.escaped = false;
   return code.trim();
 }
@@ -415,6 +427,7 @@ const ToolResultSchema = z.object({
 });
 
 const SearchPayloadSchema = z.object({
+  warnings: z.array(z.string().max(500)).max(10).optional(),
   results: z.array(
     z.object({
       provider: z.string(),
@@ -427,14 +440,27 @@ const SearchPayloadSchema = z.object({
   ),
 });
 
-function childEnvironment(): NodeJS.ProcessEnv {
-  return {
+const RESEARCH_PROXY_ENV_KEYS = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+] as const;
+
+export function researchChildEnvironment(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
     LANG: "C.UTF-8",
     LC_ALL: "C.UTF-8",
-    ...(process.platform === "win32" && process.env.SystemRoot
-      ? { SystemRoot: process.env.SystemRoot }
-      : {}),
+    ...(process.platform === "win32" && source.SystemRoot ? { SystemRoot: source.SystemRoot } : {}),
   };
+  for (const key of RESEARCH_PROXY_ENV_KEYS) {
+    if (source[key]) environment[key] = source[key];
+  }
+  return environment;
 }
 
 function bundledResearchServer(): { command: string; args: string[] } {
@@ -484,7 +510,7 @@ export async function collectPlatformResearch(
 ): Promise<ResearchRun> {
   const queries = deriveResearchQueries(files, config.maxQueries);
   if (!config.enabled || !config.indexPath || queries.length === 0) {
-    return { queries, evidence: [], promptText: "" };
+    return { queries, evidence: [], warnings: [], promptText: "" };
   }
 
   const calls = queries.map((query, index) => ({
@@ -521,7 +547,7 @@ export async function collectPlatformResearch(
   const result = await run(server.command, serverArgs, {
     input: `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`,
     cwd: tmpdir(),
-    env: childEnvironment(),
+    env: researchChildEnvironment(),
     timeout: config.timeoutMs,
     maxBuffer: 2 * 1024 * 1024,
     check: false,
@@ -544,17 +570,26 @@ export async function collectPlatformResearch(
   if (!responses.has(1)) throw new Error("platform research MCP did not initialize");
 
   const evidence: ResearchEvidence[] = [];
+  const warnings: string[] = [];
   for (let index = 0; index < queries.length; index++) {
     const query = queries[index]!;
     const toolResult = ToolResultSchema.parse(responses.get(index + 2));
     const text = toolResult.content.find((block) => block.type === "text")?.text;
     if (!text) continue;
     const payload = SearchPayloadSchema.parse(JSON.parse(text));
+    warnings.push(
+      ...(payload.warnings ?? []).map((warning) => cleanEvidenceText(warning, 500)).filter(Boolean),
+    );
     for (const item of payload.results.slice(0, config.resultsPerQuery)) {
       if (!item.url.startsWith("https://") || !query.providers.includes(item.provider)) continue;
       evidence.push({ query, ...item });
     }
   }
 
-  return { queries, evidence, promptText: formatResearchEvidence(evidence) };
+  return {
+    queries,
+    evidence,
+    warnings: [...new Set(warnings)].slice(0, 10),
+    promptText: formatResearchEvidence(evidence),
+  };
 }

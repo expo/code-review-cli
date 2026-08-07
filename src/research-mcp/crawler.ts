@@ -132,14 +132,19 @@ async function crawlProvider(
   source: SourceDefinition,
   limits: SourcesConfig["crawl"],
 ): Promise<CrawlResult> {
-  const queue: CrawlItem[] = source.seedUrls.map((url) => ({
-    url: resolveAllowedUrl(provider, url),
-    depth: 0,
-  }));
+  const queue: CrawlItem[] = [];
+  const errors: string[] = [];
+  for (const seedUrl of source.seedUrls) {
+    try {
+      queue.push({ url: resolveAllowedUrl(provider, seedUrl), depth: 0 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`${seedUrl}: ${message}`);
+    }
+  }
   const queued = new Set(queue.map((item) => item.url.href));
   const visited = new Set<string>();
   const documents: DiscoveredDocument[] = [];
-  const errors: string[] = [];
 
   while (queue.length > 0 && visited.size < limits.maxPagesPerProvider) {
     const item = queue.shift();
