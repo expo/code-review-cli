@@ -7,6 +7,7 @@ export const PROVIDERS = [
   "apple",
   "apple-releases",
   "swift-evolution",
+  "sdwebimage",
   "android",
   "android-releases",
   "media3",
@@ -64,6 +65,8 @@ export interface IndexedChunk {
   symbol?: string;
   language?: Language;
   availability?: string[];
+  previousPassageId?: string;
+  nextPassageId?: string;
   indexedAt: string;
 }
 

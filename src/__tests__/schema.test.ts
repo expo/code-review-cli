@@ -87,6 +87,7 @@ test("structured parsers expose draft-07 contracts for provider-side validation"
     properties: {
       findings: { items: { properties: Record<string, unknown>; required: string[] } };
       trace: { properties: Record<string, unknown> };
+      researchDecisions: { items: { properties: Record<string, unknown> } };
     };
   };
   expect(reviewer.$schema).toBe("http://json-schema.org/draft-07/schema#");
@@ -94,6 +95,7 @@ test("structured parsers expose draft-07 contracts for provider-side validation"
   expect(reviewer.properties.findings.items.properties.agent).toBeUndefined();
   expect(reviewer.properties.trace.properties).toHaveProperty("checked");
   expect(reviewer.properties.trace.properties).toHaveProperty("uncertainties");
+  expect(reviewer.properties.researchDecisions.items.properties).toHaveProperty("outcome");
 
   const coordinator = parseCoordinatorOutput.jsonSchema as {
     properties: Record<string, unknown>;
@@ -140,6 +142,40 @@ test("reviewer trace parses bounded diagnostics and fails soft when malformed", 
   );
   expect(malformed.trace).toBeUndefined();
   expect(malformed.findings.map((finding) => finding.title)).toEqual(["Keep the real finding"]);
+});
+
+test("reviewer research decisions parse bounded conclusions and fail soft when malformed", () => {
+  const source = {
+    title: "NWPathMonitor",
+    url: "https://developer.apple.com/documentation/network/nwpathmonitor",
+  };
+  const output = parseReviewerOutput(
+    JSON.stringify({
+      findings: [],
+      researchDecisions: [
+        {
+          outcome: "dismissed-candidate",
+          summary: "The documented callback behavior makes this path safe.",
+          sources: [source],
+        },
+      ],
+    }),
+  );
+  expect(output.researchDecisions).toEqual([
+    {
+      outcome: "dismissed-candidate",
+      summary: "The documented callback behavior makes this path safe.",
+      sources: [source],
+    },
+  ]);
+
+  const malformed = parseReviewerOutput(
+    JSON.stringify({
+      findings: [],
+      researchDecisions: [{ outcome: "read-background", summary: "No", sources: [] }],
+    }),
+  );
+  expect(malformed.researchDecisions).toBeUndefined();
 });
 
 test("a malformed coordinator-authored review trace is ignored, not a consolidation failure", () => {

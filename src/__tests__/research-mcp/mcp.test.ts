@@ -62,13 +62,38 @@ test("stdio MCP lists and calls the read-only documentation search tool", async 
     expect(searchTool?.annotations?.readOnlyHint).toBe(true);
     expect(searchTool?.annotations?.openWorldHint).toBe(true);
     expect(searchTool?.description ?? "").toMatch(/exact API symbols plus one behavior/);
+    expect(searchTool?.description ?? "").toContain(
+      "apple-releases=Xcode and Apple platform release notes",
+    );
+    expect(searchTool?.description ?? "").toContain("media3=Jetpack Media3");
+    expect(searchTool?.description ?? "").toContain(
+      "sdwebimage=SDWebImage APIs and caching/loading behavior",
+    );
+    expect(searchTool?.description ?? "").toContain("Native source retains platform context");
+    expect(searchTool?.description ?? "").toContain("react-native-worklets=Worklets");
     expect(fetchTool?.annotations?.readOnlyHint).toBe(true);
     expect(fetchTool?.description ?? "").toMatch(/every redirect/);
     const inputSchema = searchTool?.inputSchema as {
-      properties?: { query?: { description?: string } };
+      properties?: {
+        query?: { description?: string };
+        providers?: { description?: string };
+      };
+    };
+    const fetchInputSchema = fetchTool?.inputSchema as {
+      properties?: { context?: { default?: string; description?: string } };
     };
     expect(inputSchema.properties?.query?.description ?? "").toMatch(
       /CameraView barcodeScannerSettings/,
+    );
+    expect(inputSchema.properties?.providers?.description ?? "").toContain(
+      "agp=Android Gradle Plugin",
+    );
+    expect(inputSchema.properties?.providers?.description ?? "").toContain(
+      "jetbrains-issues=JetBrains YouTrack context",
+    );
+    expect(fetchInputSchema.properties?.context?.default).toBe("section");
+    expect(fetchInputSchema.properties?.context?.description ?? "").toContain(
+      "document=bounded extracted page text",
     );
 
     const response = await client.callTool({

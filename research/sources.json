@@ -71,6 +71,18 @@
       ]
     },
     {
+      "provider": "sdwebimage",
+      "sourceKind": "official-api",
+      "maxPages": 30,
+      "maxDepth": 2,
+      "seedUrls": [
+        "https://sdwebimage.github.io/documentation/sdwebimage/",
+        "https://sdwebimage.github.io/documentation/sdwebimage/sdwebimagemanager/",
+        "https://sdwebimage.github.io/documentation/sdwebimage/sdwebimageoptions/",
+        "https://sdwebimage.github.io/documentation/sdwebimage/sdwebimagecontextoption/"
+      ]
+    },
+    {
       "provider": "android",
       "sourceKind": "official-api",
       "maxPages": 150,

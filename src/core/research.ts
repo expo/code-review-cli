@@ -12,7 +12,7 @@ import { z } from "zod";
 import type { LoadedConfig } from "../config/schema.js";
 import { readResearchAudit } from "../research-mcp/audit.js";
 import { run } from "./exec.js";
-import type { Finding, FindingSource } from "./schema.js";
+import type { Finding, FindingSource, ResearchDecision } from "./schema.js";
 export { OPENCODE_RESEARCH_TOOLS } from "./tools.js";
 
 export type ResearchPlatform = "apple" | "android" | "react-native";
@@ -61,7 +61,30 @@ export interface ResearchProvenance {
   queries: ResearchQuery[];
   results: ResearchResultRecord[];
   warnings: string[];
+  /** Grounded reviewer declarations that documentation changed a concrete decision. */
+  decisions?: Array<ResearchDecision & { agent: string }>;
+  usefulness?: ResearchUsefulness;
   error?: string;
+}
+
+export interface ResearchUsefulness {
+  finalFindingsWithSources: number;
+  citedResultCount: number;
+  supportedFindingCandidates: number;
+  dismissedCandidates: number;
+  decisionResultCount: number;
+  utilizedResultCount: number;
+  unusedResultCount: number;
+}
+
+export const RESEARCH_DECISION_COUNT_LIMIT = 16;
+export const RESEARCH_DECISION_BYTES_LIMIT = 20_000;
+
+type GroundedResearchDecision = ResearchDecision & { agent: string };
+
+export interface BoundedResearchDecisions {
+  decisions: GroundedResearchDecision[];
+  omitted: number;
 }
 
 export const RESEARCH_MCP_SERVER_NAME = "platform_docs";
@@ -337,48 +360,65 @@ const REACT_NATIVE_PROVIDERS = new Set([
 function providersFor(file: ResearchInputFile, code: string, signals: string): string[] {
   const path = file.path.toLowerCase();
   const text = code.toLowerCase();
+  const platform = platformFor(file);
   const providers: string[] = [];
   const add = (provider: string, matches: boolean) => {
     if (matches && !providers.includes(provider)) providers.push(provider);
   };
-  add(
-    "react-native-reanimated",
-    /react-native-reanimated/.test(signals) || path.includes("react-native-reanimated"),
-  );
-  add(
-    "react-native-gesture-handler",
-    /react-native-gesture-handler/.test(signals) || path.includes("react-native-gesture-handler"),
-  );
-  add(
-    "react-native-screens",
-    /react-native-screens/.test(signals) || path.includes("react-native-screens"),
-  );
-  add(
-    "react-native-worklets",
-    /react-native-worklets/.test(signals) || path.includes("react-native-worklets"),
-  );
-  add(
-    "expo",
-    /(?:^|\n)(?:expo|expo-[a-z0-9-]+|@expo\/[a-z0-9-]+)(?:\n|$)/.test(signals) ||
-      /(?:^|\/)packages\/expo(?:-[^/]+)?(?:\/|$)/.test(path),
-  );
-  add("react-native", /(?:^|\n)react-native(?:\/[^\n]+)?(?:\n|$)/.test(signals));
-  if (providers.length > 0) return providers;
-  if (/androidx\.media3|mediasessionservice|\bexoplayer\b/.test(text)) return ["media3"];
-  if (/com\.bumptech\.glide|\bglide\b/.test(text)) return ["glide"];
-  if (/okhttp3|\bokhttpclient\b|\brequest\.builder\b/.test(text)) return ["okhttp"];
-  if (/kotlinx\.coroutines|\bcoroutinescope\b|\bmutable(?:state|shared)flow\b/.test(text)) {
-    return ["kotlin-coroutines"];
+
+  // Native source is owned by the native platform first. An Expo package path is
+  // repository ownership, not documentation ownership: packages/expo-image/ios
+  // must search Apple and SDWebImage contracts rather than Expo's JavaScript docs.
+  if (platform === "apple") add("apple", true);
+  if (platform === "android") add("android", true);
+
+  if (platform === "react-native") {
+    add(
+      "react-native-reanimated",
+      /react-native-reanimated/.test(signals) || path.includes("react-native-reanimated"),
+    );
+    add(
+      "react-native-gesture-handler",
+      /react-native-gesture-handler/.test(signals) || path.includes("react-native-gesture-handler"),
+    );
+    add(
+      "react-native-screens",
+      /react-native-screens/.test(signals) || path.includes("react-native-screens"),
+    );
+    add(
+      "react-native-worklets",
+      /react-native-worklets/.test(signals) || path.includes("react-native-worklets"),
+    );
+    add(
+      "expo",
+      /(?:^|\n)(?:expo|expo-[a-z0-9-]+|@expo\/[a-z0-9-]+)(?:\n|$)/.test(signals) ||
+        /(?:^|\/)packages\/expo(?:-[^/]+)?(?:\/|$)/.test(path),
+    );
+    add("react-native", /(?:^|\n)react-native(?:\/[^\n]+)?(?:\n|$)/.test(signals));
   }
-  if (/\.gradle(?:\.kts)?$/.test(path) || /(?:^|\/)build\.gradle/.test(path)) {
-    return /com\.android|android\s*\{|compilesdk|targetsdk/.test(text)
-      ? ["agp", "gradle"]
-      : ["gradle"];
+
+  // Explicit framework/dependency signals are additive. Keeping the platform
+  // provider alongside the dependency lets one pass check both the OS contract and
+  // the wrapper/library behavior without a package-path heuristic hiding either.
+  if (platform === "apple") {
+    add("sdwebimage", /\bsdwebimage(?:manager|options|context|cache|loader)?\b/.test(text));
+    add("expo", /\bexpomodulescore\b/.test(text));
   }
-  const platform = platformFor(file);
-  if (platform === "apple") return ["apple"];
-  if (platform === "android") return ["android"];
-  return ["react-native"];
+  if (platform === "android") {
+    add("media3", /androidx\.media3|mediasessionservice|\bexoplayer\b/.test(text));
+    add("glide", /com\.bumptech\.glide|\bglide\b/.test(text));
+    add("okhttp", /okhttp3|\bokhttpclient\b|\brequest\.builder\b/.test(text));
+    add(
+      "kotlin-coroutines",
+      /kotlinx\.coroutines|\bcoroutinescope\b|\bmutable(?:state|shared)flow\b/.test(text),
+    );
+    const isGradle = /\.gradle(?:\.kts)?$/.test(path) || /(?:^|\/)build\.gradle/.test(path);
+    add("agp", isGradle && /com\.android|android\s*\{|compilesdk|targetsdk/.test(text));
+    add("gradle", isGradle);
+    add("expo", /\bexpo\.modules\.kotlin\b/.test(text));
+  }
+
+  return providers.length > 0 ? providers : ["react-native"];
 }
 
 function lineQuery(line: string): string | null {
@@ -668,7 +708,7 @@ export function toResearchProvenance(run: ResearchRun): ResearchProvenance {
       sourceKind: cleanEvidenceText(item.sourceKind, 80),
       title: cleanEvidenceText(item.title, 240),
       url: item.url,
-      passage: cleanEvidenceText(item.passage, 1_200),
+      passage: cleanEvidenceText(item.passage, 20_000),
       ...(item.availability?.length
         ? { availability: item.availability.map((value) => cleanEvidenceText(value, 240)) }
         : {}),
@@ -772,7 +812,7 @@ export function mergeResearchSources(
     .slice(0, 5);
 }
 
-/** Keep only exact URLs returned by the trusted research prepass and restore their canonical titles. */
+/** Keep only exact URLs returned by this review's MCP calls and restore canonical titles. */
 export function groundResearchSources(
   findings: Finding[],
   evidence: ResearchEvidence[],
@@ -793,6 +833,135 @@ export function groundResearchSources(
     );
     return sources.length > 0 ? { ...withoutSources, sources } : withoutSources;
   });
+}
+
+/**
+ * Keep only reviewer decisions backed by an exact URL from this run's MCP audit.
+ * An ungrounded declaration is discarded so model output cannot inflate usefulness.
+ */
+export function groundResearchDecisions(
+  decisions: ResearchDecision[],
+  evidence: ResearchEvidence[],
+  agent: string,
+): Array<ResearchDecision & { agent: string }> {
+  const allowed = new Map(
+    evidence.map((item) => [
+      item.url,
+      { title: cleanEvidenceText(item.title, 240), url: item.url },
+    ]),
+  );
+  return decisions.flatMap((decision) => {
+    const sources = mergeResearchSources(
+      decision.sources.flatMap((source) => {
+        const canonical = allowed.get(source.url);
+        return canonical ? [canonical] : [];
+      }),
+    );
+    if (sources.length === 0) return [];
+    return [
+      {
+        outcome: decision.outcome,
+        summary: cleanEvidenceText(decision.summary, 240),
+        sources,
+        agent: cleanEvidenceText(agent, 120),
+      },
+    ];
+  });
+}
+
+/**
+ * Bound the cross-agent decision channel after grounding. Reviewer tasks finish
+ * concurrently, so sort before applying limits to keep the retained set stable.
+ */
+export function boundResearchDecisions(
+  decisions: GroundedResearchDecision[],
+): BoundedResearchDecisions {
+  const sorted = [...decisions].sort((left, right) => {
+    const leftKey = `${left.agent}\0${left.outcome}\0${left.summary}\0${left.sources[0]?.url ?? ""}`;
+    const rightKey = `${right.agent}\0${right.outcome}\0${right.summary}\0${right.sources[0]?.url ?? ""}`;
+    return leftKey.localeCompare(rightKey);
+  });
+  const kept = sorted.slice(0, RESEARCH_DECISION_COUNT_LIMIT);
+  let omitted = sorted.length - kept.length;
+  while (
+    kept.length > 0 &&
+    Buffer.byteLength(JSON.stringify(kept), "utf8") > RESEARCH_DECISION_BYTES_LIMIT
+  ) {
+    kept.pop();
+    omitted++;
+  }
+  return { decisions: kept, omitted };
+}
+
+/** Count unique audited results that materially affected the final review. */
+export function summarizeResearchUsefulness(
+  provenance: ResearchProvenance,
+  findings: Finding[],
+): ResearchUsefulness {
+  const resultUrls = new Set(provenance.results.map((result) => result.url));
+  const citedUrls = new Set(
+    findings.flatMap((finding) =>
+      (finding.sources ?? []).flatMap((source) => (resultUrls.has(source.url) ? [source.url] : [])),
+    ),
+  );
+  const decisions = provenance.decisions ?? [];
+  const decisionUrls = new Set(
+    decisions.flatMap((decision) =>
+      decision.sources.flatMap((source) => (resultUrls.has(source.url) ? [source.url] : [])),
+    ),
+  );
+  const utilizedUrls = new Set([...citedUrls, ...decisionUrls]);
+  return {
+    finalFindingsWithSources: findings.filter((finding) =>
+      (finding.sources ?? []).some((source) => resultUrls.has(source.url)),
+    ).length,
+    citedResultCount: citedUrls.size,
+    supportedFindingCandidates: decisions.filter(
+      (decision) => decision.outcome === "supported-finding",
+    ).length,
+    dismissedCandidates: decisions.filter((decision) => decision.outcome === "dismissed-candidate")
+      .length,
+    decisionResultCount: decisionUrls.size,
+    utilizedResultCount: utilizedUrls.size,
+    unusedResultCount: Math.max(0, resultUrls.size - utilizedUrls.size),
+  };
+}
+
+export function formatResearchUsefulness(usefulness: ResearchUsefulness): string {
+  return (
+    `  research usefulness: ${usefulness.finalFindingsWithSources} final finding(s) cited ` +
+    `${usefulness.citedResultCount} unique result(s); ` +
+    `${usefulness.supportedFindingCandidates} supported and ` +
+    `${usefulness.dismissedCandidates} dismissed candidate(s); ` +
+    `${usefulness.utilizedResultCount} result(s) materially used, ` +
+    `${usefulness.unusedResultCount} unused`
+  );
+}
+
+export function renderResearchUsefulnessMarkdown(provenance: ResearchProvenance): string {
+  const usefulness = provenance.usefulness;
+  if (!usefulness) return "";
+  const totalUniqueResults = usefulness.utilizedResultCount + usefulness.unusedResultCount;
+  const lines = [
+    "### 📚 Documentation research usefulness",
+    "",
+    `- Final findings with grounded citations: **${usefulness.finalFindingsWithSources}**`,
+    `- Unique results cited by final findings: **${usefulness.citedResultCount}**`,
+    `- Candidate decisions: **${usefulness.supportedFindingCandidates} supported**, **${usefulness.dismissedCandidates} dismissed**`,
+    `- Unique results materially used: **${usefulness.utilizedResultCount}/${totalUniqueResults}**`,
+  ];
+  if (provenance.decisions?.length) {
+    lines.push("", "Grounded candidate decisions:");
+    for (const decision of provenance.decisions) {
+      const sources = decision.sources
+        .map((source) => `[${escapeMarkdownLabel(source.title)}](<${source.url}>)`)
+        .join(", ");
+      lines.push(
+        `- **${decision.outcome === "supported-finding" ? "Supported finding" : "Dismissed candidate"}** (${escapeMarkdownLabel(decision.agent)}): ${escapeMarkdownLabel(decision.summary)} — ${sources}`,
+      );
+    }
+  }
+  return lines.join("\n");
 }
 
 export async function collectPlatformResearch(

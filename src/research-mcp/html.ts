@@ -164,11 +164,15 @@ export function chunkDocument(
     .digest("hex")
     .slice(0, 16);
 
+  const passageId = (chunkIndex: number) =>
+    `${document.provider ?? document.platform}:${documentId}#${chunkIndex}`;
   return passages.map((passage, chunkIndex) => ({
     ...document,
     body: undefined,
-    id: `${document.provider ?? document.platform}:${documentId}#${chunkIndex}`,
+    id: passageId(chunkIndex),
     passage,
+    ...(chunkIndex > 0 ? { previousPassageId: passageId(chunkIndex - 1) } : {}),
+    ...(chunkIndex + 1 < passages.length ? { nextPassageId: passageId(chunkIndex + 1) } : {}),
     indexedAt,
   }));
 }

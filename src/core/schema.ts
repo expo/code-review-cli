@@ -29,6 +29,20 @@ export const FindingSourceSchema = z.object({
 });
 export type FindingSource = z.infer<typeof FindingSourceSchema>;
 
+export const RESEARCH_DECISION_OUTCOMES = ["supported-finding", "dismissed-candidate"] as const;
+
+/**
+ * A reviewer-declared decision that documentation materially changed. Sources are
+ * later grounded against the MCP audit exactly like finding citations; an ungrounded
+ * record is discarded and can never inflate usefulness metrics.
+ */
+export const ResearchDecisionSchema = z.object({
+  outcome: z.enum(RESEARCH_DECISION_OUTCOMES),
+  summary: z.string().min(1).max(240),
+  sources: z.array(FindingSourceSchema).min(1).max(5),
+});
+export type ResearchDecision = z.infer<typeof ResearchDecisionSchema>;
+
 /** A single unit of changed code, produced by a ReviewSource. */
 export interface DiffEntry {
   /** Path relative to the repo root, in the new tree. */
@@ -72,7 +86,7 @@ export const FindingSchema = z.object({
     .max(5)
     .optional()
     .describe(
-      "Exact documentation sources used to support this finding; copy title and URL from the injected research evidence and omit when unused",
+      "Exact documentation sources used to support this finding; copy the returned title and canonical URL from this review's MCP results and omit when unused",
     ),
   /**
    * Verbatim snippet of the flagged code, copied from the file. Used to
@@ -181,6 +195,7 @@ export type ReviewerTraceNotes = z.infer<typeof ReviewerTraceNotesSchema>;
 const ReviewerModelOutputSchema = z.object({
   findings: z.array(ModelFindingSchema).default([]),
   trace: ReviewerTraceNotesSchema.optional(),
+  researchDecisions: z.array(ResearchDecisionSchema).max(8).optional(),
 });
 
 /**
@@ -192,12 +207,18 @@ export const ReviewerOutputSchema = z
   .object({
     findings: z.array(ModelFindingSchema).default([]),
     trace: z.unknown().optional(),
+    researchDecisions: z.unknown().optional(),
   })
   .transform((output) => {
     const trace = ReviewerTraceNotesSchema.safeParse(output.trace);
+    const researchDecisions = z
+      .array(ResearchDecisionSchema)
+      .max(8)
+      .safeParse(output.researchDecisions);
     return {
       findings: output.findings,
       ...(trace.success ? { trace: trace.data } : {}),
+      ...(researchDecisions.success ? { researchDecisions: researchDecisions.data } : {}),
     };
   });
 export type ReviewerOutput = z.infer<typeof ReviewerOutputSchema>;

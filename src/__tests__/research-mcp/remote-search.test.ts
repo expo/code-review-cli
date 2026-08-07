@@ -110,6 +110,61 @@ test("Apple discovery searches Brave once, rejects foreign results, and fetches 
   expect(response.results[0]?.passage).toContain("setActive");
 });
 
+test("SDWebImage discovery stays on its official scope and fetches static DocC JSON", async () => {
+  const fetchImplementation = async (input: string | URL | Request): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    if (url.hostname === "api.search.brave.com") {
+      expect(url.searchParams.get("q") ?? "").toContain(
+        "site:sdwebimage.github.io/documentation/sdwebimage",
+      );
+      return jsonResponse({
+        web: {
+          results: [
+            {
+              title: "SDWebImageManager",
+              url: "https://sdwebimage.github.io/documentation/sdwebimage/sdwebimagemanager/",
+            },
+          ],
+        },
+      });
+    }
+    expect(url.href).toBe(
+      "https://sdwebimage.github.io/data/documentation/sdwebimage/sdwebimagemanager.json",
+    );
+    return jsonResponse({
+      metadata: {
+        title: "SDWebImageManager",
+        role: "symbol",
+        modules: [{ name: "SDWebImage" }],
+      },
+      identifier: { interfaceLanguage: "swift" },
+      abstract: [
+        {
+          type: "text",
+          text: "Coordinates asynchronous image downloading with the image cache.",
+        },
+      ],
+      primaryContentSections: [],
+    });
+  };
+
+  const response = await searchRemoteDocumentation(
+    "sdwebimage",
+    "SDWebImageManager shared cache",
+    1,
+    { apiKey: "test-key", fetchImplementation },
+  );
+
+  expect(response.warnings).toEqual([]);
+  expect(response.results[0]).toMatchObject({
+    provider: "sdwebimage",
+    sourceKind: "official-api",
+    title: "SDWebImageManager",
+    framework: "SDWebImage",
+    language: "swift",
+  });
+});
+
 test("Android discovery fetches only allowlisted official HTML and returns a bounded passage", async () => {
   let searchRequests = 0;
   const fetchImplementation = async (input: string | URL | Request): Promise<Response> => {

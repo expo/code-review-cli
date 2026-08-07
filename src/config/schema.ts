@@ -427,7 +427,7 @@ export interface LoadedConfig {
     additionalIgnores: string[];
     additionalMarkers: string[];
   };
-  /** Root-only trusted host-side documentation research. */
+  /** Root-only configuration for the bundled, bounded documentation MCP. */
   research: {
     enabled: boolean;
     indexPath?: string;

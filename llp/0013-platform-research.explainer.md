@@ -8,9 +8,11 @@
 **Related:** [LLP 0001](0001-trust-model.principles.md), [LLP 0002](0002-review-engine-pipeline.explainer.md), [LLP 0003](0003-model-runtimes-and-credentials.explainer.md), [LLP 0006](0006-config-schema-loading-routing.explainer.md), [LLP 0009](0009-adoption-templates-and-ci-workflows.guide.md)
 
 `@expo/code-review-cli` ships a documentation-search MCP as a second binary in
-the same npm package. ECR invokes it before model startup and passes the resulting
-passages to reviewer prompts as bounded, explicitly untrusted evidence. The model
-never receives the MCP as an agent tool.
+the same npm package. ECR exposes that bounded MCP directly to reviewer and cross-file
+passes. Those agents decide when an external contract needs evidence, search for a
+precise symbol, or fetch an exact supported documentation URL already present in the
+review context. Coordinator, verifier, stack-verifier, and no-tools fallback passes do
+not receive the MCP.
 
 ## One Package, Two Binaries
 
@@ -22,9 +24,10 @@ supplies only enablement, bounds, and an optional absolute fallback index path�
 arbitrary command, endpoint, host, or argument vector.
 
 The MCP remains a process boundary rather than an in-process import. Its stdout is
-the only result channel, its environment is an allowlist, it runs from the OS temp
-directory, and ECR caps its runtime and output. A failure is logged and review
-continues without research; it never skips or weakens an ordinary review pass.
+the only result channel, its environment is an allowlist, and ECR caps calls and
+results. Each run uses an owner-only temporary MCP configuration and append-only audit.
+A tool failure remains local to research and never skips or weakens an ordinary review
+pass.
 
 ## Search, Fetch, and Optional Index Boundary
 
@@ -52,8 +55,17 @@ or accepts a fixed provider id as a hint when corpora overlap. The supplied URL 
 pass that provider's canonical HTTPS host/path allowlist before network access. The
 request adapter, every redirect, content type, timeout, and response size then pass
 the same checks as a search-discovered document. The tool fetches one page only and
-returns at most five bounded extracted passages. An optional query ranks passages
-within the fetched page; it cannot turn the operation into discovery.
+returns normalized extracted text—never raw HTML or DocC JSON. An optional query
+selects context within the page; it cannot turn the operation into discovery.
+
+Direct fetch uses progressive disclosure. `focused` returns a small contiguous group
+around the best passage. `section`, the default, returns at most 12,000 contiguous
+characters around that match. `document` returns at most 20,000 extracted characters
+and is reserved for contracts spread across a page. Every response reports the
+extracted document length, returned length, truncation, anchor passage id, and a
+bounded passage-id inventory. Search passages carry adjacent ids so a reviewer can
+recognize missing local context and expand the canonical URL instead of broadening
+discovery.
 
 This path is useful for documentation links already present in review context. For
 Apple symbol links it converts the canonical `/documentation/...` URL into Apple's
@@ -93,40 +105,58 @@ documentation, and optional index content can change without a config change.
 
 ## Query and Prompt Boundary
 
-ECR derives queries only from added native-code identifiers. It removes comments,
-string literals, deleted lines, file paths, and raw snippets; caps identifiers and
-query count; and selects named providers from known code signals. The MCP tool
-metadata tells direct clients to use exact symbols plus one member, behavior, or
-constraint term, and to retry broad results with a narrower symbol. It explicitly
-rejects prose, code, package/import names, paths, secrets, and sensitive context as
-query material. MCP output is
-schema-validated, limited to HTTPS URLs from the requested provider, truncated,
-sanitized, and wrapped in an untrusted platform-research fence. The Brave credential
-is never written to MCP output, prompts, logs, or run artifacts. Issue tracker text
-keeps distinct provenance and is never presented as an API contract.
+Reviewer prompts and MCP tool metadata tell direct clients to use exact symbols plus
+one member, behavior, or constraint term, and to retry a broad result with at most one
+narrower query. The MCP then deterministically removes quoted literals, URLs, email
+addresses, paths, prose stop words, overlong or high-entropy tokens, and unsupported
+punctuation. Credential-shaped or secret-labeled input fails closed. The remaining
+query must contain an API-like symbol, stay under eight short tokens, and fit the
+review-wide call budget.
+
+Provider selection preserves native platform ownership. Swift or Objective-C source
+uses Apple for OS contracts; Kotlin, Java, and Gradle source uses Android for platform
+contracts. Explicit library signals add the owning provider—such as SDWebImage,
+Media3, Glide, or OkHttp—when library behavior also matters. Repository ownership is
+not documentation ownership, so a `packages/expo-*` path does not replace Apple or
+Android with Expo documentation.
+
+MCP output is schema-validated, limited to HTTPS URLs from the requested provider,
+truncated, and sanitized. Returned passages are labeled untrusted reference data in
+the reviewer prompt. The Brave credential is scoped to the MCP child and is never
+written to MCP output, prompts, logs, or run artifacts. Issue tracker text keeps
+distinct provenance and is never presented as an API contract.
 
 ## Research Provenance and Citations
 
-Research is observable without exposing the Brave key or full responses. Each review
+Research is observable without exposing the Brave key or unbounded responses. Each review
 prints the exact bounded queries and every accepted result's title, provider,
 provenance class, and canonical URL. GitHub Actions receives that same data in its
 step summary. The JSONL run log additionally stores at most the already-bounded
 passage returned to the reviewer so operators can determine whether research was
 useful after the fact; it still excludes PR title/body and model transcripts.
 
-The prompt may select a source for a finding only by copying its exact title and URL
-from injected research evidence. Model output crosses an engine-side grounding seam:
-URLs absent from the trusted prepass are removed and accepted titles are restored
-from the canonical evidence. Grounded sources are unioned across duplicate reviewer
+The reviewer may select a source for a finding only by copying its exact title and URL
+from an MCP result. Model output crosses an engine-side grounding seam: URLs absent
+from the run's append-only MCP audit are removed and accepted titles are restored from
+canonical evidence. Grounded sources are unioned across duplicate reviewer
 findings, preserved through coordinator rewrites by the finding fingerprint, stored
 in hidden comment state, and rendered as visible links. Sources do not participate
 in fingerprints or severity/decision logic, and findings that did not materially use
 research omit them.
 
+A reviewer may also emit a bounded, conclusion-only `researchDecisions` record when
+documentation materially confirms a finding candidate or proves one safe. These
+records never enter policy or decision logic. ECR discards any record without an exact
+audited source. After verification and suppression produce the final findings, ECR
+counts final cited findings, supported and dismissed candidates, and unique result
+URLs materially used versus unused. The Actions summary displays those metrics and
+grounded candidate conclusions; the JSONL run record preserves the same structured
+data with the queries and bounded results.
+
 ## Installation-Specific Research Is Deferred
 
 The built-in source catalog covers Apple, Android, platform releases, Swift
-Evolution, Media3, Glide, OkHttp, Kotlin coroutines, Gradle/AGP, selected JetBrains
+Evolution, SDWebImage, Media3, Glide, OkHttp, Kotlin coroutines, Gradle/AGP, selected JetBrains
 issues, Expo, React Native, Reanimated, Gesture Handler, Screens, and Worklets.
 The canonical OkHttp host is backed by both the
 [maintainer's transfer announcement](https://jakewharton.com/the-lysine-contingency/)

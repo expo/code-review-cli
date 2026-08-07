@@ -20,7 +20,8 @@ Usage:
 The serve command uses BRAVE_SEARCH_API_KEY for scoped web discovery, fetches only
 allowlisted official pages, and optionally falls back to a local index. Expo-provider
 searches use Expo's public documentation index. Its fetch_platform_doc tool can fetch
-one exact allowlisted documentation URL without a search key. The update command is
+one exact allowlisted documentation URL without a search key and return focused,
+section, or bounded-document extracted context. The update command is
 an optional offline crawler for operator-managed fallback indexes.
 `);
 }

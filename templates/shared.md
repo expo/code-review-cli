@@ -216,7 +216,14 @@ Return **only** a single fenced ```json code block, an object of this shape:
       "rationale": "**Confidence:** High — why certainty is high.<br>**Impact if shipped:** Medium — concrete expected consequence.\\n\\n<details>\\n<summary>Evidence and reasoning</summary>\\n\\nFull failure/exploit path.\\n\\n</details>",
       "evidence": "one contiguous line of the flagged code, copied VERBATIM",
       "suggestion": "optional concrete fix, or omit",
-      "sources": [{ "title": "exact injected documentation title", "url": "exact injected URL" }]
+      "sources": [{ "title": "exact returned documentation title", "url": "exact returned URL" }]
+    }
+  ],
+  "researchDecisions": [
+    {
+      "outcome": "supported-finding | dismissed-candidate",
+      "summary": "short conclusion that the documentation materially established",
+      "sources": [{ "title": "exact returned documentation title", "url": "exact returned URL" }]
     }
   ],
   "trace": {
@@ -226,10 +233,16 @@ Return **only** a single fenced ```json code block, an object of this shape:
 }
 ```
 
-`sources` is optional. Include it only when injected platform research materially
-supports the finding. Copy the exact title and URL from that research; the engine
-rejects sources outside the trusted result set. Omit it for findings that did not
-use documentation research.
+`sources` is optional. Include it only when documentation returned by the research
+MCP materially supports the finding. Copy the exact returned title and canonical URL;
+the engine rejects sources outside this review's audited MCP results. Omit it for
+findings that did not use documentation research.
+
+`researchDecisions` is optional. Include an item only when documentation materially
+changes a concrete candidate decision. Use `supported-finding` when it confirms a
+finding. Use `dismissed-candidate` when it proves a suspected issue is safe. Copy exact
+returned sources. Do not list generic background reading or unused results. The engine
+discards records whose URLs do not appear in this review's audited MCP results.
 
 `line` is the start line in the new version of the file, or `null` if not
 line-specific. `evidence` is used to help verify the finding, so make it easy to
@@ -237,4 +250,4 @@ locate: copy **one contiguous line** of the flagged code **verbatim** (not spann
 multiple lines, no `…` elisions, no paraphrasing). For a structural/"missing" issue,
 quote the single most relevant real line (e.g. the early `return` that skips the
 handling). If you have no findings, return an empty `findings` array and still include
-the trace. Emit no prose outside the JSON block.
+the trace plus any applicable `researchDecisions`. Emit no prose outside the JSON block.

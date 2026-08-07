@@ -68,6 +68,118 @@ test("direct fetch accepts an allowlisted SwiftUI symbol URL and uses DocC JSON"
   expect(result.results[0]?.passage).toContain("menu style");
 });
 
+test("direct fetch resolves SDWebImage's JavaScript route through its static DocC JSON", async () => {
+  const requested: string[] = [];
+  const result = await fetchDocumentationUrl(
+    "https://sdwebimage.github.io/documentation/sdwebimage/sdwebimagemanager/",
+    {
+      limit: 1,
+      fetchImplementation: async (input) => {
+        const url = new URL(input instanceof Request ? input.url : input.toString());
+        requested.push(url.href);
+        return new Response(
+          JSON.stringify({
+            metadata: {
+              title: "SDWebImageManager",
+              role: "symbol",
+              modules: [{ name: "SDWebImage" }],
+            },
+            identifier: { interfaceLanguage: "swift" },
+            abstract: [
+              {
+                type: "text",
+                text: "Coordinates asynchronous image downloading with the image cache.",
+              },
+            ],
+            primaryContentSections: [],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      },
+    },
+  );
+
+  expect(requested).toEqual([
+    "https://sdwebimage.github.io/data/documentation/sdwebimage/sdwebimagemanager.json",
+  ]);
+  expect(result).toMatchObject({
+    provider: "sdwebimage",
+    sourceKind: "official-api",
+    canonicalUrl: "https://sdwebimage.github.io/documentation/sdwebimage/sdwebimagemanager/",
+  });
+  expect(result.results[0]).toMatchObject({
+    title: "SDWebImageManager",
+    framework: "SDWebImage",
+    language: "swift",
+  });
+});
+
+test("direct fetch progressively expands focused, section, and document context", async () => {
+  const paragraphs = [
+    ...Array.from(
+      { length: 18 },
+      (_, index) =>
+        `<p>Prelude ${index}: lifecycle background information ${"before ".repeat(80)}</p>`,
+    ),
+    `<p>UniqueTargetMember behavior: the callback runs only after the owner becomes active. ${"contract ".repeat(80)}</p>`,
+    ...Array.from(
+      { length: 18 },
+      (_, index) =>
+        `<p>Follow-up ${index}: compatibility background information ${"after ".repeat(80)}</p>`,
+    ),
+  ].join("\n");
+  const fetchImplementation = async () =>
+    new Response(
+      `<!doctype html><html><head><title>TargetSymbol | Android Developers</title></head><body><main><h1>TargetSymbol</h1>${paragraphs}</main></body></html>`,
+      { headers: { "content-type": "text/html" } },
+    );
+  const url = "https://developer.android.com/reference/android/app/Activity";
+
+  const focused = await fetchDocumentationUrl(url, {
+    query: "UniqueTargetMember behavior",
+    context: "focused",
+    limit: 3,
+    fetchImplementation,
+  });
+  expect(focused.results).toHaveLength(3);
+  expect(focused.results.some((result) => result.passage.includes("UniqueTargetMember"))).toBe(
+    true,
+  );
+  expect(focused.results.some((result) => result.previousPassageId || result.nextPassageId)).toBe(
+    true,
+  );
+  expect(focused.context).toMatchObject({
+    mode: "focused",
+    truncated: true,
+  });
+  expect(focused.context.anchorPassageId).toMatch(/#\d+$/);
+
+  const section = await fetchDocumentationUrl(url, {
+    query: "UniqueTargetMember behavior",
+    context: "section",
+    fetchImplementation,
+  });
+  expect(section.results).toHaveLength(1);
+  expect(section.results[0]?.passage).toContain("UniqueTargetMember");
+  expect(section.context.returnedCharacters).toBeLessThanOrEqual(12_000);
+  expect(section.context.returnedCharacters).toBeGreaterThan(
+    focused.results.reduce((total, result) => total + result.passage.length, 0),
+  );
+
+  const document = await fetchDocumentationUrl(url, {
+    context: "document",
+    fetchImplementation,
+  });
+  expect(document.results).toHaveLength(1);
+  expect(document.context).toMatchObject({
+    mode: "document",
+    returnedCharacters: 20_000,
+    truncated: true,
+  });
+  expect(document.context.documentCharacters).toBeGreaterThan(20_000);
+  expect(document.context.availablePassageCount).toBeGreaterThan(3);
+});
+
 test("direct fetch rejects foreign hosts before network access", async () => {
   let requests = 0;
   await expect(
@@ -94,6 +206,11 @@ test("direct fetch revalidates redirects against the selected provider", async (
 });
 
 test("direct URL inference prefers narrow release and dependency providers", () => {
+  expect(
+    resolveDirectDocumentationTarget(
+      "https://sdwebimage.github.io/documentation/sdwebimage/sdwebimagemanager/",
+    ).provider,
+  ).toBe("sdwebimage");
   expect(
     resolveDirectDocumentationTarget(
       "https://developer.apple.com/documentation/xcode-release-notes/xcode-26-release-notes",
