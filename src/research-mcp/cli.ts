@@ -9,7 +9,7 @@ import { runStdioServer } from "./server.js";
 import { PLATFORMS, type Platform } from "./types.js";
 
 function printHelp() {
-  process.stderr.write(`review-research-mcp
+  process.stdout.write(`review-research-mcp
 
 Usage:
   review-research-mcp [serve]
@@ -31,6 +31,10 @@ async function main() {
   }
 
   if (command === "serve") {
+    if (rest.includes("--help") || rest.includes("-h")) {
+      printHelp();
+      return;
+    }
     const { values } = parseArgs({
       args: rest,
       options: {
@@ -44,6 +48,10 @@ async function main() {
   }
 
   if (command === "update") {
+    if (rest.includes("--help") || rest.includes("-h")) {
+      printHelp();
+      return;
+    }
     const { values } = parseArgs({
       args: rest,
       options: {

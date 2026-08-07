@@ -102,12 +102,19 @@ function appleDocCProvider(
       return isSecurePublicUrl(url, "developer.apple.com") && hasAllowedPath(url, prefixes);
     },
     acceptsRequest(url) {
-      return (
-        this.accepts(url) ||
-        (isSecurePublicUrl(url, "developer.apple.com") &&
-          url.pathname.startsWith("/tutorials/data/documentation/") &&
-          url.pathname.endsWith(".json"))
-      );
+      if (this.accepts(url)) return true;
+      if (
+        !isSecurePublicUrl(url, "developer.apple.com") ||
+        !url.pathname.startsWith("/tutorials/data/documentation/") ||
+        !url.pathname.endsWith(".json")
+      ) {
+        return false;
+      }
+      const correspondingDocumentUrl = new URL(url.href);
+      correspondingDocumentUrl.pathname = url.pathname
+        .slice("/tutorials/data".length)
+        .replace(/\.json$/, "");
+      return hasAllowedPath(correspondingDocumentUrl, prefixes);
     },
     canonicalize: canonicalizeDocumentationUrl,
     requestUrl(documentUrl) {

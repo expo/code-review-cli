@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import {
   androidProvider,
   appleProvider,
+  appleReleasesProvider,
   expoProvider,
   glideProvider,
   jetbrainsIssuesProvider,
@@ -13,6 +14,7 @@ import {
   reactNativeScreensProvider,
   reactNativeWorkletsProvider,
   resolveAllowedUrl,
+  resolveAllowedRequestUrl,
   swiftEvolutionProvider,
 } from "../../research-mcp/providers.js";
 
@@ -38,6 +40,21 @@ test("Apple provider accepts only HTTPS documentation paths on the exact host", 
   expect(() => resolveAllowedUrl(appleProvider, "https://developer.apple.com/account")).toThrow(
     /outside the apple documentation allowlist/,
   );
+});
+
+test("Apple DocC request URLs retain each provider's document-prefix boundary", () => {
+  expect(
+    resolveAllowedRequestUrl(
+      appleReleasesProvider,
+      "https://developer.apple.com/tutorials/data/documentation/xcode-release-notes.json",
+    ).pathname,
+  ).toBe("/tutorials/data/documentation/xcode-release-notes.json");
+  expect(() =>
+    resolveAllowedRequestUrl(
+      appleReleasesProvider,
+      "https://developer.apple.com/tutorials/data/documentation/swiftui/view.json",
+    ),
+  ).toThrow(/outside the apple-releases network allowlist/);
 });
 
 test("dependency and issue providers stay on their exact owners and paths", () => {
