@@ -191,6 +191,12 @@ async function loadConfigDir(
     policy: parsed.policy,
     chunk: parsed.chunk,
     noise: parsed.noise,
+    research: parsed.research ?? {
+      enabled: false,
+      maxQueries: 8,
+      resultsPerQuery: 2,
+      timeoutMs: 15_000,
+    },
     // parsed.breakGlass/auth are always present for the root schema (defaults) and
     // absent for the scope schema; loadScopeConfig overrides both afterwards.
     breakGlassMarker: parsed.breakGlass?.marker ?? "/skip-review",
@@ -374,6 +380,7 @@ export async function loadScopeConfig(
     // run the default policy instead of the repo's real one.
     stack: rootConfig.stack,
     feedback: rootConfig.feedback,
+    research: rootConfig.research,
     scopeName: scope.name,
   };
 }

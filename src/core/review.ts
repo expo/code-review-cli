@@ -67,6 +67,7 @@ import { errorMessage, sleep } from "./util.js";
 import { reviewSetupRefNotes } from "./config-refs.js";
 import { verifyFindings } from "./verify.js";
 import { applyInlineIgnores } from "./suppress.js";
+import { collectPlatformResearch } from "./research.js";
 
 export interface ReviewRunOptions {
   config: LoadedConfig;
@@ -269,6 +270,24 @@ export async function runReview(
       summary: output.summary,
     });
     return output;
+  }
+
+  let researchText = "";
+  if (config.research.enabled) {
+    progress("Researching platform documentation from changed API identifiers…");
+    try {
+      const research = await collectPlatformResearch(kept, config.research);
+      researchText = research.promptText;
+      progress(
+        research.queries.length === 0
+          ? "  research: no native platform identifiers found"
+          : `  research: ${research.evidence.length} passage(s) from ${research.queries.length} bounded query(s)`,
+      );
+    } catch (error) {
+      // Documentation is supporting evidence, not a prerequisite for reviewing the
+      // code. Fail open with a visible diagnostic; never weaken or skip the review.
+      progress(`  research unavailable; continuing without it (${errorMessage(error)})`);
+    }
   }
 
   // Materialize the PR-head tree (not the current checkout) when the source can, so
@@ -676,8 +695,15 @@ export async function runReview(
               filtered,
               { noTools: task.fallback },
               options.contextText,
+              researchText,
             )
-          : buildReviewerTask(task.files, workspace.files, filtered, options.contextText);
+          : buildReviewerTask(
+              task.files,
+              workspace.files,
+              filtered,
+              options.contextText,
+              researchText,
+            );
       return task.fallback ? `${base}\n\n${NO_TOOLS_INSTRUCTION}` : base;
     };
     const filesLabel = (files: PatchWorkspaceFile[]): string =>
