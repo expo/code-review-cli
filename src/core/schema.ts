@@ -1,4 +1,5 @@
 // @ref LLP 0005#finding-identity-fingerprints
+// @ref LLP 0013#research-provenance-and-citations [implements] — optional citations are annotations, not finding identity or decision inputs
 import { createHash } from "node:crypto";
 
 import { z } from "zod";
@@ -17,6 +18,16 @@ export type Category = (typeof CATEGORIES)[number];
 
 export const DECISIONS = ["approve", "approve_with_comments", "request_changes"] as const;
 export type Decision = (typeof DECISIONS)[number];
+
+export const FindingSourceSchema = z.object({
+  title: z.string().min(1).max(240),
+  url: z
+    .string()
+    .url()
+    .max(2_000)
+    .refine((value) => new URL(value).protocol === "https:", "source URL must use HTTPS"),
+});
+export type FindingSource = z.infer<typeof FindingSourceSchema>;
 
 /** A single unit of changed code, produced by a ReviewSource. */
 export interface DiffEntry {
@@ -56,6 +67,13 @@ export const FindingSchema = z.object({
   title: z.string(),
   rationale: z.string(),
   suggestion: z.string().optional(),
+  sources: z
+    .array(FindingSourceSchema)
+    .max(5)
+    .optional()
+    .describe(
+      "Exact documentation sources used to support this finding; copy title and URL from the injected research evidence and omit when unused",
+    ),
   /**
    * Verbatim snippet of the flagged code, copied from the file. Used to
    * quote-ground the finding: if this text isn't actually present in the file,

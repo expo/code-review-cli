@@ -54,6 +54,7 @@ import type {
   CoordinatorOutput,
   FeedbackRecord,
   Finding,
+  FindingSource,
   ReviewerTraceNotes,
   ReviewTrace,
 } from "./schema.js";
@@ -67,7 +68,15 @@ import { errorMessage, sleep } from "./util.js";
 import { reviewSetupRefNotes } from "./config-refs.js";
 import { verifyFindings } from "./verify.js";
 import { applyInlineIgnores } from "./suppress.js";
-import { collectPlatformResearch } from "./research.js";
+import {
+  createResearchMcpRuntime,
+  formatResearchProgress,
+  groundResearchSources,
+  mergeResearchSources,
+  researchProvenanceFromAudit,
+  renderResearchMarkdown,
+} from "./research.js";
+import type { ResearchEvidence, ResearchMcpRuntime, ResearchProvenance } from "./research.js";
 
 export interface ReviewRunOptions {
   config: LoadedConfig;
@@ -272,26 +281,8 @@ export async function runReview(
     return output;
   }
 
-  let researchText = "";
-  if (config.research.enabled) {
-    progress("Researching platform documentation from changed API identifiers…");
-    try {
-      const research = await collectPlatformResearch(kept, config.research);
-      researchText = research.promptText;
-      progress(
-        research.queries.length === 0
-          ? "  research: no native platform identifiers found"
-          : `  research: ${research.evidence.length} passage(s) from ${research.queries.length} bounded query(s)`,
-      );
-      for (const warning of research.warnings) {
-        progress(`  research warning: ${warning}`);
-      }
-    } catch (error) {
-      // Documentation is supporting evidence, not a prerequisite for reviewing the
-      // code. Fail open with a visible diagnostic; never weaken or skip the review.
-      progress(`  research unavailable; continuing without it (${errorMessage(error)})`);
-    }
-  }
+  let researchEvidence: ResearchEvidence[] = [];
+  let researchRecord: ResearchProvenance | undefined;
 
   // Materialize the PR-head tree (not the current checkout) when the source can, so
   // the agents' surrounding-source reads and the verifier's re-reads see the versions
@@ -356,6 +347,20 @@ export async function runReview(
     progress(`  setup: ${note}`);
   }
 
+  let researchRuntime: ResearchMcpRuntime | undefined;
+  try {
+    researchRuntime = await createResearchMcpRuntime(config.research);
+    if (researchRuntime) {
+      progress(
+        `Documentation MCP enabled for reviewer passes (${config.research.maxQueries} calls max; queries and results will be reported).`,
+      );
+    }
+  } catch (error) {
+    await auth.cleanup();
+    await restoreCwd();
+    throw new Error(`Failed to prepare the documentation MCP: ${errorMessage(error)}`);
+  }
+
   const starting = [
     usesClaude ? "Claude Code engine" : null,
     usesOpencode ? "OpenCode server" : null,
@@ -370,10 +375,11 @@ export async function runReview(
   let claudeHandle: ClaudeCodeHandle | null = null;
   try {
     if (usesOpencode) {
-      opencodeHandle = await startOpencode(buildOpencodeConfig(config));
+      opencodeHandle = await startOpencode(buildOpencodeConfig(config, researchRuntime));
     }
   } catch (error) {
     await auth.cleanup();
+    await researchRuntime?.cleanup();
     await restoreCwd();
     throw new Error(
       `Failed to start the OpenCode server. Ensure the \`opencode\` CLI is installed and ` +
@@ -382,11 +388,12 @@ export async function runReview(
   }
   try {
     if (usesClaude) {
-      claudeHandle = await startClaudeCode(config);
+      claudeHandle = await startClaudeCode(config, researchRuntime);
     }
   } catch (error) {
     opencodeHandle?.close();
     await auth.cleanup();
+    await researchRuntime?.cleanup();
     await restoreCwd();
     throw new Error(
       `Failed to start the Claude Code engine. Ensure the \`claude\` CLI is installed and ` +
@@ -453,6 +460,7 @@ export async function runReview(
   } catch (error) {
     handle.close();
     await auth.cleanup();
+    await researchRuntime?.cleanup();
     await restoreCwd();
     throw error;
   }
@@ -474,6 +482,9 @@ export async function runReview(
   // run log stay byte-identical (attribution is engine metadata, never sent to a model).
   // @ref LLP 0011#attribution-and-identity [constrained-by] — engine-set, excluded from fingerprintFinding, so attribution never re-keys a dismissal
   const agentByFp = new Map<string, string>();
+  // Grounded source citations ride through coordinator rewrites by the same stable
+  // fingerprint. The model may select an injected source, but cannot invent its URL.
+  const sourcesByFp = new Map<string, FindingSource[]>();
   // Every model request's usage lands in the run total AND its bucket, so the run
   // log can show cache effectiveness per pass and not just run-wide.
   const trackTokens = (bucket: string, tokens?: TokenUsage): void => {
@@ -698,14 +709,14 @@ export async function runReview(
               filtered,
               { noTools: task.fallback },
               options.contextText,
-              researchText,
+              Boolean(researchRuntime) && !task.fallback,
             )
           : buildReviewerTask(
               task.files,
               workspace.files,
               filtered,
               options.contextText,
-              researchText,
+              Boolean(researchRuntime) && !task.fallback,
             );
       return task.fallback ? `${base}\n\n${NO_TOOLS_INSTRUCTION}` : base;
     };
@@ -881,6 +892,31 @@ export async function runReview(
       }
     });
 
+    if (researchRuntime) {
+      try {
+        const audited = await researchProvenanceFromAudit(researchRuntime.auditPath);
+        researchRecord = audited.provenance;
+        researchEvidence = audited.evidence;
+        for (const line of formatResearchProgress(researchRecord)) progress(line);
+        await appendStepSummary(renderResearchMarkdown(researchRecord));
+      } catch (error) {
+        researchRecord = { queries: [], results: [], warnings: [], error: errorMessage(error) };
+        progress(`  research audit unavailable: ${researchRecord.error}`);
+      }
+    }
+    // Citations are accepted only when their exact canonical URL appeared in this
+    // run's MCP audit. This strips invented URLs even if a model copied a plausible
+    // official-looking address into its structured output.
+    for (const [bucket, findings] of Object.entries(agentFindings)) {
+      const grounded = groundResearchSources(findings, researchEvidence);
+      agentFindings[bucket] = grounded;
+      for (const finding of grounded) {
+        if (!finding.sources?.length) continue;
+        const fp = fingerprintFinding(finding);
+        sourcesByFp.set(fp, mergeResearchSources(sourcesByFp.get(fp), finding.sources));
+      }
+    }
+
     // A substituted model means the review did not run on the model this repo
     // configured — the findings may be from a weaker (or free-tier) model entirely.
     // Never silent: it goes to the log, the coverage notes, and the run log.
@@ -987,6 +1023,13 @@ export async function runReview(
           : consolidated.decision;
       output = { ...consolidated, decision, incomplete: [...new Set(coverageNotes)] };
     }
+
+    // The coordinator remains model output. Revalidate every citation against the
+    // allowlisted prepass before verification, persistence, or rendering.
+    output = {
+      ...output,
+      findings: groundResearchSources(output.findings, researchEvidence),
+    };
 
     // Guard against hallucinated findings before surfacing: quote-ground every
     // finding against the real file, and adversarially verify criticals. This is
@@ -1122,6 +1165,21 @@ export async function runReview(
       output = { ...output, summary: reconcileRequalifiedSummary(output.summary) };
     }
 
+    // Carry a reviewer's grounded citations through a coordinator rewrite. A changed
+    // fingerprint fails closed, so the engine never guesses which source applies.
+    if (output.findings.length > 0) {
+      output = {
+        ...output,
+        findings: output.findings.map((finding) => {
+          const sources = mergeResearchSources(
+            finding.sources,
+            sourcesByFp.get(fingerprintFinding(finding)),
+          );
+          return sources.length > 0 ? { ...finding, sources } : finding;
+        }),
+      };
+    }
+
     // Attribution: carry each surviving finding's originating agent onto the output. The
     // coordinator merges and rewrites findings, so match by fingerprint and keep the
     // first agent that produced it; a finding the coordinator changed enough to break the
@@ -1239,6 +1297,7 @@ export async function runReview(
     const reviewTrace = buildReviewTrace(agentTrace);
     await safeLog(logPath, {
       ...baseRecord,
+      ...(researchRecord ? { research: researchRecord } : {}),
       agentCosts,
       totalCost: sum(agentCosts),
       tokens: tokenTotals,
@@ -1275,6 +1334,7 @@ export async function runReview(
   } catch (error) {
     await safeLog(logPath, {
       ...baseRecord,
+      ...(researchRecord ? { research: researchRecord } : {}),
       agentCosts,
       totalCost: sum(agentCosts),
       tokens: tokenTotals,
@@ -1291,6 +1351,7 @@ export async function runReview(
   } finally {
     handle.close();
     await auth.cleanup();
+    await researchRuntime?.cleanup();
     await restoreCwd();
   }
 }

@@ -70,6 +70,7 @@ function configWith(overrides: {
       promptText: "",
     },
     auth: overrides.auth ?? [{ mode: "api-key", provider: "openai" }],
+    research: { enabled: true, maxQueries: 8, resultsPerQuery: 2, timeoutMs: 15_000 },
   } as unknown as LoadedConfig;
 }
 
@@ -348,6 +349,35 @@ test("buildOpencodeConfig registers the no-tools stack verifier (empty tool list
   expect(stackVerifier).toBeDefined();
   // Every tool disabled — the patch is inlined, so it must never read the disk.
   expect(Object.values(stackVerifier!.tools).every((enabled) => enabled === false)).toBe(true);
+});
+
+test("buildOpencodeConfig grants the bundled MCP only to reviewer roles", () => {
+  const runtime = {
+    command: "/trusted/node",
+    args: ["/trusted/research.js", "serve"],
+    environment: { BRAVE_SEARCH_API_KEY: "not-rendered-to-model" },
+    auditPath: "/tmp/audit.jsonl",
+    claudeConfigPath: "/tmp/mcp.json",
+    cleanup: async () => {},
+  };
+  const opencode = buildOpencodeConfig(configWith({}), runtime) as {
+    agent: Record<string, { tools: Record<string, boolean> }>;
+    mcp: Record<string, unknown>;
+  };
+  expect(opencode.mcp.platform_docs).toEqual({
+    type: "local",
+    command: ["/trusted/node", "/trusted/research.js", "serve"],
+    environment: { BRAVE_SEARCH_API_KEY: "not-rendered-to-model" },
+    enabled: true,
+    timeout: 15_000,
+  });
+  for (const name of ["platform_docs_search_platform_docs", "platform_docs_fetch_platform_doc"]) {
+    expect(opencode.agent.correctness!.tools[name]).toBe(true);
+    expect(opencode.agent["cross-cutting"]!.tools[name]).toBe(true);
+    expect(opencode.agent.verifier!.tools[name]).toBe(false);
+    expect(opencode.agent[STACK_VERIFIER_AGENT]!.tools[name]).toBe(false);
+    expect(opencode.agent.coordinator!.tools[name]).toBe(false);
+  }
 });
 
 test("no upstream aliases ⇒ no provider key in the OpenCode config at all", () => {

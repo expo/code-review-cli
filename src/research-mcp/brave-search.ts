@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { sanitizeDocumentationQuery } from "./query-sanitizer.js";
 import { readBodyWithLimit } from "./response.js";
 
 const BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
@@ -33,21 +34,8 @@ export type FetchImplementation = (
   init?: RequestInit,
 ) => Promise<Response>;
 
-function normalizeSearchText(value: string): string {
-  return (
-    value
-      // oxlint-disable-next-line no-control-regex -- outbound query sanitization
-      .replace(/[\u0000-\u001f\u007f]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-  );
-}
-
 export function buildScopedSearchQuery(query: string, scopes: readonly string[]): string {
-  const normalized = normalizeSearchText(query);
-  if (!normalized || normalized.length > 300) {
-    throw new Error("Query must contain between 1 and 300 visible characters");
-  }
+  const normalized = sanitizeDocumentationQuery(query);
   if (scopes.length === 0 || scopes.length > 8) {
     throw new Error("A documentation search requires between 1 and 8 fixed scopes");
   }

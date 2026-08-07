@@ -44,6 +44,23 @@ documentation uses its structured DocC JSON, including symbol and availability
 metadata. Search-engine sparsity produces an empty result and never broadens the
 trust boundary.
 
+## Direct URL Fetch Boundary
+
+The MCP also exposes `fetch_platform_doc` for a caller that already has an exact
+documentation link. It infers the narrowest matching provider from a fixed ordering,
+or accepts a fixed provider id as a hint when corpora overlap. The supplied URL must
+pass that provider's canonical HTTPS host/path allowlist before network access. The
+request adapter, every redirect, content type, timeout, and response size then pass
+the same checks as a search-discovered document. The tool fetches one page only and
+returns at most five bounded extracted passages. An optional query ranks passages
+within the fetched page; it cannot turn the operation into discovery.
+
+This path is useful for documentation links already present in review context. For
+Apple symbol links it converts the canonical `/documentation/...` URL into Apple's
+allowlisted DocC JSON request URL, preserving the human-facing canonical URL in the
+result. A URL that matches no provider is rejected before `fetch`; a redirect outside
+the selected provider's separate request allowlist is rejected before following it.
+
 Expo-routed queries use the fixed public Expo Algolia endpoint. Its browser-visible
 key is search-only; redirects are rejected, response size/time/hit count are capped,
 records are schema-validated, and canonical result URLs must remain on
@@ -87,6 +104,24 @@ schema-validated, limited to HTTPS URLs from the requested provider, truncated,
 sanitized, and wrapped in an untrusted platform-research fence. The Brave credential
 is never written to MCP output, prompts, logs, or run artifacts. Issue tracker text
 keeps distinct provenance and is never presented as an API contract.
+
+## Research Provenance and Citations
+
+Research is observable without exposing the Brave key or full responses. Each review
+prints the exact bounded queries and every accepted result's title, provider,
+provenance class, and canonical URL. GitHub Actions receives that same data in its
+step summary. The JSONL run log additionally stores at most the already-bounded
+passage returned to the reviewer so operators can determine whether research was
+useful after the fact; it still excludes PR title/body and model transcripts.
+
+The prompt may select a source for a finding only by copying its exact title and URL
+from injected research evidence. Model output crosses an engine-side grounding seam:
+URLs absent from the trusted prepass are removed and accepted titles are restored
+from the canonical evidence. Grounded sources are unioned across duplicate reviewer
+findings, preserved through coordinator rewrites by the finding fingerprint, stored
+in hidden comment state, and rendered as visible links. Sources do not participate
+in fingerprints or severity/decision logic, and findings that did not materially use
+research omit them.
 
 ## Installation-Specific Research Is Deferred
 

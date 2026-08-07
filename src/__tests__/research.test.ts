@@ -9,7 +9,11 @@ import {
   collectPlatformResearch,
   deriveResearchQueries,
   formatResearchEvidence,
+  formatResearchProgress,
+  groundResearchSources,
+  renderResearchMarkdown,
   researchChildEnvironment,
+  toResearchProvenance,
 } from "../core/research.js";
 import { buildSearchIndex, writeSearchIndex } from "../research-mcp/search-index.js";
 
@@ -230,6 +234,82 @@ test("research index fallback is absolute and research remains root-only", () =>
     }).success,
   ).toBe(true);
   expect(ScopeReviewConfigSchema.safeParse({ research: { enabled: false } }).success).toBe(false);
+});
+
+test("research provenance exposes each bounded query and exact result in logs and step Markdown", () => {
+  const query = {
+    platform: "apple" as const,
+    providers: ["apple"],
+    query: "NWPathMonitor pathUpdateHandler",
+  };
+  const provenance = toResearchProvenance({
+    queries: [query],
+    evidence: [
+      {
+        id: "remote:apple:nwpathmonitor",
+        query,
+        provider: "apple",
+        sourceKind: "official-api",
+        title: "NWPathMonitor",
+        url: "https://developer.apple.com/documentation/network/nwpathmonitor",
+        passage: "Observe network path changes with a path update handler.",
+      },
+    ],
+    warnings: [],
+    promptText: "unused",
+  });
+
+  expect(provenance.results[0]?.passage).toContain("path update handler");
+  expect(formatResearchProgress(provenance)).toEqual([
+    "  research: 1 result(s) from 1 bounded query(s)",
+    "  research query 1/1 — apple [apple]: NWPathMonitor pathUpdateHandler",
+    "    result: NWPathMonitor (apple/official-api) — https://developer.apple.com/documentation/network/nwpathmonitor",
+  ]);
+  const summary = renderResearchMarkdown(provenance);
+  expect(summary).toContain("`NWPathMonitor pathUpdateHandler`");
+  expect(summary).toContain(
+    "[NWPathMonitor](<https://developer.apple.com/documentation/network/nwpathmonitor>)",
+  );
+});
+
+test("finding citations are exact selections from research evidence", () => {
+  const evidence = [
+    {
+      query: { platform: "apple" as const, providers: ["apple"], query: "menuStyle" },
+      provider: "apple",
+      sourceKind: "official-api",
+      title: "menuStyle(_:)",
+      url: "https://developer.apple.com/documentation/swiftui/view/menustyle(_:)",
+      passage: "Sets the style for menus within this view.",
+    },
+  ];
+  const [finding] = groundResearchSources(
+    [
+      {
+        severity: "warning",
+        category: "correctness",
+        file: "Menu.swift",
+        line: 12,
+        title: "Menu style is applied to the wrong hierarchy",
+        rationale: "The modifier affects descendants.",
+        sources: [
+          {
+            title: "forged title",
+            url: "https://developer.apple.com/documentation/swiftui/view/menustyle(_:)",
+          },
+          { title: "attacker", url: "https://attacker.example/fake" },
+        ],
+      },
+    ],
+    evidence,
+  );
+
+  expect(finding?.sources).toEqual([
+    {
+      title: "menuStyle(_:)",
+      url: "https://developer.apple.com/documentation/swiftui/view/menustyle(_:)",
+    },
+  ]);
 });
 
 test("one-shot stdio MCP results are validated, bounded, and fenced as untrusted", async () => {

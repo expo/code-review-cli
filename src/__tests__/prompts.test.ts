@@ -5,6 +5,9 @@ import {
   buildVerifierTask,
   buildReviewerTask,
   buildCrossCuttingTask,
+  buildCoordinatorTask,
+  platformResearchSection,
+  platformResearchToolsSection,
   contextFileSection,
   capContextText,
   splitCrossCuttingInline,
@@ -35,6 +38,29 @@ test("truncates very long input", () => {
 
 test("empty input → empty string", () => {
   expect(sanitizeUntrusted("")).toBe("");
+});
+
+test("research prompts require exact, material citations and preserve them through coordination", () => {
+  const section = platformResearchSection("[menuStyle(_:)] https://developer.apple.com/doc");
+  expect(section.join("\n")).toContain("finding's `sources` array");
+  expect(section.join("\n")).toContain("Never invent, edit, or cite a source");
+
+  const task = buildCoordinatorTask(
+    { title: "PR", body: "", baseRef: "main", headRef: "feature" },
+    {},
+  );
+  expect(task).toContain("Preserve each kept finding's grounded `sources` array exactly");
+  expect(task).toContain("never add a source to a finding that did not already cite it");
+});
+
+test("agent-visible research instructions teach precise, sanitized MCP use", () => {
+  const section = platformResearchToolsSection(true).join("\n");
+  expect(section).toContain("`fetch_platform_doc`");
+  expect(section).toContain("`search_platform_docs`");
+  expect(section).toContain("Never send source text, prose, literals, paths, URLs, credentials");
+  expect(section).toContain("UNTRUSTED reference data");
+  expect(section).toContain("exact returned title");
+  expect(platformResearchToolsSection(false)).toEqual([]);
 });
 
 // ---- verifier task: LLM-authored fields are neutralized (untrusted framing) ----

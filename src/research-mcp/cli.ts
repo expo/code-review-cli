@@ -19,9 +19,20 @@ Usage:
 
 The serve command uses BRAVE_SEARCH_API_KEY for scoped web discovery, fetches only
 allowlisted official pages, and optionally falls back to a local index. Expo-provider
-searches use Expo's public documentation index. The update command is an optional
-offline crawler for operator-managed fallback indexes.
+searches use Expo's public documentation index. Its fetch_platform_doc tool can fetch
+one exact allowlisted documentation URL without a search key. The update command is
+an optional offline crawler for operator-managed fallback indexes.
 `);
+}
+
+function boundedInteger(name: string, fallback: number, minimum: number, maximum: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be an integer from ${minimum} to ${maximum}`);
+  }
+  return value;
 }
 
 async function main() {
@@ -46,6 +57,11 @@ async function main() {
     const indexPath = values.index ?? process.env.REVIEW_RESEARCH_INDEX_PATH;
     await runStdioServer({
       ...(indexPath ? { indexPath } : {}),
+      ...(process.env.REVIEW_RESEARCH_AUDIT_PATH
+        ? { auditPath: process.env.REVIEW_RESEARCH_AUDIT_PATH }
+        : {}),
+      maxCalls: boundedInteger("REVIEW_RESEARCH_MAX_CALLS", 8, 1, 20),
+      maxResultsPerCall: boundedInteger("REVIEW_RESEARCH_MAX_RESULTS", 3, 1, 3),
       ...(process.env.BRAVE_SEARCH_API_KEY
         ? { braveApiKey: process.env.BRAVE_SEARCH_API_KEY }
         : {}),

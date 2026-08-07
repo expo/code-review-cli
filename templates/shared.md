@@ -215,7 +215,8 @@ Return **only** a single fenced ```json code block, an object of this shape:
       "title": "short one-line summary",
       "rationale": "**Confidence:** High — why certainty is high.<br>**Impact if shipped:** Medium — concrete expected consequence.\\n\\n<details>\\n<summary>Evidence and reasoning</summary>\\n\\nFull failure/exploit path.\\n\\n</details>",
       "evidence": "one contiguous line of the flagged code, copied VERBATIM",
-      "suggestion": "optional concrete fix, or omit"
+      "suggestion": "optional concrete fix, or omit",
+      "sources": [{ "title": "exact injected documentation title", "url": "exact injected URL" }]
     }
   ],
   "trace": {
@@ -224,6 +225,11 @@ Return **only** a single fenced ```json code block, an object of this shape:
   }
 }
 ```
+
+`sources` is optional. Include it only when injected platform research materially
+supports the finding. Copy the exact title and URL from that research; the engine
+rejects sources outside the trusted result set. Omit it for findings that did not
+use documentation research.
 
 `line` is the start line in the new version of the file, or `null` if not
 line-specific. `evidence` is used to help verify the finding, so make it easy to

@@ -70,6 +70,22 @@ test("review state (review + dismissals) round-trips via parseReviewState", () =
   expect(state!.review.findings.length).toBe(1);
 });
 
+test("grounded documentation sources render visibly and survive hidden state", () => {
+  const cited = finding({
+    sources: [
+      {
+        title: "menuStyle(_:)",
+        url: "https://developer.apple.com/documentation/swiftui/view/menustyle(_:)",
+      },
+    ],
+  });
+  const body = renderMarkdown({ ...base, findings: [cited] }, "tag");
+  expect(body).toContain(
+    "**Sources:** [menuStyle(_:)](<https://developer.apple.com/documentation/swiftui/view/menustyle(_:)>)",
+  );
+  expect(parseReviewState(body, "tag")?.review.findings[0]?.sources).toEqual(cited.sources);
+});
+
 test("review input hash round-trips only in hidden comment state", () => {
   const inputHash = "a".repeat(64);
   const body = renderMarkdown(base, "tag", [], undefined, [], [], inputHash);
