@@ -62,6 +62,33 @@ export const ReviewConfigSchema = z.object({
       additionalMarkers: z.array(z.string()).default([]),
     })
     .default({ additionalIgnores: [], additionalMarkers: [] }),
+  research: z
+    .object({
+      enabled: z.boolean().default(false),
+      indexPath: z
+        .string()
+        .min(1)
+        .refine((value) => path.isAbsolute(value), "research.indexPath must be an absolute path")
+        .optional(),
+      maxQueries: z.number().int().min(1).max(20).default(8),
+      resultsPerQuery: z.number().int().min(1).max(3).default(2),
+      timeoutMs: z.number().int().min(1000).max(60_000).default(15_000),
+    })
+    .superRefine((value, context) => {
+      if (value.enabled && !value.indexPath) {
+        context.addIssue({
+          code: "custom",
+          path: ["indexPath"],
+          message: "research.indexPath is required when research.enabled is true",
+        });
+      }
+    })
+    .default({
+      enabled: false,
+      maxQueries: 8,
+      resultsPerQuery: 2,
+      timeoutMs: 15_000,
+    }),
   breakGlass: z
     .object({ marker: z.string().default("/skip-review") })
     .default({ marker: "/skip-review" }),
@@ -295,7 +322,7 @@ export type RoutingDefaults = RoutingManifest["defaults"];
  * Scope config = root config MINUS the centrally locked keys. Allowlist of
  * scope-overridable keys (Turborepo-style, graft 6): model, policy, chunk,
  * noise (+ the prompt files living beside it: shared.md, coordinator.md,
- * agents/). NEVER auth or breakGlass — declaring either fails parsing at the
+ * agents/). NEVER auth, breakGlass, or research — declaring one fails parsing at the
  * Zod level so IDE/doctor catch it before CI. commentTag is also locked: a
  * scope's comment marker is always DERIVED (`<rootTag>:<scope>`; the default
  * scope keeps the root tag) so `ecr ci`'s post/clear/reconcile paths and a
@@ -309,6 +336,7 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
   commentTag: true,
   stack: true,
   feedback: true,
+  research: true,
 }).extend({
   auth: z
     .never({ error: "auth is locked to the root config; remove it from this scope config" })
@@ -330,6 +358,12 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
     .never({
       error:
         "feedback is locked to the root config (the comment lifecycle is global); remove it from this scope config",
+    })
+    .optional(),
+  research: z
+    .never({
+      error:
+        "research is locked to the root config because it starts a trusted host process; remove it from this scope config",
     })
     .optional(),
 });
@@ -401,6 +435,14 @@ export interface LoadedConfig {
   noise: {
     additionalIgnores: string[];
     additionalMarkers: string[];
+  };
+  /** Root-only trusted host-side documentation research. */
+  research: {
+    enabled: boolean;
+    indexPath?: string;
+    maxQueries: number;
+    resultsPerQuery: number;
+    timeoutMs: number;
   };
   breakGlassMarker: string;
   commentTag: string;

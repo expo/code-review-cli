@@ -1,0 +1,283 @@
+{
+  "output": "data/docs-index.json",
+  "crawl": {
+    "maxPagesPerProvider": 250,
+    "maxDepth": 4,
+    "delayMs": 200,
+    "timeoutMs": 15000,
+    "maxResponseBytes": 5000000
+  },
+  "sources": [
+    {
+      "provider": "apple",
+      "sourceKind": "official-api",
+      "maxPages": 170,
+      "seedUrls": [
+        "https://developer.apple.com/documentation/swift",
+        "https://developer.apple.com/documentation/swiftui",
+        "https://developer.apple.com/documentation/uikit",
+        "https://developer.apple.com/documentation/foundation",
+        "https://developer.apple.com/documentation/avfoundation",
+        "https://developer.apple.com/documentation/coregraphics",
+        "https://developer.apple.com/documentation/photos",
+        "https://developer.apple.com/documentation/usernotifications",
+        "https://developer.apple.com/documentation/webkit",
+        "https://developer.apple.com/documentation/storekit",
+        "https://developer.apple.com/documentation/activitykit",
+        "https://developer.apple.com/documentation/widgetkit",
+        "https://developer.apple.com/documentation/appintents",
+        "https://developer.apple.com/documentation/network",
+        "https://developer.apple.com/documentation/photos/phasset",
+        "https://developer.apple.com/documentation/photos/phasset/location",
+        "https://developer.apple.com/documentation/network/nwpathmonitor",
+        "https://developer.apple.com/documentation/network/nwpathmonitor/pathupdatehandler",
+        "https://developer.apple.com/documentation/appintents/liveactivityintent",
+        "https://developer.apple.com/documentation/activitykit/activity",
+        "https://developer.apple.com/documentation/activitykit/activity/id",
+        "https://developer.apple.com/documentation/activitykit/activity/activities",
+        "https://developer.apple.com/documentation/activitykit/activity/activitystate",
+        "https://developer.apple.com/documentation/activitykit/activity/pushtokenupdates-swift.property",
+        "https://developer.apple.com/documentation/avfaudio/avaudiosession",
+        "https://developer.apple.com/documentation/avfaudio/avaudiosession/setactive(_:options:)",
+        "https://developer.apple.com/documentation/avfaudio/avaudiosession/setactiveoptions/notifyothersondeactivation",
+        "https://developer.apple.com/documentation/swiftui/view/widgeturl(_:)",
+        "https://developer.apple.com/design/human-interface-guidelines/"
+      ]
+    },
+    {
+      "provider": "apple-releases",
+      "sourceKind": "release-notes",
+      "maxPages": 40,
+      "maxDepth": 2,
+      "seedUrls": [
+        "https://developer.apple.com/documentation/xcode-release-notes",
+        "https://developer.apple.com/documentation/ios-ipados-release-notes"
+      ]
+    },
+    {
+      "provider": "swift-evolution",
+      "sourceKind": "official-guide",
+      "maxPages": 35,
+      "maxDepth": 1,
+      "seedUrls": [
+        "https://www.swift.org/swift-evolution/",
+        "https://github.com/swiftlang/swift-evolution/blob/main/proposals/0302-concurrent-value-and-concurrent-closures.md",
+        "https://github.com/swiftlang/swift-evolution/blob/main/proposals/0304-structured-concurrency.md",
+        "https://github.com/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md",
+        "https://github.com/swiftlang/swift-evolution/blob/main/proposals/0316-global-actors.md",
+        "https://github.com/swiftlang/swift-evolution/blob/main/proposals/0338-clarify-execution-non-actor-async.md",
+        "https://github.com/swiftlang/swift-evolution/blob/main/proposals/0420-inheritance-of-actor-isolation.md",
+        "https://github.com/swiftlang/swift-evolution/blob/main/proposals/0430-transferring-parameters-and-results.md"
+      ]
+    },
+    {
+      "provider": "android",
+      "sourceKind": "official-api",
+      "maxPages": 150,
+      "seedUrls": [
+        "https://developer.android.com/develop",
+        "https://developer.android.com/reference",
+        "https://developer.android.com/develop/ui/views/text-and-emoji/fonts-in-xml",
+        "https://developer.android.com/reference/androidx/biometric/BiometricPrompt.PromptInfo.Builder",
+        "https://developer.android.com/reference/android/media/AudioFocusRequest",
+        "https://developer.android.com/reference/android/media/AudioManager",
+        "https://developer.android.com/reference/android/net/ConnectivityManager",
+        "https://developer.android.com/reference/android/net/ConnectivityManager.NetworkCallback",
+        "https://developer.android.com/reference/android/content/Intent",
+        "https://developer.android.com/reference/android/app/NotificationManager",
+        "https://developer.android.com/reference/android/os/Build.VERSION_CODES",
+        "https://developer.android.com/reference/androidx/core/os/BuildCompat",
+        "https://developer.android.com/reference/androidx/work/Constraints.Builder",
+        "https://developer.android.com/reference/androidx/work/NetworkType",
+        "https://developer.android.com/develop/ui/compose/graphics/images/loading",
+        "https://developer.android.com/develop/ui/compose/graphics/images/customize",
+        "https://developer.android.com/reference/kotlin/androidx/compose/foundation/Image.composable",
+        "https://developers.google.com/android/reference/com/google/android/gms/location/FusedLocationProviderClient",
+        "https://developers.google.com/android/reference/com/google/android/gms/location/LocationCallback"
+      ]
+    },
+    {
+      "provider": "android-releases",
+      "sourceKind": "release-notes",
+      "maxPages": 50,
+      "maxDepth": 2,
+      "seedUrls": [
+        "https://developer.android.com/about/versions/16",
+        "https://developer.android.com/about/versions/16/features",
+        "https://developer.android.com/about/versions/16/behavior-changes-all",
+        "https://developer.android.com/about/versions/16/behavior-changes-16",
+        "https://developer.android.com/about/versions/15/behavior-changes-all",
+        "https://developer.android.com/about/versions/15/behavior-changes-15",
+        "https://developer.android.com/about/versions/14/behavior-changes-all",
+        "https://developer.android.com/about/versions/14/behavior-changes-14"
+      ]
+    },
+    {
+      "provider": "media3",
+      "sourceKind": "official-guide",
+      "maxPages": 40,
+      "maxDepth": 2,
+      "seedUrls": [
+        "https://developer.android.com/media/media3",
+        "https://developer.android.com/media/media3/session/background-playback",
+        "https://developer.android.com/jetpack/androidx/releases/media3",
+        "https://developer.android.com/reference/androidx/media3/common/Player",
+        "https://developer.android.com/reference/androidx/media3/session/MediaSessionService"
+      ]
+    },
+    {
+      "provider": "glide",
+      "sourceKind": "official-guide",
+      "maxPages": 30,
+      "maxDepth": 2,
+      "seedUrls": [
+        "https://bumptech.github.io/glide/doc/caching.html",
+        "https://bumptech.github.io/glide/doc/configuration.html",
+        "https://bumptech.github.io/glide/javadocs/450/com/bumptech/glide/load/engine/cache/DiskCache.html",
+        "https://bumptech.github.io/glide/javadocs/450/com/bumptech/glide/load/engine/cache/InternalCacheDiskCacheFactory.html"
+      ]
+    },
+    {
+      "provider": "okhttp",
+      "sourceKind": "official-guide",
+      "maxPages": 30,
+      "maxDepth": 2,
+      "seedUrls": [
+        "https://lysine.dev/okhttp/",
+        "https://lysine.dev/okhttp/recipes/",
+        "https://lysine.dev/okhttp/features/caching/",
+        "https://lysine.dev/okhttp/features/calls/",
+        "https://lysine.dev/okhttp/features/connections/",
+        "https://lysine.dev/okhttp/features/https/",
+        "https://lysine.dev/okhttp/features/interceptors/",
+        "https://lysine.dev/okhttp/changelogs/changelog/",
+        "https://lysine.dev/okhttp/5.x/okhttp/okhttp3/-ok-http-client/"
+      ]
+    },
+    {
+      "provider": "kotlin-coroutines",
+      "sourceKind": "official-guide",
+      "maxPages": 40,
+      "maxDepth": 1,
+      "seedUrls": [
+        "https://kotlinlang.org/docs/coroutines-guide.html",
+        "https://kotlinlang.org/docs/coroutines-basics.html",
+        "https://kotlinlang.org/docs/cancellation-and-timeouts.html",
+        "https://kotlinlang.org/docs/exception-handling.html",
+        "https://kotlinlang.org/docs/shared-mutable-state-and-concurrency.html",
+        "https://kotlinlang.org/docs/flow.html",
+        "https://kotlinlang.org/api/kotlinx.coroutines/"
+      ]
+    },
+    {
+      "provider": "gradle",
+      "sourceKind": "official-guide",
+      "maxPages": 40,
+      "maxDepth": 1,
+      "seedUrls": [
+        "https://docs.gradle.org/current/userguide/tooling_api.html",
+        "https://docs.gradle.org/current/userguide/composite_builds.html",
+        "https://docs.gradle.org/current/userguide/public_apis.html",
+        "https://docs.gradle.org/current/userguide/upgrading_version_9.html",
+        "https://docs.gradle.org/current/release-notes.html"
+      ]
+    },
+    {
+      "provider": "agp",
+      "sourceKind": "release-notes",
+      "maxPages": 40,
+      "maxDepth": 1,
+      "seedUrls": [
+        "https://developer.android.com/build/releases/about-agp",
+        "https://developer.android.com/build/releases/gradle-plugin-roadmap",
+        "https://developer.android.com/build/releases/agp-9-0-0-release-notes",
+        "https://developer.android.com/reference/tools/gradle-api"
+      ]
+    },
+    {
+      "provider": "jetbrains-issues",
+      "sourceKind": "issue-tracker",
+      "maxPages": 1,
+      "maxDepth": 0,
+      "seedUrls": [
+        "https://youtrack.jetbrains.com/issue/IDEA-329756/Importing-symlinked-Gradle-included-build-fails"
+      ]
+    },
+    {
+      "provider": "expo",
+      "sourceKind": "official-api",
+      "maxPages": 100,
+      "maxDepth": 3,
+      "seedUrls": [
+        "https://docs.expo.dev/versions/latest/",
+        "https://docs.expo.dev/versions/latest/sdk/expo/",
+        "https://docs.expo.dev/versions/latest/sdk/camera/",
+        "https://docs.expo.dev/versions/latest/sdk/notifications/",
+        "https://docs.expo.dev/router/introduction/",
+        "https://docs.expo.dev/modules/overview/",
+        "https://docs.expo.dev/guides/new-architecture/"
+      ]
+    },
+    {
+      "provider": "react-native",
+      "sourceKind": "official-api",
+      "maxPages": 80,
+      "maxDepth": 3,
+      "seedUrls": [
+        "https://reactnative.dev/docs/getting-started",
+        "https://reactnative.dev/docs/components-and-apis",
+        "https://reactnative.dev/docs/flatlist",
+        "https://reactnative.dev/docs/view",
+        "https://reactnative.dev/docs/platform",
+        "https://reactnative.dev/architecture/landing-page"
+      ]
+    },
+    {
+      "provider": "react-native-reanimated",
+      "sourceKind": "official-guide",
+      "maxPages": 60,
+      "maxDepth": 3,
+      "seedUrls": [
+        "https://docs.swmansion.com/react-native-reanimated/docs/fundamentals/getting-started/",
+        "https://docs.swmansion.com/react-native-reanimated/docs/guides/testing/",
+        "https://docs.swmansion.com/react-native-reanimated/docs/guides/compatibility/",
+        "https://docs.swmansion.com/react-native-reanimated/docs/category/core/",
+        "https://docs.swmansion.com/react-native-reanimated/docs/category/advanced-apis/"
+      ]
+    },
+    {
+      "provider": "react-native-gesture-handler",
+      "sourceKind": "official-guide",
+      "maxPages": 60,
+      "maxDepth": 3,
+      "seedUrls": [
+        "https://docs.swmansion.com/react-native-gesture-handler/docs/fundamentals/getting-started/",
+        "https://docs.swmansion.com/react-native-gesture-handler/docs/gestures/pan-gesture/",
+        "https://docs.swmansion.com/react-native-gesture-handler/docs/gestures/gesture-detector/"
+      ]
+    },
+    {
+      "provider": "react-native-screens",
+      "sourceKind": "official-guide",
+      "maxPages": 50,
+      "maxDepth": 3,
+      "seedUrls": [
+        "https://docs.swmansion.com/react-native-screens/",
+        "https://github.com/software-mansion/react-native-screens/blob/main/README.md"
+      ]
+    },
+    {
+      "provider": "react-native-worklets",
+      "sourceKind": "official-guide",
+      "maxPages": 60,
+      "maxDepth": 3,
+      "seedUrls": [
+        "https://docs.swmansion.com/react-native-worklets/docs/fundamentals/getting-started/",
+        "https://docs.swmansion.com/react-native-worklets/docs/guides/testing/",
+        "https://docs.swmansion.com/react-native-worklets/docs/category/fundamentals/",
+        "https://docs.swmansion.com/react-native-worklets/docs/fundamentals/sharing-memory/",
+        "https://docs.swmansion.com/react-native-worklets/docs/guides/feature-flags/"
+      ]
+    }
+  ]
+}

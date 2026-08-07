@@ -173,6 +173,83 @@ Two run points:
 
 ---
 
+## Providing context and research capabilities
+
+`@expo/code-review-cli` includes `review-research-mcp` and can run it as a trusted
+host-side prepass. This is deliberately not an agent-visible MCP: Claude Code
+keeps `--safe-mode`, `--strict-mcp-config`, path-scoped read tools, and its
+execution/network/write deny list. Before model startup, ECR extracts only short
+API identifiers from added native code, asks the documentation MCP for bounded evidence,
+and appends the results to reviewer and cross-file prompts as explicitly untrusted
+reference text.
+
+Enable it only in the root config, which CI loads from the PR's trusted base:
+
+```jsonc
+{
+  "research": {
+    "enabled": true,
+    "indexPath": "/opt/expo-review/docs-index.json",
+    "maxQueries": 8,
+    "resultsPerQuery": 2,
+    "timeoutMs": 15000
+  }
+}
+```
+
+ECR resolves the MCP entry point inside its own installed package and starts it
+with the current absolute Node executable, so a PR-owned `PATH` entry cannot replace
+either component. Build the index in a separate networked job and mount it read-only
+in review jobs. The child runs from the OS temp directory with a minimal environment, a 2 MB output
+cap, and a hard timeout. It receives no model credentials, source snippets, string
+literals, comments, removed lines, or repository paths—only normalized identifiers,
+the platform, and named provider filters. MCP failures are visible in the job log
+but fail open to an ordinary review; they never skip or weaken review passes.
+
+Research is root-only in routed monorepos because it starts a host process; scope
+configs cannot change its index path or limits. Result-cache reuse is disabled while
+research is enabled because an index can change at the same mounted path. For CI,
+pin the ECR package/Node version and verify a signed index checksum before invoking
+ECR. A simpler initial deployment may build the index in an earlier, secretless
+workflow step using the same pinned published package, with no PR code executed and
+failure allowed so review can continue without research. Keep `update` out of the
+credential-bearing `ecr ci` process itself; the review pipeline always starts `serve`.
+
+The built-in query router recognizes Apple/Android APIs plus Media3, Glide, OkHttp,
+Kotlin coroutines, Gradle/AGP, Swift concurrency/evolution, platform release/API
+availability, Expo, React Native, Reanimated, Gesture Handler, Screens, and Worklets.
+Queries are short exact symbols plus at most one useful member or behavior term. For
+example, `CameraView barcodeScannerSettings` is useful; a source snippet, import path,
+or natural-language question is not. The MCP publishes the same guidance in its tool
+metadata for direct clients. An empty result stays empty; it is not replaced with a
+loose semantic guess.
+
+For a query routed to the `expo` provider, `serve` POSTs the already-sanitized query
+directly to Expo's public Algolia search endpoint and prefers the returned canonical
+`docs.expo.dev` hits.
+The endpoint, application id, and browser-visible search-only key are fixed in the
+package; redirects are rejected; response size, timeout, hit count, and returned URL
+host are bounded. Algolia receives the query text; a failed request falls back to the
+mounted local index. The local index is still required for that fallback and every
+other provider. Direct MCP clients can omit the `expo` provider; ECR installations
+requiring a fully offline review should leave research disabled until provider
+selection becomes installation-configurable.
+
+The MCP and its trusted updater ship with ECR. From this repository, build an index
+with `bun run research:update`; an installed package exposes the equivalent
+`review-research-mcp update`. The built-in seed catalog lives in
+`research/sources.json`, while the generated `research/data/` directory is ignored
+and is not published. `seedUrls` are deterministic starting pages for the bounded
+crawler; ordinary link extraction, parsing, indexing, and searching use no LLM.
+Installation-specific provider configuration is intentionally
+deferred: when added, it should follow the trusted root-config model used for agents
+without permitting PR-controlled URLs, commands, or executable parsers. Expo skills
+are complementary, not another search corpus: their pinned procedural guidance can
+later be supplied to review agents as separately labeled trusted context, while
+documentation search continues to return citable API evidence. Dynamic skills or
+instructions retrieved from documentation must never become executable reviewer
+instructions.
+
 ## Monorepos (routing manifest)
 
 A monorepo can route different subtrees to different reviewer rosters from a single
@@ -255,10 +332,11 @@ your-monorepo/
 
 ### Security
 
-- **auth is locked to the root.** `tokenEnv` (which env var becomes the model
+- **auth and research are locked to the root.** `tokenEnv` (which env var becomes the model
   credential) is honored in exactly one place: the root `config.jsonc` or
-  `routing.jsonc` `defaults.auth`. A scope config declaring `auth`/`breakGlass`
-  **fails to parse** (Zod-level rejection), and the CI guard step independently
+  `routing.jsonc` `defaults.auth`. A scope config declaring `auth`/`breakGlass`/`research`
+  **fails to parse** (Zod-level rejection). A scope declaring `research` also fails,
+  so PR-controlled routing cannot select a different host index. The CI guard step independently
   sweeps every `.expo-code-review/config.jsonc`/`routing.jsonc` repo-wide and refuses
   to run unless `tokenEnv` appears exactly once, in a root-owned file, equal to
   `ECR_EXPECTED_TOKEN_ENV`. A routing manifest can never widen exposure — globs only

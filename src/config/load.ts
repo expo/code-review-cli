@@ -39,6 +39,14 @@ const FEEDBACK_CONFIG_DEFAULTS: LoadedConfig["feedback"] = {
   maxAdjudications: 10,
 };
 
+/** Research defaults for a scope load (where `research` is schema-rejected). */
+const RESEARCH_CONFIG_DEFAULTS: LoadedConfig["research"] = {
+  enabled: false,
+  maxQueries: 8,
+  resultsPerQuery: 2,
+  timeoutMs: 15_000,
+};
+
 /** Default OpenCode tool toggles for a reviewer: read the repo, never mutate it. */
 const DEFAULT_AGENT_TOOLS = toolMap(["read", "grep", "glob", "list"]);
 
@@ -68,13 +76,14 @@ export interface LoadConfigOptions {
 /** Parsed config with the centrally-locked keys optional (scope configs omit them). */
 type ParsedConfig = Omit<
   RawReviewConfig,
-  "auth" | "breakGlass" | "commentTag" | "stack" | "feedback"
+  "auth" | "breakGlass" | "commentTag" | "stack" | "feedback" | "research"
 > & {
   auth?: RawReviewConfig["auth"];
   breakGlass?: RawReviewConfig["breakGlass"];
   commentTag?: RawReviewConfig["commentTag"];
   stack?: RawReviewConfig["stack"];
   feedback?: RawReviewConfig["feedback"];
+  research?: RawReviewConfig["research"];
 };
 
 export function hasConfig(repoRoot: string, options: LoadConfigOptions = {}): boolean {
@@ -191,6 +200,9 @@ async function loadConfigDir(
     policy: parsed.policy,
     chunk: parsed.chunk,
     noise: parsed.noise,
+    // Root-only: scope schemas reject research configuration, so an untrusted
+    // subtree cannot select the index or alter the network-facing runtime.
+    research: parsed.research ?? RESEARCH_CONFIG_DEFAULTS,
     // parsed.breakGlass/auth are always present for the root schema (defaults) and
     // absent for the scope schema; loadScopeConfig overrides both afterwards.
     breakGlassMarker: parsed.breakGlass?.marker ?? "/skip-review",
@@ -374,6 +386,7 @@ export async function loadScopeConfig(
     // run the default policy instead of the repo's real one.
     stack: rootConfig.stack,
     feedback: rootConfig.feedback,
+    research: rootConfig.research,
     scopeName: scope.name,
   };
 }

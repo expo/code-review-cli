@@ -232,16 +232,42 @@ test("a rationale ending in </details> does not swallow the next finding's bulle
   );
 
   const lines = body.split("\n");
+  let closingDetailsCount = 0;
   for (const [index, line] of lines.entries()) {
-    if (line.trimEnd() !== "</details>") continue;
+    if (line.trim() !== "</details>") continue;
+    closingDetailsCount++;
     // The line after a closing </details> must be blank, or Markdown after it is
     // emitted raw.
     expect(lines[index + 1] ?? "").toBe("");
   }
+  expect(closingDetailsCount).toBe(2);
 
   // Both bullets must survive as list items rather than one leaking into the other.
   expect(lines.filter((line) => line.startsWith("- **")).length).toBe(2);
   expect(body).toContain("- **Second**");
+});
+
+test("a suggestion after </details> resumes Markdown after a blank line", () => {
+  const body = renderMarkdown(
+    {
+      ...base,
+      findings: [
+        finding({
+          rationale:
+            "**Confidence:** High.\n\n<details>\n<summary>Evidence and reasoning</summary>\n\nThe path.\n\n</details>",
+          suggestion: "Keep the formatting intact.",
+        }),
+      ],
+    },
+    "tag",
+  );
+
+  const lines = body.split("\n");
+  const closingDetails = lines.findIndex((line) => line.trim() === "</details>");
+  expect(closingDetails).toBeGreaterThan(-1);
+  expect(lines[closingDetails + 1]).toBe("");
+  expect(lines[closingDetails + 2]).toBe("  **Suggestion:** Keep the formatting intact.");
+  expect(body).not.toContain("_Suggestion:_");
 });
 
 test("multi-line rationales stay indented inside their list item", () => {

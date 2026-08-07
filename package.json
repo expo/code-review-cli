@@ -11,17 +11,22 @@
   "bin": {
     "ecr": "build/cli.js",
     "expo-code-review": "build/cli.js",
-    "code-review-cli": "build/cli.js"
+    "code-review-cli": "build/cli.js",
+    "review-research-mcp": "build/research-mcp/cli.js"
   },
   "files": [
     "build",
-    "templates"
+    "templates",
+    "research/sources.json"
   ],
   "engines": {
     "node": ">=20"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "overrides": {
+    "@hono/node-server": "2.0.10"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -33,11 +38,17 @@
     "llp:check": "./ref-check",
     "dev": "bun run src/cli.ts",
     "test:unit": "bun test",
+    "research:update": "bun run src/research-mcp/cli.ts update",
+    "research:evaluate:corpora": "bun run build && node scripts/research/evaluate-corpora.mjs",
+    "research:evaluate:expo": "bun run build && node scripts/research/evaluate-expo-prs.mjs",
     "release": "bash scripts/release.sh",
     "prepublishOnly": "rimraf build && tsc -p tsconfig.build.json"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@opencode-ai/sdk": "1.18.4",
+    "cheerio": "1.1.2",
+    "minisearch": "7.2.0",
     "opencode-ai": "1.18.4",
     "zod": "^4.4.3"
   },
