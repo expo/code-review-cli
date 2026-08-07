@@ -1,8 +1,7 @@
-import assert from "node:assert/strict";
+import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import test from "node:test";
 
 import {
   buildSearchIndex,
@@ -46,15 +45,15 @@ test("a serialized index reloads and filters search results by platform", async 
       language: "swift",
       limit: 5,
     });
-    assert.equal(appleResults.length, 1);
-    assert.equal(appleResults[0]?.title, "MainActor");
+    expect(appleResults).toHaveLength(1);
+    expect(appleResults[0]?.title).toBe("MainActor");
 
     const androidResults = searchDocumentation(loaded, "lifecycle callbacks", {
       platform: "android",
       limit: 5,
     });
-    assert.equal(androidResults.length, 1);
-    assert.equal(androidResults[0]?.platform, "android");
+    expect(androidResults).toHaveLength(1);
+    expect(androidResults[0]?.platform).toBe("android");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -62,12 +61,10 @@ test("a serialized index reloads and filters search results by platform", async 
 
 test("search rejects empty and oversized queries", () => {
   const index = buildSearchIndex(chunks, 2);
-  assert.throws(
-    () => searchDocumentation(index, "\u0000\n", { platform: "all", limit: 5 }),
+  expect(() => searchDocumentation(index, "\u0000\n", { platform: "all", limit: 5 })).toThrow(
     /between 1 and 300/,
   );
-  assert.throws(
-    () => searchDocumentation(index, "x".repeat(301), { platform: "all", limit: 5 }),
+  expect(() => searchDocumentation(index, "x".repeat(301), { platform: "all", limit: 5 })).toThrow(
     /between 1 and 300/,
   );
 });
@@ -87,13 +84,12 @@ test("symbol queries do not fall back to unrelated partial matches", () => {
     1,
   );
 
-  assert.deepEqual(
+  expect(
     searchDocumentation(index, "AudioManager AUDIOFOCUS_GAIN_TRANSIENT", {
       platform: "android",
       limit: 5,
     }),
-    [],
-  );
+  ).toEqual([]);
 });
 
 test("symbol fallback keeps results anchored by canonical identity", () => {
@@ -115,7 +111,7 @@ test("symbol fallback keeps results anchored by canonical identity", () => {
     platform: "apple",
     limit: 5,
   });
-  assert.equal(results[0]?.title, "PHAsset");
+  expect(results[0]?.title).toBe("PHAsset");
 });
 
 test("symbol anchors do not match identifier suffixes or generic acronyms", () => {
@@ -133,13 +129,12 @@ test("symbol anchors do not match identifier suffixes or generic acronyms", () =
     1,
   );
 
-  assert.deepEqual(
+  expect(
     searchDocumentation(index, "OkHttp Request.Builder custom header API", {
       platform: "android",
       limit: 5,
     }),
-    [],
-  );
+  ).toEqual([]);
 });
 
 test("search filters named corpora and provenance classes", () => {
@@ -175,8 +170,7 @@ test("search filters named corpora and provenance classes", () => {
     sourceKinds: ["official-guide"],
     limit: 5,
   });
-  assert.deepEqual(
-    results.map(({ provider, sourceKind }) => ({ provider, sourceKind })),
-    [{ provider: "glide", sourceKind: "official-guide" }],
-  );
+  expect(results.map(({ provider, sourceKind }) => ({ provider, sourceKind }))).toEqual([
+    { provider: "glide", sourceKind: "official-guide" },
+  ]);
 });

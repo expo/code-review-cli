@@ -20,7 +20,7 @@ const cases = [
   {
     provider: "okhttp",
     query: "Request.Builder header",
-    expected: "github.com/lysine-dev/okhttp/blob/main/",
+    expected: "lysine.dev/okhttp/",
   },
   {
     provider: "kotlin-coroutines",

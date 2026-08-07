@@ -1,5 +1,4 @@
-import assert from "node:assert/strict";
-import test from "node:test";
+import { expect, test } from "bun:test";
 
 import { extractAppleDocCPage } from "../../research-mcp/apple-docc.js";
 
@@ -38,12 +37,12 @@ test("Apple DocC extraction keeps API prose, availability, and documentation lin
     "https://developer.apple.com/documentation/swift/mainactor",
   );
 
-  assert.ok(page);
-  assert.equal(page.document.title, "MainActor");
-  assert.equal(page.document.framework, "Swift");
-  assert.equal(page.document.language, "swift");
-  assert.deepEqual(page.document.availability, ["iOS 13.0"]);
-  assert.match(page.document.body, /main-thread executor/);
-  assert.match(page.document.body, /Use this actor for UI work/);
-  assert.deepEqual(page.links, ["/documentation/swift/mainactor/run(resulttype:body:)"]);
+  expect(page).not.toBeNull();
+  expect(page?.document.title).toBe("MainActor");
+  expect(page?.document.framework).toBe("Swift");
+  expect(page?.document.language).toBe("swift");
+  expect(page?.document.availability).toEqual(["iOS 13.0"]);
+  expect(page?.document.body).toMatch(/main-thread executor/);
+  expect(page?.document.body).toMatch(/Use this actor for UI work/);
+  expect(page?.links).toEqual(["/documentation/swift/mainactor/run(resulttype:body:)"]);
 });

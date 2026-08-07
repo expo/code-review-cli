@@ -80,7 +80,7 @@ const cases = [
     pr: 48616,
     query: "Request.Builder header",
     providers: ["okhttp"],
-    url: "github.com/lysine-dev/okhttp/blob/main/",
+    url: "lysine.dev/okhttp/",
   },
   {
     pr: 48532,

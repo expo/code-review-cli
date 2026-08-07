@@ -1,5 +1,4 @@
-import assert from "node:assert/strict";
-import test from "node:test";
+import { expect, test } from "bun:test";
 
 import {
   androidProvider,
@@ -22,124 +21,110 @@ test("Apple provider accepts only HTTPS documentation paths on the exact host", 
     appleProvider,
     "https://developer.apple.com/documentation/swiftui",
   );
-  assert.equal(swiftUiUrl.href, "https://developer.apple.com/documentation/swiftui");
-  assert.equal(
-    appleProvider.requestUrl(swiftUiUrl).href,
+  expect(swiftUiUrl.href).toBe("https://developer.apple.com/documentation/swiftui");
+  expect(appleProvider.requestUrl(swiftUiUrl).href).toBe(
     "https://developer.apple.com/tutorials/data/documentation/swiftui.json",
   );
-  assert.equal(appleProvider.responseFormat(swiftUiUrl), "docc-json");
-  assert.throws(
-    () =>
-      resolveAllowedUrl(
-        appleProvider,
-        "https://developer.apple.com.evil.example/documentation/swiftui",
-      ),
-    /outside the apple documentation allowlist/,
-  );
-  assert.throws(
-    () => resolveAllowedUrl(appleProvider, "http://developer.apple.com/documentation/swiftui"),
-    /outside the apple documentation allowlist/,
-  );
-  assert.throws(
-    () => resolveAllowedUrl(appleProvider, "https://developer.apple.com/account"),
+  expect(appleProvider.responseFormat(swiftUiUrl)).toBe("docc-json");
+  expect(() =>
+    resolveAllowedUrl(
+      appleProvider,
+      "https://developer.apple.com.evil.example/documentation/swiftui",
+    ),
+  ).toThrow(/outside the apple documentation allowlist/);
+  expect(() =>
+    resolveAllowedUrl(appleProvider, "http://developer.apple.com/documentation/swiftui"),
+  ).toThrow(/outside the apple documentation allowlist/);
+  expect(() => resolveAllowedUrl(appleProvider, "https://developer.apple.com/account")).toThrow(
     /outside the apple documentation allowlist/,
   );
 });
 
 test("dependency and issue providers stay on their exact owners and paths", () => {
-  assert.equal(
+  expect(
     resolveAllowedUrl(glideProvider, "https://bumptech.github.io/glide/doc/caching.html").hostname,
-    "bumptech.github.io",
-  );
-  assert.equal(
-    resolveAllowedUrl(
-      okHttpProvider,
-      "https://github.com/lysine-dev/okhttp/blob/main/docs/recipes.md",
-    ).hostname,
-    "github.com",
+  ).toBe("bumptech.github.io");
+  expect(resolveAllowedUrl(okHttpProvider, "https://lysine.dev/okhttp/recipes/").hostname).toBe(
+    "lysine.dev",
   );
   const okHttpDoc = resolveAllowedUrl(
     okHttpProvider,
-    "https://github.com/lysine-dev/okhttp/blob/main/docs/features/interceptors.md",
+    "https://lysine.dev/okhttp/features/interceptors/",
   );
-  assert.equal(
-    okHttpProvider.requestUrl(okHttpDoc).href,
-    "https://raw.githubusercontent.com/lysine-dev/okhttp/refs/heads/main/docs/features/interceptors.md",
+  expect(okHttpProvider.requestUrl(okHttpDoc).href).toBe(
+    "https://lysine.dev/okhttp/features/interceptors",
   );
-  assert.equal(okHttpProvider.responseFormat(okHttpDoc), "markdown");
+  expect(okHttpProvider.responseFormat(okHttpDoc)).toBe("html");
   const proposal = resolveAllowedUrl(
     swiftEvolutionProvider,
     "https://github.com/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md",
   );
-  assert.equal(proposal.pathname, "/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md");
-  assert.equal(
-    swiftEvolutionProvider.requestUrl(proposal).href,
+  expect(proposal.pathname).toBe("/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md");
+  expect(swiftEvolutionProvider.requestUrl(proposal).href).toBe(
     "https://raw.githubusercontent.com/swiftlang/swift-evolution/refs/heads/main/proposals/0306-actors.md",
   );
-  assert.equal(swiftEvolutionProvider.responseFormat(proposal), "markdown");
+  expect(swiftEvolutionProvider.responseFormat(proposal)).toBe("markdown");
 
   const issue = resolveAllowedUrl(
     jetbrainsIssuesProvider,
     "https://youtrack.jetbrains.com/issue/IDEA-329756",
   );
-  assert.equal(issue.pathname, "/issue/IDEA-329756");
-  assert.match(jetbrainsIssuesProvider.requestUrl(issue).href, /\/api\/issues\/IDEA-329756/);
-  assert.equal(jetbrainsIssuesProvider.responseFormat(issue), "youtrack-json");
+  expect(issue.pathname).toBe("/issue/IDEA-329756");
+  expect(jetbrainsIssuesProvider.requestUrl(issue).href).toMatch(/\/api\/issues\/IDEA-329756/);
+  expect(jetbrainsIssuesProvider.responseFormat(issue)).toBe("youtrack-json");
 
   for (const [provider, url] of [
     [glideProvider, "https://bumptech.github.io/other/project"],
+    [okHttpProvider, "https://github.com/lysine-dev/okhttp/blob/main/docs/recipes.md"],
     [okHttpProvider, "https://github.com/square/okhttp/blob/main/docs/recipes.md"],
     [okHttpProvider, "https://github.com/attacker/okhttp/blob/main/docs/recipes.md"],
+    [okHttpProvider, "https://lysine.dev/retrofit/"],
     [
       swiftEvolutionProvider,
       "https://github.com/attacker/swift-evolution/blob/main/proposals/fake.md",
     ],
     [jetbrainsIssuesProvider, "https://youtrack.jetbrains.com/admin"],
   ] as const) {
-    assert.throws(() => resolveAllowedUrl(provider, url), /outside the .* documentation allowlist/);
+    expect(() => resolveAllowedUrl(provider, url)).toThrow(
+      /outside the .* documentation allowlist/,
+    );
   }
 });
 
 test("Android provider canonicalizes safe links and rejects credentials and other hosts", () => {
-  assert.equal(
+  expect(
     resolveAllowedUrl(
       androidProvider,
       "../reference/android/app/Activity?hl=en#lifecycle",
       "https://developer.android.com/develop/ui",
     ).href,
-    "https://developer.android.com/reference/android/app/Activity",
-  );
-  assert.throws(
-    () =>
-      resolveAllowedUrl(
-        androidProvider,
-        "https://user:password@developer.android.com/reference/android/app/Activity",
-      ),
-    /outside the android documentation allowlist/,
-  );
-  assert.throws(
-    () =>
-      resolveAllowedUrl(
-        androidProvider,
-        "https://developer.android.google.cn/reference/android/app/Activity",
-      ),
-    /outside the android documentation allowlist/,
-  );
-  assert.equal(
+  ).toBe("https://developer.android.com/reference/android/app/Activity");
+  expect(() =>
+    resolveAllowedUrl(
+      androidProvider,
+      "https://user:password@developer.android.com/reference/android/app/Activity",
+    ),
+  ).toThrow(/outside the android documentation allowlist/);
+  expect(() =>
+    resolveAllowedUrl(
+      androidProvider,
+      "https://developer.android.google.cn/reference/android/app/Activity",
+    ),
+  ).toThrow(/outside the android documentation allowlist/);
+  expect(
     resolveAllowedUrl(
       androidProvider,
       "https://developers.google.com/android/reference/com/google/android/gms/location/FusedLocationProviderClient",
     ).href,
+  ).toBe(
     "https://developers.google.com/android/reference/com/google/android/gms/location/FusedLocationProviderClient",
   );
-  assert.throws(
-    () =>
-      resolveAllowedUrl(
-        androidProvider,
-        "https://developers.google.com/maps/documentation/android-sdk",
-      ),
-    /outside the android documentation allowlist/,
-  );
+  expect(() =>
+    resolveAllowedUrl(
+      androidProvider,
+      "https://developers.google.com/maps/documentation/android-sdk",
+    ),
+  ).toThrow(/outside the android documentation allowlist/);
 });
 
 test("React Native ecosystem providers stay on their exact documentation hosts and projects", () => {
@@ -160,19 +145,16 @@ test("React Native ecosystem providers stay on their exact documentation hosts a
       "https://docs.swmansion.com/react-native-worklets/docs/fundamentals/getting-started/",
     ],
   ] as const) {
-    assert.equal(resolveAllowedUrl(provider, url).hostname, new URL(url).hostname);
+    expect(resolveAllowedUrl(provider, url).hostname).toBe(new URL(url).hostname);
   }
 
-  assert.throws(
-    () =>
-      resolveAllowedUrl(
-        reactNativeReanimatedProvider,
-        "https://docs.swmansion.com/react-native-worklets/docs/fundamentals/getting-started/",
-      ),
-    /outside the react-native-reanimated documentation allowlist/,
-  );
-  assert.throws(
-    () => resolveAllowedUrl(expoProvider, "https://expo.dev/accounts"),
+  expect(() =>
+    resolveAllowedUrl(
+      reactNativeReanimatedProvider,
+      "https://docs.swmansion.com/react-native-worklets/docs/fundamentals/getting-started/",
+    ),
+  ).toThrow(/outside the react-native-reanimated documentation allowlist/);
+  expect(() => resolveAllowedUrl(expoProvider, "https://expo.dev/accounts")).toThrow(
     /outside the expo documentation allowlist/,
   );
 });

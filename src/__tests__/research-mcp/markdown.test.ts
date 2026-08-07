@@ -1,5 +1,4 @@
-import assert from "node:assert/strict";
-import test from "node:test";
+import { expect, test } from "bun:test";
 
 import { extractMarkdownDocumentationPage } from "../../research-mcp/markdown.js";
 
@@ -18,22 +17,22 @@ Actors protect their mutable state through actor isolation.
     { provider: "swift-evolution", sourceKind: "official-guide" },
   );
 
-  assert.ok(result);
-  assert.equal(result.document.title, "Actors");
-  assert.equal(result.document.provider, "swift-evolution");
-  assert.match(result.document.body, /actor isolation/);
-  assert.doesNotMatch(result.document.body, /ignore/);
-  assert.deepEqual(result.links, ["0304-structured-concurrency.md"]);
+  expect(result).not.toBeNull();
+  expect(result?.document.title).toBe("Actors");
+  expect(result?.document.provider).toBe("swift-evolution");
+  expect(result?.document.body).toMatch(/actor isolation/);
+  expect(result?.document.body).not.toMatch(/ignore/);
+  expect(result?.links).toEqual(["0304-structured-concurrency.md"]);
 });
 
 test("Markdown extraction recognizes Setext titles used by dependency guides", () => {
   const page = extractMarkdownDocumentationPage(
     "Caching\n=======\n\nOkHttp implements an optional cache with explicit cache hit and miss behavior.",
-    "https://github.com/lysine-dev/okhttp/blob/main/docs/features/caching.md",
+    "https://lysine.dev/okhttp/features/caching/",
     "android",
     { provider: "okhttp", sourceKind: "official-guide" },
   );
 
-  assert.equal(page?.document.title, "Caching");
-  assert.match(page?.document.body ?? "", /cache hit and miss behavior/);
+  expect(page?.document.title).toBe("Caching");
+  expect(page?.document.body ?? "").toMatch(/cache hit and miss behavior/);
 });

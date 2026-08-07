@@ -87,34 +87,165 @@ const IGNORED_MEMBERS = new Set([
   "toString",
 ]);
 
-function addedCode(patch: string): string[] {
-  return patch
-    .split("\n")
-    .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
-    .map((line) =>
-      line
-        .slice(1)
-        .replace(/\/\*[^]*?\*\//g, " ")
-        .replace(/\/\/.*$/, "")
-        .replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g, " ")
-        .trim(),
-    )
-    .filter(Boolean);
+type LexicalMode =
+  | "code"
+  | "block-comment"
+  | "single-quote"
+  | "double-quote"
+  | "template"
+  | "triple-single-quote"
+  | "triple-double-quote";
+
+interface LexicalState {
+  mode: LexicalMode;
+  escaped: boolean;
+  moduleSpecifier: string | null;
 }
 
-function addedProviderSignals(patch: string): string {
-  return patch
-    .split("\n")
-    .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
-    .map((line) =>
-      line
-        .slice(1)
-        .replace(/\/\*[^]*?\*\//g, " ")
-        .replace(/\/\/.*$/, " "),
-    )
-    .join("\n")
-    .slice(0, 256_000)
-    .toLowerCase();
+interface AddedPatchAnalysis {
+  codeLines: string[];
+  providerSignals: string;
+}
+
+function startsModuleSpecifier(code: string): boolean {
+  return /(?:\b(?:from|import)\s*|\brequire\s*\(\s*)$/.test(code);
+}
+
+function analyzePatchLine(
+  source: string,
+  state: LexicalState,
+  collectProviderSignals: boolean,
+  providerSignals: string[],
+): string {
+  let code = "";
+
+  const finishModuleSpecifier = () => {
+    const value = state.moduleSpecifier;
+    if (value && /^[A-Za-z0-9@._/+~-]{1,200}$/.test(value)) providerSignals.push(value);
+    state.moduleSpecifier = null;
+  };
+
+  for (let index = 0; index < source.length;) {
+    if (state.mode === "block-comment") {
+      if (source.startsWith("*/", index)) {
+        state.mode = "code";
+        code += "  ";
+        index += 2;
+      } else {
+        code += " ";
+        index++;
+      }
+      continue;
+    }
+
+    if (state.mode === "triple-single-quote" || state.mode === "triple-double-quote") {
+      const delimiter = state.mode === "triple-single-quote" ? "'''" : '"""';
+      if (source.startsWith(delimiter, index)) {
+        state.mode = "code";
+        code += "   ";
+        index += 3;
+      } else {
+        code += " ";
+        index++;
+      }
+      continue;
+    }
+
+    if (
+      state.mode === "single-quote" ||
+      state.mode === "double-quote" ||
+      state.mode === "template"
+    ) {
+      const delimiter =
+        state.mode === "single-quote" ? "'" : state.mode === "double-quote" ? '"' : "`";
+      const character = source[index]!;
+      if (state.escaped) {
+        if (state.moduleSpecifier !== null) state.moduleSpecifier += character;
+        state.escaped = false;
+        code += " ";
+        index++;
+      } else if (character === "\\") {
+        state.escaped = true;
+        code += " ";
+        index++;
+      } else if (character === delimiter) {
+        finishModuleSpecifier();
+        state.mode = "code";
+        code += " ";
+        index++;
+      } else {
+        if (state.moduleSpecifier !== null) state.moduleSpecifier += character;
+        code += " ";
+        index++;
+      }
+      continue;
+    }
+
+    if (source.startsWith("//", index)) {
+      code += " ".repeat(source.length - index);
+      break;
+    }
+    if (source.startsWith("/*", index)) {
+      state.mode = "block-comment";
+      code += "  ";
+      index += 2;
+      continue;
+    }
+    if (source.startsWith("'''", index) || source.startsWith('"""', index)) {
+      state.mode = source.startsWith("'''", index) ? "triple-single-quote" : "triple-double-quote";
+      state.moduleSpecifier = null;
+      code += "   ";
+      index += 3;
+      continue;
+    }
+    const character = source[index]!;
+    if (character === "'" || character === '"' || character === "`") {
+      state.mode =
+        character === "'" ? "single-quote" : character === '"' ? "double-quote" : "template";
+      state.escaped = false;
+      state.moduleSpecifier =
+        collectProviderSignals && character !== "`" && startsModuleSpecifier(code) ? "" : null;
+      code += " ";
+      index++;
+      continue;
+    }
+    code += character;
+    index++;
+  }
+
+  state.escaped = false;
+  return code.trim();
+}
+
+/**
+ * Analyze the resulting side of a unified diff while keeping lexical state across
+ * lines. Provider routing may retain only import/require module specifiers; those
+ * strings are kept separate and can never become outbound query text.
+ */
+function analyzeAddedPatch(patch: string): AddedPatchAnalysis {
+  const codeLines: string[] = [];
+  const providerSignals: string[] = [];
+  const state: LexicalState = { mode: "code", escaped: false, moduleSpecifier: null };
+
+  for (const patchLine of patch.split("\n")) {
+    if (patchLine.startsWith("@@")) {
+      state.mode = "code";
+      state.escaped = false;
+      state.moduleSpecifier = null;
+      continue;
+    }
+    if (patchLine.startsWith("+++") || patchLine.startsWith("---")) continue;
+    const isAdded = patchLine.startsWith("+");
+    const isContext = patchLine.startsWith(" ");
+    if (!isAdded && !isContext) continue;
+    const code = analyzePatchLine(patchLine.slice(1), state, isAdded, providerSignals);
+    if (isAdded && code) codeLines.push(code);
+  }
+
+  return {
+    codeLines,
+    providerSignals: providerSignals.join("\n").slice(0, 256_000).toLowerCase(),
+  };
 }
 
 function normalizeQuery(parts: string[]): string {
@@ -168,10 +299,10 @@ function providersFor(file: ResearchInputFile, code: string, signals: string): s
   );
   add(
     "expo",
-    /(?:^|[\s"'])@?expo(?:[/-][a-z0-9-]+|[\s"'])/.test(signals) ||
+    /(?:^|\n)(?:expo|expo-[a-z0-9-]+|@expo\/[a-z0-9-]+)(?:\n|$)/.test(signals) ||
       /(?:^|\/)packages\/expo(?:-[^/]+)?(?:\/|$)/.test(path),
   );
-  add("react-native", /["']react-native["']/.test(signals));
+  add("react-native", /(?:^|\n)react-native(?:\/[^\n]+)?(?:\n|$)/.test(signals));
   if (providers.length > 0) return providers;
   if (/androidx\.media3|mediasessionservice|\bexoplayer\b/.test(text)) return ["media3"];
   if (/com\.bumptech\.glide|\bglide\b/.test(text)) return ["glide"];
@@ -234,9 +365,9 @@ export function deriveResearchQueries(files: ResearchInputFile[], maxQueries = 8
   for (const file of files) {
     const platform = platformFor(file);
     if (!platform) continue;
-    const lines = addedCode(file.patch);
+    const { codeLines: lines, providerSignals } = analyzeAddedPatch(file.patch);
     const code = lines.join("\n").slice(0, 256_000);
-    const providers = providersFor(file, code, addedProviderSignals(file.patch));
+    const providers = providersFor(file, code, providerSignals);
 
     for (const provider of providers) {
       let addedForProvider = 0;

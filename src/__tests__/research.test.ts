@@ -109,6 +109,54 @@ test("routes Expo and React Native ecosystem imports without forwarding module s
   expect(JSON.stringify(queries)).not.toContain("expo-camera");
 });
 
+test("multiline literals and block comments never become Expo Algolia queries", () => {
+  const queries = deriveResearchQueries(
+    [
+      {
+        path: "app/Camera.tsx",
+        patch: [
+          "@@ -1 +1,14 @@",
+          '+import { CameraView } from "expo-camera";',
+          "+const certificate = `-----BEGIN PRIVATE KEY-----",
+          "+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjSensitiveCredentialType",
+          "+-----END PRIVATE KEY-----`;",
+          "+/*",
+          "+ReviewerHomeDirectory SecretCertificateIdentifier",
+          "+*/",
+          "+const camera = CameraView;",
+        ].join("\n"),
+      },
+      {
+        path: "ios/Secrets.swift",
+        patch: [
+          '+let certificate = """',
+          "+SwiftMultilinePrivateCredentialType",
+          '+"""',
+          "+let monitor = NWPathMonitor()",
+        ].join("\n"),
+      },
+    ],
+    20,
+  );
+
+  expect(queries).toContainEqual({
+    platform: "react-native",
+    providers: ["expo"],
+    query: "CameraView",
+  });
+  expect(queries).toContainEqual({
+    platform: "apple",
+    providers: ["apple"],
+    query: "NWPathMonitor",
+  });
+  const serialized = JSON.stringify(queries);
+  expect(serialized).not.toContain("MIIEvQIB");
+  expect(serialized).not.toContain("SensitiveCredentialType");
+  expect(serialized).not.toContain("ReviewerHomeDirectory");
+  expect(serialized).not.toContain("SecretCertificateIdentifier");
+  expect(serialized).not.toContain("SwiftMultilinePrivateCredentialType");
+});
+
 test("research index configuration is absolute, root-only, and required when enabled", () => {
   expect(
     ReviewConfigSchema.safeParse({ research: { enabled: true, indexPath: "index.json" } }).success,

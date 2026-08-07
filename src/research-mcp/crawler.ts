@@ -12,6 +12,7 @@ import {
   resolveAllowedUrl,
   type DocumentationProvider,
 } from "./providers.js";
+import { readBodyWithLimit } from "./response.js";
 import { buildSearchIndex, writeSearchIndex } from "./search-index.js";
 import { extractYouTrackIssue } from "./youtrack.js";
 import {
@@ -69,31 +70,6 @@ export interface UpdateOptions {
 
 function sleep(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-async function readBodyWithLimit(response: Response, maximumBytes: number): Promise<string> {
-  const contentLength = Number(response.headers.get("content-length") ?? 0);
-  if (contentLength > maximumBytes) {
-    throw new Error(`response is ${contentLength} bytes; limit is ${maximumBytes}`);
-  }
-  if (!response.body) {
-    throw new Error("response has no body");
-  }
-
-  const chunks: Uint8Array[] = [];
-  let received = 0;
-  const reader = response.body.getReader();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    received += value.byteLength;
-    if (received > maximumBytes) {
-      await reader.cancel();
-      throw new Error(`response exceeded the ${maximumBytes}-byte limit`);
-    }
-    chunks.push(value);
-  }
-  return new TextDecoder("utf-8", { fatal: false }).decode(Buffer.concat(chunks));
 }
 
 async function fetchAllowedContent(
@@ -223,6 +199,15 @@ export async function readSourcesConfig(configPath: string): Promise<SourcesConf
   return sourcesConfigSchema.parse(JSON.parse(await readFile(configPath, "utf8")));
 }
 
+export function resolveIndexOutputPath(
+  configPath: string,
+  configuredOutput: string,
+  outputPath?: string,
+): string {
+  if (outputPath) return path.resolve(outputPath);
+  return path.resolve(path.dirname(path.resolve(configPath)), configuredOutput);
+}
+
 export async function updateDocumentationIndex(options: UpdateOptions) {
   const absoluteConfigPath = path.resolve(options.configPath);
   const config = await readSourcesConfig(absoluteConfigPath);
@@ -266,9 +251,7 @@ export async function updateDocumentationIndex(options: UpdateOptions) {
     throw new Error(`Index update produced no searchable content${details ? `:\n${details}` : ""}`);
   }
 
-  const outputPath = path.resolve(
-    options.outputPath ?? path.resolve(path.dirname(absoluteConfigPath), "..", config.output),
-  );
+  const outputPath = resolveIndexOutputPath(absoluteConfigPath, config.output, options.outputPath);
   const index = buildSearchIndex(chunks, documents.length, indexedAt);
   await writeSearchIndex(outputPath, index.serialized);
 

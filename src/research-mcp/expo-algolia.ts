@@ -5,6 +5,7 @@ import * as cheerio from "cheerio";
 import { z } from "zod";
 
 import { expoProvider, resolveAllowedUrl } from "./providers.js";
+import { readBodyWithLimit } from "./response.js";
 import type { DiscoveredDocument } from "./types.js";
 
 const EXPO_ALGOLIA_ENDPOINT = "https://qex7pb7d46-dsn.algolia.net/1/indexes/expo/query";
@@ -91,16 +92,7 @@ async function fetchExpoAlgolia(
   if (!contentType.includes("json")) {
     throw new Error(`Expo Algolia returned unsupported content type: ${contentType || "missing"}`);
   }
-  const contentLength = Number(response.headers.get("content-length") ?? 0);
-  if (contentLength > maxResponseBytes) {
-    throw new Error(
-      `Expo Algolia response is ${contentLength} bytes; limit is ${maxResponseBytes}`,
-    );
-  }
-  const body = await response.text();
-  if (Buffer.byteLength(body) > maxResponseBytes) {
-    throw new Error(`Expo Algolia response exceeded the ${maxResponseBytes}-byte limit`);
-  }
+  const body = await readBodyWithLimit(response, maxResponseBytes);
   return extractExpoAlgoliaDocuments(body);
 }
 

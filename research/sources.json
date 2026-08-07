@@ -143,14 +143,15 @@
       "maxPages": 30,
       "maxDepth": 2,
       "seedUrls": [
-        "https://github.com/lysine-dev/okhttp/blob/main/README.md",
-        "https://github.com/lysine-dev/okhttp/blob/main/CHANGELOG.md",
-        "https://github.com/lysine-dev/okhttp/blob/main/docs/recipes.md",
-        "https://github.com/lysine-dev/okhttp/blob/main/docs/features/caching.md",
-        "https://github.com/lysine-dev/okhttp/blob/main/docs/features/calls.md",
-        "https://github.com/lysine-dev/okhttp/blob/main/docs/features/connections.md",
-        "https://github.com/lysine-dev/okhttp/blob/main/docs/features/https.md",
-        "https://github.com/lysine-dev/okhttp/blob/main/docs/features/interceptors.md"
+        "https://lysine.dev/okhttp/",
+        "https://lysine.dev/okhttp/recipes/",
+        "https://lysine.dev/okhttp/features/caching/",
+        "https://lysine.dev/okhttp/features/calls/",
+        "https://lysine.dev/okhttp/features/connections/",
+        "https://lysine.dev/okhttp/features/https/",
+        "https://lysine.dev/okhttp/features/interceptors/",
+        "https://lysine.dev/okhttp/changelogs/changelog/",
+        "https://lysine.dev/okhttp/5.x/okhttp/okhttp3/-ok-http-client/"
       ]
     },
     {

@@ -224,48 +224,11 @@ export const glideProvider = htmlProvider("glide", "android", "Glide documentati
   },
 ]);
 
-const okHttpOrigins: readonly AllowedOrigin[] = [
-  {
-    hostname: "github.com",
-    prefixes: [
-      "/lysine-dev/okhttp/blob/main/docs",
-      "/lysine-dev/okhttp/blob/main/README.md",
-      "/lysine-dev/okhttp/blob/main/CHANGELOG.md",
-    ],
-  },
-];
-
-export const okHttpProvider: DocumentationProvider = {
-  id: "okhttp",
-  platform: "android",
-  displayName: "OkHttp project documentation",
-  accepts(url) {
-    return acceptsOrigin(url, okHttpOrigins);
-  },
-  acceptsRequest(url) {
-    return (
-      this.accepts(url) ||
-      (isSecurePublicUrl(url, "raw.githubusercontent.com") &&
-        hasAllowedPath(url, [
-          "/lysine-dev/okhttp/refs/heads/main/docs",
-          "/lysine-dev/okhttp/refs/heads/main/README.md",
-          "/lysine-dev/okhttp/refs/heads/main/CHANGELOG.md",
-        ]))
-    );
-  },
-  canonicalize: canonicalizeDocumentationUrl,
-  requestUrl(documentUrl) {
-    const match = documentUrl.pathname.match(
-      /^\/lysine-dev\/okhttp\/blob\/main\/(docs\/.+\.md|README\.md|CHANGELOG\.md)$/,
-    );
-    return match
-      ? new URL(`https://raw.githubusercontent.com/lysine-dev/okhttp/refs/heads/main/${match[1]}`)
-      : documentUrl;
-  },
-  responseFormat() {
-    return "markdown";
-  },
-};
+// OkHttp moved from Square to the Commonhaus-backed Lysine organization in 2026.
+// Use its canonical project domain instead of coupling trust to either GitHub owner name.
+export const okHttpProvider = htmlProvider("okhttp", "android", "OkHttp project documentation", [
+  { hostname: "lysine.dev", prefixes: ["/okhttp"] },
+]);
 
 export const kotlinCoroutinesProvider = htmlProvider(
   "kotlin-coroutines",

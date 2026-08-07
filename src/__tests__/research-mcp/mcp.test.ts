@@ -1,8 +1,7 @@
-import assert from "node:assert/strict";
+import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -54,18 +53,14 @@ test("stdio MCP lists and calls the read-only documentation search tool", async 
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    assert.deepEqual(
-      tools.tools.map((tool) => tool.name),
-      ["search_platform_docs"],
-    );
-    assert.equal(tools.tools[0]?.annotations?.readOnlyHint, true);
-    assert.equal(tools.tools[0]?.annotations?.openWorldHint, true);
-    assert.match(tools.tools[0]?.description ?? "", /exact API symbols plus one behavior/);
+    expect(tools.tools.map((tool) => tool.name)).toEqual(["search_platform_docs"]);
+    expect(tools.tools[0]?.annotations?.readOnlyHint).toBe(true);
+    expect(tools.tools[0]?.annotations?.openWorldHint).toBe(true);
+    expect(tools.tools[0]?.description ?? "").toMatch(/exact API symbols plus one behavior/);
     const inputSchema = tools.tools[0]?.inputSchema as {
       properties?: { query?: { description?: string } };
     };
-    assert.match(
-      inputSchema.properties?.query?.description ?? "",
+    expect(inputSchema.properties?.query?.description ?? "").toMatch(
       /CameraView barcodeScannerSettings/,
     );
 
@@ -81,14 +76,14 @@ test("stdio MCP lists and calls the read-only documentation search tool", async 
     });
     const content = response.content as Array<{ type: string; text?: string }>;
     const textBlock = content.find((block) => block.type === "text");
-    assert.ok(textBlock && textBlock.type === "text");
+    expect(textBlock?.type).toBe("text");
     const payload = JSON.parse(textBlock.text ?? "") as {
       results: Array<{ title: string; provider: string; sourceKind: string }>;
     };
-    assert.equal(payload.results[0]?.title, "MainActor");
-    assert.equal(payload.results[0]?.provider, "apple");
-    assert.equal(payload.results[0]?.sourceKind, "official-api");
-    assert.equal(payload.results.length, 1);
+    expect(payload.results[0]?.title).toBe("MainActor");
+    expect(payload.results[0]?.provider).toBe("apple");
+    expect(payload.results[0]?.sourceKind).toBe("official-api");
+    expect(payload.results).toHaveLength(1);
   } finally {
     await client.close();
     await rm(directory, { recursive: true, force: true });

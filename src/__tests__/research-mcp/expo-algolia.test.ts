@@ -1,5 +1,4 @@
-import assert from "node:assert/strict";
-import test from "node:test";
+import { expect, test } from "bun:test";
 
 import { extractExpoAlgoliaDocuments, searchExpoAlgolia } from "../../research-mcp/expo-algolia.js";
 
@@ -23,52 +22,50 @@ test("Expo Algolia records become bounded official documents without highlight m
     }),
   );
 
-  assert.equal(documents.length, 1);
-  assert.equal(documents[0]?.provider, "expo");
-  assert.equal(documents[0]?.platform, "react-native");
-  assert.equal(documents[0]?.title, "CameraView");
-  assert.match(documents[0]?.body ?? "", /barcodeScannerSettings/);
-  assert.doesNotMatch(documents[0]?.body ?? "", /&lt;/);
+  expect(documents).toHaveLength(1);
+  expect(documents[0]?.provider).toBe("expo");
+  expect(documents[0]?.platform).toBe("react-native");
+  expect(documents[0]?.title).toBe("CameraView");
+  expect(documents[0]?.body ?? "").toMatch(/barcodeScannerSettings/);
+  expect(documents[0]?.body ?? "").not.toMatch(/&lt;/);
 });
 
 test("Expo Algolia records cannot point outside official Expo documentation", () => {
-  assert.throws(
-    () =>
-      extractExpoAlgoliaDocuments(
-        JSON.stringify({
-          hits: [
-            {
-              objectID: "forged",
-              url: "https://attacker.example/expo",
-              content: "Forged documentation content",
-              hierarchy: { lvl0: "Forged" },
-            },
-          ],
-        }),
-      ),
-    /outside the expo documentation allowlist/,
-  );
+  expect(() =>
+    extractExpoAlgoliaDocuments(
+      JSON.stringify({
+        hits: [
+          {
+            objectID: "forged",
+            url: "https://attacker.example/expo",
+            content: "Forged documentation content",
+            hierarchy: { lvl0: "Forged" },
+          },
+        ],
+      }),
+    ),
+  ).toThrow(/outside the expo documentation allowlist/);
 });
 
 test("Expo Algolia query and result bounds fail before any network request", async () => {
-  await assert.rejects(() => searchExpoAlgolia("", 1), /between 1 and 300/);
-  await assert.rejects(() => searchExpoAlgolia("CameraView", 11), /between 1 and 10/);
+  await expect(searchExpoAlgolia("", 1)).rejects.toThrow(/between 1 and 300/);
+  await expect(searchExpoAlgolia("CameraView", 11)).rejects.toThrow(/between 1 and 10/);
 });
 
 test("Expo provider passes the normalized documentation query directly to Algolia", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input, init) => {
-    assert.equal(input, "https://qex7pb7d46-dsn.algolia.net/1/indexes/expo/query");
-    assert.equal(init?.method, "POST");
-    assert.equal(init?.redirect, "error");
+    expect(input).toBe("https://qex7pb7d46-dsn.algolia.net/1/indexes/expo/query");
+    expect(init?.method).toBe("POST");
+    expect(init?.redirect).toBe("error");
     const request = JSON.parse(String(init?.body)) as {
       params: string;
       facetFilters: string[][];
     };
     const params = new URLSearchParams(request.params);
-    assert.equal(params.get("query"), "CameraView barcodeScannerSettings");
-    assert.equal(params.get("hitsPerPage"), "2");
-    assert.deepEqual(request.facetFilters, [["version:none", "version:latest"]]);
+    expect(params.get("query")).toBe("CameraView barcodeScannerSettings");
+    expect(params.get("hitsPerPage")).toBe("2");
+    expect(request.facetFilters).toEqual([["version:none", "version:latest"]]);
     return new Response(
       JSON.stringify({
         hits: [
@@ -86,7 +83,37 @@ test("Expo provider passes the normalized documentation query directly to Algoli
 
   try {
     const documents = await searchExpoAlgolia("  CameraView   barcodeScannerSettings  ", 2);
-    assert.equal(documents[0]?.title, "barcodeScannerSettings");
+    expect(documents[0]?.title).toBe("barcodeScannerSettings");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Expo Algolia cancels an oversized streaming response", async () => {
+  const originalFetch = globalThis.fetch;
+  let cancelled = false;
+  let pullCount = 0;
+  globalThis.fetch = (async () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pullCount++;
+          controller.enqueue(new Uint8Array(600_000));
+          if (pullCount === 3) controller.close();
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+      { headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+
+  try {
+    await expect(searchExpoAlgolia("CameraView", 2)).rejects.toThrow(
+      "response exceeded the 1000000-byte limit",
+    );
+    expect(cancelled).toBe(true);
+    expect(pullCount).toBeLessThanOrEqual(3);
   } finally {
     globalThis.fetch = originalFetch;
   }
