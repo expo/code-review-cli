@@ -232,20 +232,41 @@ configs cannot alter its network behavior or limits. Result-cache reuse remains
 disabled while research is enabled because web results and documentation can change
 without a config change.
 
-The fixed provider catalog covers Apple/Android APIs plus Media3, Glide, OkHttp,
+The fixed provider catalog covers Apple/Android APIs plus SDWebImage, Media3, Glide, OkHttp,
 Kotlin coroutines, Gradle/AGP, Swift concurrency/evolution, platform release/API
 availability, Expo, React Native, Reanimated, Gesture Handler, Screens, and Worklets.
 Queries are short exact symbols plus at most one useful member or behavior term. For
 example, `CameraView barcodeScannerSettings` is useful; a source snippet, import path,
 or natural-language question is not. The MCP publishes the same guidance in its tool
 metadata. An empty result stays empty; it is not replaced with a loose semantic guess.
+The tool metadata also includes an explicit provider map, so the reviewing model can
+distinguish core platform APIs from release notes, dependency-owned documentation,
+build-tool references, and issue-tracker context before choosing a corpus.
+Reviewer instructions require grounding whenever a judgment depends on an externally
+owned API contract, whether the evidence confirms a finding or dismisses a candidate
+as safe; model memory alone is not treated as sufficient for those decisions.
+Native source keeps its platform context: Apple or Android documents the OS contract,
+while an explicit dependency provider documents library-owned behavior. Providers are
+additive when both contracts matter. A path under `packages/expo-*` does not by itself
+route Swift or Kotlin code to Expo's JavaScript documentation.
 
 Direct clients can also call `fetch_platform_doc` with an exact documentation URL.
 The tool infers the narrowest matching provider (or accepts an explicit provider
 hint), then applies the same fixed HTTPS host/path allowlist, manual redirect checks,
 10-second timeout, 5 MB response limit, content-type validation, extraction, and
-passage bounds as search-discovered pages. An optional `query` ranks passages only
-within that one page; it never broadens discovery. For example,
+passage bounds as search-discovered pages. It returns normalized extracted text, never
+raw HTML or DocC JSON. An optional `query` selects context only within that one page;
+it never broadens discovery. Context expands progressively:
+
+- `focused` returns the best passage plus adjacent passages.
+- `section` (the default) returns a contiguous window of at most 12,000 characters
+  around the best passage.
+- `document` returns at most 20,000 characters of extracted page text and should be
+  used only when the contract is spread across the page.
+
+The response reports returned and original character counts, whether it was truncated,
+the anchor passage id, and bounded available passage ids. Search results also carry
+neighboring passage ids so an agent can recognize when more local context exists. For example,
 `https://developer.apple.com/documentation/swiftui/view/menustyle(_:)` is resolved to
 Apple's DocC JSON and returned with the canonical page URL and API availability.
 
@@ -257,6 +278,14 @@ are instructed to attach `sources` only when documentation materially supports a
 finding. ECR accepts only exact URLs returned during that review, restores canonical
 titles, carries citations through coordination, and renders them below the finding;
 invented or unrelated citations are dropped.
+
+Reviewers also emit a bounded `researchDecisions` record only when documentation
+materially confirms a finding candidate or proves one safe. ECR grounds those records
+against the exact MCP audit and discards ungrounded claims. After verification and
+suppression, the log and Actions summary report final findings with citations,
+supported and dismissed candidates, and unique audited results materially used versus
+unused. Counts use canonical URLs rather than passage count, so repeated hits do not
+inflate usefulness.
 
 For a query routed to the `expo` provider, `serve` POSTs the already-sanitized query
 directly to Expo's public Algolia search endpoint and returns canonical
