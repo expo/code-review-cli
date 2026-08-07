@@ -209,6 +209,47 @@ test("Android discovery fetches only allowlisted official HTML and returns a bou
   expect(response.results[0]?.passage).toContain("asynchronously");
 });
 
+test("discovery fetches only enough candidates to fill the requested result limit", async () => {
+  const documentRequests: string[] = [];
+  const fetchImplementation = async (input: string | URL | Request): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    if (url.hostname === "api.search.brave.com") {
+      return jsonResponse({
+        web: {
+          results: ["First", "Second", "Third", "Fourth"].map((title) => ({
+            title,
+            url: `https://developer.android.com/reference/example/${title}`,
+          })),
+        },
+      });
+    }
+    documentRequests.push(url.pathname);
+    if (url.pathname.endsWith("/First")) {
+      return new Response("unavailable", { status: 503 });
+    }
+    return new Response(
+      `<!doctype html><html><head><title>${url.pathname}</title></head>` +
+        `<body><main><p>Official API documentation for ${url.pathname}. ` +
+        `This reference explains the Example lifecycle, behavior, constraints, and supported usage.</p></main></body></html>`,
+      { headers: { "content-type": "text/html; charset=utf-8" } },
+    );
+  };
+
+  const response = await searchRemoteDocumentation("android", "Example behavior", 2, {
+    apiKey: "test-key",
+    fetchImplementation,
+  });
+
+  expect(response.results).toHaveLength(2);
+  expect(documentRequests).toEqual([
+    "/reference/example/First",
+    "/reference/example/Second",
+    "/reference/example/Third",
+  ]);
+  expect(documentRequests).not.toContain("/reference/example/Fourth");
+  expect(response.warnings[0]).toContain("/reference/example/First");
+});
+
 test("an allowlisted search result cannot redirect the fetch off-provider", async () => {
   const fetchImplementation = async (input: string | URL | Request): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : input.toString());

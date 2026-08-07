@@ -180,50 +180,65 @@ export async function searchRemoteDocumentation(
 
   const warnings: string[] = [];
   const indexedAt = new Date().toISOString();
-  const fetched = await Promise.all(
-    candidates.map(async ({ url, position }): Promise<SearchResult | null> => {
-      try {
-        const document = await fetchDocumentationDocument(
-          provider,
-          url.href,
-          definition.sourceKind,
-          fetchImplementation,
-        );
-        if (!document || (options.language && document.language !== options.language)) return null;
-        const id = createHash("sha256")
-          .update(`${providerId}\0${document.url}\0${document.title}`)
-          .digest("hex")
-          .slice(0, 16);
-        const selected = bestPassage(document, query, indexedAt);
-        const result: SearchResult = {
-          id: `remote:${providerId}:${id}`,
-          platform: document.platform,
-          provider: providerId,
-          sourceKind: definition.sourceKind,
-          title: document.title,
-          url: document.url,
-          passage: selected.passage,
-          ...(document.framework ? { framework: document.framework } : {}),
-          ...(document.symbol ? { symbol: document.symbol } : {}),
-          ...(document.language ? { language: document.language } : {}),
-          ...(document.availability ? { availability: document.availability } : {}),
-          indexedAt,
-          score: selected.relevance * 100 + hits.length - position,
-        };
-        return result;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        warnings.push(`${provider.displayName} fetch failed for ${url.href}: ${message}`);
-        return null;
-      }
-    }),
-  );
+  const fetchCandidate = async ({
+    url,
+    position,
+  }: {
+    url: URL;
+    position: number;
+  }): Promise<SearchResult | null> => {
+    try {
+      const document = await fetchDocumentationDocument(
+        provider,
+        url.href,
+        definition.sourceKind,
+        fetchImplementation,
+      );
+      if (!document || (options.language && document.language !== options.language)) return null;
+      const id = createHash("sha256")
+        .update(`${providerId}\0${document.url}\0${document.title}`)
+        .digest("hex")
+        .slice(0, 16);
+      const selected = bestPassage(document, query, indexedAt);
+      const result: SearchResult = {
+        id: `remote:${providerId}:${id}`,
+        platform: document.platform,
+        provider: providerId,
+        sourceKind: definition.sourceKind,
+        title: document.title,
+        url: document.url,
+        passage: selected.passage,
+        ...(document.framework ? { framework: document.framework } : {}),
+        ...(document.symbol ? { symbol: document.symbol } : {}),
+        ...(document.language ? { language: document.language } : {}),
+        ...(document.availability ? { availability: document.availability } : {}),
+        indexedAt,
+        score: selected.relevance * 100 + hits.length - position,
+      };
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      warnings.push(`${provider.displayName} fetch failed for ${url.href}: ${message}`);
+      return null;
+    }
+  };
+
+  // Brave ranking is discovery order. Fetch only enough pages to satisfy the
+  // caller, advancing to later candidates when a page is rejected or unavailable.
+  // Batching the outstanding result count preserves parallelism without eagerly
+  // downloading every discovery candidate.
+  const fetched: SearchResult[] = [];
+  let candidateIndex = 0;
+  while (fetched.length < limit && candidateIndex < candidates.length) {
+    const outstanding = limit - fetched.length;
+    const batch = candidates.slice(candidateIndex, candidateIndex + outstanding);
+    candidateIndex += batch.length;
+    const batchResults = await Promise.all(batch.map(fetchCandidate));
+    fetched.push(...batchResults.flatMap((result) => (result ? [result] : [])));
+  }
 
   return {
-    results: fetched
-      .flatMap((result) => (result ? [result] : []))
-      .sort((left, right) => right.score - left.score)
-      .slice(0, limit),
+    results: fetched.sort((left, right) => right.score - left.score).slice(0, limit),
     warnings: warnings.slice(0, 5),
   };
 }

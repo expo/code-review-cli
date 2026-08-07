@@ -29,6 +29,13 @@ results. Each run uses an owner-only temporary MCP configuration and append-only
 A tool failure remains local to research and never skips or weakens an ordinary review
 pass.
 
+Starting a review does not derive searches from the patch, prefetch documentation, or
+start a crawl. ECR only prepares the bounded MCP configuration and audit path. Reviewer
+and cross-file agents make individual search or direct-fetch calls when their reasoning
+identifies an external contract that needs grounding. This keeps query selection inside
+the pass that understands the candidate issue and avoids spending calls on speculative
+identifier searches.
+
 ## Search, Fetch, and Optional Index Boundary
 
 `review-research-mcp serve` uses Brave Web Search as discovery for non-Expo
@@ -46,6 +53,12 @@ snippet—is parsed, locally ranked, truncated, and returned as evidence. Apple
 documentation uses its structured DocC JSON, including symbol and availability
 metadata. Search-engine sparsity produces an empty result and never broadens the
 trust boundary.
+
+Search-time page retrieval is demand-driven rather than a background prefetch. The
+MCP fetches the highest-ranked allowlisted candidates in batches sized to the number
+of results still needed. It advances to later candidates only when an earlier page is
+rejected, unavailable, or excluded by a requested language. Candidate pages that are
+not needed to fill the result limit are not downloaded.
 
 ## Direct URL Fetch Boundary
 
