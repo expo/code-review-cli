@@ -179,6 +179,26 @@ test("an unpaired JSX apostrophe cannot expose a later string literal as a query
   expect(JSON.stringify(queries)).not.toContain("AKIAIOSFODNN7EXAMPLE");
 });
 
+test("an oversized patch line stops bounded query analysis for that file", () => {
+  const queries = deriveResearchQueries([
+    {
+      path: "app/Camera.tsx",
+      patch: [
+        '+import { CameraView } from "expo-camera";',
+        `+${"'".repeat(200_000)}`,
+        "+const credential = SensitiveCredentialType;",
+      ].join("\n"),
+    },
+  ]);
+
+  expect(queries).toContainEqual({
+    platform: "react-native",
+    providers: ["expo"],
+    query: "CameraView",
+  });
+  expect(JSON.stringify(queries)).not.toContain("SensitiveCredentialType");
+});
+
 test("research child environment forwards only locale and standard proxy variables", () => {
   expect(
     researchChildEnvironment({

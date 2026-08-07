@@ -43,6 +43,7 @@ const APPLE_EXTENSIONS = /\.(?:swift|m|mm)$/i;
 const ANDROID_EXTENSIONS = /\.(?:kt|java|gradle|gradle\.kts)$/i;
 const REACT_NATIVE_EXTENSIONS = /\.(?:[cm]?[jt]sx?)$/i;
 const QUERY_TOKEN = /[A-Za-z][A-Za-z0-9_.:-]{1,79}/g;
+const MAX_ANALYZED_PATCH_LINE_LENGTH = 4096;
 const TYPE_TOKEN = /\b[A-Z][A-Za-z0-9_]{2,}(?:\.[A-Za-z_][A-Za-z0-9_]*)*/g;
 const MEMBER_TOKEN = /\.([a-z][A-Za-z0-9_]{3,})\s*(?:\(|\b)/g;
 const ECOSYSTEM_CALL_TOKEN =
@@ -250,7 +251,15 @@ function analyzeAddedPatch(patch: string): AddedPatchAnalysis {
     const isAdded = patchLine.startsWith("+");
     const isContext = patchLine.startsWith(" ");
     if (!isAdded && !isContext) continue;
-    const code = analyzePatchLine(patchLine.slice(1), state, isAdded, providerSignals);
+    const source = patchLine.slice(1);
+    if (source.length > MAX_ANALYZED_PATCH_LINE_LENGTH) {
+      // A quote startsModuleSpecifier check examines the accumulated line prefix.
+      // Stop this file before an attacker-controlled giant line can turn that
+      // bounded research prepass into quadratic work. Abandoning later lines also
+      // avoids guessing whether the skipped input opened a multiline literal.
+      break;
+    }
+    const code = analyzePatchLine(source, state, isAdded, providerSignals);
     if (isAdded && code) codeLines.push(code);
   }
 
