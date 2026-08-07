@@ -1,5 +1,6 @@
 // @ref LLP 0013#query-and-prompt-boundary [implements] — derive identifiers only; validate, bound, and sanitize MCP evidence
 // @ref LLP 0013#one-package-two-binaries [implements] — resolve the package-relative MCP entry instead of PATH/configured commands
+// @ref LLP 0013#research-provenance-and-citations [implements] — bounded query/result audit records plus exact citation grounding
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,7 @@ import { z } from "zod";
 
 import type { LoadedConfig } from "../config/schema.js";
 import { run } from "./exec.js";
+import type { Finding, FindingSource } from "./schema.js";
 
 export type ResearchPlatform = "apple" | "android" | "react-native";
 
@@ -23,6 +25,7 @@ export interface ResearchInputFile {
 }
 
 export interface ResearchEvidence {
+  id?: string;
   query: ResearchQuery;
   provider: string;
   sourceKind: string;
@@ -37,6 +40,24 @@ export interface ResearchRun {
   evidence: ResearchEvidence[];
   warnings: string[];
   promptText: string;
+}
+
+export interface ResearchResultRecord {
+  id?: string;
+  query: ResearchQuery;
+  provider: string;
+  sourceKind: string;
+  title: string;
+  url: string;
+  passage: string;
+  availability?: string[];
+}
+
+export interface ResearchProvenance {
+  queries: ResearchQuery[];
+  results: ResearchResultRecord[];
+  warnings: string[];
+  error?: string;
 }
 
 const APPLE_EXTENSIONS = /\.(?:swift|m|mm)$/i;
@@ -439,12 +460,13 @@ const SearchPayloadSchema = z.object({
   warnings: z.array(z.string().max(500)).max(10).optional(),
   results: z.array(
     z.object({
-      provider: z.string(),
-      sourceKind: z.string(),
-      title: z.string(),
-      url: z.string().url(),
-      passage: z.string(),
-      availability: z.array(z.string()).optional(),
+      id: z.string().min(1).max(240).optional(),
+      provider: z.string().min(1).max(80),
+      sourceKind: z.string().min(1).max(80),
+      title: z.string().min(1).max(500),
+      url: z.string().url().max(2_000),
+      passage: z.string().max(5_000),
+      availability: z.array(z.string().max(240)).max(20).optional(),
     }),
   ),
 });
@@ -515,6 +537,147 @@ export function formatResearchEvidence(evidence: ResearchEvidence[]): string {
     })
     .join("\n\n");
   return cleanEvidenceText(body, 16_000);
+}
+
+function researchQueryKey(query: ResearchQuery): string {
+  return `${query.platform}\0${query.providers.join(",")}\0${query.query}`;
+}
+
+export function toResearchProvenance(run: ResearchRun): ResearchProvenance {
+  return {
+    queries: run.queries,
+    results: run.evidence.map((item) => ({
+      ...(item.id ? { id: cleanEvidenceText(item.id, 240) } : {}),
+      query: item.query,
+      provider: cleanEvidenceText(item.provider, 80),
+      sourceKind: cleanEvidenceText(item.sourceKind, 80),
+      title: cleanEvidenceText(item.title, 240),
+      url: item.url,
+      passage: cleanEvidenceText(item.passage, 1_200),
+      ...(item.availability?.length
+        ? { availability: item.availability.map((value) => cleanEvidenceText(value, 240)) }
+        : {}),
+    })),
+    warnings: run.warnings.map((warning) => cleanEvidenceText(warning, 500)),
+  };
+}
+
+export function formatResearchProgress(provenance: ResearchProvenance): string[] {
+  const lines = [
+    `  research: ${provenance.results.length} result(s) from ${provenance.queries.length} bounded query(s)`,
+  ];
+  const byQuery = new Map<string, ResearchResultRecord[]>();
+  for (const result of provenance.results) {
+    const key = researchQueryKey(result.query);
+    const bucket = byQuery.get(key) ?? [];
+    bucket.push(result);
+    byQuery.set(key, bucket);
+  }
+  for (const [index, query] of provenance.queries.entries()) {
+    lines.push(
+      `  research query ${index + 1}/${provenance.queries.length} — ${query.platform} [${query.providers.join(", ")}]: ${cleanEvidenceText(query.query, 120)}`,
+    );
+    const results = byQuery.get(researchQueryKey(query)) ?? [];
+    if (results.length === 0) {
+      lines.push("    result: none");
+      continue;
+    }
+    for (const result of results) {
+      lines.push(
+        `    result: ${cleanEvidenceText(result.title, 160)} (${result.provider}/${result.sourceKind}) — ${result.url}`,
+      );
+    }
+  }
+  for (const warning of provenance.warnings) {
+    lines.push(`  research warning: ${cleanEvidenceText(warning, 500)}`);
+  }
+  if (provenance.error) {
+    lines.push(`  research error: ${cleanEvidenceText(provenance.error, 500)}`);
+  }
+  return lines;
+}
+
+function escapeMarkdownLabel(value: string): string {
+  return cleanEvidenceText(value, 240)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/([\\[\]])/g, "\\$1");
+}
+
+export function renderResearchMarkdown(provenance: ResearchProvenance): string {
+  const lines = [
+    "### 🔎 Documentation research",
+    "",
+    `${provenance.results.length} result(s) from ${provenance.queries.length} bounded query(s).`,
+    "",
+  ];
+  const byQuery = new Map<string, ResearchResultRecord[]>();
+  for (const result of provenance.results) {
+    const key = researchQueryKey(result.query);
+    const bucket = byQuery.get(key) ?? [];
+    bucket.push(result);
+    byQuery.set(key, bucket);
+  }
+  for (const query of provenance.queries) {
+    lines.push(
+      `- \`${cleanEvidenceText(query.query, 120)}\` — ${query.platform}; ${query.providers.join(", ")}`,
+    );
+    const results = byQuery.get(researchQueryKey(query)) ?? [];
+    if (results.length === 0) {
+      lines.push("  - _No allowlisted result._");
+      continue;
+    }
+    for (const result of results) {
+      lines.push(
+        `  - [${escapeMarkdownLabel(result.title)}](<${result.url}>) — ${escapeMarkdownLabel(result.provider)}/${escapeMarkdownLabel(result.sourceKind)}`,
+      );
+    }
+  }
+  for (const warning of provenance.warnings) {
+    lines.push(`- ⚠️ ${escapeMarkdownLabel(warning)}`);
+  }
+  if (provenance.error) {
+    lines.push(`- ⚠️ Research failed: ${escapeMarkdownLabel(provenance.error)}`);
+  }
+  return lines.join("\n");
+}
+
+export function mergeResearchSources(
+  ...groups: Array<readonly FindingSource[] | undefined>
+): FindingSource[] {
+  const seen = new Set<string>();
+  return groups
+    .flatMap((group) => group ?? [])
+    .filter((source) => {
+      if (seen.has(source.url)) return false;
+      seen.add(source.url);
+      return true;
+    })
+    .slice(0, 5);
+}
+
+/** Keep only exact URLs returned by the trusted research prepass and restore their canonical titles. */
+export function groundResearchSources(
+  findings: Finding[],
+  evidence: ResearchEvidence[],
+): Finding[] {
+  const allowed = new Map(
+    evidence.map((item) => [
+      item.url,
+      { title: cleanEvidenceText(item.title, 240), url: item.url },
+    ]),
+  );
+  return findings.map((finding) => {
+    const { sources: claimed, ...withoutSources } = finding;
+    const sources = mergeResearchSources(
+      claimed?.flatMap((source) => {
+        const canonical = allowed.get(source.url);
+        return canonical ? [canonical] : [];
+      }),
+    );
+    return sources.length > 0 ? { ...withoutSources, sources } : withoutSources;
+  });
 }
 
 export async function collectPlatformResearch(

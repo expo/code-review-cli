@@ -53,11 +53,18 @@ test("stdio MCP lists and calls the read-only documentation search tool", async 
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    expect(tools.tools.map((tool) => tool.name)).toEqual(["search_platform_docs"]);
-    expect(tools.tools[0]?.annotations?.readOnlyHint).toBe(true);
-    expect(tools.tools[0]?.annotations?.openWorldHint).toBe(true);
-    expect(tools.tools[0]?.description ?? "").toMatch(/exact API symbols plus one behavior/);
-    const inputSchema = tools.tools[0]?.inputSchema as {
+    expect(tools.tools.map((tool) => tool.name)).toEqual([
+      "search_platform_docs",
+      "fetch_platform_doc",
+    ]);
+    const searchTool = tools.tools.find((tool) => tool.name === "search_platform_docs");
+    const fetchTool = tools.tools.find((tool) => tool.name === "fetch_platform_doc");
+    expect(searchTool?.annotations?.readOnlyHint).toBe(true);
+    expect(searchTool?.annotations?.openWorldHint).toBe(true);
+    expect(searchTool?.description ?? "").toMatch(/exact API symbols plus one behavior/);
+    expect(fetchTool?.annotations?.readOnlyHint).toBe(true);
+    expect(fetchTool?.description ?? "").toMatch(/every redirect/);
+    const inputSchema = searchTool?.inputSchema as {
       properties?: { query?: { description?: string } };
     };
     expect(inputSchema.properties?.query?.description ?? "").toMatch(

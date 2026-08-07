@@ -5,6 +5,8 @@ import {
   buildVerifierTask,
   buildReviewerTask,
   buildCrossCuttingTask,
+  buildCoordinatorTask,
+  platformResearchSection,
   contextFileSection,
   capContextText,
   splitCrossCuttingInline,
@@ -35,6 +37,19 @@ test("truncates very long input", () => {
 
 test("empty input → empty string", () => {
   expect(sanitizeUntrusted("")).toBe("");
+});
+
+test("research prompts require exact, material citations and preserve them through coordination", () => {
+  const section = platformResearchSection("[menuStyle(_:)] https://developer.apple.com/doc");
+  expect(section.join("\n")).toContain("finding's `sources` array");
+  expect(section.join("\n")).toContain("Never invent, edit, or cite a source");
+
+  const task = buildCoordinatorTask(
+    { title: "PR", body: "", baseRef: "main", headRef: "feature" },
+    {},
+  );
+  expect(task).toContain("Preserve each kept finding's grounded `sources` array exactly");
+  expect(task).toContain("never add a source to a finding that did not already cite it");
 });
 
 // ---- verifier task: LLM-authored fields are neutralized (untrusted framing) ----

@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import type { FetchImplementation } from "./brave-search.js";
+import { fetchDocumentationUrl } from "./direct-fetch.js";
 import { searchExpoAlgolia } from "./expo-algolia.js";
 import { searchOkHttpDocumentation } from "./okhttp-search.js";
 import { getProvider, resolveAllowedUrl } from "./providers.js";
@@ -202,6 +203,62 @@ export async function createDocumentationServer(options: DocumentationServerOpti
         },
         ...(warnings.length > 0 ? { warnings: [...new Set(warnings)].slice(0, 10) } : {}),
         results,
+      };
+      return {
+        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "fetch_platform_doc",
+    {
+      title: "Fetch an official documentation URL",
+      description:
+        "Fetch one caller-supplied documentation URL from the fixed Apple, Android, Expo, React Native, dependency, build-tool, release-note, or issue-source allowlist. The URL and every redirect are revalidated before download. Returns bounded extracted passages and the canonical source URL; use query only to rank passages within that page.",
+      inputSchema: {
+        url: z
+          .string()
+          .url()
+          .max(2_000)
+          .describe("Exact HTTPS documentation URL to fetch; must match a supported provider"),
+        provider: z
+          .enum(PROVIDERS)
+          .optional()
+          .describe("Optional provider hint for URLs accepted by more than one corpus"),
+        query: z
+          .string()
+          .min(1)
+          .max(300)
+          .optional()
+          .describe("Optional short phrase used only to select the most relevant page passages"),
+        limit: z.number().int().min(1).max(5).default(3),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ url, provider, query, limit }) => {
+      const fetched = await fetchDocumentationUrl(url, {
+        ...(provider ? { provider } : {}),
+        ...(query ? { query } : {}),
+        limit,
+        ...(options.fetchImplementation
+          ? { fetchImplementation: options.fetchImplementation }
+          : {}),
+      });
+      const payload = {
+        notice: untrustedMaterialNotice,
+        retrieval: {
+          mode: "direct-url",
+          provider: fetched.provider,
+          sourceKind: fetched.sourceKind,
+          canonicalUrl: fetched.canonicalUrl,
+        },
+        results: fetched.results,
       };
       return {
         content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],

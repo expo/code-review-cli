@@ -1,4 +1,5 @@
 // @ref LLP 0005#comment-rendering — pure Markdown builder; the comment body is the durable state store
+// @ref LLP 0013#research-provenance-and-citations [implements] — grounded finding sources render visibly and persist in durable state
 import { createHash } from "node:crypto";
 
 import {
@@ -337,6 +338,13 @@ function indentContinuation(value: string, indent = "  "): string[] {
   return value.split("\n").map((line) => (line.trim() === "" ? "" : `${indent}${line}`));
 }
 
+function sourceLabel(value: string): string {
+  return stripStateMarkers(value)
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/([\\[\]])/g, "\\$1");
+}
+
 function renderFindingLines(
   finding: Finding,
   link?: LinkContext,
@@ -347,6 +355,12 @@ function renderFindingLines(
     `- **${stripStateMarkers(finding.title)}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\`${replyAnnotation(reply)}`,
     ...indentContinuation(stripStateMarkers(finding.rationale)),
   ];
+  if (finding.sources?.length) {
+    const sources = finding.sources
+      .map((source) => `[${sourceLabel(source.title)}](<${source.url}>)`)
+      .join(", ");
+    out.push("", ...indentContinuation(`**Sources:** ${sources}`));
+  }
   if (finding.suggestion) {
     // A rationale may end in raw HTML (`</details>`). GitHub requires a truly
     // blank line before it resumes Markdown parsing; without this separator the

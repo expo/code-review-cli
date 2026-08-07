@@ -54,6 +54,7 @@ import type {
   CoordinatorOutput,
   FeedbackRecord,
   Finding,
+  FindingSource,
   ReviewerTraceNotes,
   ReviewTrace,
 } from "./schema.js";
@@ -67,7 +68,16 @@ import { errorMessage, sleep } from "./util.js";
 import { reviewSetupRefNotes } from "./config-refs.js";
 import { verifyFindings } from "./verify.js";
 import { applyInlineIgnores } from "./suppress.js";
-import { collectPlatformResearch } from "./research.js";
+import {
+  collectPlatformResearch,
+  deriveResearchQueries,
+  formatResearchProgress,
+  groundResearchSources,
+  mergeResearchSources,
+  renderResearchMarkdown,
+  toResearchProvenance,
+} from "./research.js";
+import type { ResearchEvidence, ResearchProvenance } from "./research.js";
 
 export interface ReviewRunOptions {
   config: LoadedConfig;
@@ -273,23 +283,30 @@ export async function runReview(
   }
 
   let researchText = "";
+  let researchEvidence: ResearchEvidence[] = [];
+  let researchRecord: ResearchProvenance | undefined;
   if (config.research.enabled) {
     progress("Researching platform documentation from changed API identifiers…");
+    const plannedQueries = deriveResearchQueries(kept, config.research.maxQueries);
     try {
       const research = await collectPlatformResearch(kept, config.research);
       researchText = research.promptText;
-      progress(
-        research.queries.length === 0
-          ? "  research: no native platform identifiers found"
-          : `  research: ${research.evidence.length} passage(s) from ${research.queries.length} bounded query(s)`,
-      );
-      for (const warning of research.warnings) {
-        progress(`  research warning: ${warning}`);
-      }
+      researchEvidence = research.evidence;
+      researchRecord = toResearchProvenance(research);
+      for (const line of formatResearchProgress(researchRecord)) progress(line);
+      await appendStepSummary(renderResearchMarkdown(researchRecord));
     } catch (error) {
       // Documentation is supporting evidence, not a prerequisite for reviewing the
       // code. Fail open with a visible diagnostic; never weaken or skip the review.
-      progress(`  research unavailable; continuing without it (${errorMessage(error)})`);
+      researchRecord = {
+        queries: plannedQueries,
+        results: [],
+        warnings: [],
+        error: errorMessage(error),
+      };
+      for (const line of formatResearchProgress(researchRecord)) progress(line);
+      await appendStepSummary(renderResearchMarkdown(researchRecord));
+      progress("  research unavailable; continuing without it");
     }
   }
 
@@ -474,6 +491,9 @@ export async function runReview(
   // run log stay byte-identical (attribution is engine metadata, never sent to a model).
   // @ref LLP 0011#attribution-and-identity [constrained-by] — engine-set, excluded from fingerprintFinding, so attribution never re-keys a dismissal
   const agentByFp = new Map<string, string>();
+  // Grounded source citations ride through coordinator rewrites by the same stable
+  // fingerprint. The model may select an injected source, but cannot invent its URL.
+  const sourcesByFp = new Map<string, FindingSource[]>();
   // Every model request's usage lands in the run total AND its bucket, so the run
   // log can show cache effectiveness per pass and not just run-wide.
   const trackTokens = (bucket: string, tokens?: TokenUsage): void => {
@@ -757,14 +777,18 @@ export async function runReview(
         agentCosts[task.bucket] = (agentCosts[task.bucket] ?? 0) + cost;
         trackTokens(task.bucket, tokens);
         trackModel(task.bucket, taskModel(task), model);
-        (agentFindings[task.bucket] ??= []).push(...value.findings);
+        const groundedFindings = groundResearchSources(value.findings, researchEvidence);
+        (agentFindings[task.bucket] ??= []).push(...groundedFindings);
         if (value.trace) {
           mergeTraceNotes(agentTrace, task.bucket, value.trace);
         }
-        for (const finding of value.findings) {
+        for (const finding of groundedFindings) {
           const fp = fingerprintFinding(finding);
           if (!agentByFp.has(fp)) {
             agentByFp.set(fp, task.bucket);
+          }
+          if (finding.sources?.length) {
+            sourcesByFp.set(fp, mergeResearchSources(sourcesByFp.get(fp), finding.sources));
           }
         }
         completedPasses++;
@@ -988,6 +1012,13 @@ export async function runReview(
       output = { ...consolidated, decision, incomplete: [...new Set(coverageNotes)] };
     }
 
+    // The coordinator remains model output. Revalidate every citation against the
+    // allowlisted prepass before verification, persistence, or rendering.
+    output = {
+      ...output,
+      findings: groundResearchSources(output.findings, researchEvidence),
+    };
+
     // Guard against hallucinated findings before surfacing: quote-ground every
     // finding against the real file, and adversarially verify criticals. This is
     // what stops a confident but wrong critical from shipping.
@@ -1122,6 +1153,21 @@ export async function runReview(
       output = { ...output, summary: reconcileRequalifiedSummary(output.summary) };
     }
 
+    // Carry a reviewer's grounded citations through a coordinator rewrite. A changed
+    // fingerprint fails closed, so the engine never guesses which source applies.
+    if (output.findings.length > 0) {
+      output = {
+        ...output,
+        findings: output.findings.map((finding) => {
+          const sources = mergeResearchSources(
+            finding.sources,
+            sourcesByFp.get(fingerprintFinding(finding)),
+          );
+          return sources.length > 0 ? { ...finding, sources } : finding;
+        }),
+      };
+    }
+
     // Attribution: carry each surviving finding's originating agent onto the output. The
     // coordinator merges and rewrites findings, so match by fingerprint and keep the
     // first agent that produced it; a finding the coordinator changed enough to break the
@@ -1239,6 +1285,7 @@ export async function runReview(
     const reviewTrace = buildReviewTrace(agentTrace);
     await safeLog(logPath, {
       ...baseRecord,
+      ...(researchRecord ? { research: researchRecord } : {}),
       agentCosts,
       totalCost: sum(agentCosts),
       tokens: tokenTotals,
@@ -1275,6 +1322,7 @@ export async function runReview(
   } catch (error) {
     await safeLog(logPath, {
       ...baseRecord,
+      ...(researchRecord ? { research: researchRecord } : {}),
       agentCosts,
       totalCost: sum(agentCosts),
       tokens: tokenTotals,

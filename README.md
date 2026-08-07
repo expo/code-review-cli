@@ -233,6 +233,24 @@ or natural-language question is not. The MCP publishes the same guidance in its 
 metadata for direct clients. An empty result stays empty; it is not replaced with a
 loose semantic guess.
 
+Direct clients can also call `fetch_platform_doc` with an exact documentation URL.
+The tool infers the narrowest matching provider (or accepts an explicit provider
+hint), then applies the same fixed HTTPS host/path allowlist, manual redirect checks,
+10-second timeout, 5 MB response limit, content-type validation, extraction, and
+passage bounds as search-discovered pages. An optional `query` ranks passages only
+within that one page; it never broadens discovery. For example,
+`https://developer.apple.com/documentation/swiftui/view/menustyle(_:)` is resolved to
+Apple's DocC JSON and returned with the canonical page URL and API availability.
+
+Every research-enabled review prints each outbound query and each returned result's
+title, provider, provenance class, and canonical URL. GitHub Actions receives the
+same audit trail in the step summary, while `.runs/reviews.jsonl` keeps the queries
+plus bounded returned passages for short-lived operational inspection. Reviewers
+are instructed to attach `sources` only when documentation materially supports a
+finding. ECR accepts only exact URLs from the injected evidence, restores canonical
+titles, carries citations through coordination, and renders them below the finding;
+invented or unrelated citations are dropped.
+
 For a query routed to the `expo` provider, `serve` POSTs the already-sanitized query
 directly to Expo's public Algolia search endpoint and returns canonical
 `docs.expo.dev` hits. The endpoint, application id, and browser-visible search-only

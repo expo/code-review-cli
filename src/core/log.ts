@@ -5,6 +5,7 @@ import path from "node:path";
 import type { CoordinatorOutput, Finding, ReviewMetadata, ReviewTrace } from "./schema.js";
 import type { FilteredFile } from "./noise.js";
 import type { TokenUsage } from "./opencode.js";
+import type { ResearchProvenance } from "./research.js";
 
 export interface RunLogRecord {
   timestamp: string;
@@ -18,6 +19,8 @@ export interface RunLogRecord {
   metadata: Pick<ReviewMetadata, "baseRef" | "headRef">;
   reviewedFiles: string[];
   filteredFiles: FilteredFile[];
+  /** Bounded outbound queries plus the exact allowlisted documentation results returned. */
+  research?: ResearchProvenance;
   agentCosts: Record<string, number>;
   totalCost: number;
   // Aggregate token usage across all agent + coordinator requests, for cache
