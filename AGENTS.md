@@ -12,7 +12,8 @@ verifies their findings, and posts one updating PR comment.
 - `src/core/` — engine: diffing/chunking, prompt assembly, OpenCode server,
   finding verification, comment rendering, auth.
 - `src/research-mcp/` + `research/` — bundled read-only documentation MCP,
-  trusted networked indexer, and built-in source catalog.
+  scoped search/allowlisted fetch adapters, optional trusted indexer, and built-in
+  source catalog.
 - `src/sources/` — where the diff comes from (`local-git`, `github-pr`).
 - `src/reporters/` — where findings go (`terminal`, `github`).
 - `src/config/` — zod schema + loader for `.expo-code-review/config.jsonc`;

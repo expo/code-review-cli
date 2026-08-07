@@ -28,7 +28,7 @@ The code divides by concern. Each directory maps to the doc that owns its ration
 - `src/config/` — the zod schema, loader, and monorepo `routing.ts` (assigns changed files to scopes, last-match-wins) [observed: AGENTS.md:16-18]. Owned by [LLP 0006](0006-config-schema-loading-routing.explainer.md).
 - `src/sources/` (`local-git`, `github-pr`) + `src/reporters/` (`terminal`, `github`) — where the diff comes from and where findings go [observed: AGENTS.md:14-15; src/sources/, src/reporters/]. Owned by [LLP 0008](0008-sources-and-reporters.explainer.md).
 - `templates/` + the scaffolded CI workflow — the files `ecr init` writes into an adopting repo; they define adopter-facing behavior and must stay in sync with the code [observed: AGENTS.md:19-20]. Owned by [LLP 0009](0009-adoption-templates-and-ci-workflows.guide.md).
-- `src/research-mcp/` + `research/` — the bundled read-only documentation MCP, networked index builder, source catalog, and host-side evidence prepass. Owned by [LLP 0013](0013-platform-research.explainer.md).
+- `src/research-mcp/` + `research/` — the bundled read-only documentation MCP, scoped remote discovery and allowlisted fetch adapters, optional index builder, source catalog, and host-side evidence prepass. Owned by [LLP 0013](0013-platform-research.explainer.md).
 - The trust model spans all of the above and is stated as principles in [LLP 0001](0001-trust-model.principles.md).
 
 ## Cross-Cutting Invariants

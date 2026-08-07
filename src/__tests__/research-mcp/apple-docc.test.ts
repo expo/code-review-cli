@@ -16,6 +16,20 @@ test("Apple DocC extraction keeps API prose, availability, and documentation lin
       abstract: [{ type: "text", text: "A singleton actor with a main-thread executor." }],
       primaryContentSections: [
         {
+          kind: "declarations",
+          declarations: [
+            {
+              tokens: [
+                { kind: "keyword", text: "static" },
+                { kind: "text", text: " " },
+                { kind: "keyword", text: "let" },
+                { kind: "text", text: " " },
+                { kind: "identifier", text: "shared" },
+              ],
+            },
+          ],
+        },
+        {
           kind: "content",
           content: [
             { type: "heading", text: "Overview" },
@@ -44,5 +58,6 @@ test("Apple DocC extraction keeps API prose, availability, and documentation lin
   expect(page?.document.availability).toEqual(["iOS 13.0"]);
   expect(page?.document.body).toMatch(/main-thread executor/);
   expect(page?.document.body).toMatch(/Use this actor for UI work/);
+  expect(page?.document.body).toContain("static let shared");
   expect(page?.links).toEqual(["/documentation/swift/mainactor/run(resulttype:body:)"]);
 });

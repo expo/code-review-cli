@@ -74,15 +74,6 @@ export const ReviewConfigSchema = z.object({
       resultsPerQuery: z.number().int().min(1).max(3).default(2),
       timeoutMs: z.number().int().min(1000).max(60_000).default(15_000),
     })
-    .superRefine((value, context) => {
-      if (value.enabled && !value.indexPath) {
-        context.addIssue({
-          code: "custom",
-          path: ["indexPath"],
-          message: "research.indexPath is required when research.enabled is true",
-        });
-      }
-    })
     .default({
       enabled: false,
       maxQueries: 8,

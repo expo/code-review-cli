@@ -129,7 +129,13 @@ export function chunkDocument(
     if (passage) {
       passages.push(passage);
     }
-    current = passage.slice(Math.max(0, passage.length - overlapCharacters));
+    const overlapStart = Math.max(0, passage.length - overlapCharacters);
+    const overlapTail = passage.slice(overlapStart);
+    const sentenceBoundary = overlapTail.match(/[.!?]\s+/);
+    current =
+      sentenceBoundary?.index !== undefined
+        ? overlapTail.slice(sentenceBoundary.index + sentenceBoundary[0].length)
+        : "";
   };
 
   for (const paragraph of paragraphs) {

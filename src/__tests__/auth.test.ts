@@ -50,14 +50,13 @@ test("checkProviderAuth: oauth requires the token env to be set", () => {
 });
 
 test("checkProviderAuth: forbidden tokenEnv is refused", () => {
-  const r = checkProviderAuth(
-    cfg({ mode: "api-key", provider: "anthropic", tokenEnv: "GITHUB_TOKEN" }),
-    {
-      GITHUB_TOKEN: "ghp_xxx",
-    },
-  );
-  expect(r.ok).toBe(false);
-  expect(r.detail).toMatch(/non-provider secret/);
+  for (const tokenEnv of ["GITHUB_TOKEN", "BRAVE_SEARCH_API_KEY"]) {
+    const r = checkProviderAuth(cfg({ mode: "api-key", provider: "anthropic", tokenEnv }), {
+      [tokenEnv]: "secret",
+    });
+    expect(r.ok).toBe(false);
+    expect(r.detail).toMatch(/non-provider secret/);
+  }
 });
 
 test("checkProviderAuth: REVIEWER_MODEL override is always ready (own login)", () => {

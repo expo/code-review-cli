@@ -23,46 +23,86 @@ function inlineText(value: unknown): string {
     .trim();
 }
 
-const readableKeys = new Set(["text", "code", "title", "name"]);
-const skippedKeys = new Set([
-  "anchor",
-  "checksum",
-  "identifier",
-  "identifiers",
-  "images",
-  "kind",
-  "role",
-  "type",
-  "url",
-]);
+function cleanBlock(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
 
-function collectReadableText(value: unknown, output: string[], key?: string) {
-  if (typeof value === "string") {
-    if (key && readableKeys.has(key)) output.push(value);
-    return;
-  }
+function referenceTitle(identifier: unknown, references: Record<string, unknown> | null): string {
+  if (typeof identifier !== "string") return "";
+  const reference = objectValue(references?.[identifier]);
+  return typeof reference?.title === "string" ? reference.title : "";
+}
+
+function inlineContentText(value: unknown, references: Record<string, unknown> | null): string {
   if (Array.isArray(value)) {
-    for (const item of value) collectReadableText(item, output, key);
+    return value.map((item) => inlineContentText(item, references)).join("");
+  }
+  const object = objectValue(value);
+  if (!object) return "";
+  if (typeof object.text === "string") return object.text;
+  if (typeof object.code === "string") return object.code;
+  if (object.type === "reference") return referenceTitle(object.identifier, references);
+  return Object.values(object)
+    .map((child) => inlineContentText(child, references))
+    .join("");
+}
+
+function collectReadableBlocks(
+  value: unknown,
+  references: Record<string, unknown> | null,
+  output: string[],
+) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectReadableBlocks(item, references, output);
     return;
   }
   const object = objectValue(value);
   if (!object) return;
-  for (const [childKey, child] of Object.entries(object)) {
-    if (!skippedKeys.has(childKey)) collectReadableText(child, output, childKey);
-  }
-}
 
-function cleanLines(lines: string[]): string {
-  const output: string[] = [];
-  let previous = "";
-  for (const line of lines) {
-    const cleaned = line.replace(/\s+/g, " ").trim();
-    if (cleaned && cleaned !== previous) {
-      output.push(cleaned);
-      previous = cleaned;
-    }
+  if (Array.isArray(object.tokens)) {
+    const declaration = cleanBlock(inlineContentText(object.tokens, references));
+    if (declaration) output.push(declaration);
+    return;
   }
-  return output.join("\n\n");
+  if (object.type === "paragraph") {
+    const paragraph = cleanBlock(inlineContentText(object.inlineContent, references));
+    if (paragraph) output.push(paragraph);
+    return;
+  }
+  if (object.type === "heading" && typeof object.text === "string") {
+    const heading = cleanBlock(object.text);
+    if (heading) output.push(heading);
+    return;
+  }
+  if (object.type === "codeListing" && Array.isArray(object.code)) {
+    const code = object.code.filter((line): line is string => typeof line === "string").join("\n");
+    if (code.trim()) output.push(code.trim());
+    return;
+  }
+
+  if (typeof object.name === "string" && Array.isArray(object.content)) {
+    const content: string[] = [];
+    collectReadableBlocks(object.content, references, content);
+    const body = content.join("\n\n");
+    output.push(body ? `${object.name}: ${body}` : object.name);
+    return;
+  }
+  if (object.type === "aside" && Array.isArray(object.content)) {
+    const content: string[] = [];
+    collectReadableBlocks(object.content, references, content);
+    const label =
+      typeof object.name === "string"
+        ? object.name
+        : typeof object.style === "string"
+          ? object.style
+          : "Note";
+    if (content.length > 0) output.push(`${label}: ${content.join("\n\n")}`);
+    return;
+  }
+
+  for (const child of Object.values(object)) {
+    collectReadableBlocks(child, references, output);
+  }
 }
 
 function languageFromIdentifier(identifier: Record<string, unknown> | null): Language | undefined {
@@ -94,11 +134,11 @@ export function extractAppleDocCPage(
   const text: string[] = [];
   const abstract = inlineText(root.abstract);
   if (abstract) text.push(abstract);
-  collectReadableText(root.primaryContentSections, text);
-  collectReadableText(root.relationshipsSections, text);
+  const references = objectValue(root.references);
+  collectReadableBlocks(root.primaryContentSections, references, text);
+  collectReadableBlocks(root.relationshipsSections, references, text);
 
   const links = new Set<string>();
-  const references = objectValue(root.references);
   for (const value of Object.values(references ?? {})) {
     const reference = objectValue(value) as DocCReference | null;
     if (!reference || typeof reference.url !== "string") continue;
@@ -107,7 +147,7 @@ export function extractAppleDocCPage(
     }
   }
 
-  const body = cleanLines(text);
+  const body = [...new Set(text.map(cleanBlock).filter(Boolean))].join("\n\n");
   if (body.length < 40) return null;
 
   const platforms = Array.isArray(metadata.platforms) ? metadata.platforms : [];
