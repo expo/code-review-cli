@@ -6,6 +6,7 @@ import path from "node:path";
 import { ReviewConfigSchema, ScopeReviewConfigSchema } from "../config/schema.js";
 import { platformResearchSection } from "../core/prompts.js";
 import {
+  boundResearchDecisions,
   collectPlatformResearch,
   deriveResearchQueries,
   formatResearchEvidence,
@@ -16,6 +17,8 @@ import {
   renderResearchMarkdown,
   renderResearchUsefulnessMarkdown,
   researchChildEnvironment,
+  RESEARCH_DECISION_BYTES_LIMIT,
+  RESEARCH_DECISION_COUNT_LIMIT,
   summarizeResearchUsefulness,
   toResearchProvenance,
 } from "../core/research.js";
@@ -441,6 +444,30 @@ test("research usefulness counts grounded candidate decisions and unique used re
   expect(markdown).toContain("**Supported finding** (correctness)");
   expect(markdown).toContain(
     "[Widget API](<https://developer.apple.com/documentation/widgetkit/widget>)",
+  );
+});
+
+test("cross-agent research decisions are deterministic and bounded by count and bytes", () => {
+  const decisions = Array.from({ length: 24 }, (_, index) => ({
+    outcome: index % 2 === 0 ? ("supported-finding" as const) : ("dismissed-candidate" as const),
+    summary: `${String(24 - index).padStart(2, "0")}-${"s".repeat(220)}`,
+    sources: [
+      {
+        title: "T".repeat(220),
+        url: `https://developer.apple.com/documentation/example/${String(index).padStart(2, "0")}/${"u".repeat(1_200)}`,
+      },
+    ],
+    agent: `agent-${String(24 - index).padStart(2, "0")}`,
+  }));
+
+  const bounded = boundResearchDecisions(decisions);
+  expect(bounded.decisions.length).toBeLessThanOrEqual(RESEARCH_DECISION_COUNT_LIMIT);
+  expect(Buffer.byteLength(JSON.stringify(bounded.decisions), "utf8")).toBeLessThanOrEqual(
+    RESEARCH_DECISION_BYTES_LIMIT,
+  );
+  expect(bounded.omitted).toBe(decisions.length - bounded.decisions.length);
+  expect(bounded.decisions.map((decision) => decision.agent)).toEqual(
+    bounded.decisions.map((decision) => decision.agent).sort(),
   );
 });
 

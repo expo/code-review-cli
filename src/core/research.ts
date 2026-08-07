@@ -77,6 +77,16 @@ export interface ResearchUsefulness {
   unusedResultCount: number;
 }
 
+export const RESEARCH_DECISION_COUNT_LIMIT = 16;
+export const RESEARCH_DECISION_BYTES_LIMIT = 20_000;
+
+type GroundedResearchDecision = ResearchDecision & { agent: string };
+
+export interface BoundedResearchDecisions {
+  decisions: GroundedResearchDecision[];
+  omitted: number;
+}
+
 export const RESEARCH_MCP_SERVER_NAME = "platform_docs";
 export const CLAUDE_RESEARCH_TOOLS = [
   `mcp__${RESEARCH_MCP_SERVER_NAME}__search_platform_docs`,
@@ -857,6 +867,30 @@ export function groundResearchDecisions(
       },
     ];
   });
+}
+
+/**
+ * Bound the cross-agent decision channel after grounding. Reviewer tasks finish
+ * concurrently, so sort before applying limits to keep the retained set stable.
+ */
+export function boundResearchDecisions(
+  decisions: GroundedResearchDecision[],
+): BoundedResearchDecisions {
+  const sorted = [...decisions].sort((left, right) => {
+    const leftKey = `${left.agent}\0${left.outcome}\0${left.summary}\0${left.sources[0]?.url ?? ""}`;
+    const rightKey = `${right.agent}\0${right.outcome}\0${right.summary}\0${right.sources[0]?.url ?? ""}`;
+    return leftKey.localeCompare(rightKey);
+  });
+  const kept = sorted.slice(0, RESEARCH_DECISION_COUNT_LIMIT);
+  let omitted = sorted.length - kept.length;
+  while (
+    kept.length > 0 &&
+    Buffer.byteLength(JSON.stringify(kept), "utf8") > RESEARCH_DECISION_BYTES_LIMIT
+  ) {
+    kept.pop();
+    omitted++;
+  }
+  return { decisions: kept, omitted };
 }
 
 /** Count unique audited results that materially affected the final review. */

@@ -70,6 +70,7 @@ import { reviewSetupRefNotes } from "./config-refs.js";
 import { verifyFindings } from "./verify.js";
 import { applyInlineIgnores } from "./suppress.js";
 import {
+  boundResearchDecisions,
   createResearchMcpRuntime,
   formatResearchProgress,
   formatResearchUsefulness,
@@ -928,10 +929,19 @@ export async function runReview(
       }
     }
     if (researchRecord) {
-      const decisions = Object.entries(agentResearchDecisions).flatMap(([agent, records]) =>
+      const groundedDecisions = Object.entries(agentResearchDecisions).flatMap(([agent, records]) =>
         groundResearchDecisions(records, researchEvidence, agent),
       );
+      const { decisions, omitted } = boundResearchDecisions(groundedDecisions);
       if (decisions.length > 0) researchRecord = { ...researchRecord, decisions };
+      if (omitted > 0) {
+        const warning = `${omitted} grounded research decision(s) omitted by output bounds`;
+        researchRecord = {
+          ...researchRecord,
+          warnings: [...researchRecord.warnings, warning],
+        };
+        progress(`  research: ${warning}`);
+      }
     }
 
     // A substituted model means the review did not run on the model this repo
