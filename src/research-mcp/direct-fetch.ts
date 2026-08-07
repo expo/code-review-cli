@@ -3,6 +3,7 @@ import type { FetchImplementation } from "./brave-search.js";
 import { fetchDocumentationDocument } from "./fetch-document.js";
 import { chunkDocument } from "./html.js";
 import { getProvider, resolveAllowedUrl } from "./providers.js";
+import { assertSafeDocumentationUrlShape } from "./query-sanitizer.js";
 import { buildSearchIndex, searchDocumentation } from "./search-index.js";
 import type { ProviderId, SearchResult, SourceKind } from "./types.js";
 
@@ -67,6 +68,7 @@ export function resolveDirectDocumentationTarget(
   rawUrl: string,
   providerHint?: ProviderId,
 ): DirectDocumentationTarget {
+  assertSafeDocumentationUrlShape(rawUrl);
   const candidates = providerHint ? [providerHint] : DIRECT_PROVIDER_ORDER;
   for (const providerId of candidates) {
     const provider = getProvider(providerId);

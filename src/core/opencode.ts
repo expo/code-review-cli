@@ -12,8 +12,9 @@ import type { LoadedConfig } from "../config/schema.js";
 import type { ClaudeCodeHandle, Engine } from "./claude-code.js";
 import { pathInside, resolveOnPath } from "./exec.js";
 import { RateLimitWatch } from "./throttle.js";
-import { toolMap } from "./tools.js";
+import { OPENCODE_RESEARCH_TOOLS, toolMap } from "./tools.js";
 import { errorMessage, sleep } from "./util.js";
+import type { ResearchMcpRuntime } from "./research.js";
 
 /** Discriminant for the Claude Code CLI engine (see core/claude-code.ts). */
 export const CLAUDE_CODE_ENGINE = "claude-code" as const;
@@ -146,7 +147,10 @@ const VERIFIER_TOOLS = toolMap(["read", "grep"]);
 export const STACK_VERIFIER_AGENT = "stack-verifier";
 
 /** Build the inline OpenCode config (agents + coordinator) from a repo config. */
-export function buildOpencodeConfig(config: LoadedConfig): Record<string, unknown> {
+export function buildOpencodeConfig(
+  config: LoadedConfig,
+  research?: ResearchMcpRuntime,
+): Record<string, unknown> {
   const agent: Record<string, unknown> = {};
   for (const reviewer of config.agents) {
     agent[reviewer.id] = {
@@ -155,7 +159,10 @@ export function buildOpencodeConfig(config: LoadedConfig): Record<string, unknow
       model: reviewer.model,
       temperature: reviewer.temperature,
       prompt: `You are the ${reviewer.id} code reviewer. Follow the user message exactly and return only the requested JSON.`,
-      tools: reviewer.tools,
+      tools: {
+        ...reviewer.tools,
+        ...Object.fromEntries(OPENCODE_RESEARCH_TOOLS.map((name) => [name, Boolean(research)])),
+      },
     };
   }
   agent[CROSS_CUTTING_AGENT] = {
@@ -166,7 +173,10 @@ export function buildOpencodeConfig(config: LoadedConfig): Record<string, unknow
     temperature: config.agents[0]?.temperature ?? 0.1,
     prompt:
       "You are the cross-file code reviewer. Follow the user message exactly and return only the requested JSON.",
-    tools: CROSS_CUTTING_TOOLS,
+    tools: {
+      ...CROSS_CUTTING_TOOLS,
+      ...Object.fromEntries(OPENCODE_RESEARCH_TOOLS.map((name) => [name, Boolean(research)])),
+    },
   };
   agent[VERIFIER_AGENT] = {
     description: "Verifies a finding against the real file (adversarial refute pass).",
@@ -237,6 +247,19 @@ export function buildOpencodeConfig(config: LoadedConfig): Record<string, unknow
   return {
     $schema: "https://opencode.ai/config.json",
     agent,
+    ...(research
+      ? {
+          mcp: {
+            platform_docs: {
+              type: "local",
+              command: [research.command, ...research.args],
+              environment: research.environment,
+              enabled: true,
+              timeout: config.research.timeoutMs,
+            },
+          },
+        }
+      : {}),
     ...(Object.keys(provider).length > 0 ? { provider } : {}),
   };
 }

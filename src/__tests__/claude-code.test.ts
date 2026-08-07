@@ -585,6 +585,24 @@ test("buildClaudeArgs: maxTurns is forwarded as the CLI --max-turns bound", () =
   expect(args.join(" ")).toContain("--max-turns 50");
 });
 
+test("buildClaudeArgs: explicit research MCP replaces safe mode without loading repo settings", () => {
+  const args = buildClaudeArgs({
+    model: "claude-opus-5",
+    system: "SYS",
+    cwd: "/work/repo",
+    tools: ["read"],
+    researchMcpConfigPath: "/private/mcp.json",
+  });
+  const joined = args.join(" ");
+  expect(joined).toContain("mcp__platform_docs__search_platform_docs");
+  expect(joined).toContain("mcp__platform_docs__fetch_platform_doc");
+  expect(joined).toContain("--mcp-config /private/mcp.json");
+  expect(joined).toContain("--setting-sources  --disable-slash-commands");
+  expect(joined).toContain("--strict-mcp-config");
+  expect(joined).toContain("--no-session-persistence");
+  expect(args).not.toContain("--safe-mode");
+});
+
 test("usageLimitMessage: non-transient so the pass fails fast, carrying the reset time", () => {
   const msg = usageLimitMessage("Claude AI usage limit reached|1728000000");
   // The old wording contained "rate limit" and matched isTransientApiError, burning

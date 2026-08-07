@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -133,5 +133,38 @@ test("stdio MCP starts without an index and reports unavailable remote discovery
     expect(payload.results).toEqual([]);
   } finally {
     await client.close();
+  }
+});
+
+test("stdio MCP rejects credential-shaped searches before network access or audit logging", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "review-research-mcp-secret-"));
+  const auditPath = path.join(directory, "audit.jsonl");
+  const cliPath = fileURLToPath(new URL("../../research-mcp/cli.ts", import.meta.url));
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [cliPath, "serve"],
+    stderr: "pipe",
+    env: {
+      REVIEW_RESEARCH_AUDIT_PATH: auditPath,
+      BRAVE_SEARCH_API_KEY: "would-be-used-only-after-sanitization",
+    },
+  });
+  const client = new Client({ name: "test-client", version: "1.0.0" });
+  try {
+    await client.connect(transport);
+    const response = await client.callTool({
+      name: "search_platform_docs",
+      arguments: {
+        platform: "apple",
+        providers: ["apple"],
+        query: "MainActor api_key=ghp_abcdefghijklmnopqrstuvwxyz",
+        limit: 1,
+      },
+    });
+    expect(response.isError).toBe(true);
+    await expect(readFile(auditPath, "utf8")).rejects.toThrow();
+  } finally {
+    await client.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });

@@ -2,14 +2,18 @@
 // @ref LLP 0013#one-package-two-binaries [implements] — resolve the package-relative MCP entry instead of PATH/configured commands
 // @ref LLP 0013#research-provenance-and-citations [implements] — bounded query/result audit records plus exact citation grounding
 import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { z } from "zod";
 
 import type { LoadedConfig } from "../config/schema.js";
+import { readResearchAudit } from "../research-mcp/audit.js";
 import { run } from "./exec.js";
 import type { Finding, FindingSource } from "./schema.js";
+export { OPENCODE_RESEARCH_TOOLS } from "./tools.js";
 
 export type ResearchPlatform = "apple" | "android" | "react-native";
 
@@ -58,6 +62,20 @@ export interface ResearchProvenance {
   results: ResearchResultRecord[];
   warnings: string[];
   error?: string;
+}
+
+export const RESEARCH_MCP_SERVER_NAME = "platform_docs";
+export const CLAUDE_RESEARCH_TOOLS = [
+  `mcp__${RESEARCH_MCP_SERVER_NAME}__search_platform_docs`,
+  `mcp__${RESEARCH_MCP_SERVER_NAME}__fetch_platform_doc`,
+] as const;
+export interface ResearchMcpRuntime {
+  auditPath: string;
+  claudeConfigPath: string;
+  command: string;
+  args: string[];
+  environment: Record<string, string>;
+  cleanup(): Promise<void>;
 }
 
 const APPLE_EXTENSIONS = /\.(?:swift|m|mm)$/i;
@@ -498,13 +516,110 @@ export function researchChildEnvironment(
   return environment;
 }
 
-function bundledResearchServer(): { command: string; args: string[] } {
+export function bundledResearchServer(): { command: string; args: string[] } {
   const builtEntry = fileURLToPath(new URL("../research-mcp/cli.js", import.meta.url));
   const sourceEntry = fileURLToPath(new URL("../research-mcp/cli.ts", import.meta.url));
   return {
     command: process.execPath,
     args: [existsSync(builtEntry) ? builtEntry : sourceEntry],
   };
+}
+
+/**
+ * Create one owner-only MCP configuration and append-only audit for a review run.
+ * The model process receives only the config path; the Brave credential is passed
+ * directly to the bounded MCP child and never added to the model process env.
+ */
+export async function createResearchMcpRuntime(
+  config: LoadedConfig["research"],
+): Promise<ResearchMcpRuntime | undefined> {
+  if (!config.enabled) return undefined;
+  const directory = await mkdtemp(path.join(tmpdir(), "ecr-research-"));
+  const auditPath = path.join(directory, "audit.jsonl");
+  const claudeConfigPath = path.join(directory, "mcp.json");
+  const server = bundledResearchServer();
+  const args = [
+    ...server.args,
+    "serve",
+    ...(config.indexPath ? ["--index", config.indexPath] : []),
+  ];
+  const child = researchChildEnvironment();
+  const environment = Object.fromEntries(
+    Object.entries({
+      ...child,
+      REVIEW_RESEARCH_AUDIT_PATH: auditPath,
+      REVIEW_RESEARCH_MAX_CALLS: String(config.maxQueries),
+      REVIEW_RESEARCH_MAX_RESULTS: String(config.resultsPerQuery),
+    }).flatMap(([key, value]) => (value === undefined ? [] : [[key, value]])),
+  );
+  await writeFile(
+    claudeConfigPath,
+    `${JSON.stringify({
+      mcpServers: {
+        [RESEARCH_MCP_SERVER_NAME]: {
+          type: "stdio",
+          command: server.command,
+          args,
+          env: environment,
+        },
+      },
+    })}\n`,
+    { encoding: "utf8", mode: 0o600 },
+  );
+  return {
+    auditPath,
+    claudeConfigPath,
+    command: server.command,
+    args,
+    environment,
+    cleanup: () => rm(directory, { recursive: true, force: true }),
+  };
+}
+
+export async function researchProvenanceFromAudit(
+  auditPath: string,
+): Promise<{ provenance: ResearchProvenance; evidence: ResearchEvidence[] }> {
+  const records = await readResearchAudit(auditPath);
+  const queries: ResearchQuery[] = [];
+  const evidence: ResearchEvidence[] = [];
+  const warnings: string[] = [];
+  for (const record of records) {
+    const firstResult = record.results[0];
+    const platformValue = record.input.platform ?? firstResult?.platform ?? "react-native";
+    const platform: ResearchPlatform =
+      platformValue === "apple" || platformValue === "android" ? platformValue : "react-native";
+    const providers =
+      record.input.providers ??
+      record.results.flatMap((result) => (result.provider ? [result.provider] : []));
+    const query: ResearchQuery = {
+      platform,
+      providers: [...new Set(providers)],
+      query: record.input.query ?? record.input.url ?? record.tool,
+    };
+    queries.push(query);
+    warnings.push(...record.warnings);
+    if (record.error) warnings.push(`${record.tool}: ${record.error}`);
+    for (const result of record.results) {
+      if (!result.provider || !result.sourceKind) continue;
+      evidence.push({
+        id: result.id,
+        query,
+        provider: result.provider,
+        sourceKind: result.sourceKind,
+        title: result.title,
+        url: result.url,
+        passage: result.passage,
+        ...(result.availability ? { availability: result.availability } : {}),
+      });
+    }
+  }
+  const run: ResearchRun = {
+    queries,
+    evidence,
+    warnings: [...new Set(warnings)].slice(0, 10),
+    promptText: "",
+  };
+  return { provenance: toResearchProvenance(run), evidence };
 }
 
 function cleanEvidenceText(value: string, maxLength: number): string {

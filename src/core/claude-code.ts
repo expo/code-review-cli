@@ -17,6 +17,8 @@ import {
 } from "./opencode.js";
 import type { OpencodeHandle, PromptResult, TokenUsage } from "./opencode.js";
 import { RateLimitWatch } from "./throttle.js";
+import { CLAUDE_RESEARCH_TOOLS } from "./research.js";
+import type { ResearchMcpRuntime } from "./research.js";
 
 /**
  * The Claude Code CLI review engine. Runs each pass as a single `claude -p
@@ -47,6 +49,10 @@ export interface ClaudeCodeHandle extends OpencodeHandle {
    *  the resolved Claude credential is re-injected here — CLAUDE_CODE_OAUTH_TOKEN for a
    *  subscription token, ANTHROPIC_API_KEY for a Console key (the CLI reads either). */
   childEnv: NodeJS.ProcessEnv;
+  /** Owner-only config for the single built-in documentation MCP. */
+  researchMcpConfigPath?: string;
+  /** Only reviewer and cross-cutting roles may receive the documentation tools. */
+  researchAgents?: ReadonlySet<string>;
 }
 
 /** Prompt args, structurally shared with promptAgent/promptAndParse in opencode.ts. */
@@ -290,6 +296,7 @@ export function buildClaudeArgs(opts: {
    * by omission.
    */
   tools?: readonly string[];
+  researchMcpConfigPath?: string;
   maxTurns?: number;
   jsonSchema?: Record<string, unknown>;
 }): string[] {
@@ -305,6 +312,8 @@ export function buildClaudeArgs(opts: {
   // Read tools NOT granted are denied by name (see the `tools` doc above) — the
   // scoped allow rules alone don't deny them when the allow list is empty.
   const deniedReadTools = ALL_READ_TOOLS.filter((tool) => !enabled.includes(tool));
+  const researchTools = opts.researchMcpConfigPath ? [...CLAUDE_RESEARCH_TOOLS] : [];
+  const allowedTools = [...enabled.map(scope), ...researchTools];
   return [
     "-p",
     "--output-format",
@@ -315,14 +324,23 @@ export function buildClaudeArgs(opts: {
     "--append-system-prompt",
     opts.system,
     ...(opts.jsonSchema ? ["--json-schema", JSON.stringify(opts.jsonSchema)] : []),
-    ...(enabled.length > 0 ? ["--allowedTools", ...enabled.map(scope)] : []),
+    ...(allowedTools.length > 0 ? ["--allowedTools", ...allowedTools] : []),
     "--disallowedTools",
     ...deniedReadTools,
     ...ALWAYS_DENIED_TOOLS,
     "--permission-mode",
     "dontAsk",
     "--strict-mcp-config",
-    "--safe-mode",
+    ...(opts.researchMcpConfigPath
+      ? [
+          "--mcp-config",
+          opts.researchMcpConfigPath,
+          "--setting-sources",
+          "",
+          "--disable-slash-commands",
+        ]
+      : ["--safe-mode"]),
+    "--no-session-persistence",
     "--max-turns",
     String(opts.maxTurns ?? CLAUDE_MAX_TURNS),
   ];
@@ -749,6 +767,10 @@ export async function runClaudePrompt(
   // review.ts's no-tools-fallback tripwire — deny every tool for that pass.
   const configuredTools = handle.tools[args.agent] ?? ["read", "grep", "glob"];
   const tools = args.maxToolCalls === 0 ? [] : configuredTools;
+  const researchMcpConfigPath =
+    args.maxToolCalls !== 0 && handle.researchAgents?.has(args.agent)
+      ? handle.researchMcpConfigPath
+      : undefined;
   // A soft tool-call ceiling doubles as the CLI's per-pass turn bound (the closest
   // stateless analogue of OpenCode's mid-run tool-call cap).
   const maxTurns =
@@ -784,6 +806,7 @@ export async function runClaudePrompt(
         system: args.system,
         cwd: process.cwd(),
         tools,
+        researchMcpConfigPath,
         maxTurns,
         jsonSchema: args.jsonSchema,
       }),
@@ -1066,7 +1089,10 @@ export function claudeTokenCredential(
 
 // @ref LLP 0003#credential-resolution-and-forwarding [implements] — re-runs checkAuthEntry at the forwarding site because REVIEWER_MODEL bypasses prepareAuth/checkProviderAuth entirely
 /** Start the Claude Code engine: resolve the CLI and build the subscription env. */
-export async function startClaudeCode(config: LoadedConfig): Promise<ClaudeCodeHandle> {
+export async function startClaudeCode(
+  config: LoadedConfig,
+  research?: ResearchMcpRuntime,
+): Promise<ClaudeCodeHandle> {
   const cliPath = await resolveOnPath("claude");
   if (!cliPath) {
     throw new Error(MISSING_CLI_MESSAGE);
@@ -1160,6 +1186,8 @@ export async function startClaudeCode(config: LoadedConfig): Promise<ClaudeCodeH
   tools[STACK_VERIFIER_AGENT] = [];
   tools["coordinator"] = [];
   const defaultModel = config.agents[0]?.model ?? config.coordinator.model;
+  const researchAgents = new Set(config.agents.map((agent) => agent.id));
+  researchAgents.add(CROSS_CUTTING_AGENT);
 
   return {
     client: undefined,
@@ -1176,5 +1204,7 @@ export async function startClaudeCode(config: LoadedConfig): Promise<ClaudeCodeH
     defaultModel,
     cliPath,
     childEnv,
+    ...(research ? { researchMcpConfigPath: research.claudeConfigPath } : {}),
+    researchAgents,
   };
 }

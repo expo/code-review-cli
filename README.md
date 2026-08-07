@@ -175,13 +175,12 @@ Two run points:
 
 ## Providing context and research capabilities
 
-`@expo/code-review-cli` includes `review-research-mcp` and can run it as a trusted
-host-side prepass. This is deliberately not an agent-visible MCP: Claude Code
-keeps `--safe-mode`, `--strict-mcp-config`, path-scoped read tools, and its
-execution/network/write deny list. Before model startup, ECR extracts only short
-API identifiers from added native code, asks the documentation MCP for bounded evidence,
-and appends the results to reviewer and cross-file prompts as explicitly untrusted
-reference text.
+`@expo/code-review-cli` includes `review-research-mcp` and exposes that one bundled,
+local MCP directly to reviewer and cross-file passes. The agent decides whether an
+external API contract needs research and can either search for an exact symbol or
+fetch an exact supported documentation URL already present in the review context.
+Coordinator, verifier, stack-verifier, and time-critical no-tools passes never receive
+the MCP.
 
 Enable it only in the root config, which CI loads from the PR's trusted base:
 
@@ -203,13 +202,22 @@ search index; neither consumes Brave quota.
 
 ECR resolves the MCP entry point inside its own installed package and starts it with
 the current absolute Node executable, so a PR-owned `PATH` entry cannot replace
-either component. The child runs from the OS temp directory with a minimal
-environment, a 2 MB output cap, and a hard timeout. It receives the fixed Brave
-search credential but no model credentials, source snippets, string literals,
-comments, removed lines, repository paths, or arbitrary environment secrets—only
-normalized identifiers, the platform, and named provider filters. MCP failures are
-visible in the job log but fail open to an ordinary review; they never skip or weaken
-review passes.
+either component. Each review gets an owner-only temporary MCP config and append-only
+audit. Claude receives that explicit config under `--strict-mcp-config`, with project
+settings and slash commands disabled; OpenCode receives the same fixed local command.
+The Brave credential is passed to the MCP child, not the model process.
+
+The MCP is the outbound security boundary. Search queries are normalized before
+logging or networking: quoted literals, URLs, email addresses, paths, prose stop
+words, overlong/high-entropy tokens, and unsupported punctuation are removed;
+credential-shaped or secret-labeled input fails closed. The remaining query must be
+at most eight short tokens and contain an API-like symbol. Direct URLs must use plain
+HTTPS with no credentials, port, query string, or fragment; suspicious/high-entropy
+path segments fail closed. The fixed provider host/path allowlist and redirect,
+response-size, content-type, and timeout checks still apply after that first gate.
+These deterministic checks greatly reduce accidental exfiltration; they are not a
+proof that every low-entropy string is harmless, so reviewer prompts also forbid
+sending repository text and the review-wide MCP budget defaults to eight calls.
 
 For non-Expo providers, discovery sends a fixed, provider-owned `site:` scope plus
 the bounded query to Brave's fixed Web Search endpoint. Search snippets and titles
@@ -224,14 +232,13 @@ configs cannot alter its network behavior or limits. Result-cache reuse remains
 disabled while research is enabled because web results and documentation can change
 without a config change.
 
-The built-in query router recognizes Apple/Android APIs plus Media3, Glide, OkHttp,
+The fixed provider catalog covers Apple/Android APIs plus Media3, Glide, OkHttp,
 Kotlin coroutines, Gradle/AGP, Swift concurrency/evolution, platform release/API
 availability, Expo, React Native, Reanimated, Gesture Handler, Screens, and Worklets.
 Queries are short exact symbols plus at most one useful member or behavior term. For
 example, `CameraView barcodeScannerSettings` is useful; a source snippet, import path,
 or natural-language question is not. The MCP publishes the same guidance in its tool
-metadata for direct clients. An empty result stays empty; it is not replaced with a
-loose semantic guess.
+metadata. An empty result stays empty; it is not replaced with a loose semantic guess.
 
 Direct clients can also call `fetch_platform_doc` with an exact documentation URL.
 The tool infers the narrowest matching provider (or accepts an explicit provider
@@ -242,12 +249,12 @@ within that one page; it never broadens discovery. For example,
 `https://developer.apple.com/documentation/swiftui/view/menustyle(_:)` is resolved to
 Apple's DocC JSON and returned with the canonical page URL and API availability.
 
-Every research-enabled review prints each outbound query and each returned result's
+Every research-enabled review audits each sanitized outbound query and each returned result's
 title, provider, provenance class, and canonical URL. GitHub Actions receives the
 same audit trail in the step summary, while `.runs/reviews.jsonl` keeps the queries
 plus bounded returned passages for short-lived operational inspection. Reviewers
 are instructed to attach `sources` only when documentation materially supports a
-finding. ECR accepts only exact URLs from the injected evidence, restores canonical
+finding. ECR accepts only exact URLs returned during that review, restores canonical
 titles, carries citations through coordination, and renders them below the finding;
 invented or unrelated citations are dropped.
 

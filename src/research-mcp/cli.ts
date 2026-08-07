@@ -25,6 +25,16 @@ an optional offline crawler for operator-managed fallback indexes.
 `);
 }
 
+function boundedInteger(name: string, fallback: number, minimum: number, maximum: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be an integer from ${minimum} to ${maximum}`);
+  }
+  return value;
+}
+
 async function main() {
   const [command = "serve", ...rest] = process.argv.slice(2);
   if (command === "--help" || command === "-h" || command === "help") {
@@ -47,6 +57,11 @@ async function main() {
     const indexPath = values.index ?? process.env.REVIEW_RESEARCH_INDEX_PATH;
     await runStdioServer({
       ...(indexPath ? { indexPath } : {}),
+      ...(process.env.REVIEW_RESEARCH_AUDIT_PATH
+        ? { auditPath: process.env.REVIEW_RESEARCH_AUDIT_PATH }
+        : {}),
+      maxCalls: boundedInteger("REVIEW_RESEARCH_MAX_CALLS", 8, 1, 20),
+      maxResultsPerCall: boundedInteger("REVIEW_RESEARCH_MAX_RESULTS", 3, 1, 3),
       ...(process.env.BRAVE_SEARCH_API_KEY
         ? { braveApiKey: process.env.BRAVE_SEARCH_API_KEY }
         : {}),

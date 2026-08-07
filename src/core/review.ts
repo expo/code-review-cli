@@ -69,15 +69,14 @@ import { reviewSetupRefNotes } from "./config-refs.js";
 import { verifyFindings } from "./verify.js";
 import { applyInlineIgnores } from "./suppress.js";
 import {
-  collectPlatformResearch,
-  deriveResearchQueries,
+  createResearchMcpRuntime,
   formatResearchProgress,
   groundResearchSources,
   mergeResearchSources,
+  researchProvenanceFromAudit,
   renderResearchMarkdown,
-  toResearchProvenance,
 } from "./research.js";
-import type { ResearchEvidence, ResearchProvenance } from "./research.js";
+import type { ResearchEvidence, ResearchMcpRuntime, ResearchProvenance } from "./research.js";
 
 export interface ReviewRunOptions {
   config: LoadedConfig;
@@ -282,33 +281,8 @@ export async function runReview(
     return output;
   }
 
-  let researchText = "";
   let researchEvidence: ResearchEvidence[] = [];
   let researchRecord: ResearchProvenance | undefined;
-  if (config.research.enabled) {
-    progress("Researching platform documentation from changed API identifiers…");
-    const plannedQueries = deriveResearchQueries(kept, config.research.maxQueries);
-    try {
-      const research = await collectPlatformResearch(kept, config.research);
-      researchText = research.promptText;
-      researchEvidence = research.evidence;
-      researchRecord = toResearchProvenance(research);
-      for (const line of formatResearchProgress(researchRecord)) progress(line);
-      await appendStepSummary(renderResearchMarkdown(researchRecord));
-    } catch (error) {
-      // Documentation is supporting evidence, not a prerequisite for reviewing the
-      // code. Fail open with a visible diagnostic; never weaken or skip the review.
-      researchRecord = {
-        queries: plannedQueries,
-        results: [],
-        warnings: [],
-        error: errorMessage(error),
-      };
-      for (const line of formatResearchProgress(researchRecord)) progress(line);
-      await appendStepSummary(renderResearchMarkdown(researchRecord));
-      progress("  research unavailable; continuing without it");
-    }
-  }
 
   // Materialize the PR-head tree (not the current checkout) when the source can, so
   // the agents' surrounding-source reads and the verifier's re-reads see the versions
@@ -373,6 +347,20 @@ export async function runReview(
     progress(`  setup: ${note}`);
   }
 
+  let researchRuntime: ResearchMcpRuntime | undefined;
+  try {
+    researchRuntime = await createResearchMcpRuntime(config.research);
+    if (researchRuntime) {
+      progress(
+        `Documentation MCP enabled for reviewer passes (${config.research.maxQueries} calls max; queries and results will be reported).`,
+      );
+    }
+  } catch (error) {
+    await auth.cleanup();
+    await restoreCwd();
+    throw new Error(`Failed to prepare the documentation MCP: ${errorMessage(error)}`);
+  }
+
   const starting = [
     usesClaude ? "Claude Code engine" : null,
     usesOpencode ? "OpenCode server" : null,
@@ -387,10 +375,11 @@ export async function runReview(
   let claudeHandle: ClaudeCodeHandle | null = null;
   try {
     if (usesOpencode) {
-      opencodeHandle = await startOpencode(buildOpencodeConfig(config));
+      opencodeHandle = await startOpencode(buildOpencodeConfig(config, researchRuntime));
     }
   } catch (error) {
     await auth.cleanup();
+    await researchRuntime?.cleanup();
     await restoreCwd();
     throw new Error(
       `Failed to start the OpenCode server. Ensure the \`opencode\` CLI is installed and ` +
@@ -399,11 +388,12 @@ export async function runReview(
   }
   try {
     if (usesClaude) {
-      claudeHandle = await startClaudeCode(config);
+      claudeHandle = await startClaudeCode(config, researchRuntime);
     }
   } catch (error) {
     opencodeHandle?.close();
     await auth.cleanup();
+    await researchRuntime?.cleanup();
     await restoreCwd();
     throw new Error(
       `Failed to start the Claude Code engine. Ensure the \`claude\` CLI is installed and ` +
@@ -470,6 +460,7 @@ export async function runReview(
   } catch (error) {
     handle.close();
     await auth.cleanup();
+    await researchRuntime?.cleanup();
     await restoreCwd();
     throw error;
   }
@@ -718,14 +709,14 @@ export async function runReview(
               filtered,
               { noTools: task.fallback },
               options.contextText,
-              researchText,
+              Boolean(researchRuntime) && !task.fallback,
             )
           : buildReviewerTask(
               task.files,
               workspace.files,
               filtered,
               options.contextText,
-              researchText,
+              Boolean(researchRuntime) && !task.fallback,
             );
       return task.fallback ? `${base}\n\n${NO_TOOLS_INSTRUCTION}` : base;
     };
@@ -777,18 +768,14 @@ export async function runReview(
         agentCosts[task.bucket] = (agentCosts[task.bucket] ?? 0) + cost;
         trackTokens(task.bucket, tokens);
         trackModel(task.bucket, taskModel(task), model);
-        const groundedFindings = groundResearchSources(value.findings, researchEvidence);
-        (agentFindings[task.bucket] ??= []).push(...groundedFindings);
+        (agentFindings[task.bucket] ??= []).push(...value.findings);
         if (value.trace) {
           mergeTraceNotes(agentTrace, task.bucket, value.trace);
         }
-        for (const finding of groundedFindings) {
+        for (const finding of value.findings) {
           const fp = fingerprintFinding(finding);
           if (!agentByFp.has(fp)) {
             agentByFp.set(fp, task.bucket);
-          }
-          if (finding.sources?.length) {
-            sourcesByFp.set(fp, mergeResearchSources(sourcesByFp.get(fp), finding.sources));
           }
         }
         completedPasses++;
@@ -904,6 +891,31 @@ export async function runReview(
         }
       }
     });
+
+    if (researchRuntime) {
+      try {
+        const audited = await researchProvenanceFromAudit(researchRuntime.auditPath);
+        researchRecord = audited.provenance;
+        researchEvidence = audited.evidence;
+        for (const line of formatResearchProgress(researchRecord)) progress(line);
+        await appendStepSummary(renderResearchMarkdown(researchRecord));
+      } catch (error) {
+        researchRecord = { queries: [], results: [], warnings: [], error: errorMessage(error) };
+        progress(`  research audit unavailable: ${researchRecord.error}`);
+      }
+    }
+    // Citations are accepted only when their exact canonical URL appeared in this
+    // run's MCP audit. This strips invented URLs even if a model copied a plausible
+    // official-looking address into its structured output.
+    for (const [bucket, findings] of Object.entries(agentFindings)) {
+      const grounded = groundResearchSources(findings, researchEvidence);
+      agentFindings[bucket] = grounded;
+      for (const finding of grounded) {
+        if (!finding.sources?.length) continue;
+        const fp = fingerprintFinding(finding);
+        sourcesByFp.set(fp, mergeResearchSources(sourcesByFp.get(fp), finding.sources));
+      }
+    }
 
     // A substituted model means the review did not run on the model this repo
     // configured — the findings may be from a weaker (or free-tier) model entirely.
@@ -1339,6 +1351,7 @@ export async function runReview(
   } finally {
     handle.close();
     await auth.cleanup();
+    await researchRuntime?.cleanup();
     await restoreCwd();
   }
 }
