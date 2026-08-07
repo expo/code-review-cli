@@ -15,6 +15,7 @@ import {
   reactNativeWorkletsProvider,
   resolveAllowedUrl,
   resolveAllowedRequestUrl,
+  sdWebImageProvider,
   swiftEvolutionProvider,
 } from "../../research-mcp/providers.js";
 
@@ -72,6 +73,22 @@ test("dependency and issue providers stay on their exact owners and paths", () =
     "https://lysine.dev/okhttp/features/interceptors",
   );
   expect(okHttpProvider.responseFormat(okHttpDoc)).toBe("html");
+  const sdWebImageDoc = resolveAllowedUrl(
+    sdWebImageProvider,
+    "https://sdwebimage.github.io/documentation/sdwebimage/sdwebimagemanager/",
+  );
+  expect(sdWebImageDoc.hostname).toBe("sdwebimage.github.io");
+  expect(sdWebImageProvider.requestUrl(sdWebImageDoc).href).toBe(
+    "https://sdwebimage.github.io/data/documentation/sdwebimage/sdwebimagemanager.json",
+  );
+  expect(
+    sdWebImageProvider.acceptsRequest(
+      new URL("https://sdwebimage.github.io/data/documentation/sdwebimage/sdwebimagemanager.json"),
+    ),
+  ).toBe(true);
+  expect(sdWebImageDoc.href).toBe(
+    "https://sdwebimage.github.io/documentation/sdwebimage/sdwebimagemanager/",
+  );
   const proposal = resolveAllowedUrl(
     swiftEvolutionProvider,
     "https://github.com/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md",
@@ -96,6 +113,8 @@ test("dependency and issue providers stay on their exact owners and paths", () =
     [okHttpProvider, "https://github.com/square/okhttp/blob/main/docs/recipes.md"],
     [okHttpProvider, "https://github.com/attacker/okhttp/blob/main/docs/recipes.md"],
     [okHttpProvider, "https://lysine.dev/retrofit/"],
+    [sdWebImageProvider, "https://sdwebimage.github.io/documentation/other-framework/"],
+    [sdWebImageProvider, "https://github.com/SDWebImage/SDWebImage"],
     [
       swiftEvolutionProvider,
       "https://github.com/attacker/swift-evolution/blob/main/proposals/fake.md",

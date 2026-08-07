@@ -28,6 +28,8 @@ const miniSearchOptions = {
     "symbol",
     "language",
     "availability",
+    "previousPassageId",
+    "nextPassageId",
     "indexedAt",
   ],
 };
@@ -172,6 +174,8 @@ export function searchDocumentation(
     ...(match.symbol ? { symbol: String(match.symbol) } : {}),
     ...(match.language ? { language: match.language as Language } : {}),
     ...(Array.isArray(match.availability) ? { availability: match.availability.map(String) } : {}),
+    ...(match.previousPassageId ? { previousPassageId: String(match.previousPassageId) } : {}),
+    ...(match.nextPassageId ? { nextPassageId: String(match.nextPassageId) } : {}),
     indexedAt: String(match.indexedAt),
     score: match.score,
   }));

@@ -19,7 +19,7 @@ export interface RunLogRecord {
   metadata: Pick<ReviewMetadata, "baseRef" | "headRef">;
   reviewedFiles: string[];
   filteredFiles: FilteredFile[];
-  /** Bounded outbound queries plus the exact allowlisted documentation results returned. */
+  /** Bounded queries/results plus grounded research decisions and final usefulness metrics. */
   research?: ResearchProvenance;
   agentCosts: Record<string, number>;
   totalCost: number;

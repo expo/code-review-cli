@@ -55,11 +55,24 @@ test("research prompts require exact, material citations and preserve them throu
 
 test("agent-visible research instructions teach precise, sanitized MCP use", () => {
   const section = platformResearchToolsSection(true).join("\n");
+  const prose = section.replace(/\s+/g, " ");
   expect(section).toContain("`fetch_platform_doc`");
   expect(section).toContain("`search_platform_docs`");
   expect(section).toContain("Never send source text, prose, literals, paths, URLs, credentials");
   expect(section).toContain("UNTRUSTED reference data");
   expect(section).toContain("exact returned title");
+  expect(prose).toContain("do not rely on model memory");
+  expect(prose).toContain("reporting");
+  expect(prose).toContain("dismissing the candidate as safe");
+  expect(prose).toContain("availability/version gates, lifecycle, threading, permissions");
+  expect(section).toContain("`researchDecisions`");
+  expect(section).toContain("`supported-finding`");
+  expect(section).toContain("`dismissed-candidate`");
+  expect(section).toContain("Omit generic context and unused results");
+  expect(prose).toContain("Native source retains platform context");
+  expect(section).toContain("`packages/expo-*`");
+  expect(section).toContain("`section` context");
+  expect(section).toContain("`document` only when");
   expect(platformResearchToolsSection(false)).toEqual([]);
 });
 

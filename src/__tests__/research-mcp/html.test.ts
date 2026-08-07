@@ -40,6 +40,8 @@ test("chunking produces bounded overlapping passages with stable identifiers", (
   const chunks = chunkDocument(document, "2026-08-06T00:00:00.000Z", 500, 50);
   expect(chunks.length).toBeGreaterThan(1);
   expect(chunks[0]?.id ?? "").toMatch(/^android:[a-f0-9]{16}#0$/);
+  expect(chunks[0]?.nextPassageId).toBe(chunks[1]?.id);
+  expect(chunks[1]?.previousPassageId).toBe(chunks[0]?.id);
   expect(
     chunkDocument(document, "2026-08-06T00:00:00.000Z", 500, 50).map((chunk) => chunk.id),
   ).toEqual(chunks.map((chunk) => chunk.id));

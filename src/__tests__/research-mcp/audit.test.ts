@@ -28,7 +28,7 @@ test("research audit shares one call budget and records bounded completed result
         sourceKind: "official-api",
         title: "MainActor",
         url: "https://developer.apple.com/documentation/swift/mainactor",
-        passage: "Main actor documentation.",
+        passage: `Main actor documentation.${"x".repeat(25_000)}`,
         indexedAt: "2026-08-07T00:00:00.000Z",
       },
     ]);
@@ -39,6 +39,7 @@ test("research audit shares one call budget and records bounded completed result
     const records = await readResearchAudit(auditPath);
     expect(records).toHaveLength(2);
     expect(records[0]?.results[0]?.title).toBe("MainActor");
+    expect(records[0]?.results[0]?.passage).toHaveLength(20_000);
     expect(records[1]?.error).toBe("no page");
   } finally {
     await rm(directory, { recursive: true, force: true });

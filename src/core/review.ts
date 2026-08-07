@@ -55,6 +55,7 @@ import type {
   FeedbackRecord,
   Finding,
   FindingSource,
+  ResearchDecision,
   ReviewerTraceNotes,
   ReviewTrace,
 } from "./schema.js";
@@ -71,10 +72,14 @@ import { applyInlineIgnores } from "./suppress.js";
 import {
   createResearchMcpRuntime,
   formatResearchProgress,
+  formatResearchUsefulness,
+  groundResearchDecisions,
   groundResearchSources,
   mergeResearchSources,
   researchProvenanceFromAudit,
   renderResearchMarkdown,
+  renderResearchUsefulnessMarkdown,
+  summarizeResearchUsefulness,
 } from "./research.js";
 import type { ResearchEvidence, ResearchMcpRuntime, ResearchProvenance } from "./research.js";
 
@@ -472,6 +477,9 @@ export async function runReview(
   // reviewers produced before the failure — partial findings are exactly what's
   // needed to debug a run that died mid-way.
   const agentFindings: Record<string, Finding[]> = {};
+  // Reviewer-declared, conclusion-only records of cases where documentation changed
+  // a concrete candidate decision. They remain inert until exact-source grounding.
+  const agentResearchDecisions: Record<string, ResearchDecision[]> = {};
   // Bounded, conclusion-only diagnostics for machine consumers of the hidden
   // comment state. These are deliberately separate from findings: they never reach
   // the coordinator, verification, policy, or decision paths.
@@ -769,6 +777,9 @@ export async function runReview(
         trackTokens(task.bucket, tokens);
         trackModel(task.bucket, taskModel(task), model);
         (agentFindings[task.bucket] ??= []).push(...value.findings);
+        if (value.researchDecisions) {
+          (agentResearchDecisions[task.bucket] ??= []).push(...value.researchDecisions);
+        }
         if (value.trace) {
           mergeTraceNotes(agentTrace, task.bucket, value.trace);
         }
@@ -915,6 +926,12 @@ export async function runReview(
         const fp = fingerprintFinding(finding);
         sourcesByFp.set(fp, mergeResearchSources(sourcesByFp.get(fp), finding.sources));
       }
+    }
+    if (researchRecord) {
+      const decisions = Object.entries(agentResearchDecisions).flatMap(([agent, records]) =>
+        groundResearchDecisions(records, researchEvidence, agent),
+      );
+      if (decisions.length > 0) researchRecord = { ...researchRecord, decisions };
     }
 
     // A substituted model means the review did not run on the model this repo
@@ -1254,6 +1271,16 @@ export async function runReview(
           `Author-reply adjudication failed (${errorMessage(error)}); continuing without it.`,
         );
       }
+    }
+
+    // Measure utility only after verification, suppression, citation carry-through,
+    // and feedback adjudication have produced the final finding set. Counts use
+    // unique audited URLs, not passages, so duplicate search hits cannot inflate them.
+    if (researchRecord) {
+      const usefulness = summarizeResearchUsefulness(researchRecord, output.findings);
+      researchRecord = { ...researchRecord, usefulness };
+      progress(formatResearchUsefulness(usefulness));
+      await appendStepSummary(renderResearchUsefulnessMarkdown(researchRecord));
     }
 
     // Surface provider throttling as a fact about the run: passes already waited or

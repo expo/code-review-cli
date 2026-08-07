@@ -5,7 +5,11 @@ import { z } from "zod";
 import { ResearchAudit } from "./audit.js";
 import type { FetchImplementation } from "./brave-search.js";
 import { sanitizeDocumentationQuery } from "./query-sanitizer.js";
-import { fetchDocumentationUrl, resolveDirectDocumentationTarget } from "./direct-fetch.js";
+import {
+  DIRECT_DOCUMENT_CONTEXT_MODES,
+  fetchDocumentationUrl,
+  resolveDirectDocumentationTarget,
+} from "./direct-fetch.js";
 import { searchExpoAlgolia } from "./expo-algolia.js";
 import { searchOkHttpDocumentation } from "./okhttp-search.js";
 import { getProvider, resolveAllowedUrl } from "./providers.js";
@@ -19,6 +23,9 @@ const untrustedMaterialNotice =
 
 const queryGuidance =
   "Formulate short documentation queries from exact API symbols plus one behavior or constraint term. Good: `CameraView barcodeScannerSettings`, `NWPathMonitor pathUpdateHandler`, `GestureDetector simultaneous gestures`. Avoid questions, prose, package/import names, code snippets, literals, paths, credentials, and other sensitive context. If the first result is broad, retry with a narrower symbol or member name.";
+
+const providerGuidance =
+  "Provider map: apple=Apple SDK APIs and Human Interface Guidelines; apple-releases=Xcode and Apple platform release notes; swift-evolution=Swift Evolution proposals; sdwebimage=SDWebImage APIs and caching/loading behavior; android=Android, Jetpack, Compose, and Google Play services APIs; android-releases=Android platform releases and behavior changes; media3=Jetpack Media3; glide=Glide; okhttp=OkHttp; kotlin-coroutines=Kotlin coroutines; gradle=Gradle; agp=Android Gradle Plugin; jetbrains-issues=JetBrains YouTrack context; expo=Expo documentation; react-native=React Native core; react-native-reanimated=Reanimated; react-native-gesture-handler=Gesture Handler; react-native-screens=Screens; react-native-worklets=Worklets. Native source retains platform context: use apple/android for OS contracts and add the dependency provider for dependency-owned behavior; an Expo package path does not make a native API an Expo-docs query. Issue-tracker results are context, not API contracts.";
 
 export interface DocumentationServerOptions {
   indexPath?: string;
@@ -50,7 +57,7 @@ export async function createDocumentationServer(options: DocumentationServerOpti
     "search_platform_docs",
     {
       title: "Search official platform documentation",
-      description: `Search official platform, dependency, build-tool, and release documentation. Discovery uses scoped web search (or Expo's public documentation search), then fetches only allowlisted official pages; an optional local index is fallback evidence. Selected issue-tracker passages are context, not API contracts. Returns short passages with canonical source URLs. ${queryGuidance}`,
+      description: `Search official platform, dependency, build-tool, and release documentation. Discovery uses scoped web search (or Expo's public documentation search), then fetches only allowlisted official pages; an optional local index is fallback evidence. Returns short passages with canonical source URLs. ${providerGuidance} ${queryGuidance}`,
       inputSchema: {
         platform: z
           .enum(["apple", "android", "react-native", "all"])
@@ -67,9 +74,7 @@ export async function createDocumentationServer(options: DocumentationServerOpti
           .min(1)
           .max(4)
           .optional()
-          .describe(
-            "Optional named corpora to search. Select the dependency that owns the API; use expo for Expo APIs and react-native for React Native core.",
-          ),
+          .describe(`Optional named corpora to search. ${providerGuidance}`),
         sourceKinds: z
           .array(z.enum(SOURCE_KINDS))
           .min(1)
@@ -247,7 +252,7 @@ export async function createDocumentationServer(options: DocumentationServerOpti
     {
       title: "Fetch an official documentation URL",
       description:
-        "Fetch one caller-supplied documentation URL from the fixed Apple, Android, Expo, React Native, dependency, build-tool, release-note, or issue-source allowlist. The URL and every redirect are revalidated before download. Returns bounded extracted passages and the canonical source URL; use query only to rank passages within that page.",
+        "Fetch one caller-supplied documentation URL from the fixed Apple, Android, Expo, React Native, dependency, build-tool, release-note, or issue-source allowlist. The URL and every redirect are revalidated before download. Returns normalized extracted text, never raw HTML or DocC JSON. `focused` returns the best passage with adjacent passages, `section` (default) returns a bounded contiguous window around the best passage, and `document` returns extracted page text up to a hard ceiling. Use query only to select context within that page.",
       inputSchema: {
         url: z
           .string()
@@ -264,7 +269,19 @@ export async function createDocumentationServer(options: DocumentationServerOpti
           .max(300)
           .optional()
           .describe("Optional short phrase used only to select the most relevant page passages"),
-        limit: z.number().int().min(1).max(5).default(3),
+        context: z
+          .enum(DIRECT_DOCUMENT_CONTEXT_MODES)
+          .default("section")
+          .describe(
+            "Context breadth: focused=matched and adjacent passages, section=bounded contiguous window around the match, document=bounded extracted page text",
+          ),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(5)
+          .default(3)
+          .describe("Passage count for focused context; ignored by section/document context"),
       },
       annotations: {
         readOnlyHint: true,
@@ -273,7 +290,7 @@ export async function createDocumentationServer(options: DocumentationServerOpti
         openWorldHint: true,
       },
     },
-    async ({ url, provider, query, limit }) => {
+    async ({ url, provider, query, context, limit }) => {
       const sanitizedQuery = query ? sanitizeDocumentationQuery(query) : undefined;
       // Resolve and validate before recording anything. This prevents credentials,
       // query strings, or covert high-entropy path data from reaching either the
@@ -283,12 +300,14 @@ export async function createDocumentationServer(options: DocumentationServerOpti
         providers: [target.provider],
         ...(sanitizedQuery ? { query: sanitizedQuery } : {}),
         url: target.url.href,
+        context,
       };
       const requestId = await audit.reserve("fetch_platform_doc", auditInput);
       try {
         const fetched = await fetchDocumentationUrl(target.url.href, {
           provider: target.provider,
           ...(sanitizedQuery ? { query: sanitizedQuery } : {}),
+          context,
           limit: Math.min(limit, maxResultsPerCall),
           ...(options.fetchImplementation
             ? { fetchImplementation: options.fetchImplementation }
@@ -301,6 +320,7 @@ export async function createDocumentationServer(options: DocumentationServerOpti
             provider: fetched.provider,
             sourceKind: fetched.sourceKind,
             canonicalUrl: fetched.canonicalUrl,
+            context: fetched.context,
           },
           results: fetched.results,
         };

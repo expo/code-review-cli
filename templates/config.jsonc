@@ -24,12 +24,12 @@
   // *.min.js, *.map, __snapshots__/*.snap, @generated markers).
   "noise": { "additionalIgnores": [] },
 
-  // Optional trusted host-side platform research (ROOT-ONLY; off by default).
-  // ECR derives short API identifiers from native diffs and sends them to its
-  // bundled MCP before model startup. BRAVE_SEARCH_API_KEY enables fixed site-scoped
-  // discovery; returned URLs are independently allowlisted before ECR fetches and
-  // fences official passages. Expo uses its public documentation search. The model
-  // never receives an MCP tool. indexPath is an optional offline fallback only.
+  // Optional bounded platform research (ROOT-ONLY; off by default). Reviewer and
+  // cross-file passes can call ECR's bundled MCP for exact API-symbol searches and
+  // supported documentation URLs. The MCP sanitizes queries, uses fixed provider
+  // allowlists, audits results, and never receives model credentials. BRAVE_SEARCH_API_KEY
+  // enables fixed site-scoped discovery; Expo uses its public documentation search.
+  // indexPath remains an optional offline fallback only.
   // "research": {
   //   "enabled": true,
   //   "maxQueries": 8,

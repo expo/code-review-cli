@@ -188,6 +188,47 @@ export const swiftEvolutionProvider: DocumentationProvider = {
   },
 };
 
+const sdWebImageDocumentPrefix = "/documentation/sdwebimage";
+
+/** SDWebImage publishes a static DocC archive whose visible routes are JS shells. */
+export const sdWebImageProvider: DocumentationProvider = {
+  id: "sdwebimage",
+  platform: "apple",
+  displayName: "SDWebImage documentation",
+  accepts(url) {
+    return (
+      isSecurePublicUrl(url, "sdwebimage.github.io") &&
+      hasAllowedPath(url, [sdWebImageDocumentPrefix])
+    );
+  },
+  acceptsRequest(url) {
+    if (this.accepts(url)) return true;
+    if (
+      !isSecurePublicUrl(url, "sdwebimage.github.io") ||
+      !url.pathname.startsWith(`/data${sdWebImageDocumentPrefix}`) ||
+      !url.pathname.endsWith(".json")
+    ) {
+      return false;
+    }
+    const correspondingDocumentUrl = new URL(url.href);
+    correspondingDocumentUrl.pathname = url.pathname.slice("/data".length).replace(/\.json$/, "");
+    return hasAllowedPath(correspondingDocumentUrl, [sdWebImageDocumentPrefix]);
+  },
+  canonicalize(url) {
+    const hadTrailingSlash = url.pathname.endsWith("/");
+    const canonical = canonicalizeDocumentationUrl(url);
+    if (hadTrailingSlash && !canonical.pathname.endsWith("/")) canonical.pathname += "/";
+    return canonical;
+  },
+  requestUrl(documentUrl) {
+    const documentPath = documentUrl.pathname.replace(/\/$/, "").toLowerCase();
+    return new URL(`/data${documentPath}.json`, documentUrl.origin);
+  },
+  responseFormat() {
+    return "docc-json";
+  },
+};
+
 const androidPrefixes = [
   "/build",
   "/develop",
@@ -394,6 +435,7 @@ const providers: Record<ProviderId, DocumentationProvider> = {
   apple: appleProvider,
   "apple-releases": appleReleasesProvider,
   "swift-evolution": swiftEvolutionProvider,
+  sdwebimage: sdWebImageProvider,
   android: androidProvider,
   "android-releases": androidReleasesProvider,
   media3: media3Provider,

@@ -10,9 +10,13 @@ import {
   deriveResearchQueries,
   formatResearchEvidence,
   formatResearchProgress,
+  formatResearchUsefulness,
+  groundResearchDecisions,
   groundResearchSources,
   renderResearchMarkdown,
+  renderResearchUsefulnessMarkdown,
   researchChildEnvironment,
+  summarizeResearchUsefulness,
   toResearchProvenance,
 } from "../core/research.js";
 import { buildSearchIndex, writeSearchIndex } from "../research-mcp/search-index.js";
@@ -60,10 +64,53 @@ test("routes Media3 and Swift concurrency identifiers to named corpora", () => {
 
   expect(queries).toContainEqual({
     platform: "android",
+    providers: ["android"],
+    query: "MediaSessionService",
+  });
+  expect(queries).toContainEqual({
+    platform: "android",
     providers: ["media3"],
     query: "MediaSessionService",
   });
   expect(queries.some((query) => query.providers[0] === "swift-evolution")).toBe(true);
+});
+
+test("native Expo packages search the platform first and add dependency owners", () => {
+  const queries = deriveResearchQueries(
+    [
+      {
+        path: "packages/expo-image/ios/SVGVariablesImageLoader.swift",
+        patch: "+let manager = SDWebImageManager.shared",
+      },
+      {
+        path: "packages/expo-app-metrics/android/src/NetworkRequestInterceptor.kt",
+        patch: "+val client = OkHttpClient.Builder().build()",
+      },
+    ],
+    20,
+  );
+
+  expect(queries).toContainEqual({
+    platform: "apple",
+    providers: ["apple"],
+    query: "SDWebImageManager.shared",
+  });
+  expect(queries).toContainEqual({
+    platform: "apple",
+    providers: ["sdwebimage"],
+    query: "SDWebImageManager.shared",
+  });
+  expect(queries).toContainEqual({
+    platform: "android",
+    providers: ["android"],
+    query: "OkHttpClient.Builder",
+  });
+  expect(queries).toContainEqual({
+    platform: "android",
+    providers: ["okhttp"],
+    query: "OkHttpClient.Builder",
+  });
+  expect(queries.every((query) => query.providers[0] !== "expo")).toBe(true);
 });
 
 test("routes Expo and React Native ecosystem imports without forwarding module strings", () => {
@@ -310,6 +357,91 @@ test("finding citations are exact selections from research evidence", () => {
       url: "https://developer.apple.com/documentation/swiftui/view/menustyle(_:)",
     },
   ]);
+});
+
+test("research usefulness counts grounded candidate decisions and unique used results", () => {
+  const query = { platform: "apple" as const, providers: ["apple"], query: "Widget behavior" };
+  const evidence = [
+    {
+      query,
+      provider: "apple",
+      sourceKind: "official-api",
+      title: "Widget API",
+      url: "https://developer.apple.com/documentation/widgetkit/widget",
+      passage: "A widget contract.",
+    },
+    {
+      query,
+      provider: "apple",
+      sourceKind: "official-guide",
+      title: "Widget lifecycle",
+      url: "https://developer.apple.com/documentation/widgetkit/keeping-a-widget-up-to-date",
+      passage: "A lifecycle contract.",
+    },
+    {
+      query,
+      provider: "apple",
+      sourceKind: "official-guide",
+      title: "Unused result",
+      url: "https://developer.apple.com/documentation/widgetkit/creating-a-widget-extension",
+      passage: "Background only.",
+    },
+  ];
+  const decisions = groundResearchDecisions(
+    [
+      {
+        outcome: "supported-finding",
+        summary: "The documented lifecycle confirms the stale update path.",
+        sources: [{ title: "forged", url: evidence[0]!.url }],
+      },
+      {
+        outcome: "dismissed-candidate",
+        summary: "The documented default makes the suspected fallback safe.",
+        sources: [{ title: "forged", url: evidence[1]!.url }],
+      },
+      {
+        outcome: "supported-finding",
+        summary: "This declaration is not grounded.",
+        sources: [{ title: "attacker", url: "https://attacker.example/fake" }],
+      },
+    ],
+    evidence,
+    "correctness",
+  );
+  expect(decisions).toHaveLength(2);
+  expect(decisions[0]?.sources[0]?.title).toBe("Widget API");
+
+  const provenance = {
+    ...toResearchProvenance({ queries: [query], evidence, warnings: [], promptText: "" }),
+    decisions,
+  };
+  const usefulness = summarizeResearchUsefulness(provenance, [
+    {
+      severity: "warning",
+      category: "correctness",
+      file: "Widget.swift",
+      line: 12,
+      title: "Widget update stays stale",
+      rationale: "The update does not reload.",
+      sources: [{ title: "Widget API", url: evidence[0]!.url }],
+    },
+  ]);
+  expect(usefulness).toEqual({
+    finalFindingsWithSources: 1,
+    citedResultCount: 1,
+    supportedFindingCandidates: 1,
+    dismissedCandidates: 1,
+    decisionResultCount: 2,
+    utilizedResultCount: 2,
+    unusedResultCount: 1,
+  });
+  expect(formatResearchUsefulness(usefulness)).toContain("2 result(s) materially used, 1 unused");
+  const markdown = renderResearchUsefulnessMarkdown({ ...provenance, usefulness });
+  expect(markdown).toContain("**2/3**");
+  expect(markdown).toContain("**Supported finding** (correctness)");
+  expect(markdown).toContain(
+    "[Widget API](<https://developer.apple.com/documentation/widgetkit/widget>)",
+  );
 });
 
 test("one-shot stdio MCP results are validated, bounded, and fenced as untrusted", async () => {

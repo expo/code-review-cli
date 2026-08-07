@@ -19,6 +19,7 @@ const chunks: IndexedChunk[] = [
     url: "https://developer.apple.com/documentation/swift/mainactor",
     passage: "A singleton actor whose executor is equivalent to the main dispatch queue.",
     language: "swift",
+    nextPassageId: "apple:2",
     indexedAt: "2026-08-06T00:00:00.000Z",
   },
   {
@@ -47,6 +48,7 @@ test("a serialized index reloads and filters search results by platform", async 
     });
     expect(appleResults).toHaveLength(1);
     expect(appleResults[0]?.title).toBe("MainActor");
+    expect(appleResults[0]?.nextPassageId).toBe("apple:2");
 
     const androidResults = searchDocumentation(loaded, "lifecycle callbacks", {
       platform: "android",

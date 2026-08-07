@@ -31,6 +31,10 @@ const providerSearchDefinitions: Record<Exclude<ProviderId, "expo">, ProviderSea
     scopes: ["github.com/swiftlang/swift-evolution/blob/main/proposals"],
     sourceKind: "official-guide",
   },
+  sdwebimage: {
+    scopes: ["sdwebimage.github.io/documentation/sdwebimage"],
+    sourceKind: "official-api",
+  },
   android: {
     scopes: ["developer.android.com/reference"],
     sourceKind: "official-api",

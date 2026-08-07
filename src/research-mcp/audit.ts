@@ -10,6 +10,7 @@ export interface ResearchAuditInput {
   providers?: string[];
   query?: string;
   url?: string;
+  context?: string;
 }
 
 export interface ResearchAuditResult {
@@ -21,7 +22,17 @@ export interface ResearchAuditResult {
       SearchResult,
       "id" | "platform" | "provider" | "sourceKind" | "title" | "url" | "passage"
     > &
-      Partial<Pick<SearchResult, "availability" | "framework" | "language" | "symbol">>
+      Partial<
+        Pick<
+          SearchResult,
+          | "availability"
+          | "framework"
+          | "language"
+          | "symbol"
+          | "previousPassageId"
+          | "nextPassageId"
+        >
+      >
   >;
   warnings: string[];
   error?: string;
@@ -47,6 +58,7 @@ type AuditEvent =
 
 const LOCK_RETRIES = 200;
 const LOCK_DELAY_MS = 10;
+const MAX_AUDITED_PASSAGE_CHARACTERS = 20_000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -66,13 +78,19 @@ function boundedResult(result: SearchResult): ResearchAuditResult["results"][num
     sourceKind: result.sourceKind,
     title: result.title.slice(0, 240),
     url: result.url.slice(0, 2_000),
-    passage: result.passage.slice(0, 1_400),
+    // This equals the direct-fetch document ceiling, so the artifact preserves the
+    // exact bounded text shown to the reviewer without ever storing the raw page.
+    passage: result.passage.slice(0, MAX_AUDITED_PASSAGE_CHARACTERS),
     ...(result.availability?.length
       ? { availability: result.availability.slice(0, 20).map((value) => value.slice(0, 240)) }
       : {}),
     ...(result.framework ? { framework: result.framework.slice(0, 240) } : {}),
     ...(result.language ? { language: result.language } : {}),
     ...(result.symbol ? { symbol: result.symbol.slice(0, 240) } : {}),
+    ...(result.previousPassageId
+      ? { previousPassageId: result.previousPassageId.slice(0, 240) }
+      : {}),
+    ...(result.nextPassageId ? { nextPassageId: result.nextPassageId.slice(0, 240) } : {}),
   };
 }
 
