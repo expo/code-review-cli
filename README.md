@@ -189,7 +189,6 @@ Enable it only in the root config, which CI loads from the PR's trusted base:
 {
   "research": {
     "enabled": true,
-    "indexPath": "/opt/expo-review/docs-index.json",
     "maxQueries": 8,
     "resultsPerQuery": 2,
     "timeoutMs": 15000
@@ -197,23 +196,33 @@ Enable it only in the root config, which CI loads from the PR's trusted base:
 }
 ```
 
-ECR resolves the MCP entry point inside its own installed package and starts it
-with the current absolute Node executable, so a PR-owned `PATH` entry cannot replace
-either component. Build the index in a separate networked job and mount it read-only
-in review jobs. The child runs from the OS temp directory with a minimal environment, a 2 MB output
-cap, and a hard timeout. It receives no model credentials, source snippets, string
-literals, comments, removed lines, or repository paths—only normalized identifiers,
-the platform, and named provider filters. MCP failures are visible in the job log
-but fail open to an ordinary review; they never skip or weaken review passes.
+Add a repository Actions secret named `BRAVE_SEARCH_API_KEY`. The generated
+automatic and command-triggered workflows pass only that search credential to the
+MCP. Expo uses its public documentation search and OkHttp uses its official static
+search index; neither consumes Brave quota.
+
+ECR resolves the MCP entry point inside its own installed package and starts it with
+the current absolute Node executable, so a PR-owned `PATH` entry cannot replace
+either component. The child runs from the OS temp directory with a minimal
+environment, a 2 MB output cap, and a hard timeout. It receives the fixed Brave
+search credential but no model credentials, source snippets, string literals,
+comments, removed lines, repository paths, or arbitrary environment secrets—only
+normalized identifiers, the platform, and named provider filters. MCP failures are
+visible in the job log but fail open to an ordinary review; they never skip or weaken
+review passes.
+
+For non-Expo providers, discovery sends a fixed, provider-owned `site:` scope plus
+the bounded query to Brave's fixed Web Search endpoint. Search snippets and titles
+are never treated as evidence. ECR independently rejects off-allowlist result URLs,
+manually validates every redirect, fetches a few official pages, verifies content
+types and response sizes, extracts visible documentation text, and returns locally
+ranked bounded passages. Sparse search-engine coverage therefore produces an honest
+empty result rather than a loose guess.
 
 Research is root-only in routed monorepos because it starts a host process; scope
-configs cannot change its index path or limits. Result-cache reuse is disabled while
-research is enabled because an index can change at the same mounted path. For CI,
-pin the ECR package/Node version and verify a signed index checksum before invoking
-ECR. A simpler initial deployment may build the index in an earlier, secretless
-workflow step using the same pinned published package, with no PR code executed and
-failure allowed so review can continue without research. Keep `update` out of the
-credential-bearing `ecr ci` process itself; the review pipeline always starts `serve`.
+configs cannot alter its network behavior or limits. Result-cache reuse remains
+disabled while research is enabled because web results and documentation can change
+without a config change.
 
 The built-in query router recognizes Apple/Android APIs plus Media3, Glide, OkHttp,
 Kotlin coroutines, Gradle/AGP, Swift concurrency/evolution, platform release/API
@@ -225,22 +234,24 @@ metadata for direct clients. An empty result stays empty; it is not replaced wit
 loose semantic guess.
 
 For a query routed to the `expo` provider, `serve` POSTs the already-sanitized query
-directly to Expo's public Algolia search endpoint and prefers the returned canonical
-`docs.expo.dev` hits.
-The endpoint, application id, and browser-visible search-only key are fixed in the
-package; redirects are rejected; response size, timeout, hit count, and returned URL
-host are bounded. Algolia receives the query text; a failed request falls back to the
-mounted local index. The local index is still required for that fallback and every
-other provider. Direct MCP clients can omit the `expo` provider; ECR installations
-requiring a fully offline review should leave research disabled until provider
-selection becomes installation-configurable.
+directly to Expo's public Algolia search endpoint and returns canonical
+`docs.expo.dev` hits. The endpoint, application id, and browser-visible search-only
+key are fixed in the package; redirects are rejected; response size, timeout, hit
+count, and returned URL host are bounded.
 
-The MCP and its trusted updater ship with ECR. From this repository, build an index
-with `bun run research:update`; an installed package exposes the equivalent
-`review-research-mcp update`. The built-in seed catalog lives in
-`research/sources.json`, while the generated `research/data/` directory is ignored
-and is not published. `seedUrls` are deterministic starting pages for the bounded
-crawler; ordinary link extraction, parsing, indexing, and searching use no LLM.
+OkHttp's newly migrated documentation is still sparse in Brave, so its provider
+downloads the fixed official `lysine.dev` static search index, validates and indexes
+it in memory once per MCP process, and rejects any entry outside the existing OkHttp
+allowlist. Brave remains a fallback if that official index is unavailable.
+
+An absolute `research.indexPath` remains available as an optional local fallback.
+The MCP and its trusted updater ship with ECR: build that fallback from this
+repository with `bun run research:update`, or from an installed package with
+`review-research-mcp update`. This is operator/scheduled offline tooling, not a
+step to run before each review. The built-in seed catalog lives in
+`research/sources.json`; `seedUrls` are deterministic starting pages for the
+bounded crawler, and extraction/indexing use no LLM. Installations requiring a fully
+offline review can supply a separately built, verified index and omit the Brave key.
 Installation-specific provider configuration is intentionally
 deferred: when added, it should follow the trusted root-config model used for agents
 without permitting PR-controlled URLs, commands, or executable parsers. Expo skills

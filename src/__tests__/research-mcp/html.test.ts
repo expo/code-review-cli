@@ -44,4 +44,12 @@ test("chunking produces bounded overlapping passages with stable identifiers", (
     chunkDocument(document, "2026-08-06T00:00:00.000Z", 500, 50).map((chunk) => chunk.id),
   ).toEqual(chunks.map((chunk) => chunk.id));
   expect(chunks.every((chunk) => chunk.passage.length < 700)).toBe(true);
+  expect(
+    chunks
+      .slice(1)
+      .every(
+        (chunk) =>
+          chunk.passage.startsWith("Lifecycle") || chunk.passage.startsWith("Configuration"),
+      ),
+  ).toBe(true);
 });

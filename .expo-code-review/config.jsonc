@@ -20,6 +20,16 @@
   // *.min.js, *.map, __snapshots__/*.snap, @generated markers).
   "noise": { "additionalIgnores": [] },
 
+  // Trusted host-side documentation research. Only bounded API identifiers leave
+  // the runner; scoped web results are independently checked against fixed provider
+  // allowlists before ECR fetches and fences official documentation passages.
+  "research": {
+    "enabled": true,
+    "maxQueries": 8,
+    "resultsPerQuery": 2,
+    "timeoutMs": 15000
+  },
+
   // Large diffs are split into focused chunks by changed-line count, plus a
   // cross-cutting pass for multi-file issues. Diffs under maxChangedLines are one
   // full-context pass. Defaults shown; raise/lower per your model + PR sizes.

@@ -279,6 +279,7 @@ test("parseTokenEnvs validates names and refuses well-known unrelated secrets", 
   expect(parseTokenEnvs("A_TOKEN, B_TOKEN")).toEqual(["A_TOKEN", "B_TOKEN"]);
   expect(() => parseTokenEnvs("lower_case")).toThrow(/UPPER_SNAKE_CASE/);
   expect(() => parseTokenEnvs("GH_TOKEN")).toThrow(/unrelated secret/);
+  expect(() => parseTokenEnvs("BRAVE_SEARCH_API_KEY")).toThrow(/unrelated secret/);
   expect(() => parseTokenEnvs("A_TOKEN,A_TOKEN")).toThrow(/duplicate/);
 });
 

@@ -25,16 +25,13 @@
   "noise": { "additionalIgnores": [] },
 
   // Optional trusted host-side platform research (ROOT-ONLY; off by default).
-  // ECR starts its bundled review-research-mcp in read-only `serve` mode against
-  // the absolute index path. It derives short API identifiers
-  // from native diffs, queries the MCP before model startup, and injects only
-  // bounded, fenced evidence. The reviewer remains on Claude `--safe-mode` and
-  // never receives an MCP tool. Expo-provider searches send only the derived,
-  // bounded API query to Expo's public documentation search and fall back locally.
-  // Never point this at the separately networked `update` command.
+  // ECR derives short API identifiers from native diffs and sends them to its
+  // bundled MCP before model startup. BRAVE_SEARCH_API_KEY enables fixed site-scoped
+  // discovery; returned URLs are independently allowlisted before ECR fetches and
+  // fences official passages. Expo uses its public documentation search. The model
+  // never receives an MCP tool. indexPath is an optional offline fallback only.
   // "research": {
   //   "enabled": true,
-  //   "indexPath": "/opt/expo-review/docs-index.json",
   //   "maxQueries": 8,
   //   "resultsPerQuery": 2,
   //   "timeoutMs": 15000

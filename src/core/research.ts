@@ -457,6 +457,7 @@ const RESEARCH_PROXY_ENV_KEYS = [
   "https_proxy",
   "no_proxy",
 ] as const;
+const RESEARCH_SEARCH_API_KEY = "BRAVE_SEARCH_API_KEY";
 
 export function researchChildEnvironment(
   source: NodeJS.ProcessEnv = process.env,
@@ -468,6 +469,9 @@ export function researchChildEnvironment(
   };
   for (const key of RESEARCH_PROXY_ENV_KEYS) {
     if (source[key]) environment[key] = source[key];
+  }
+  if (source[RESEARCH_SEARCH_API_KEY]) {
+    environment[RESEARCH_SEARCH_API_KEY] = source[RESEARCH_SEARCH_API_KEY];
   }
   return environment;
 }
@@ -518,7 +522,7 @@ export async function collectPlatformResearch(
   config: LoadedConfig["research"],
 ): Promise<ResearchRun> {
   const queries = deriveResearchQueries(files, config.maxQueries);
-  if (!config.enabled || !config.indexPath || queries.length === 0) {
+  if (!config.enabled || queries.length === 0) {
     return { queries, evidence: [], warnings: [], promptText: "" };
   }
 
@@ -552,7 +556,11 @@ export async function collectPlatformResearch(
   ];
 
   const server = bundledResearchServer();
-  const serverArgs = [...server.args, "serve", "--index", config.indexPath];
+  const serverArgs = [
+    ...server.args,
+    "serve",
+    ...(config.indexPath ? ["--index", config.indexPath] : []),
+  ];
   const result = await run(server.command, serverArgs, {
     input: `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`,
     cwd: tmpdir(),

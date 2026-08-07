@@ -543,7 +543,7 @@ export function parseTokenEnvs(value: string | undefined): string[] {
 
 // Secrets that a review workflow forwards for reasons other than the model
 // credential, so a non-default name here is not a baked credential to preserve.
-const NON_MODEL_FORWARDED_SECRETS = new Set(["GH_TOKEN", "GITHUB_TOKEN"]);
+const NON_MODEL_FORWARDED_SECRETS = new Set(["GH_TOKEN", "GITHUB_TOKEN", "BRAVE_SEARCH_API_KEY"]);
 
 /**
  * Detect the non-default model credential an existing review workflow bakes in,
@@ -600,7 +600,8 @@ function runAiReviewStep(raw: string): string {
 /**
  * Names of the non-default model credential a workflow's `Run AI review` step
  * forwards, read from its `<NAME>: ${{ secrets.<...> }}` env lines. Skips the
- * default, the known non-model secrets (GH_TOKEN), and any FORBIDDEN_TOKEN_ENVS
+ * default, known non-model secrets (such as GH_TOKEN and BRAVE_SEARCH_API_KEY),
+ * and any FORBIDDEN_TOKEN_ENVS
  * name — the runtime refuses those as a model credential, so surfacing one as a
  * baked credential would produce a remediation (`--token-env <name>`) that either
  * cannot pass parseTokenEnvs or would wire an unrelated secret to the provider.

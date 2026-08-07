@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // @ref LLP 0013#one-package-two-binaries [implements] — the package's second binary owns serve/update dispatch
-// @ref LLP 0013#index-lifecycle-and-network-boundary [implements] — review-facing serve and operator-only update stay separate
+// @ref LLP 0013#search-fetch-and-optional-index-boundary [implements] — review-facing serve and operator-only update stay separate
 
 import { parseArgs } from "node:util";
 
-import { defaultConfigPath, defaultIndexPath } from "./paths.js";
+import { defaultConfigPath } from "./paths.js";
 import { runStdioServer } from "./server.js";
 import { PLATFORMS, type Platform } from "./types.js";
 
@@ -17,9 +17,10 @@ Usage:
   review-research-mcp update [--config PATH] [--output PATH]
                              [--platform apple|android|react-native] [--max-pages NUMBER]
 
-The serve command uses the local index except that Expo-provider searches query
-Expo's public documentation index and fall back locally. The update command crawls
-the allowlisted documentation websites.
+The serve command uses BRAVE_SEARCH_API_KEY for scoped web discovery, fetches only
+allowlisted official pages, and optionally falls back to a local index. Expo-provider
+searches use Expo's public documentation index. The update command is an optional
+offline crawler for operator-managed fallback indexes.
 `);
 }
 
@@ -42,8 +43,13 @@ async function main() {
       },
       strict: true,
     });
-    const indexPath = values.index ?? process.env.REVIEW_RESEARCH_INDEX_PATH ?? defaultIndexPath;
-    await runStdioServer(indexPath);
+    const indexPath = values.index ?? process.env.REVIEW_RESEARCH_INDEX_PATH;
+    await runStdioServer({
+      ...(indexPath ? { indexPath } : {}),
+      ...(process.env.BRAVE_SEARCH_API_KEY
+        ? { braveApiKey: process.env.BRAVE_SEARCH_API_KEY }
+        : {}),
+    });
     return;
   }
 

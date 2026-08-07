@@ -4,15 +4,10 @@ import path from "node:path";
 import { z } from "zod";
 
 import { extractAppleDocCPage } from "./apple-docc.js";
+import { fetchAllowedContent } from "./fetch-document.js";
 import { chunkDocument, extractDocumentationPage } from "./html.js";
 import { extractMarkdownDocumentationPage } from "./markdown.js";
-import {
-  getProvider,
-  resolveAllowedRequestUrl,
-  resolveAllowedUrl,
-  type DocumentationProvider,
-} from "./providers.js";
-import { readBodyWithLimit } from "./response.js";
+import { getProvider, resolveAllowedUrl, type DocumentationProvider } from "./providers.js";
 import { buildSearchIndex, writeSearchIndex } from "./search-index.js";
 import { extractYouTrackIssue } from "./youtrack.js";
 import {
@@ -70,61 +65,6 @@ export interface UpdateOptions {
 
 function sleep(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-async function fetchAllowedContent(
-  provider: DocumentationProvider,
-  documentUrl: URL,
-  limits: SourcesConfig["crawl"],
-): Promise<string> {
-  let currentUrl = resolveAllowedRequestUrl(provider, provider.requestUrl(documentUrl).href);
-
-  for (let redirectCount = 0; redirectCount <= 5; redirectCount++) {
-    const response = await fetch(currentUrl, {
-      redirect: "manual",
-      signal: AbortSignal.timeout(limits.timeoutMs),
-      headers: {
-        "accept-language": "en-US,en;q=0.9",
-        accept: (() => {
-          const format = provider.responseFormat(documentUrl);
-          if (format === "docc-json" || format === "youtrack-json") {
-            return "application/json";
-          }
-          if (format === "markdown") {
-            return "text/markdown,text/plain;q=0.9";
-          }
-          return "text/html,application/xhtml+xml;q=0.9";
-        })(),
-        "user-agent": "review-research-mcp/0.1 (+local documentation indexer)",
-      },
-    });
-
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get("location");
-      if (!location) {
-        throw new Error(`redirect ${response.status} did not include Location`);
-      }
-      currentUrl = resolveAllowedRequestUrl(provider, location, currentUrl.href);
-      continue;
-    }
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-    const expectedFormat = provider.responseFormat(documentUrl);
-    const isExpectedType =
-      expectedFormat === "docc-json" || expectedFormat === "youtrack-json"
-        ? contentType.includes("json")
-        : expectedFormat === "markdown"
-          ? contentType.includes("text/plain") || contentType.includes("text/markdown")
-          : contentType.includes("text/html") || contentType.includes("application/xhtml+xml");
-    if (!isExpectedType) {
-      throw new Error(`unsupported content type: ${contentType || "missing"}`);
-    }
-    return readBodyWithLimit(response, limits.maxResponseBytes);
-  }
-  throw new Error("too many redirects");
 }
 
 async function crawlProvider(

@@ -110,6 +110,8 @@ jobs:
           # Anthropic review credential — the env var named by auth.tokenEnv in
           # config.jsonc (see workflow.yml for the accepted token shapes).
           CLAUDE_CODE_REVIEW_SHARED_API_TOKEN: ${{ secrets.CLAUDE_CODE_REVIEW_SHARED_API_TOKEN }}
+          # Optional search-only credential for trusted platform documentation research.
+          BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
           # Optional: override the model for every agent.
           REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}
         run: |

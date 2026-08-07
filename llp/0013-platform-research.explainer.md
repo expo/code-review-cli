@@ -18,23 +18,42 @@ The package exposes `ecr` and `review-research-mcp`. Keeping both in one package
 makes the query router, MCP protocol, source adapters, tests, and review integration
 one versioned unit. ECR does not resolve the MCP through `PATH`: it starts the
 package-relative entry point with the current absolute Node executable. Root config
-therefore supplies only an absolute `research.indexPath`, not an arbitrary command
-or argument vector.
+supplies only enablement, bounds, and an optional absolute fallback index path—not an
+arbitrary command, endpoint, host, or argument vector.
 
 The MCP remains a process boundary rather than an in-process import. Its stdout is
 the only result channel, its environment is an allowlist, it runs from the OS temp
 directory, and ECR caps its runtime and output. A failure is logged and review
 continues without research; it never skips or weakens an ordinary review pass.
 
-## Index Lifecycle and Network Boundary
+## Search, Fetch, and Optional Index Boundary
 
-`review-research-mcp serve` reads the local index for every provider except Expo.
-An Expo-routed query sends the already-sanitized API/concept query to
-the fixed public Expo Algolia search endpoint. The browser-visible key is search-only;
-redirects are rejected, response size/time/hit count are capped, every result is
-schema-validated, and canonical result URLs must remain on `docs.expo.dev`. Failure
-falls back to the local index. No code snippets, strings, comments, paths, credentials,
-or model prompts cross that boundary.
+`review-research-mcp serve` uses Brave Web Search as discovery for non-Expo
+providers. Each request combines the already-sanitized API/concept query with a fixed
+provider-owned `site:` scope. The endpoint is fixed, redirects are rejected, response
+size/time/hit count are capped, and only the fixed `BRAVE_SEARCH_API_KEY` credential
+is forwarded into the MCP child. Search titles, snippets, and ranking are untrusted
+discovery hints, never evidence.
+
+Every discovered URL must independently pass the provider's exact HTTPS host/path
+allowlist before a fetch begins. Redirects are handled manually and must remain on
+the provider's request allowlist; content type, body size, redirect count, timeout,
+and fetched-page count are bounded. The fetched official body—not the search
+snippet—is parsed, locally ranked, truncated, and returned as evidence. Apple
+documentation uses its structured DocC JSON, including symbol and availability
+metadata. Search-engine sparsity produces an empty result and never broadens the
+trust boundary.
+
+Expo-routed queries use the fixed public Expo Algolia endpoint. Its browser-visible
+key is search-only; redirects are rejected, response size/time/hit count are capped,
+records are schema-validated, and canonical result URLs must remain on
+`docs.expo.dev`.
+
+OkHttp uses the fixed official `lysine.dev` static search index because the newly
+migrated feature pages are not yet comprehensively represented in Brave. The index
+has the same response-size/schema/URL constraints, is cached only within the MCP
+process, and can never admit a URL outside the OkHttp provider allowlist. Brave is a
+fallback when that first-party index is unavailable.
 
 `review-research-mcp update` is a separate, operator-invoked command for trusted
 scheduled jobs. The updater uses exact HTTPS host/path allowlists, manually
@@ -43,19 +62,17 @@ crawl depth, page count, timeout, and delay. The Expo crawl supplies a local fal
 precise Expo search uses the live query rather than pretending an empty-query result
 page is a complete Algolia index.
 
-An adopter without index-distribution infrastructure may run `update` in a separate
-secretless workflow step from the same pinned published package and trusted base
-checkout. That step must execute no PR code, receive no model credential, and fail
-open so the ordinary review still runs. It is a bootstrap deployment, not a reason to
-mix the crawler into the credential-bearing `ecr ci` process; mature installations
-should prefer a scheduled, signed, read-only index artifact.
+The crawler is not part of the ordinary review workflow. An adopter requiring an
+offline fallback may run `update` in a separate scheduled secretless job from a
+pinned package and trusted checkout. That job must execute no PR code, receive no
+model credential, and publish a verified read-only index artifact.
 
 The generated index is deliberately not published in the npm package. Documentation
-changes independently of ECR, and the current index is large enough that coupling it
-to every CLI install would make releases and cache invalidation expensive. CI should
-build the index outside the PR job, verify its digest, and mount it read-only at the
-absolute path named by trusted base-commit config. Research-enabled reviews bypass
-result-cache reuse until the index digest becomes part of the cache key.
+changes independently of ECR, and coupling a snapshot to every CLI install would make
+releases and invalidation expensive. If supplied, an absolute trusted-base
+`research.indexPath` is fallback evidence when remote discovery fails or misses.
+Research-enabled reviews bypass result-cache reuse because remote search,
+documentation, and optional index content can change without a config change.
 
 ## Query and Prompt Boundary
 
@@ -67,7 +84,8 @@ constraint term, and to retry broad results with a narrower symbol. It explicitl
 rejects prose, code, package/import names, paths, secrets, and sensitive context as
 query material. MCP output is
 schema-validated, limited to HTTPS URLs from the requested provider, truncated,
-sanitized, and wrapped in an untrusted platform-research fence. Issue tracker text
+sanitized, and wrapped in an untrusted platform-research fence. The Brave credential
+is never written to MCP output, prompts, logs, or run artifacts. Issue tracker text
 keeps distinct provenance and is never presented as an API contract.
 
 ## Installation-Specific Research Is Deferred

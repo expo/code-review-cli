@@ -199,11 +199,12 @@ test("an oversized patch line stops bounded query analysis for that file", () =>
   expect(JSON.stringify(queries)).not.toContain("SensitiveCredentialType");
 });
 
-test("research child environment forwards only locale and standard proxy variables", () => {
+test("research child environment forwards only locale, proxy variables, and the fixed search key", () => {
   expect(
     researchChildEnvironment({
       HTTPS_PROXY: "http://proxy.example:8080",
       no_proxy: "localhost",
+      BRAVE_SEARCH_API_KEY: "search-only",
       SECRET_TOKEN: "must-not-be-forwarded",
       PATH: "/private/bin",
     }),
@@ -212,16 +213,17 @@ test("research child environment forwards only locale and standard proxy variabl
     LC_ALL: "C.UTF-8",
     HTTPS_PROXY: "http://proxy.example:8080",
     no_proxy: "localhost",
+    BRAVE_SEARCH_API_KEY: "search-only",
   });
   expect(researchChildEnvironment({ SECRET_TOKEN: "nope" })).not.toHaveProperty("SECRET_TOKEN");
   expect(researchChildEnvironment({ PATH: "/private/bin" })).not.toHaveProperty("PATH");
 });
 
-test("research index configuration is absolute, root-only, and required when enabled", () => {
+test("research index fallback is absolute and research remains root-only", () => {
   expect(
     ReviewConfigSchema.safeParse({ research: { enabled: true, indexPath: "index.json" } }).success,
   ).toBe(false);
-  expect(ReviewConfigSchema.safeParse({ research: { enabled: true } }).success).toBe(false);
+  expect(ReviewConfigSchema.safeParse({ research: { enabled: true } }).success).toBe(true);
   expect(
     ReviewConfigSchema.safeParse({
       research: { enabled: true, indexPath: path.join(tmpdir(), "index.json") },
