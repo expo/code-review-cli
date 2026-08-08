@@ -76,8 +76,9 @@ export function createResearchNetwork(
     if (controller.signal.aborted) throw new ResearchDeadlineError(timeoutMs);
 
     const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const isSearch = SEARCH_ENDPOINTS.some((endpoint) => href.startsWith(endpoint));
     totalRequests++;
-    if (SEARCH_ENDPOINTS.some((endpoint) => href.startsWith(endpoint))) searchRequests++;
+    if (isSearch) searchRequests++;
     else documentRequests++;
 
     // Keep the caller's own per-attempt timeout AND add the call deadline, so a
@@ -89,9 +90,13 @@ export function createResearchNetwork(
     const response = await base(input, { ...init, signal });
     if (response.status >= 300 && response.status < 400) {
       redirects++;
-      // A redirect hop is a round trip, not a new document; undo the document
-      // count so `documentRequests` stays a count of distinct pages requested.
-      documentRequests--;
+      // A redirect hop is a round trip, not a distinct resource, so undo the
+      // classification count. It has to be the SAME counter that was
+      // incremented: the search backends use `redirect: "manual"` too and treat
+      // a 3xx as an error, so unconditionally decrementing documentRequests
+      // drives it negative the first time a discovery endpoint redirects.
+      if (isSearch) searchRequests--;
+      else documentRequests--;
     }
     return response;
   };

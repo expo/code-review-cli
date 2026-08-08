@@ -78,6 +78,25 @@ test("the ledger separates paid discovery from page fetches and redirect hops", 
   });
 });
 
+test("a redirect from a discovery endpoint never drives a counter negative", async () => {
+  // The search backends also use `redirect: "manual"` and treat a 3xx as an
+  // error, so a redirect must undo the counter it actually incremented.
+  const network = createResearchNetwork(
+    async () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://api.search.brave.com/res/v2/web/search" },
+      }),
+    10_000,
+  );
+  await network.fetch("https://api.search.brave.com/res/v1/web/search?q=x");
+
+  const counts = network.counts();
+  expect(counts).toMatchObject({ searchRequests: 0, documentRequests: 0, redirects: 1 });
+  expect(counts.documentRequests).toBeGreaterThanOrEqual(0);
+  expect(counts.searchRequests).toBeGreaterThanOrEqual(0);
+});
+
 test("per-call ledgers sum into one review-wide total", () => {
   expect(
     totalResearchNetwork([
