@@ -1065,6 +1065,9 @@ export async function runReview(
     const findingCountBeforeChecks = output.findings.length;
     const decisionBeforeChecks = output.decision;
     let verifierDropped: { finding: Finding; reason: string }[] = [];
+    // Citations the verifier stripped from kept findings, persisted to the run
+    // log so the removal reason stays auditable — mirrors verifierDropped.
+    let citationStrips: { finding: Finding; reason: string }[] = [];
     // Stripped requalifications (finding + reason), persisted to the run log so the
     // stack-aware decision trail is auditable after the fact — mirrors verifierDropped.
     const requalificationStrips: { finding: Finding; reason: string }[] = [];
@@ -1086,6 +1089,7 @@ export async function runReview(
         verification.model,
       );
       verifierDropped = verification.dropped;
+      citationStrips = verification.citationStripped;
       if (verification.dropped.length > 0 || verification.citationStripped.length > 0) {
         if (verification.dropped.length > 0) {
           progress(`Verification dropped ${verification.dropped.length} unverified finding(s).`);
@@ -1107,7 +1111,7 @@ export async function runReview(
       // fingerprint-carried copies too, or the post-coordination merge below
       // would silently restore the stripped sources.
       for (const stripped of verification.citationStripped) {
-        sourcesByFp.delete(fingerprintFinding(stripped));
+        sourcesByFp.delete(fingerprintFinding(stripped.finding));
       }
     }
 
@@ -1366,6 +1370,7 @@ export async function runReview(
       coverageNotes,
       verifierDropped,
       requalificationStrips,
+      citationStrips,
       ...(rlTotal > 0
         ? {
             rateLimitEvents: rlTotal,

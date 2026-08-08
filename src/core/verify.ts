@@ -23,11 +23,13 @@ export interface VerificationResult {
   kept: Finding[];
   dropped: Array<{ finding: Finding; reason: string }>;
   /**
-   * Kept findings whose cited documentation the verifier judged unsupportive.
-   * Their `sources` are already removed from `kept`; the caller must also drop
-   * the fingerprint-carried copies so a later merge cannot restore them.
+   * Kept findings whose cited documentation the verifier judged unsupportive,
+   * with the strip reason — the citation slice of the same audit trail as
+   * `dropped` (run-logged by the caller). Their `sources` are already removed
+   * from `kept`; the caller must also drop the fingerprint-carried copies so a
+   * later merge cannot restore them.
    */
-  citationStripped: Finding[];
+  citationStripped: Array<{ finding: Finding; reason: string }>;
   cost: number;
   tokens: TokenUsage;
   /** provider/model that actually answered the verify calls (see PromptResult.model). */
@@ -145,7 +147,7 @@ export async function verifyFindings(
   researchEvidence: ResearchEvidence[] = [],
 ): Promise<VerificationResult> {
   const dropped: Array<{ finding: Finding; reason: string }> = [];
-  const citationStripped: Finding[] = [];
+  const citationStripped: Array<{ finding: Finding; reason: string }> = [];
   // Kept findings the verifier rewrote (currently only citation removal).
   const replacements = new Map<Finding, Finding>();
   let cost = 0;
@@ -211,7 +213,10 @@ export async function verifyFindings(
           if (citedSources && value.citationSupported === false) {
             const { sources: _sources, ...withoutSources } = finding;
             replacements.set(finding, withoutSources);
-            citationStripped.push(finding);
+            citationStripped.push({
+              finding,
+              reason: "the verifier judged the cited passages unsupportive of the claim",
+            });
             onProgress?.(
               `  verify: kept "${finding.title}" but removed its citation — the cited passages do not support the claim`,
             );
