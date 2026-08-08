@@ -1093,7 +1093,14 @@ export async function runReview(
         output = {
           ...output,
           findings: verification.kept,
-          decision: decisionAfterVerification(output.decision, verification.kept),
+          // Re-derive the decision ONLY when findings were dropped. A citation
+          // strip keeps every finding, and decisionAfterVerification would
+          // downgrade a criticals-free request_changes to approve_with_comments —
+          // a blocking review must not stop blocking because a link was removed.
+          decision:
+            verification.dropped.length > 0
+              ? decisionAfterVerification(output.decision, verification.kept)
+              : output.decision,
         };
       }
       // The verifier judged these citations unsupportive. Remove the
