@@ -23,6 +23,9 @@ async function callSearch(serverOptions, name, args) {
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
     const response = await client.callTool({ name: "search_platform_docs", arguments: args });
     const block = response.content.find((entry) => entry.type === "text");
+    if (response.isError) {
+      throw new Error(block?.text ?? "tool returned an error without text");
+    }
     return JSON.parse(block?.text ?? "{}");
   } finally {
     await client.close();

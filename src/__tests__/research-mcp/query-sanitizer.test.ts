@@ -25,14 +25,26 @@ test("query sanitizer removes quoted literals, URLs, paths, and excess prose", (
   ).toBe("MainActor isolation");
 });
 
-test("query sanitizer rejects secret-shaped material and queries without an API anchor", () => {
+test("query sanitizer rejects secret-shaped material and single-word generic queries", () => {
   expect(() => sanitizeDocumentationQuery("API key: ExampleSecretValue123 MainActor")).toThrow(
     /secret-labeled/,
   );
   expect(sanitizeDocumentationQuery("MainActor Ab3dE5fG7hJ9kLmN2pQrS4tUvW6xY8z")).toBe("MainActor");
-  expect(() => sanitizeDocumentationQuery("background behavior availability")).toThrow(
-    /API-like symbol/,
+  expect(() => sanitizeDocumentationQuery("background")).toThrow(/API-like symbol/);
+  expect(() => sanitizeDocumentationQuery("how does it work")).toThrow(/API-like symbol/);
+});
+
+test("query sanitizer accepts package names and lowercase concept phrases", () => {
+  expect(sanitizeDocumentationQuery("expo-camera barcode scanner")).toBe(
+    "expo-camera barcode scanner",
   );
+  expect(sanitizeDocumentationQuery("gradle configuration cache")).toBe(
+    "gradle configuration cache",
+  );
+  expect(sanitizeDocumentationQuery("coroutine cancellation cooperative")).toBe(
+    "coroutine cancellation cooperative",
+  );
+  expect(sanitizeDocumentationQuery("ios background fetch")).toBe("ios background fetch");
 });
 
 test("direct URL sanitizer rejects decorations and suspicious outbound path segments", () => {

@@ -36,11 +36,13 @@ test("research audit shares one call budget and records bounded completed result
     await expect(first.reserve("search_platform_docs", { query: "View" })).rejects.toThrow(
       /call budget exhausted \(2\)/,
     );
-    const records = await readResearchAudit(auditPath);
+    const { records, rejections } = await readResearchAudit(auditPath);
     expect(records).toHaveLength(2);
     expect(records[0]?.results[0]?.title).toBe("MainActor");
     expect(records[0]?.results[0]?.passage).toHaveLength(20_000);
     expect(records[1]?.error).toBe("no page");
+    // The over-budget attempt is visible by reason class and consumed no budget.
+    expect(rejections).toEqual([{ tool: "search_platform_docs", reason: "budget-exhausted" }]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

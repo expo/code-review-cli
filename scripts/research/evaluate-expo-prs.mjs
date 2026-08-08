@@ -296,11 +296,11 @@ const cases = [
 
 await runEvalCases(cases, {
   clientName: "expo-pr-evaluation",
+  // No explicit limit: the tool's default is the server's enforced maximum.
   buildArguments: (testCase) => ({
     platform: testCase.platform ?? "android",
     ...(testCase.providers ? { providers: testCase.providers } : {}),
     query: testCase.query,
-    limit: 5,
   }),
   assertCase: assertExpectedUrl,
 });

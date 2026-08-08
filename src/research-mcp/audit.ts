@@ -5,6 +5,23 @@ import type { SearchResult } from "./types.js";
 
 export type ResearchToolName = "search_platform_docs" | "fetch_platform_doc";
 
+/**
+ * Why a call was refused before it executed. Recorded WITHOUT the offending
+ * input: a rejected query or URL may contain exactly the sensitive material
+ * the sanitizer refused to send, so only the reason class is audited.
+ */
+export const RESEARCH_REJECTION_REASONS = [
+  "query-rejected",
+  "url-rejected",
+  "budget-exhausted",
+] as const;
+export type ResearchRejectionReason = (typeof RESEARCH_REJECTION_REASONS)[number];
+
+export interface ResearchRejection {
+  tool: ResearchToolName;
+  reason: ResearchRejectionReason;
+}
+
 export interface ResearchAuditInput {
   platform?: string;
   providers?: string[];
@@ -54,7 +71,8 @@ type AuditEvent =
       input: ResearchAuditInput;
       error: string;
       timestamp: string;
-    };
+    }
+  | ({ type: "rejected"; timestamp: string } & ResearchRejection);
 
 const LOCK_RETRIES = 200;
 const LOCK_DELAY_MS = 10;
@@ -150,6 +168,14 @@ export class ResearchAudit {
     await this.withLock(async () => {
       const used = await this.reservationCount();
       if (used >= this.maxCalls) {
+        // Rejected events do not count as reservations, so recording the refusal
+        // cannot itself consume (or extend) the budget.
+        await this.append({
+          type: "rejected",
+          tool,
+          reason: "budget-exhausted",
+          timestamp: new Date().toISOString(),
+        });
         throw new Error(`Documentation research call budget exhausted (${this.maxCalls})`);
       }
       if (!this.path) this.localReservations++;
@@ -197,17 +223,33 @@ export class ResearchAudit {
       timestamp: new Date().toISOString(),
     });
   }
+
+  /** Record a call refused before execution — reason class only, never the input. */
+  async rejected(tool: ResearchToolName, reason: ResearchRejectionReason): Promise<void> {
+    await this.append({
+      type: "rejected",
+      tool,
+      reason,
+      timestamp: new Date().toISOString(),
+    });
+  }
 }
 
-export async function readResearchAudit(path: string): Promise<ResearchAuditResult[]> {
+export interface ResearchAuditLog {
+  records: ResearchAuditResult[];
+  rejections: ResearchRejection[];
+}
+
+export async function readResearchAudit(path: string): Promise<ResearchAuditLog> {
   let contents = "";
   try {
     contents = await readFile(path, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { records: [], rejections: [] };
     throw error;
   }
   const records: ResearchAuditResult[] = [];
+  const rejections: ResearchRejection[] = [];
   for (const line of contents.split("\n")) {
     if (!line) continue;
     try {
@@ -223,9 +265,15 @@ export async function readResearchAudit(path: string): Promise<ResearchAuditResu
           error: event.error,
         });
       }
+      if (
+        event.type === "rejected" &&
+        RESEARCH_REJECTION_REASONS.includes(event.reason as ResearchRejectionReason)
+      ) {
+        rejections.push({ tool: event.tool, reason: event.reason });
+      }
     } catch {
       // Ignore a partial final line from a process that was terminated mid-write.
     }
   }
-  return records;
+  return { records, rejections };
 }

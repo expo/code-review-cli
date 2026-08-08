@@ -123,8 +123,14 @@ one member, behavior, or constraint term, and to retry a broad result with at mo
 narrower query. The MCP then deterministically removes quoted literals, URLs, email
 addresses, paths, prose stop words, overlong or high-entropy tokens, and unsupported
 punctuation. Credential-shaped or secret-labeled input fails closed. The remaining
-query must contain an API-like symbol, stay under eight short tokens, and fit the
-review-wide call budget.
+query must contain an API-like symbol — which includes hyphenated package names such
+as `expo-camera` — or be a short multi-word lowercase concept phrase, stay under eight
+short tokens, and fit the review-wide call budget. The concept-phrase allowance exists
+because guide, release-note, and Expo topics frequently have no CamelCase symbol; its
+tokens pass the same length, entropy, and secret checks, and a single generic word
+still fails closed. The search tool's advertised result limit is derived from the
+enforced per-call bound, and the direct-fetch focused passage count is independent of
+that bound, so a caller's mental model matches what a request can return.
 
 Provider selection preserves native platform ownership. Swift or Objective-C source
 uses Apple for OS contracts; Kotlin, Java, and Gradle source uses Android for platform
@@ -147,6 +153,13 @@ provenance class, and canonical URL. GitHub Actions receives that same data in i
 step summary. The JSONL run log additionally stores at most the already-bounded
 passage returned to the reviewer so operators can determine whether research was
 useful after the fact; it still excludes PR title/body and model transcripts.
+
+Calls refused before execution are also audited, by reason class only: a rejected
+query, a rejected direct-fetch URL, or an exhausted call budget. The refused input is
+never recorded — it may be exactly the material the sanitizer refused to send — but
+the counts surface in progress output and the step summary so operators can see unmet
+research demand and tune the budget. A budget-exhausted attempt does not consume a
+reservation.
 
 The reviewer may select a source for a finding only by copying its exact title and URL
 from an MCP result. Model output crosses an engine-side grounding seam: URLs absent

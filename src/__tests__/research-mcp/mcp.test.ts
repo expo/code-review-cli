@@ -95,6 +95,12 @@ test("stdio MCP lists and calls the read-only documentation search tool", async 
     expect(fetchInputSchema.properties?.context?.description ?? "").toContain(
       "document=bounded extracted page text",
     );
+    // The advertised search limit is the limit the server enforces.
+    const searchInputSchema = searchTool?.inputSchema as
+      | { properties?: { limit?: { maximum?: number; default?: number } } }
+      | undefined;
+    expect(searchInputSchema?.properties?.limit?.maximum).toBe(3);
+    expect(searchInputSchema?.properties?.limit?.default).toBe(3);
 
     const response = await client.callTool({
       name: "search_platform_docs",
@@ -161,7 +167,7 @@ test("stdio MCP starts without an index and reports unavailable remote discovery
   }
 });
 
-test("stdio MCP rejects credential-shaped searches before network access or audit logging", async () => {
+test("stdio MCP rejects credential-shaped searches before network access, auditing only the reason class", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "review-research-mcp-secret-"));
   const auditPath = path.join(directory, "audit.jsonl");
   const cliPath = fileURLToPath(new URL("../../research-mcp/cli.ts", import.meta.url));
@@ -187,7 +193,22 @@ test("stdio MCP rejects credential-shaped searches before network access or audi
       },
     });
     expect(response.isError).toBe(true);
-    await expect(readFile(auditPath, "utf8")).rejects.toThrow();
+    // The refusal is audited by reason class only — never the rejected query text.
+    const auditContents = await readFile(auditPath, "utf8");
+    const events = auditContents
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(events).toEqual([
+      {
+        type: "rejected",
+        tool: "search_platform_docs",
+        reason: "query-rejected",
+        timestamp: expect.any(String),
+      },
+    ]);
+    expect(auditContents).not.toContain("ghp_");
+    expect(auditContents).not.toContain("MainActor");
   } finally {
     await client.close();
     await rm(directory, { recursive: true, force: true });

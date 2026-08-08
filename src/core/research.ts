@@ -53,6 +53,11 @@ export interface ResearchProvenance {
   queries: ResearchQuery[];
   results: ResearchResultRecord[];
   warnings: string[];
+  /**
+   * Calls refused before execution, aggregated by reason class (query-rejected,
+   * url-rejected, budget-exhausted). Rejected input text is never recorded.
+   */
+  rejections?: Array<{ tool: string; reason: string; count: number }>;
   /** Grounded reviewer declarations that documentation changed a concrete decision. */
   decisions?: Array<ResearchDecision & { agent: string }>;
   usefulness?: ResearchUsefulness;
@@ -183,7 +188,7 @@ export async function createResearchMcpRuntime(
 export async function researchProvenanceFromAudit(
   auditPath: string,
 ): Promise<{ provenance: ResearchProvenance; evidence: ResearchEvidence[] }> {
-  const records = await readResearchAudit(auditPath);
+  const { records, rejections } = await readResearchAudit(auditPath);
   const queries: ResearchQuery[] = [];
   const evidence: ResearchEvidence[] = [];
   const warnings: string[] = [];
@@ -223,7 +228,23 @@ export async function researchProvenanceFromAudit(
     warnings: [...new Set(warnings)].slice(0, 10),
     promptText: "",
   };
-  return { provenance: toResearchProvenance(run), evidence };
+  const provenance = toResearchProvenance(run);
+  if (rejections.length > 0) {
+    const counts = new Map<string, number>();
+    for (const rejection of rejections) {
+      const key = `${rejection.tool}\0${rejection.reason}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    provenance.rejections = [...counts.entries()]
+      .map(([key, count]) => {
+        const [tool = "", reason = ""] = key.split("\0");
+        return { tool: cleanEvidenceText(tool, 80), reason: cleanEvidenceText(reason, 80), count };
+      })
+      .sort((left, right) =>
+        `${left.tool}${left.reason}`.localeCompare(`${right.tool}${right.reason}`),
+      );
+  }
+  return { provenance, evidence };
 }
 
 function cleanEvidenceText(value: string, maxLength: number): string {
@@ -307,6 +328,11 @@ export function formatResearchProgress(provenance: ResearchProvenance): string[]
       );
     }
   }
+  for (const rejection of provenance.rejections ?? []) {
+    lines.push(
+      `  research: ${rejection.count} ${rejection.tool} call(s) rejected before execution (${rejection.reason})`,
+    );
+  }
   for (const warning of provenance.warnings) {
     lines.push(`  research warning: ${cleanEvidenceText(warning, 500)}`);
   }
@@ -352,6 +378,11 @@ export function renderResearchMarkdown(provenance: ResearchProvenance): string {
         `  - [${escapeMarkdownLabel(result.title)}](<${result.url}>) — ${escapeMarkdownLabel(result.provider)}/${escapeMarkdownLabel(result.sourceKind)}`,
       );
     }
+  }
+  for (const rejection of provenance.rejections ?? []) {
+    lines.push(
+      `- ⚠️ ${rejection.count} \`${escapeMarkdownLabel(rejection.tool)}\` call(s) rejected before execution (${escapeMarkdownLabel(rejection.reason)}).`,
+    );
   }
   for (const warning of provenance.warnings) {
     lines.push(`- ⚠️ ${escapeMarkdownLabel(warning)}`);
