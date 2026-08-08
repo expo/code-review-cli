@@ -27,6 +27,18 @@ export interface ReviewInputHashOptions {
   agents?: string[];
   route?: boolean;
   contextText?: string;
+  /**
+   * Deliberately absent: the prior-review context block is NOT part of the key.
+   *
+   * It is derived from the previous review's own result, so including it would
+   * change the hash the moment a first review exists and guarantee a miss on
+   * every re-review — disabling the cache exactly where it pays. Excluding it is
+   * also the consistent answer: a hit means the diff, files, config and metadata
+   * are byte-identical, and reusing that run's conclusions is precisely what the
+   * prior-review block would have told the model to reuse. Dismissals and author
+   * replies likewise stay out — both are applied after the fact at render time,
+   * so they change the comment without needing a fresh review.
+   */
 }
 
 /** Canonical JSON: object-key order never turns the same input into a cache miss. */

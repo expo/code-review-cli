@@ -13,6 +13,7 @@ import { coordinate } from "./coordinator.js";
 import { writeRunLog } from "./log.js";
 import type { RunLogRecord } from "./log.js";
 import { filterNoise, writePatchWorkspace } from "./noise.js";
+import type { PriorReview } from "./prior-review.js";
 import type { PatchWorkspaceFile } from "./noise.js";
 import {
   addTokenUsage,
@@ -107,6 +108,13 @@ export interface ReviewRunOptions {
   /** Already-read, byte-capped external context text (untrusted); injected into the
    * reviewer + cross-cutting prompts. Read once in the command layer. */
   contextText?: string;
+  /**
+   * What the previous review of this PR reported, reduced in the command layer from
+   * the comment's embedded state. Injected into the reviewer + cross-cutting prompts
+   * so a re-review knows what a human already dismissed or answered. UNTRUSTED (it is
+   * model output about an untrusted PR) and never given to the coordinator.
+   */
+  priorReview?: PriorReview;
   /**
    * When set, walk the OPEN PRs stacked on top of this one and inject a paths-only
    * manifest into the COORDINATOR so absence-style findings a later stacked PR
@@ -719,6 +727,7 @@ export async function runReview(
               { noTools: task.fallback },
               options.contextText,
               Boolean(researchRuntime) && !task.fallback,
+              options.priorReview,
             )
           : buildReviewerTask(
               task.files,
@@ -726,6 +735,7 @@ export async function runReview(
               filtered,
               options.contextText,
               Boolean(researchRuntime) && !task.fallback,
+              options.priorReview,
             );
       return task.fallback ? `${base}\n\n${NO_TOOLS_INSTRUCTION}` : base;
     };

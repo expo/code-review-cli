@@ -25,7 +25,8 @@ import { readContextFile } from "../core/context-file.js";
 import { buildDiffLineIndex } from "../core/render.js";
 import type { LinkContext, ReviewState, ScopeReviewResult } from "../core/render.js";
 import type { CoordinatorOutput, FeedbackPin, FeedbackRecord, Finding } from "../core/schema.js";
-import { applyPins, collectPins, scopedFingerprint } from "../core/schema.js";
+import { applyPins, collectPins, fingerprintFinding, scopedFingerprint } from "../core/schema.js";
+import { summarizePriorReview } from "../core/prior-review.js";
 import { dropStaleVerdict, feedbackApplied, feedbackNeedsRunSeam } from "../core/adjudicate.js";
 import { runReview } from "../core/review.js";
 import type { ReviewRunOptions, ReviewRunResult } from "../core/review.js";
@@ -584,6 +585,27 @@ async function runLegacyCi(
   const cacheAllowed = !bypassTriggerGate && !stack && !feedback && metadata !== undefined;
   let inputHash: string | undefined;
 
+  // The previous review's embedded comment state, read ONCE: the cache check below
+  // consults it, and the reviewer prompts carry a reduced form of it so a re-review
+  // knows what a human already dismissed or answered. Fail-open — a PR that has
+  // never been reviewed, or an unreadable comment, simply reviews without it.
+  let priorState: Awaited<ReturnType<typeof reporter.readState>> = null;
+  try {
+    priorState = await reporter.readState();
+  } catch (error) {
+    process.stderr.write(
+      `CI reviewer: could not read the previous review comment ` +
+        `(continuing without prior context): ${errorMessage(error)}\n`,
+    );
+  }
+  const priorReview = summarizePriorReview(priorState, fingerprintFinding, (finding, record) =>
+    // dropStaleVerdict first, exactly as mergeFeedback and the aggregate merge do: a
+    // verdict is a claim about SOURCE and the fingerprint excludes the line number, so
+    // without this an accepted rebuttal from an earlier head keeps marking a finding
+    // answered after the code it judged was edited away.
+    feedbackApplied(finding, dropStaleVerdict(record, headSha), config.feedback),
+  );
+
   try {
     if (cacheAllowed) {
       try {
@@ -606,11 +628,10 @@ async function runLegacyCi(
           `CI reviewer: could not hash the review input (continuing fresh): ${errorMessage(error)}\n`,
         );
       }
-      if (inputHash) {
+      if (inputHash && priorState) {
         try {
-          const prior = await reporter.readState();
-          if (prior && reviewMatchesInput(prior.review, prior.inputHash, inputHash)) {
-            await reporter.report(prior.review, undefined, inputHash);
+          if (reviewMatchesInput(priorState.review, priorState.inputHash, inputHash)) {
+            await reporter.report(priorState.review, undefined, inputHash);
             process.stderr.write(
               "CI reviewer: unchanged review input; reused the previous result.\n",
             );
@@ -618,7 +639,7 @@ async function runLegacyCi(
           }
         } catch (error) {
           process.stderr.write(
-            `CI reviewer: could not read the previous review cache (continuing fresh): ${errorMessage(error)}\n`,
+            `CI reviewer: could not reuse the previous review cache (continuing fresh): ${errorMessage(error)}\n`,
           );
         }
       }
@@ -630,6 +651,7 @@ async function runLegacyCi(
       agents,
       route,
       contextText,
+      priorReview,
       stack,
       stackConfirm,
       runsDir: workspaceRunsDir(cwd),
@@ -903,13 +925,19 @@ async function runRoutedCi(
       );
     }
   }
+  // Read whenever one aggregate comment holds every scope, NOT only when the cache is
+  // live: this state is both the cache source and the prior-review context each scope
+  // carries into its prompts. Gating it on `cacheReadRoot` silently dropped the
+  // prior-review block for every run with feedback or stack enabled — which is to say,
+  // for exactly the repos whose dismissals and replies make the block worth having.
   let priorAggregateState: ReviewState | null = null;
-  if (cacheReadRoot && mode === "single") {
+  if (mode === "single") {
     try {
       priorAggregateState = await singleModeReporter!.readState();
     } catch (error) {
       process.stderr.write(
-        `CI reviewer: could not read the previous aggregate cache (continuing fresh): ${errorMessage(error)}\n`,
+        `CI reviewer: could not read the previous aggregate review ` +
+          `(continuing fresh, without prior context): ${errorMessage(error)}\n`,
       );
     }
   }
@@ -949,6 +977,46 @@ async function runRoutedCi(
               : undefined,
           )
         : undefined;
+      // Prior state for THIS scope, read once and used twice: the cache check below
+      // and the reviewer prompts. Which comment holds it — and which fingerprint the
+      // dismissal/feedback records are keyed under — follows the same rule as
+      // `feedbackSeam` above, so the two can never disagree about a scope's history.
+      const scopeFingerprint = (finding: Finding): string =>
+        mode === "single"
+          ? scopedFingerprint(isDefault ? null : scope.name, finding)
+          : fingerprintFinding(finding);
+      let scopeState: ReviewState | null = null;
+      try {
+        scopeState =
+          mode === "single"
+            ? priorAggregateState
+            : ((await scopeReporter(scope.name).readState()) ?? null);
+      } catch (error) {
+        process.stderr.write(
+          `CI reviewer: [${scope.name}] could not read the previous review comment ` +
+            `(continuing without prior context): ${errorMessage(error)}\n`,
+        );
+      }
+      // In "single" mode one aggregate comment holds every scope: this scope's
+      // findings come from its own `scopes` entry, while the dismissal/feedback/pin
+      // records live at the aggregate's root.
+      const scopePriorSource: ReviewState | null =
+        mode === "single"
+          ? scopeState && {
+              ...scopeState,
+              review:
+                scopeState.scopes?.find((entry) => entry.scope === scope.name)?.review ??
+                ({ findings: [] } as unknown as CoordinatorOutput),
+            }
+          : scopeState;
+      const scopePriorReview = summarizePriorReview(
+        scopePriorSource,
+        scopeFingerprint,
+        // Same staleness rule as the single-scope path and both merge paths.
+        (finding, record) =>
+          feedbackApplied(finding, dropStaleVerdict(record, headSha), rootConfig.feedback),
+      );
+
       let cached: ScopeReviewResult | ReviewState | undefined;
       if (cacheReadRoot) {
         try {
@@ -965,7 +1033,7 @@ async function runRoutedCi(
           if (mode === "single") {
             cached = priorAggregateState?.scopes?.find((entry) => entry.scope === scope.name);
           } else {
-            cached = (await scopeReporter(scope.name).readState()) ?? undefined;
+            cached = scopeState ?? undefined;
           }
         } catch (error) {
           inputHash = undefined;
@@ -988,6 +1056,7 @@ async function runRoutedCi(
           route,
           includePaths: scope.files,
           contextText,
+          priorReview: scopePriorReview,
           stack: stackWalk,
           stackConfirm,
           passesBudgetMs: budget,

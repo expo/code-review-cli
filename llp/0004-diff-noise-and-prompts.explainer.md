@@ -344,3 +344,73 @@ is passed as `ReviewRunOptions.contextText` (see
 N scopes reads the file once, not once per scope [observed]
 (`src/commands/ci.ts` reads before fan-out; `src/core/review.ts`
 `ReviewRunOptions.contextText`).
+
+## Prior-Review Context
+
+A re-review used to start from nothing. Every pass ran stateless, so the reviewer
+could not tell a second push from a first look, and a finding a maintainer had
+already dismissed came back on the next run in slightly different words — near-
+identical repeats are caught by fingerprint suppression, a reworded re-raise is
+not.
+
+The state to fix that was already in hand. `ReviewState` round-trips the whole
+previous `CoordinatorOutput` — every finding with its file, line, severity and
+category — plus `dismissed`, `feedback` and `pins`, through the reviewer's own PR
+comment on every run [observed] (`src/core/render.ts:ReviewState`). It was
+decoded each run and consulted only afterward, for suppression and reply
+matching. `summarizePriorReview` reduces it to a bounded list, and
+`priorReviewSection` renders that as one fenced block for the reviewer and
+cross-cutting tasks [observed] (`src/core/prior-review.ts`,
+`src/core/prompts.ts:priorReviewSection`). Both CI paths supply it: the
+single-scope run reads the reviewer's comment once and reuses that read for the
+cache check, and a routed run resolves it per scope — from the scope's own comment,
+or, in `single` mode, from the aggregate's `scopes` entry paired with the root's
+dismissal records, keyed by the scope-namespaced fingerprint those records use
+[observed] (`src/commands/ci.ts` `scopePriorReview`).
+
+Carrying status is the part that earns the block. A maintainer's dismissal and an
+author's reply both happen *after* a run ends, so no amount of engine session or
+transcript replay could ever contain them; this channel is the only one that can.
+A pin outranks both, because `/undismiss` is the human's last word that a finding
+still stands [observed] (`src/core/prior-review.ts:statusOf`).
+
+`answered` means the reply actually **cleared** the finding, not that someone
+replied — and the test is `feedbackApplied`, the same predicate the reporter uses,
+injected rather than imported so the two cannot drift [observed]
+(`src/core/prior-review.ts` `replyCleared` parameter; `src/commands/ci.ts` binds it
+to the run's feedback config). This is load-bearing, not tidiness: LLP 0011 floors
+`critical`/`secrets`/`security` in code so no reply can clear them, and a block
+that labelled such a finding "a human replied to this" would hand the reviewer a
+reason to drop it — reinstating, through the prompt, exactly the suppression the
+floors refuse. A quote without the `id:` token, a third-party commenter, and a
+finding a maintainer pinned back all stay `open` for the same reason. Each record
+also goes through `dropStaleVerdict` against the reviewed head first, the same
+rule both merge paths apply [observed] (`src/commands/ci.ts`, `mergeFeedback` in
+`src/reporters/github.ts:178`): a verdict is a claim about SOURCE and
+`fingerprintFinding` excludes the line number, so without it an accepted rebuttal
+from an earlier revision would keep marking a finding answered after the code it
+judged was edited away.
+
+It is untrusted, and treated so. The titles and paths are model output produced
+by reading an untrusted pull request — `stripStateMarkers` exists precisely
+because a forged marker can arrive inside a model-written rationale (see [LLP
+0011](0011-author-feedback.explainer.md)). Each entry is therefore flattened
+through `flattenUntrusted` onto a single line and the assembled block is swept
+for a forged `----- BEGIN/END PREVIOUS REVIEW -----` fence, the same defense the
+context file gets [observed] (`src/core/prompts.ts` `PRIOR_REVIEW_BOUNDARY`).
+
+Two boundaries are deliberate. The **coordinator never receives it**: it merges
+and decides, and handing it the previous decision is how a decision drifts by
+inheritance rather than by evidence. And the wording frames prior findings as
+claims to re-check, never as conclusions to carry forward — a reviewer that
+restates last run's list without re-deriving it has stopped reviewing, and recall
+is the product. The block says so explicitly, including that absence from the
+list means nothing.
+
+It is **not** part of the review-cache key, which is a deliberate exception to
+"every input joins the hash" [observed] (`src/core/review-cache.ts`
+`ReviewInputHashOptions`). The block is derived from the previous result, so
+including it would change the hash the moment a first review exists and miss on
+every re-review — disabling the cache exactly where it pays. A hit already means
+the diff, files, config and metadata are byte-identical, so reusing that run's
+conclusions is precisely what the block would have told the model to do.
