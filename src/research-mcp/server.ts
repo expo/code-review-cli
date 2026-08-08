@@ -126,7 +126,11 @@ export async function createDocumentationServer(options: DocumentationServerOpti
                 return { results: [] as SearchResult[], warnings: [] as string[] };
               }
               try {
-                const documents = await searchExpoAlgolia(sanitizedQuery, perProviderLimit);
+                const documents = await searchExpoAlgolia(
+                  sanitizedQuery,
+                  perProviderLimit,
+                  options.fetchImplementation ?? fetch,
+                );
                 return {
                   results: documents.map((document, position) => ({
                     id: `expo-algolia:${document.url}`,
