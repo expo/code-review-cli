@@ -603,6 +603,13 @@ export interface VerifierCitedSource {
   passage: string;
 }
 
+// Neutralize a passage line that forges this fence's own boundary (mirrors
+// CONTEXT_FILE_BOUNDARY). Cited pages are not always official prose — a YouTrack
+// issue description is outsider-editable — and sanitizeUntrusted does not strip a
+// bare DOC_PASSAGE line, so without this a crafted passage could close the fence
+// early and address the verifier as engine prose.
+const DOC_PASSAGE_BOUNDARY = /^\s*<{0,3}DOC_PASSAGE\s*$/gim;
+
 export function buildVerifierTask(
   finding: Finding,
   opts: { evidenceUngrounded?: boolean; citedSources?: VerifierCitedSource[] } = {},
@@ -655,7 +662,7 @@ export function buildVerifierTask(
       lines.push(
         `- cited source: ${flattenUntrusted(source.title)} — ${source.url}`,
         "<<<DOC_PASSAGE",
-        sanitizeUntrusted(source.passage, 1600),
+        sanitizeUntrusted(source.passage, 1600).replace(DOC_PASSAGE_BOUNDARY, ""),
         "DOC_PASSAGE",
       );
     }
