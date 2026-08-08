@@ -925,13 +925,19 @@ async function runRoutedCi(
       );
     }
   }
+  // Read whenever one aggregate comment holds every scope, NOT only when the cache is
+  // live: this state is both the cache source and the prior-review context each scope
+  // carries into its prompts. Gating it on `cacheReadRoot` silently dropped the
+  // prior-review block for every run with feedback or stack enabled — which is to say,
+  // for exactly the repos whose dismissals and replies make the block worth having.
   let priorAggregateState: ReviewState | null = null;
-  if (cacheReadRoot && mode === "single") {
+  if (mode === "single") {
     try {
       priorAggregateState = await singleModeReporter!.readState();
     } catch (error) {
       process.stderr.write(
-        `CI reviewer: could not read the previous aggregate cache (continuing fresh): ${errorMessage(error)}\n`,
+        `CI reviewer: could not read the previous aggregate review ` +
+          `(continuing fresh, without prior context): ${errorMessage(error)}\n`,
       );
     }
   }
