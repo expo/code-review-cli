@@ -598,7 +598,9 @@ async function runLegacyCi(
         `(continuing without prior context): ${errorMessage(error)}\n`,
     );
   }
-  const priorReview = summarizePriorReview(priorState, fingerprintFinding);
+  const priorReview = summarizePriorReview(priorState, fingerprintFinding, (finding, record) =>
+    feedbackApplied(finding, record, config.feedback),
+  );
 
   try {
     if (cacheAllowed) {
@@ -965,6 +967,44 @@ async function runRoutedCi(
               : undefined,
           )
         : undefined;
+      // Prior state for THIS scope, read once and used twice: the cache check below
+      // and the reviewer prompts. Which comment holds it — and which fingerprint the
+      // dismissal/feedback records are keyed under — follows the same rule as
+      // `feedbackSeam` above, so the two can never disagree about a scope's history.
+      const scopeFingerprint = (finding: Finding): string =>
+        mode === "single"
+          ? scopedFingerprint(isDefault ? null : scope.name, finding)
+          : fingerprintFinding(finding);
+      let scopeState: ReviewState | null = null;
+      try {
+        scopeState =
+          mode === "single"
+            ? priorAggregateState
+            : ((await scopeReporter(scope.name).readState()) ?? null);
+      } catch (error) {
+        process.stderr.write(
+          `CI reviewer: [${scope.name}] could not read the previous review comment ` +
+            `(continuing without prior context): ${errorMessage(error)}\n`,
+        );
+      }
+      // In "single" mode one aggregate comment holds every scope: this scope's
+      // findings come from its own `scopes` entry, while the dismissal/feedback/pin
+      // records live at the aggregate's root.
+      const scopePriorSource: ReviewState | null =
+        mode === "single"
+          ? scopeState && {
+              ...scopeState,
+              review:
+                scopeState.scopes?.find((entry) => entry.scope === scope.name)?.review ??
+                ({ findings: [] } as unknown as CoordinatorOutput),
+            }
+          : scopeState;
+      const scopePriorReview = summarizePriorReview(
+        scopePriorSource,
+        scopeFingerprint,
+        (finding, record) => feedbackApplied(finding, record, rootConfig.feedback),
+      );
+
       let cached: ScopeReviewResult | ReviewState | undefined;
       if (cacheReadRoot) {
         try {
@@ -981,7 +1021,7 @@ async function runRoutedCi(
           if (mode === "single") {
             cached = priorAggregateState?.scopes?.find((entry) => entry.scope === scope.name);
           } else {
-            cached = (await scopeReporter(scope.name).readState()) ?? undefined;
+            cached = scopeState ?? undefined;
           }
         } catch (error) {
           inputHash = undefined;
@@ -1004,6 +1044,7 @@ async function runRoutedCi(
           route,
           includePaths: scope.files,
           contextText,
+          priorReview: scopePriorReview,
           stack: stackWalk,
           stackConfirm,
           passesBudgetMs: budget,

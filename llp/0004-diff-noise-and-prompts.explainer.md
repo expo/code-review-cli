@@ -361,13 +361,29 @@ decoded each run and consulted only afterward, for suppression and reply
 matching. `summarizePriorReview` reduces it to a bounded list, and
 `priorReviewSection` renders that as one fenced block for the reviewer and
 cross-cutting tasks [observed] (`src/core/prior-review.ts`,
-`src/core/prompts.ts:priorReviewSection`).
+`src/core/prompts.ts:priorReviewSection`). Both CI paths supply it: the
+single-scope run reads the reviewer's comment once and reuses that read for the
+cache check, and a routed run resolves it per scope — from the scope's own comment,
+or, in `single` mode, from the aggregate's `scopes` entry paired with the root's
+dismissal records, keyed by the scope-namespaced fingerprint those records use
+[observed] (`src/commands/ci.ts` `scopePriorReview`).
 
 Carrying status is the part that earns the block. A maintainer's dismissal and an
 author's reply both happen *after* a run ends, so no amount of engine session or
 transcript replay could ever contain them; this channel is the only one that can.
 A pin outranks both, because `/undismiss` is the human's last word that a finding
 still stands [observed] (`src/core/prior-review.ts:statusOf`).
+
+`answered` means the reply actually **cleared** the finding, not that someone
+replied — and the test is `feedbackApplied`, the same predicate the reporter uses,
+injected rather than imported so the two cannot drift [observed]
+(`src/core/prior-review.ts` `replyCleared` parameter; `src/commands/ci.ts` binds it
+to the run's feedback config). This is load-bearing, not tidiness: LLP 0011 floors
+`critical`/`secrets`/`security` in code so no reply can clear them, and a block
+that labelled such a finding "a human replied to this" would hand the reviewer a
+reason to drop it — reinstating, through the prompt, exactly the suppression the
+floors refuse. A quote without the `id:` token, a third-party commenter, and a
+finding a maintainer pinned back all stay `open` for the same reason.
 
 It is untrusted, and treated so. The titles and paths are model output produced
 by reading an untrusted pull request — `stripStateMarkers` exists precisely
