@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import { summarizePriorReview } from "../core/prior-review.js";
 import { buildCrossCuttingTask, buildReviewerTask, priorReviewSection } from "../core/prompts.js";
-import { feedbackApplied } from "../core/adjudicate.js";
+import { dropStaleVerdict, feedbackApplied } from "../core/adjudicate.js";
 import { fingerprintFinding } from "../core/schema.js";
 import type { ReviewState } from "../core/render.js";
 import type { CoordinatorOutput, FeedbackConfig, FeedbackRecord, Finding } from "../core/schema.js";
@@ -188,4 +188,32 @@ test("a third-party or quote-only reply never reads as answered", () => {
   expect(check(reply(target, { maintainer: true, unclearedByHuman: true }))).toBe("open");
   // The one case that does clear.
   expect(check(reply(target, { maintainer: true }))).toBe("answered");
+});
+
+test("a verdict from an older head no longer marks a finding answered", () => {
+  // A verdict judges SOURCE, and fingerprintFinding excludes the line number, so a
+  // finding keeps its identity while the code the rebuttal relied on is edited away.
+  // The prior-review block must apply the same staleness rule as both merge paths.
+  const ADJUDICATED = {
+    ...MAINTAINER_CLEARS,
+    dismiss: "adjudicated",
+  } as unknown as FeedbackConfig;
+  const target = finding({ title: "Author rebutted this at an older revision" });
+  const accepted = reply(target, {
+    author: true,
+    verdict: "accepted",
+    sourceSha: "old-head-sha",
+  });
+
+  const statusAt = (headSha: string | undefined) =>
+    summarizePriorReview(
+      state([target], { feedback: [accepted] as ReviewState["feedback"] }),
+      fingerprintFinding,
+      (f, r) => feedbackApplied(f, dropStaleVerdict(r, headSha), ADJUDICATED),
+    )?.findings[0]?.status;
+
+  // Head still matches the revision the verdict judged: it clears.
+  expect(statusAt("old-head-sha")).toBe("answered");
+  // The author pushed since: the verdict is stale and must not suppress anything.
+  expect(statusAt("new-head-sha")).toBe("open");
 });

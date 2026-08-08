@@ -599,7 +599,11 @@ async function runLegacyCi(
     );
   }
   const priorReview = summarizePriorReview(priorState, fingerprintFinding, (finding, record) =>
-    feedbackApplied(finding, record, config.feedback),
+    // dropStaleVerdict first, exactly as mergeFeedback and the aggregate merge do: a
+    // verdict is a claim about SOURCE and the fingerprint excludes the line number, so
+    // without this an accepted rebuttal from an earlier head keeps marking a finding
+    // answered after the code it judged was edited away.
+    feedbackApplied(finding, dropStaleVerdict(record, headSha), config.feedback),
   );
 
   try {
@@ -1002,7 +1006,9 @@ async function runRoutedCi(
       const scopePriorReview = summarizePriorReview(
         scopePriorSource,
         scopeFingerprint,
-        (finding, record) => feedbackApplied(finding, record, rootConfig.feedback),
+        // Same staleness rule as the single-scope path and both merge paths.
+        (finding, record) =>
+          feedbackApplied(finding, dropStaleVerdict(record, headSha), rootConfig.feedback),
       );
 
       let cached: ScopeReviewResult | ReviewState | undefined;

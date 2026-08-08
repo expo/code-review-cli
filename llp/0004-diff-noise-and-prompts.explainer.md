@@ -383,7 +383,13 @@ to the run's feedback config). This is load-bearing, not tidiness: LLP 0011 floo
 that labelled such a finding "a human replied to this" would hand the reviewer a
 reason to drop it — reinstating, through the prompt, exactly the suppression the
 floors refuse. A quote without the `id:` token, a third-party commenter, and a
-finding a maintainer pinned back all stay `open` for the same reason.
+finding a maintainer pinned back all stay `open` for the same reason. Each record
+also goes through `dropStaleVerdict` against the reviewed head first, the same
+rule both merge paths apply [observed] (`src/commands/ci.ts`, `mergeFeedback` in
+`src/reporters/github.ts:178`): a verdict is a claim about SOURCE and
+`fingerprintFinding` excludes the line number, so without it an accepted rebuttal
+from an earlier revision would keep marking a finding answered after the code it
+judged was edited away.
 
 It is untrusted, and treated so. The titles and paths are model output produced
 by reading an untrusted pull request — `stripStateMarkers` exists precisely
