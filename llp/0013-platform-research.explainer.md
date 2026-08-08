@@ -186,9 +186,12 @@ documentation materially confirms a finding candidate or proves one safe. These
 records never enter policy or decision logic. ECR discards any record without an exact
 audited source. After verification and suppression produce the final findings, ECR
 counts final cited findings, supported and dismissed candidates, and unique result
-URLs materially used versus unused. The Actions summary displays those metrics and
-grounded candidate conclusions; the JSONL run record preserves the same structured
-data with the queries and bounded results.
+URLs materially used versus unused. A narrow heuristic also counts final findings that
+assert external platform behavior — a version or API-level claim, or
+documented-lifecycle wording — with no grounded citation; the count is advisory
+observability, never a gate. The Actions summary displays those metrics and grounded
+candidate conclusions; the JSONL run record preserves the same structured data with
+the queries and bounded results.
 
 ## Installation-Specific Research Is Deferred
 
