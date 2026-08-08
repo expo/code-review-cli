@@ -35,7 +35,6 @@ export interface ResearchRun {
   queries: ResearchQuery[];
   evidence: ResearchEvidence[];
   warnings: string[];
-  promptText: string;
 }
 
 export interface ResearchResultRecord {
@@ -72,6 +71,12 @@ export interface ResearchUsefulness {
   decisionResultCount: number;
   utilizedResultCount: number;
   unusedResultCount: number;
+  /**
+   * Final findings whose title or rationale asserts external platform behavior
+   * (a version/availability claim, an API-level rule, a documented default) but
+   * carries no grounded citation. Advisory only — detection is a heuristic.
+   */
+  externalClaimFindingsWithoutSources: number;
 }
 
 export const RESEARCH_DECISION_COUNT_LIMIT = 16;
@@ -226,7 +231,6 @@ export async function researchProvenanceFromAudit(
     queries,
     evidence,
     warnings: [...new Set(warnings)].slice(0, 10),
-    promptText: "",
   };
   const provenance = toResearchProvenance(run);
   if (rejections.length > 0) {
@@ -258,25 +262,6 @@ function cleanEvidenceText(value: string, maxLength: number): string {
       .slice(0, maxLength)
       .trim()
   );
-}
-
-export function formatResearchEvidence(evidence: ResearchEvidence[]): string {
-  if (evidence.length === 0) return "";
-  const body = evidence
-    .map((item) => {
-      const availability = item.availability?.length
-        ? `\nAvailability: ${cleanEvidenceText(item.availability.join(", "), 500)}`
-        : "";
-      return [
-        `Query: ${cleanEvidenceText(item.query.query, 120)}`,
-        `Provider: ${cleanEvidenceText(item.provider, 80)} (${cleanEvidenceText(item.sourceKind, 80)})`,
-        `Source: ${cleanEvidenceText(item.title, 240)} — ${item.url}${availability}`,
-        "Passage:",
-        cleanEvidenceText(item.passage, 1200),
-      ].join("\n");
-    })
-    .join("\n\n");
-  return cleanEvidenceText(body, 16_000);
 }
 
 function researchQueryKey(query: ResearchQuery): string {
@@ -517,6 +502,23 @@ export function boundResearchDecisions(
   return { decisions: kept, omitted };
 }
 
+/**
+ * Heuristic for external-behavior assertions: an OS-version or API-level claim,
+ * or documented-lifecycle wording. Deliberately narrow — it flags the claim
+ * shapes that most need documentation, not every mention of a platform.
+ */
+const EXTERNAL_CLAIM_PATTERN =
+  /\b(?:iOS|iPadOS|macOS|watchOS|tvOS|visionOS|Android)\s?\d+(?:\.\d+)?\b|\bAPI level\s?\d+\b|\b(?:deprecated|introduced|available|removed)\s+(?:in|since|from|as of)\b|\brequires\s+(?:iOS|iPadOS|macOS|watchOS|tvOS|visionOS|Android|API level|SDK)\b/i;
+
+/** Final findings asserting external platform behavior with no grounded citation. */
+export function countUngroundedExternalClaims(findings: Finding[]): number {
+  return findings.filter(
+    (finding) =>
+      !finding.sources?.length &&
+      EXTERNAL_CLAIM_PATTERN.test(`${finding.title}\n${finding.rationale}`),
+  ).length;
+}
+
 /** Count unique audited results that materially affected the final review. */
 export function summarizeResearchUsefulness(
   provenance: ResearchProvenance,
@@ -548,17 +550,22 @@ export function summarizeResearchUsefulness(
     decisionResultCount: decisionUrls.size,
     utilizedResultCount: utilizedUrls.size,
     unusedResultCount: Math.max(0, resultUrls.size - utilizedUrls.size),
+    externalClaimFindingsWithoutSources: countUngroundedExternalClaims(findings),
   };
 }
 
 export function formatResearchUsefulness(usefulness: ResearchUsefulness): string {
+  const ungrounded =
+    usefulness.externalClaimFindingsWithoutSources > 0
+      ? `; ${usefulness.externalClaimFindingsWithoutSources} finding(s) assert external platform behavior without a citation`
+      : "";
   return (
     `  research usefulness: ${usefulness.finalFindingsWithSources} final finding(s) cited ` +
     `${usefulness.citedResultCount} unique result(s); ` +
     `${usefulness.supportedFindingCandidates} supported and ` +
     `${usefulness.dismissedCandidates} dismissed candidate(s); ` +
     `${usefulness.utilizedResultCount} result(s) materially used, ` +
-    `${usefulness.unusedResultCount} unused`
+    `${usefulness.unusedResultCount} unused${ungrounded}`
   );
 }
 
@@ -574,6 +581,11 @@ export function renderResearchUsefulnessMarkdown(provenance: ResearchProvenance)
     `- Candidate decisions: **${usefulness.supportedFindingCandidates} supported**, **${usefulness.dismissedCandidates} dismissed**`,
     `- Unique results materially used: **${usefulness.utilizedResultCount}/${totalUniqueResults}**`,
   ];
+  if (usefulness.externalClaimFindingsWithoutSources > 0) {
+    lines.push(
+      `- ⚠️ Findings asserting external platform behavior without a citation: **${usefulness.externalClaimFindingsWithoutSources}**`,
+    );
+  }
   if (provenance.decisions?.length) {
     lines.push("", "Grounded candidate decisions:");
     for (const decision of provenance.decisions) {

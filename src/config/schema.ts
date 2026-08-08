@@ -72,13 +72,16 @@ export const ReviewConfigSchema = z.object({
         .optional(),
       maxQueries: z.number().int().min(1).max(20).default(8),
       resultsPerQuery: z.number().int().min(1).max(3).default(2),
-      timeoutMs: z.number().int().min(1000).max(60_000).default(15_000),
+      // One search may spend up to ~10s on discovery plus sequential bounded page
+      // fetches (~10s each), so the per-call budget must exceed that worst case —
+      // 15s cut off healthy slow searches on the OpenCode engine.
+      timeoutMs: z.number().int().min(1000).max(60_000).default(30_000),
     })
     .default({
       enabled: false,
       maxQueries: 8,
       resultsPerQuery: 2,
-      timeoutMs: 15_000,
+      timeoutMs: 30_000,
     }),
   breakGlass: z
     .object({ marker: z.string().default("/skip-review") })

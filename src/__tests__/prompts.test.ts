@@ -6,7 +6,6 @@ import {
   buildReviewerTask,
   buildCrossCuttingTask,
   buildCoordinatorTask,
-  platformResearchSection,
   platformResearchToolsSection,
   contextFileSection,
   capContextText,
@@ -41,10 +40,6 @@ test("empty input → empty string", () => {
 });
 
 test("research prompts require exact, material citations and preserve them through coordination", () => {
-  const section = platformResearchSection("[menuStyle(_:)] https://developer.apple.com/doc");
-  expect(section.join("\n")).toContain("finding's `sources` array");
-  expect(section.join("\n")).toContain("Never invent, edit, or cite a source");
-
   const task = buildCoordinatorTask(
     { title: "PR", body: "", baseRef: "main", headRef: "feature" },
     {},
@@ -73,6 +68,10 @@ test("agent-visible research instructions teach precise, sanitized MCP use", () 
   expect(section).toContain("`packages/expo-*`");
   expect(section).toContain("`section` context");
   expect(section).toContain("`document` only when");
+  expect(prose).toContain("consumes one slot of the shared research call budget");
+  expect(prose).toContain("A rejected query means its shape was unsafe to send");
+  expect(section).toContain("`trace.uncertainties`");
+  expect(prose).toContain("cap that finding's Confidence at Medium");
   expect(platformResearchToolsSection(false)).toEqual([]);
 });
 
