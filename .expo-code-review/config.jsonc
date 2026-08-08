@@ -20,14 +20,15 @@
   // *.min.js, *.map, __snapshots__/*.snap, @generated markers).
   "noise": { "additionalIgnores": [] },
 
-  // Trusted host-side documentation research. Only bounded API identifiers leave
-  // the runner; scoped web results are independently checked against fixed provider
-  // allowlists before ECR fetches and fences official documentation passages.
+  // Reviewer-invoked documentation research. The reviewing model chooses the
+  // outbound query terms and URLs; they are shape-checked and bounded, not
+  // confidentiality-checked. Results are independently re-checked against fixed
+  // provider allowlists before ECR fetches and fences official passages.
   "research": {
     "enabled": true,
     "maxQueries": 8,
     "resultsPerQuery": 2,
-    "timeoutMs": 15000
+    "timeoutMs": 30000
   },
 
   // Large diffs are split into focused chunks by changed-line count, plus a

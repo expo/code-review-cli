@@ -63,6 +63,7 @@ async function main() {
         : {}),
       maxCalls: boundedInteger("REVIEW_RESEARCH_MAX_CALLS", 8, 1, 20),
       maxResultsPerCall: boundedInteger("REVIEW_RESEARCH_MAX_RESULTS", 3, 1, 3),
+      timeoutMs: boundedInteger("REVIEW_RESEARCH_TIMEOUT_MS", 30_000, 1_000, 60_000),
       ...(process.env.BRAVE_SEARCH_API_KEY
         ? { braveApiKey: process.env.BRAVE_SEARCH_API_KEY }
         : {}),

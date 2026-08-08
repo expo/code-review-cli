@@ -190,7 +190,7 @@ Enable it only in the root config, which CI loads from the PR's trusted base:
     "enabled": true,
     "maxQueries": 8,
     "resultsPerQuery": 2,
-    "timeoutMs": 15000
+    "timeoutMs": 30000
   }
 }
 ```
@@ -205,19 +205,43 @@ the current absolute Node executable, so a PR-owned `PATH` entry cannot replace
 either component. Each review gets an owner-only temporary MCP config and append-only
 audit. Claude receives that explicit config under `--strict-mcp-config`, with project
 settings and slash commands disabled; OpenCode receives the same fixed local command.
-The Brave credential is passed to the MCP child, not the model process.
 
-The MCP is the outbound security boundary. Search queries are normalized before
+That command is a wrapper, not the server. Both engines merge a configured MCP `env`
+onto their own environment instead of replacing it, so the declared block alone cannot
+bound the child — the engine's model credential reaches it, and OpenCode additionally
+passes down the runner's whole ambient environment. The wrapper therefore rebuilds the
+environment from an explicit allowlist before starting the server, and loads no parser
+and opens no socket of its own. The server process sees the search key, the call
+bounds, and locale/proxy settings; it never sees a model credential. The Brave
+credential travels the same way and is never added to the model process env.
+
+The MCP bounds the shape, host, and volume of outbound requests. It is not a
+confidentiality boundary: the reviewing model chooses the query terms and URLs, and a
+low-entropy identifier can carry repository-derived data past every check below.
+Enable research only where repository-derived terms may be shared with Brave and the
+documentation providers. Search queries are normalized before
 logging or networking: quoted literals, URLs, email addresses, paths, prose stop
 words, overlong/high-entropy tokens, and unsupported punctuation are removed;
-credential-shaped or secret-labeled input fails closed. The remaining query must be
-at most eight short tokens and contain an API-like symbol. Direct URLs must use plain
+credential-shaped or secret-labeled input fails closed. The remaining query must be at
+most eight short tokens and either contain an API-like symbol or be a short multi-word
+lowercase concept phrase. Direct URLs must use plain
 HTTPS with no credentials, port, query string, or fragment; suspicious/high-entropy
 path segments fail closed. The fixed provider host/path allowlist and redirect,
 response-size, content-type, and timeout checks still apply after that first gate.
 These deterministic checks greatly reduce accidental exfiltration; they are not a
 proof that every low-entropy string is harmless, so reviewer prompts also forbid
 sending repository text and the review-wide MCP budget defaults to eight calls.
+
+`maxQueries` bounds MCP calls, not network requests. One search selects up to four
+providers, and each issues its own discovery request plus a page fetch per candidate,
+so eight calls can mean roughly thirty discovery requests and over a hundred page
+downloads. Every call therefore reports its own ledger — discovery requests, page
+fetches, redirect hops, total HTTP requests, and elapsed time — and the review log and
+Actions summary report the totals. `timeoutMs` is the MCP's own end-to-end deadline for
+one call, enforced by the server across discovery, redirects, retrieval, and
+extraction; a call that hits it returns what it already has rather than failing. It has
+to live there because OpenCode's `timeout` bounds only tool discovery and Claude
+provides no per-call timeout at all.
 
 For non-Expo providers, discovery sends a fixed, provider-owned `site:` scope plus
 the bounded query to Brave's fixed Web Search endpoint. Search snippets and titles
@@ -276,8 +300,11 @@ same audit trail in the step summary, while `.runs/reviews.jsonl` keeps the quer
 plus bounded returned passages for short-lived operational inspection. Reviewers
 are instructed to attach `sources` only when documentation materially supports a
 finding. ECR accepts only exact URLs returned during that review, restores canonical
-titles, carries citations through coordination, and renders them below the finding;
-invented or unrelated citations are dropped.
+titles, carries citations through coordination, and renders them below the finding.
+A citation to a URL this review never retrieved is dropped outright. Relatedness is a
+separate, weaker guarantee: a cited finding is escalated to the verifier with the
+audited passage inline, which judges whether that passage actually supports the claim
+and strips the citation when it does not.
 
 Reviewers also emit a bounded `researchDecisions` record only when documentation
 materially confirms a finding candidate or proves one safe. ECR grounds those records

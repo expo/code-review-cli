@@ -26,10 +26,20 @@
 
   // Optional bounded platform research (ROOT-ONLY; off by default). Reviewer and
   // cross-file passes can call ECR's bundled MCP for exact API-symbol searches and
-  // supported documentation URLs. The MCP sanitizes queries, uses fixed provider
-  // allowlists, audits results, and never receives model credentials. BRAVE_SEARCH_API_KEY
-  // enables fixed site-scoped discovery; Expo uses its public documentation search.
-  // indexPath remains an optional offline fallback only.
+  // supported documentation URLs. The MCP uses fixed provider allowlists and audits
+  // every call. It runs behind a wrapper that rebuilds its environment from an
+  // explicit allowlist, because both engines MERGE the configured env onto their own
+  // rather than replacing it — so the server sees the search key and these limits,
+  // and never the model credential. BRAVE_SEARCH_API_KEY enables fixed site-scoped
+  // discovery; Expo uses its public documentation search.
+  //
+  // Queries are shape-checked, not confidentiality-checked: the reviewing model
+  // chooses the outbound terms, so enable this only where repository-derived terms
+  // may be shared with Brave and the documentation providers.
+  //
+  // maxQueries bounds MCP CALLS, not requests — one search can issue a discovery
+  // request per provider plus a page fetch per candidate. timeoutMs is the MCP's own
+  // end-to-end deadline per call. indexPath remains an optional offline fallback.
   // "research": {
   //   "enabled": true,
   //   "maxQueries": 8,

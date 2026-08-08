@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
+import { spawn } from "node:child_process";
+import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { ReviewConfigSchema, ScopeReviewConfigSchema } from "../config/schema.js";
 import {
@@ -18,6 +21,70 @@ import {
   summarizeResearchUsefulness,
   toResearchProvenance,
 } from "../core/research.js";
+
+/**
+ * The declared `env` block is NOT the boundary. Both Claude Code and OpenCode merge
+ * it onto the environment they already hold, so this asserts on the environment the
+ * wrapper actually hands the server — the only place the guarantee is real.
+ */
+test("the wrapper hands the MCP server a constructed environment, not an inherited one", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ecr-wrapper-test-"));
+  try {
+    const recordPath = path.join(directory, "record.json");
+    // Stands in for the real server: the wrapper resolves ./cli.{js,ts} beside itself.
+    await writeFile(
+      path.join(directory, "cli.ts"),
+      `import { writeFileSync } from "node:fs";\n` +
+        `writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify(Object.keys(process.env).sort()));\n`,
+      "utf8",
+    );
+    for (const name of ["wrapper.ts", "child-env.ts"]) {
+      await copyFile(
+        fileURLToPath(new URL(`../research-mcp/${name}`, import.meta.url)),
+        path.join(directory, name),
+      );
+    }
+
+    const exitCode = await new Promise<number>((resolve) => {
+      const child = spawn(process.execPath, [path.join(directory, "wrapper.ts"), "serve"], {
+        env: {
+          // Everything an engine was measured to merge in, plus the legitimate block.
+          PATH: process.env.PATH ?? "",
+          HOME: "/root",
+          ANTHROPIC_API_KEY: "must-not-reach-the-server",
+          CLAUDE_CODE_OAUTH_TOKEN: "must-not-reach-the-server",
+          AWS_SECRET_ACCESS_KEY: "must-not-reach-the-server",
+          GITHUB_TOKEN: "must-not-reach-the-server",
+          OPENCODE_CONFIG_CONTENT: "{}",
+          NODE_OPTIONS: "--require /evil.js",
+          LANG: "C.UTF-8",
+          LC_ALL: "C.UTF-8",
+          BRAVE_SEARCH_API_KEY: "search-only",
+          REVIEW_RESEARCH_AUDIT_PATH: path.join(directory, "audit.jsonl"),
+          REVIEW_RESEARCH_MAX_CALLS: "8",
+          REVIEW_RESEARCH_MAX_RESULTS: "2",
+          REVIEW_RESEARCH_TIMEOUT_MS: "30000",
+        },
+        stdio: "ignore",
+      });
+      child.on("exit", (code) => resolve(code ?? 1));
+    });
+    expect(exitCode).toBe(0);
+
+    const names = JSON.parse(await readFile(recordPath, "utf8")) as string[];
+    expect(names.sort()).toEqual([
+      "BRAVE_SEARCH_API_KEY",
+      "LANG",
+      "LC_ALL",
+      "REVIEW_RESEARCH_AUDIT_PATH",
+      "REVIEW_RESEARCH_MAX_CALLS",
+      "REVIEW_RESEARCH_MAX_RESULTS",
+      "REVIEW_RESEARCH_TIMEOUT_MS",
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 30_000);
 
 test("research child environment forwards only locale, proxy variables, and the fixed search key", () => {
   expect(

@@ -151,14 +151,25 @@ test("stdio MCP starts without an index and reports unavailable remote discovery
     });
     const content = response.content as Array<{ type: string; text?: string }>;
     const payload = JSON.parse(content.find((block) => block.type === "text")?.text ?? "") as {
-      retrieval: { localIndex: unknown; scopedWebSearch: boolean };
+      retrieval: {
+        localIndex: unknown;
+        scopedWebSearch: boolean;
+        network: Record<string, number>;
+      };
       warnings: string[];
       results: unknown[];
     };
-    expect(payload.retrieval).toEqual({
+    expect(payload.retrieval).toMatchObject({
       scopedWebSearch: false,
       expoSearch: false,
       localIndex: null,
+    });
+    // No key and no provider reachable, so the call must not have touched the network.
+    expect(payload.retrieval.network).toMatchObject({
+      searchRequests: 0,
+      documentRequests: 0,
+      redirects: 0,
+      totalRequests: 0,
     });
     expect(payload.warnings[0]).toMatch(/BRAVE_SEARCH_API_KEY is not set/);
     expect(payload.results).toEqual([]);

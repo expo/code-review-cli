@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 
 import type { LoadedConfig } from "../config/schema.js";
 import { readResearchAudit } from "../research-mcp/audit.js";
+import { researchChildEnvironment } from "../research-mcp/child-env.js";
+import { totalResearchNetwork, type ResearchNetworkCounts } from "../research-mcp/network.js";
 import type { Finding, FindingSource, ResearchDecision } from "./schema.js";
 export { OPENCODE_RESEARCH_TOOLS } from "./tools.js";
 
@@ -57,6 +59,12 @@ export interface ResearchProvenance {
    * url-rejected, budget-exhausted). Rejected input text is never recorded.
    */
   rejections?: Array<{ tool: string; reason: string; count: number }>;
+  /**
+   * Review-wide outbound totals. Reported separately from the call budget because
+   * `maxQueries` bounds MCP calls, and one call fans out into several discovery
+   * requests plus a page download per candidate.
+   */
+  network?: ResearchNetworkCounts;
   /** Grounded reviewer declarations that documentation changed a concrete decision. */
   decisions?: Array<ResearchDecision & { agent: string }>;
   usefulness?: ResearchUsefulness;
@@ -103,36 +111,18 @@ export interface ResearchMcpRuntime {
   cleanup(): Promise<void>;
 }
 
-const RESEARCH_PROXY_ENV_KEYS = [
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "NO_PROXY",
-  "http_proxy",
-  "https_proxy",
-  "no_proxy",
-] as const;
-const RESEARCH_SEARCH_API_KEY = "BRAVE_SEARCH_API_KEY";
+export { researchChildEnvironment };
 
-export function researchChildEnvironment(
-  source: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = {
-    LANG: "C.UTF-8",
-    LC_ALL: "C.UTF-8",
-    ...(process.platform === "win32" && source.SystemRoot ? { SystemRoot: source.SystemRoot } : {}),
-  };
-  for (const key of RESEARCH_PROXY_ENV_KEYS) {
-    if (source[key]) environment[key] = source[key];
-  }
-  if (source[RESEARCH_SEARCH_API_KEY]) {
-    environment[RESEARCH_SEARCH_API_KEY] = source[RESEARCH_SEARCH_API_KEY];
-  }
-  return environment;
-}
-
+/**
+ * The engine spawns the WRAPPER, not the server. Both Claude Code and OpenCode
+ * merge the config's `env` block onto their own environment instead of replacing
+ * it, so the block below cannot bound the child on its own; the wrapper rebuilds
+ * the environment from an explicit allowlist before the real server starts. See
+ * research-mcp/wrapper.ts.
+ */
 export function bundledResearchServer(): { command: string; args: string[] } {
-  const builtEntry = fileURLToPath(new URL("../research-mcp/cli.js", import.meta.url));
-  const sourceEntry = fileURLToPath(new URL("../research-mcp/cli.ts", import.meta.url));
+  const builtEntry = fileURLToPath(new URL("../research-mcp/wrapper.js", import.meta.url));
+  const sourceEntry = fileURLToPath(new URL("../research-mcp/wrapper.ts", import.meta.url));
   return {
     command: process.execPath,
     args: [existsSync(builtEntry) ? builtEntry : sourceEntry],
@@ -141,8 +131,12 @@ export function bundledResearchServer(): { command: string; args: string[] } {
 
 /**
  * Create one owner-only MCP configuration and append-only audit for a review run.
- * The model process receives only the config path; the Brave credential is passed
- * directly to the bounded MCP child and never added to the model process env.
+ * The model process receives only the config path.
+ *
+ * The `env` block below is a request the engine merges rather than applies — see
+ * bundledResearchServer. The wrapper it names is what actually bounds the server's
+ * environment, so the Brave credential and these limits are the only things the
+ * server can see, whatever the engine passed down.
  */
 export async function createResearchMcpRuntime(
   config: LoadedConfig["research"],
@@ -164,6 +158,10 @@ export async function createResearchMcpRuntime(
       REVIEW_RESEARCH_AUDIT_PATH: auditPath,
       REVIEW_RESEARCH_MAX_CALLS: String(config.maxQueries),
       REVIEW_RESEARCH_MAX_RESULTS: String(config.resultsPerQuery),
+      // The MCP enforces this itself as a per-call deadline. OpenCode's `timeout`
+      // only bounds tool DISCOVERY and Claude has no equivalent, so neither engine
+      // can bound how long a call actually runs — the server has to.
+      REVIEW_RESEARCH_TIMEOUT_MS: String(config.timeoutMs),
     }).flatMap(([key, value]) => (value === undefined ? [] : [[key, value]])),
   );
   await writeFile(
@@ -233,6 +231,8 @@ export async function researchProvenanceFromAudit(
     warnings: [...new Set(warnings)].slice(0, 10),
   };
   const provenance = toResearchProvenance(run);
+  const ledgers = records.flatMap((record) => (record.network ? [record.network] : []));
+  if (ledgers.length > 0) provenance.network = totalResearchNetwork(ledgers);
   if (rejections.length > 0) {
     const counts = new Map<string, number>();
     for (const rejection of rejections) {
@@ -313,6 +313,13 @@ export function formatResearchProgress(provenance: ResearchProvenance): string[]
       );
     }
   }
+  if (provenance.network) {
+    const { searchRequests, documentRequests, redirects, totalRequests } = provenance.network;
+    lines.push(
+      `  research network: ${searchRequests} search request(s), ${documentRequests} page fetch(es), ` +
+        `${redirects} redirect(s) — ${totalRequests} HTTP request(s) total`,
+    );
+  }
   for (const rejection of provenance.rejections ?? []) {
     lines.push(
       `  research: ${rejection.count} ${rejection.tool} call(s) rejected before execution (${rejection.reason})`,
@@ -363,6 +370,16 @@ export function renderResearchMarkdown(provenance: ResearchProvenance): string {
         `  - [${escapeMarkdownLabel(result.title)}](<${result.url}>) — ${escapeMarkdownLabel(result.provider)}/${escapeMarkdownLabel(result.sourceKind)}`,
       );
     }
+  }
+  if (provenance.network) {
+    const { searchRequests, documentRequests, redirects, totalRequests, elapsedMs } =
+      provenance.network;
+    lines.push(
+      "",
+      `Outbound: **${searchRequests}** search request(s), **${documentRequests}** page fetch(es), ` +
+        `**${redirects}** redirect(s) — **${totalRequests}** HTTP request(s) across ` +
+        `${(elapsedMs / 1000).toFixed(1)}s of call time.`,
+    );
   }
   for (const rejection of provenance.rejections ?? []) {
     lines.push(

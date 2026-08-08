@@ -1,6 +1,7 @@
 import { appendFile, mkdir, readFile, rmdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
+import type { ResearchNetworkCounts } from "./network.js";
 import type { SearchResult } from "./types.js";
 
 export type ResearchToolName = "search_platform_docs" | "fetch_platform_doc";
@@ -52,6 +53,12 @@ export interface ResearchAuditResult {
       >
   >;
   warnings: string[];
+  /**
+   * What this one reserved call actually spent on the network. Recorded because
+   * the reservation count alone is a poor proxy: a single search can issue four
+   * paid discovery requests and sixteen page downloads.
+   */
+  network?: ResearchNetworkCounts;
   error?: string;
 }
 
@@ -196,6 +203,7 @@ export class ResearchAudit {
     input: ResearchAuditInput,
     results: SearchResult[],
     warnings: string[] = [],
+    network?: ResearchNetworkCounts,
   ): Promise<void> {
     await this.append({
       type: "completed",
@@ -204,6 +212,7 @@ export class ResearchAudit {
       input,
       results: results.map(boundedResult),
       warnings: warnings.slice(0, 10).map((warning) => warning.slice(0, 500)),
+      ...(network ? { network } : {}),
       timestamp: new Date().toISOString(),
     });
   }
