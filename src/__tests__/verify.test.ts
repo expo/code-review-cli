@@ -110,6 +110,62 @@ test("too-short evidence is unknown, kept without an LLM call", async () => {
   expect(res.dropped).toEqual([]);
 });
 
+test("a cited finding always escalates to the LLM verifier (fail-open keeps its citation)", async () => {
+  // The repo alone cannot confirm an external-behavior claim, so grounded
+  // evidence does NOT skip the LLM check when the finding cites documentation.
+  // With the dummy handle the escalated call throws → fail-open: the finding
+  // AND its citation survive, and nothing is reported citation-stripped.
+  const url = "https://developer.apple.com/documentation/network/nwpathmonitor";
+  const escalations: string[] = [];
+  const res = await verifyFindings(
+    handle,
+    [
+      finding({
+        title: "cited",
+        evidence: "return items[next++]!;", // present → would be kept LLM-free if uncited
+        sources: [{ title: "NWPathMonitor", url }],
+      }),
+    ],
+    dir,
+    (message) => escalations.push(message),
+    [
+      {
+        query: { platform: "apple", providers: ["apple"], query: "NWPathMonitor" },
+        provider: "apple",
+        sourceKind: "official-api",
+        title: "NWPathMonitor",
+        url,
+        passage: "Observe network path changes with a path update handler.",
+      },
+    ],
+  );
+  expect(res.kept.map((f) => f.title)).toEqual(["cited"]);
+  expect(res.kept[0]?.sources).toEqual([{ title: "NWPathMonitor", url }]);
+  expect(res.citationStripped).toEqual([]);
+  expect(escalations.some((m) => m.includes("could not verify"))).toBe(true);
+});
+
+test("a cited finding whose sources match no audited evidence stays on the cheap path", async () => {
+  // citedSourcesFor finds nothing → no passages to judge → ordinary rules apply
+  // (present + non-critical → kept without an LLM call).
+  const escalations: string[] = [];
+  const res = await verifyFindings(
+    handle,
+    [
+      finding({
+        title: "cited-unmatched",
+        evidence: "return items[next++]!;",
+        sources: [{ title: "Doc", url: "https://developer.apple.com/documentation/other" }],
+      }),
+    ],
+    dir,
+    (message) => escalations.push(message),
+    [],
+  );
+  expect(res.kept.map((f) => f.title)).toEqual(["cited-unmatched"]);
+  expect(escalations.some((m) => m.includes("could not verify"))).toBe(false);
+});
+
 test("unreadable file is unknown, never dropped", async () => {
   const f = finding({
     title: "missing-file",

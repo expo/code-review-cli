@@ -1070,7 +1070,13 @@ export async function runReview(
     const requalificationStrips: { finding: Finding; reason: string }[] = [];
     if (output.findings.length > 0) {
       progress("Verifying findings…");
-      const verification = await verifyFindings(handle, output.findings, process.cwd(), progress);
+      const verification = await verifyFindings(
+        handle,
+        output.findings,
+        process.cwd(),
+        progress,
+        researchEvidence,
+      );
       agentCosts["verifier"] = verification.cost;
       trackTokens("verifier", verification.tokens);
       // Mirrors buildOpencodeConfig, which gives the verifier the first agent's model.
@@ -1080,13 +1086,21 @@ export async function runReview(
         verification.model,
       );
       verifierDropped = verification.dropped;
-      if (verification.dropped.length > 0) {
-        progress(`Verification dropped ${verification.dropped.length} unverified finding(s).`);
+      if (verification.dropped.length > 0 || verification.citationStripped.length > 0) {
+        if (verification.dropped.length > 0) {
+          progress(`Verification dropped ${verification.dropped.length} unverified finding(s).`);
+        }
         output = {
           ...output,
           findings: verification.kept,
           decision: decisionAfterVerification(output.decision, verification.kept),
         };
+      }
+      // The verifier judged these citations unsupportive. Remove the
+      // fingerprint-carried copies too, or the post-coordination merge below
+      // would silently restore the stripped sources.
+      for (const stripped of verification.citationStripped) {
+        sourcesByFp.delete(fingerprintFinding(stripped));
       }
     }
 

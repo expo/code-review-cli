@@ -147,6 +147,44 @@ test("finding citations are exact selections from research evidence", () => {
   ]);
 });
 
+test("a citation that drops the URL fragment still grounds to the audited URL", () => {
+  const evidence = [
+    {
+      query: { platform: "react-native" as const, providers: ["expo"], query: "CameraView" },
+      provider: "expo",
+      sourceKind: "official-api",
+      title: "CameraView barcodeScannerSettings",
+      url: "https://docs.expo.dev/versions/latest/sdk/camera#barcodescannersettings",
+      passage: "Configures the scanned barcode formats.",
+    },
+  ];
+  const [finding] = groundResearchSources(
+    [
+      {
+        severity: "warning",
+        category: "correctness",
+        file: "Camera.tsx",
+        line: 3,
+        title: "Scanner formats are not configured",
+        rationale: "The documented default excludes this format.",
+        sources: [
+          // The model normalized the copied URL by dropping the fragment.
+          { title: "CameraView", url: "https://docs.expo.dev/versions/latest/sdk/camera" },
+          // A different host never matches, fragment or not.
+          { title: "attacker", url: "https://attacker.example/sdk/camera" },
+        ],
+      },
+    ],
+    evidence,
+  );
+  expect(finding?.sources).toEqual([
+    {
+      title: "CameraView barcodeScannerSettings",
+      url: "https://docs.expo.dev/versions/latest/sdk/camera#barcodescannersettings",
+    },
+  ]);
+});
+
 test("research usefulness counts grounded candidate decisions and unique used results", () => {
   const query = { platform: "apple" as const, providers: ["apple"], query: "Widget behavior" };
   const evidence = [
