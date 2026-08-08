@@ -64,7 +64,9 @@ export async function createDocumentationServer(options: DocumentationServerOpti
           .default("all")
           .describe("Documentation platform to search"),
         query: z.string().min(1).max(300).describe(queryGuidance),
-        limit: z.number().int().min(1).max(10).default(5),
+        // Advertise the limit this server actually enforces, so the caller's
+        // mental model matches what a request can return.
+        limit: z.number().int().min(1).max(maxResultsPerCall).default(maxResultsPerCall),
         language: z
           .enum(LANGUAGES)
           .optional()
@@ -90,11 +92,20 @@ export async function createDocumentationServer(options: DocumentationServerOpti
       },
     },
     async ({ platform, query, limit, language, providers, sourceKinds }) => {
-      const sanitizedQuery = sanitizeDocumentationQuery(query);
+      let sanitizedQuery: string;
+      try {
+        sanitizedQuery = sanitizeDocumentationQuery(query);
+      } catch (error) {
+        // Audited by reason class only: the rejected text may be exactly the
+        // sensitive material the sanitizer refused to send.
+        await audit.rejected("search_platform_docs", "query-rejected");
+        throw error;
+      }
       const selectedProviders = (providers ?? defaultProviders(platform)).filter(
         (provider) => platform === "all" || getProvider(provider).platform === platform,
       );
       if (selectedProviders.length === 0) {
+        await audit.rejected("search_platform_docs", "query-rejected");
         throw new Error("No selected documentation provider matches the requested platform");
       }
       const boundedLimit = Math.min(limit, maxResultsPerCall);
@@ -123,7 +134,12 @@ export async function createDocumentationServer(options: DocumentationServerOpti
           selectedProviders.map(async (provider) => {
             if (provider === "expo") {
               if (sourceKinds && !sourceKinds.includes("official-api")) {
-                return { results: [] as SearchResult[], warnings: [] as string[] };
+                return {
+                  results: [] as SearchResult[],
+                  warnings: [
+                    "Expo documentation search serves official-api sources only; the requested source kinds exclude it",
+                  ],
+                };
               }
               try {
                 const documents = await searchExpoAlgolia(
@@ -279,6 +295,8 @@ export async function createDocumentationServer(options: DocumentationServerOpti
           .describe(
             "Context breadth: focused=matched and adjacent passages, section=bounded contiguous window around the match, document=bounded extracted page text",
           ),
+        // Focused passage count is a context-window control, deliberately
+        // independent of the search results-per-query bound.
         limit: z
           .number()
           .int()
@@ -295,12 +313,26 @@ export async function createDocumentationServer(options: DocumentationServerOpti
       },
     },
     async ({ url, provider, query, context, limit }) => {
-      const sanitizedQuery = query ? sanitizeDocumentationQuery(query) : undefined;
-      // Resolve and validate before recording anything. This prevents credentials,
-      // query strings, or covert high-entropy path data from reaching either the
-      // network or the append-only audit file.
-      const target = resolveDirectDocumentationTarget(url, provider);
+      let sanitizedQuery: string | undefined;
+      try {
+        sanitizedQuery = query ? sanitizeDocumentationQuery(query) : undefined;
+      } catch (error) {
+        await audit.rejected("fetch_platform_doc", "query-rejected");
+        throw error;
+      }
+      // Resolve and validate before recording the input. This prevents
+      // credentials, query strings, or covert high-entropy path data from
+      // reaching either the network or the append-only audit file; a refusal is
+      // still audited by reason class so unmet demand stays visible.
+      let target: ReturnType<typeof resolveDirectDocumentationTarget>;
+      try {
+        target = resolveDirectDocumentationTarget(url, provider);
+      } catch (error) {
+        await audit.rejected("fetch_platform_doc", "url-rejected");
+        throw error;
+      }
       const auditInput = {
+        platform: getProvider(target.provider).platform,
         providers: [target.provider],
         ...(sanitizedQuery ? { query: sanitizedQuery } : {}),
         url: target.url.href,
@@ -312,7 +344,7 @@ export async function createDocumentationServer(options: DocumentationServerOpti
           provider: target.provider,
           ...(sanitizedQuery ? { query: sanitizedQuery } : {}),
           context,
-          limit: Math.min(limit, maxResultsPerCall),
+          limit,
           ...(options.fetchImplementation
             ? { fetchImplementation: options.fetchImplementation }
             : {}),

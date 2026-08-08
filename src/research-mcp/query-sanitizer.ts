@@ -78,8 +78,22 @@ function isApiAnchor(value: string): boolean {
     /[a-z][A-Z]/.test(value) ||
     /[A-Z][A-Za-z0-9_]{1,}/.test(value) ||
     /[._:$#()]/.test(value) ||
-    /_[A-Z0-9]/.test(value)
+    /_[A-Z0-9]/.test(value) ||
+    // Hyphenated package and module names (expo-camera, react-native-screens).
+    /[a-z0-9]-[a-z]/.test(value)
   );
+}
+
+/**
+ * A short, all-lowercase concept phrase ("gradle configuration cache",
+ * "coroutine cancellation cooperative"). Guide, release-note, and Expo
+ * documentation topics frequently have no CamelCase symbol; two or more plain
+ * dictionary-shaped words carry no more outbound capacity than a symbol query
+ * (same token, length, entropy, and secret checks apply) and are accepted.
+ * A single generic word still fails closed.
+ */
+function isPlainConceptPhrase(tokens: string[]): boolean {
+  return tokens.length >= 2 && tokens.every((token) => /^[a-z][a-z0-9]{2,23}$/.test(token));
 }
 
 /**
@@ -111,8 +125,8 @@ export function sanitizeDocumentationQuery(rawQuery: string): string {
     return !PROSE_STOP_WORDS.has(token.toLowerCase());
   });
   const unique = [...new Set(candidates)].slice(0, MAX_QUERY_TOKENS);
-  if (!unique.some(isApiAnchor)) {
-    throw new Error("Query must include an API-like symbol or member name");
+  if (!unique.some(isApiAnchor) && !isPlainConceptPhrase(unique)) {
+    throw new Error("Query must include an API-like symbol or a multi-word concept phrase");
   }
   const sanitized = unique.join(" ").slice(0, MAX_QUERY_CHARACTERS).trim();
   if (!sanitized) throw new Error("Query contained no safe documentation terms");

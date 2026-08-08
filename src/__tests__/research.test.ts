@@ -88,6 +88,25 @@ test("research provenance exposes each bounded query and exact result in logs an
   );
 });
 
+test("rejected research calls surface by reason class in progress and Markdown output", () => {
+  const provenance = {
+    ...toResearchProvenance({ queries: [], evidence: [], warnings: [], promptText: "" }),
+    rejections: [
+      { tool: "search_platform_docs", reason: "budget-exhausted", count: 2 },
+      { tool: "fetch_platform_doc", reason: "url-rejected", count: 1 },
+    ],
+  };
+  const progress = formatResearchProgress(provenance).join("\n");
+  expect(progress).toContain(
+    "2 search_platform_docs call(s) rejected before execution (budget-exhausted)",
+  );
+  expect(progress).toContain(
+    "1 fetch_platform_doc call(s) rejected before execution (url-rejected)",
+  );
+  const markdown = renderResearchMarkdown(provenance);
+  expect(markdown).toContain("rejected before execution (budget-exhausted)");
+});
+
 test("finding citations are exact selections from research evidence", () => {
   const evidence = [
     {

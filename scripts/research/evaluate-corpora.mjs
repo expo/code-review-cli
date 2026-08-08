@@ -55,6 +55,17 @@ const cases = [
     body: "The Tooling API can run tasks in composite builds. Included builds are substituted for binary dependencies, and the Tooling API exposes the composite as a single connected build.",
   },
   {
+    // Lowercase concept phrase: guide topics often carry no CamelCase symbol.
+    label: "gradle-concept-phrase",
+    provider: "gradle",
+    providers: ["gradle"],
+    query: "gradle configuration cache",
+    expected: "docs.gradle.org/current/userguide/configuration_cache",
+    url: "https://docs.gradle.org/current/userguide/configuration_cache.html",
+    title: "Configuration cache",
+    body: "The gradle configuration cache stores the result of the configuration phase and reuses it in later builds. A build with an incompatible task falls back to configuring without the cache.",
+  },
+  {
     label: "agp",
     provider: "agp",
     providers: ["agp"],
@@ -178,11 +189,11 @@ const cases = [
 
 await runEvalCases(cases, {
   clientName: "corpus-evaluation",
+  // No explicit limit: the tool's default is the server's enforced maximum.
   buildArguments: (testCase) => ({
     platform: testCase.platform ?? "android",
     providers: testCase.providers,
     query: testCase.query,
-    limit: 5,
   }),
   assertCase: assertExpectedUrl,
 });
