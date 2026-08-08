@@ -4,6 +4,7 @@
 import * as cheerio from "cheerio";
 import { z } from "zod";
 
+import type { FetchImplementation } from "./brave-search.js";
 import { expoProvider, resolveAllowedUrl } from "./providers.js";
 import { readBodyWithLimit } from "./response.js";
 import type { DiscoveredDocument } from "./types.js";
@@ -66,8 +67,9 @@ async function fetchExpoAlgolia(
   limit: number,
   timeoutMs: number,
   maxResponseBytes: number,
+  fetchImplementation: FetchImplementation,
 ): Promise<DiscoveredDocument[]> {
-  const response = await fetch(EXPO_ALGOLIA_ENDPOINT, {
+  const response = await fetchImplementation(EXPO_ALGOLIA_ENDPOINT, {
     method: "POST",
     redirect: "error",
     signal: AbortSignal.timeout(timeoutMs),
@@ -99,6 +101,7 @@ async function fetchExpoAlgolia(
 export async function searchExpoAlgolia(
   query: string,
   limit: number,
+  fetchImplementation: FetchImplementation = fetch,
 ): Promise<DiscoveredDocument[]> {
   const normalized = query.replace(/\s+/g, " ").trim();
   if (!normalized || normalized.length > 300) {
@@ -107,5 +110,5 @@ export async function searchExpoAlgolia(
   if (!Number.isInteger(limit) || limit < 1 || limit > 10) {
     throw new Error("Expo Algolia result limit must be between 1 and 10");
   }
-  return fetchExpoAlgolia(normalized, limit, 5000, 1_000_000);
+  return fetchExpoAlgolia(normalized, limit, 5000, 1_000_000, fetchImplementation);
 }

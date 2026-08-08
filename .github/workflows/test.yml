@@ -37,3 +37,8 @@ jobs:
 
       - name: Unit tests
         run: bun test
+
+      - name: Research retrieval evaluation (recorded fixtures)
+        run: |
+          node scripts/research/evaluate-corpora.mjs
+          node scripts/research/evaluate-expo-prs.mjs

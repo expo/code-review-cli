@@ -1,140 +1,188 @@
-import assert from "node:assert/strict";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+// Provider-corpus evaluation: one representative query per documentation
+// provider, asserting the pipeline routes it to an authoritative result.
+// Runs on recorded fixtures by default; RESEARCH_EVAL_LIVE=1 uses live search.
+import { assertExpectedUrl, runEvalCases } from "./run-eval.mjs";
 
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-
-const root = fileURLToPath(new URL("../../", import.meta.url));
 const cases = [
   {
+    label: "media3",
     provider: "media3",
+    providers: ["media3"],
     query: "MediaSessionService background playback notification",
     expected: "developer.android.com",
+    url: "https://developer.android.com/media/media3/session/background-playback",
+    title: "Background playback with a MediaSessionService",
+    body: "A MediaSessionService lets the player run background playback with a media notification. The service keeps the session alive while the app is not in the foreground and publishes the playback notification.",
   },
   {
+    label: "glide",
     provider: "glide",
+    providers: ["glide"],
     query: "DiskCache custom implementation cache invalidation",
     expected: "bumptech.github.io",
+    url: "https://bumptech.github.io/glide/doc/caching.html",
+    title: "Glide caching",
+    body: "Glide supports a custom DiskCache implementation. Cache invalidation is driven by cache keys, so a custom implementation must change the key when the underlying media changes.",
   },
   {
+    label: "okhttp",
     provider: "okhttp",
+    providers: ["okhttp"],
     query: "Request.Builder header",
     expected: "lysine.dev/okhttp/",
+    url: "https://lysine.dev/okhttp/recipes/",
+    title: "OkHttp recipes",
+    body: "Use Request.Builder header to replace a header value on the request. The addHeader method appends a value without removing the values already present on the request.",
   },
   {
+    label: "kotlin-coroutines",
     provider: "kotlin-coroutines",
-    query: "coroutine cancellation cooperative",
+    providers: ["kotlin-coroutines"],
+    query: "Job cancellation cooperative",
     expected: "kotlinlang.org",
+    url: "https://kotlinlang.org/docs/cancellation-and-timeouts.html",
+    title: "Cancellation and timeouts",
+    body: "Job cancellation is cooperative. A coroutine checks for cancellation at suspension points, so long-running computation must check isActive or call yield to observe the cancelled Job.",
   },
   {
+    label: "gradle",
     provider: "gradle",
+    providers: ["gradle"],
     query: "Tooling API composite included builds",
     expected: "docs.gradle.org",
+    url: "https://docs.gradle.org/current/userguide/composite_builds.html",
+    title: "Composite builds",
+    body: "The Tooling API can run tasks in composite builds. Included builds are substituted for binary dependencies, and the Tooling API exposes the composite as a single connected build.",
   },
   {
+    label: "agp",
     provider: "agp",
+    providers: ["agp"],
     query: "Android Gradle Plugin API removed DSL",
     expected: "developer.android.com/build/",
+    sourceKind: "release-notes",
+    url: "https://developer.android.com/build/releases/gradle-plugin-api-updates",
+    title: "Android Gradle Plugin API updates",
+    body: "The Android Gradle Plugin release notes list each removed DSL element and its replacement API. Removed DSL interfaces stop compiling when a build migrates to the new plugin version.",
   },
   {
+    label: "swift-evolution",
     provider: "swift-evolution",
     platform: "apple",
+    providers: ["swift-evolution"],
     query: "Swift Evolution actors concurrency",
     expected: "github.com/swiftlang/swift-evolution/blob/main/proposals/",
+    url: "https://github.com/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md",
+    title: "Actors",
+    body: "This Swift Evolution proposal introduces actors to the concurrency model. Actors protect their mutable state by isolating it, and cross-actor references require asynchronous access.",
   },
   {
+    label: "apple-releases",
     provider: "apple-releases",
     platform: "apple",
+    providers: ["apple-releases"],
     query: "Xcode release notes Swift",
     expected: "developer.apple.com/documentation/xcode-release-notes/",
+    url: "https://developer.apple.com/documentation/xcode-release-notes/xcode-16-release-notes",
+    title: "Xcode 16 Release Notes",
+    body: "The Xcode release notes describe the Swift compiler changes, resolved issues, and known issues in this release of Xcode.",
   },
   {
+    label: "android-releases",
     provider: "android-releases",
+    providers: ["android-releases"],
     query: "Android 16 local network protection",
     expected: "developer.android.com/about/versions/16/",
+    url: "https://developer.android.com/about/versions/16/behavior-changes-all",
+    title: "Android 16 behavior changes",
+    body: "Android 16 adds local network protection. Apps that access devices on the local network must hold the new permission, and access without it is blocked for all apps on Android 16.",
   },
   {
+    label: "jetbrains-issues",
     provider: "jetbrains-issues",
+    providers: ["jetbrains-issues"],
     query: "IDEA-329756 symlink Gradle included build",
     expected: "youtrack.jetbrains.com",
     sourceKind: "issue-tracker",
+    url: "https://youtrack.jetbrains.com/issue/IDEA-329756",
+    title: "Gradle sync fails for an included build behind a symlink",
+    body: "Gradle sync resolves a symlink to its canonical path, so an included build referenced through a symlink is treated as a different project and the sync fails.",
   },
   {
+    label: "expo",
     provider: "expo",
     platform: "react-native",
+    providers: ["expo"],
     query: "CameraView barcodeScannerSettings",
     expected: "docs.expo.dev/versions/latest/sdk/camera#barcodescannersettings",
+    url: "https://docs.expo.dev/versions/latest/sdk/camera#barcodescannersettings",
+    title: "CameraView barcodeScannerSettings",
+    body: "barcodeScannerSettings configures the barcode types the CameraView scans. Pass barcodeTypes to limit scanning to the formats the screen expects.",
   },
   {
+    label: "react-native",
     provider: "react-native",
     platform: "react-native",
+    providers: ["react-native"],
     query: "FlatList getItemLayout",
     expected: "reactnative.dev/docs/flatlist",
+    url: "https://reactnative.dev/docs/flatlist",
+    title: "FlatList",
+    body: "getItemLayout is an optional optimization for FlatList. It lets the list skip the measurement of dynamic content when the row height is known ahead of time.",
   },
   {
+    label: "react-native-reanimated",
     provider: "react-native-reanimated",
     platform: "react-native",
+    providers: ["react-native-reanimated"],
     query: "useSharedValue",
     expected: "/react-native-reanimated/docs/core/useSharedValue",
+    url: "https://docs.swmansion.com/react-native-reanimated/docs/core/useSharedValue",
+    title: "useSharedValue",
+    body: "useSharedValue creates a shared value that both the JavaScript thread and the UI thread can read and write. Updates to the value do not trigger a React render.",
   },
   {
+    label: "react-native-gesture-handler",
     provider: "react-native-gesture-handler",
     platform: "react-native",
+    providers: ["react-native-gesture-handler"],
     query: "GestureDetector",
-    expected: "/react-native-gesture-handler/docs/core-components/gesture-detectors",
+    expected: "/react-native-gesture-handler/docs/gestures/gesture-detector",
+    url: "https://docs.swmansion.com/react-native-gesture-handler/docs/gestures/gesture-detector",
+    title: "GestureDetector",
+    body: "GestureDetector is the component that attaches configured gestures to a view. It accepts a single gesture object or a composition built with Gesture.Simultaneous, Gesture.Race, or Gesture.Exclusive.",
   },
   {
+    label: "react-native-screens",
     provider: "react-native-screens",
     platform: "react-native",
+    providers: ["react-native-screens"],
     query: "enableFreeze",
     expected: "github.com/software-mansion/react-native-screens/blob/main/README.md",
+    url: "https://github.com/software-mansion/react-native-screens/blob/main/README.md",
+    title: "React Native Screens",
+    body: "Call enableFreeze to make inactive screens stop rendering their children. The freeze is powered by react-freeze and reduces the render work for screens below the top of the stack.",
   },
   {
+    label: "react-native-worklets",
     provider: "react-native-worklets",
     platform: "react-native",
+    providers: ["react-native-worklets"],
     query: "scheduleOnUI",
     expected: "/react-native-worklets/docs/",
+    url: "https://docs.swmansion.com/react-native-worklets/docs/threading/scheduleOnUI",
+    title: "scheduleOnUI",
+    body: "scheduleOnUI schedules a worklet to run on the UI thread runtime. The worklet executes asynchronously, and values it captures are copied to the worklet runtime.",
   },
 ];
 
-const transport = new StdioClientTransport({
-  command: process.execPath,
-  args: [
-    path.join(root, "build/research-mcp/cli.js"),
-    "serve",
-    "--index",
-    path.join(root, "research/data/docs-index.json"),
-  ],
-  stderr: "pipe",
+await runEvalCases(cases, {
+  clientName: "corpus-evaluation",
+  buildArguments: (testCase) => ({
+    platform: testCase.platform ?? "android",
+    providers: testCase.providers,
+    query: testCase.query,
+    limit: 5,
+  }),
+  assertCase: assertExpectedUrl,
 });
-const client = new Client({ name: "corpus-evaluation", version: "1.0.0" });
-
-try {
-  await client.connect(transport);
-  for (const testCase of cases) {
-    const response = await client.callTool({
-      name: "search_platform_docs",
-      arguments: {
-        platform: testCase.platform ?? "android",
-        providers: [testCase.provider],
-        query: testCase.query,
-        limit: 5,
-      },
-    });
-    const block = response.content.find((entry) => entry.type === "text");
-    const payload = JSON.parse(block?.text ?? "{}");
-    const match = (payload.results ?? []).find(
-      (result) =>
-        result.provider === testCase.provider &&
-        result.url.includes(testCase.expected) &&
-        (!testCase.sourceKind || result.sourceKind === testCase.sourceKind)
-    );
-    assert.ok(match, `${testCase.provider}: expected an authoritative corpus result`);
-    console.log(
-      `PASS ${testCase.provider} | ${match.sourceKind} | ${match.title} | ${match.url}`
-    );
-  }
-} finally {
-  await client.close();
-}
