@@ -7,14 +7,17 @@ import {
   type DocumentationProvider,
 } from "./providers.js";
 import { readBodyWithLimit } from "./response.js";
-import type { DiscoveredDocument, ProviderId, SourceKind, SourcesConfig } from "./types.js";
+import type { DiscoveredDocument, ProviderId, SourceKind } from "./types.js";
 import { extractYouTrackIssue } from "./youtrack.js";
 import type { FetchImplementation } from "./brave-search.js";
 
-export const onDemandFetchLimits: SourcesConfig["crawl"] = {
-  maxPagesPerProvider: 10,
-  maxDepth: 0,
-  delayMs: 0,
+/** Per-attempt bounds for one documentation request. */
+export interface DocumentFetchLimits {
+  timeoutMs: number;
+  maxResponseBytes: number;
+}
+
+export const onDemandFetchLimits: DocumentFetchLimits = {
   timeoutMs: 10_000,
   maxResponseBytes: 5_000_000,
 };
@@ -22,7 +25,7 @@ export const onDemandFetchLimits: SourcesConfig["crawl"] = {
 export async function fetchAllowedContent(
   provider: DocumentationProvider,
   documentUrl: URL,
-  limits: Pick<SourcesConfig["crawl"], "timeoutMs" | "maxResponseBytes">,
+  limits: DocumentFetchLimits,
   fetchImplementation: FetchImplementation = fetch,
 ): Promise<string> {
   let currentUrl = resolveAllowedRequestUrl(provider, provider.requestUrl(documentUrl).href);

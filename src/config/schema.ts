@@ -65,10 +65,14 @@ export const ReviewConfigSchema = z.object({
   research: z
     .object({
       enabled: z.boolean().default(false),
+      // Removed with the offline index. An unknown key would be stripped silently,
+      // so name it explicitly: a config carrying it is stale, and quietly ignoring
+      // the setting is worse than refusing to start.
       indexPath: z
-        .string()
-        .min(1)
-        .refine((value) => path.isAbsolute(value), "research.indexPath must be an absolute path")
+        .never({
+          error:
+            "research.indexPath was removed — documentation is now always fetched live from the provider allowlist. Delete this key.",
+        })
         .optional(),
       maxQueries: z.number().int().min(1).max(20).default(8),
       resultsPerQuery: z.number().int().min(1).max(3).default(2),
@@ -433,7 +437,6 @@ export interface LoadedConfig {
   /** Root-only configuration for the bundled, bounded documentation MCP. */
   research: {
     enabled: boolean;
-    indexPath?: string;
     maxQueries: number;
     resultsPerQuery: number;
     timeoutMs: number;

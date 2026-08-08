@@ -1,6 +1,3 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import path from "node:path";
-
 import MiniSearch, { type SearchOptions } from "minisearch";
 
 import type {
@@ -10,7 +7,6 @@ import type {
   PlatformFilter,
   ProviderId,
   SearchResult,
-  SerializedSearchIndex,
   SourceKind,
 } from "./types.js";
 
@@ -35,51 +31,18 @@ const miniSearchOptions = {
 };
 
 export interface BuiltSearchIndex {
-  serialized: SerializedSearchIndex;
   miniSearch: MiniSearch<IndexedChunk>;
 }
 
-export function buildSearchIndex(
-  chunks: IndexedChunk[],
-  documentCount: number,
-  generatedAt = new Date().toISOString(),
-): BuiltSearchIndex {
+/**
+ * Build a throwaway in-memory index over one fetch's chunks, purely to rank them.
+ * Nothing is serialized or persisted: since the offline index was removed, every
+ * caller builds this per request and discards it.
+ */
+export function buildSearchIndex(chunks: IndexedChunk[]): BuiltSearchIndex {
   const miniSearch = new MiniSearch<IndexedChunk>(miniSearchOptions);
   miniSearch.addAll(chunks);
-
-  const providers = [
-    ...new Set(chunks.map((chunk) => chunk.provider ?? chunk.platform)),
-  ].sort() as ProviderId[];
-  return {
-    miniSearch,
-    serialized: {
-      schemaVersion: 1,
-      generatedAt,
-      documentCount,
-      chunkCount: chunks.length,
-      providers,
-      searchIndex: miniSearch.toJSON(),
-    },
-  };
-}
-
-export async function writeSearchIndex(filePath: string, index: SerializedSearchIndex) {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const temporaryPath = `${filePath}.tmp-${process.pid}`;
-  await writeFile(temporaryPath, `${JSON.stringify(index)}\n`, { mode: 0o644 });
-  await rename(temporaryPath, filePath);
-}
-
-export async function loadSearchIndex(filePath: string): Promise<BuiltSearchIndex> {
-  const serialized = JSON.parse(await readFile(filePath, "utf8")) as SerializedSearchIndex;
-  if (serialized.schemaVersion !== 1 || typeof serialized.searchIndex !== "object") {
-    throw new Error(`Unsupported or invalid search index at ${filePath}`);
-  }
-  const miniSearch = MiniSearch.loadJSON<IndexedChunk>(
-    JSON.stringify(serialized.searchIndex),
-    miniSearchOptions,
-  );
-  return { serialized, miniSearch };
+  return { miniSearch };
 }
 
 function searchOptions(combineWith: "AND" | "OR", exact = false): SearchOptions {

@@ -139,7 +139,7 @@ function bestPassage(
   if (chunks.length === 0) {
     return { passage: document.body.slice(0, 1_400), relevance: 0 };
   }
-  const index = buildSearchIndex(chunks, 1, indexedAt);
+  const index = buildSearchIndex(chunks);
   const result = searchDocumentation(index, query, {
     platform: document.platform,
     providers: document.provider ? [document.provider] : undefined,

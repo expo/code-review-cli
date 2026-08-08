@@ -3,16 +3,12 @@
 // Default mode replays recorded fixtures (no network, no key) and validates
 // the full MCP pipeline deterministically. Set RESEARCH_EVAL_LIVE=1 (plus
 // BRAVE_SEARCH_API_KEY) to run the same cases against live search instead.
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { createDocumentationServer } from "../../build/research-mcp/server.js";
 import { createRecordedFetch } from "./recorded-fetch.mjs";
-
-const INDEX_PATH = fileURLToPath(new URL("../../research/data/docs-index.json", import.meta.url));
 
 async function callSearch(serverOptions, name, args) {
   // One server per case keeps every case inside the per-server call budget.
@@ -44,7 +40,6 @@ export async function runEvalCases(cases, { clientName, buildArguments, assertCa
         ...(process.env.BRAVE_SEARCH_API_KEY
           ? { braveApiKey: process.env.BRAVE_SEARCH_API_KEY }
           : {}),
-        ...(existsSync(INDEX_PATH) ? { indexPath: INDEX_PATH } : {}),
       }
     : { fetchImplementation: createRecordedFetch(cases), braveApiKey: "recorded-fixtures" };
 

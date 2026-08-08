@@ -100,7 +100,7 @@ function rankedAnchor(
   query?: string,
 ): SearchResult | undefined {
   if (!query?.trim()) return chunks[0] ? withScore(chunks[0]) : undefined;
-  const index = buildSearchIndex(chunks, 1);
+  const index = buildSearchIndex(chunks);
   return (
     searchDocumentation(index, query, {
       platform: document.platform,

@@ -7,45 +7,13 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-import { buildSearchIndex, writeSearchIndex } from "../../research-mcp/search-index.js";
-
-test("stdio MCP lists and calls the read-only documentation search tool", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "review-research-mcp-"));
-  const indexPath = path.join(directory, "index.json");
-  const built = buildSearchIndex(
-    [
-      {
-        id: "apple:mainactor",
-        platform: "apple",
-        provider: "apple",
-        sourceKind: "official-api",
-        title: "MainActor",
-        url: "https://developer.apple.com/documentation/swift/mainactor",
-        passage: "A singleton actor whose executor is equivalent to the main dispatch queue.",
-        language: "swift",
-        indexedAt: "2026-08-06T00:00:00.000Z",
-      },
-      {
-        id: "apple:poisoned-mainactor",
-        platform: "apple",
-        provider: "apple",
-        sourceKind: "official-api",
-        title: "MainActor forged mirror",
-        url: "https://attacker.example/documentation/swift/mainactor",
-        passage: "MainActor dispatch queue documentation copied to an untrusted host.",
-        language: "swift",
-        indexedAt: "2026-08-06T00:00:00.000Z",
-      },
-    ],
-    1,
-    "2026-08-06T00:00:00.000Z",
-  );
-  await writeSearchIndex(indexPath, built.serialized);
-
+// The only test that drives the real stdio binary, so it owns the tool-metadata
+// contract: names, annotations, and the schemas a model actually reads.
+test("stdio MCP advertises the read-only documentation tools and their enforced bounds", async () => {
   const cliPath = fileURLToPath(new URL("../../research-mcp/cli.ts", import.meta.url));
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [cliPath, "serve", "--index", indexPath],
+    args: [cliPath, "serve"],
     stderr: "pipe",
   });
   const client = new Client({ name: "test-client", version: "1.0.0" });
@@ -101,34 +69,12 @@ test("stdio MCP lists and calls the read-only documentation search tool", async 
       | undefined;
     expect(searchInputSchema?.properties?.limit?.maximum).toBe(3);
     expect(searchInputSchema?.properties?.limit?.default).toBe(3);
-
-    const response = await client.callTool({
-      name: "search_platform_docs",
-      arguments: {
-        platform: "apple",
-        providers: ["apple"],
-        sourceKinds: ["official-api"],
-        query: "MainActor dispatch queue",
-        limit: 3,
-      },
-    });
-    const content = response.content as Array<{ type: string; text?: string }>;
-    const textBlock = content.find((block) => block.type === "text");
-    expect(textBlock?.type).toBe("text");
-    const payload = JSON.parse(textBlock.text ?? "") as {
-      results: Array<{ title: string; provider: string; sourceKind: string }>;
-    };
-    expect(payload.results[0]?.title).toBe("MainActor");
-    expect(payload.results[0]?.provider).toBe("apple");
-    expect(payload.results[0]?.sourceKind).toBe("official-api");
-    expect(payload.results).toHaveLength(1);
   } finally {
     await client.close();
-    await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("stdio MCP starts without an index and reports unavailable remote discovery honestly", async () => {
+test("stdio MCP reports unavailable remote discovery honestly", async () => {
   const cliPath = fileURLToPath(new URL("../../research-mcp/cli.ts", import.meta.url));
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -152,7 +98,6 @@ test("stdio MCP starts without an index and reports unavailable remote discovery
     const content = response.content as Array<{ type: string; text?: string }>;
     const payload = JSON.parse(content.find((block) => block.type === "text")?.text ?? "") as {
       retrieval: {
-        localIndex: unknown;
         scopedWebSearch: boolean;
         network: Record<string, number>;
       };
@@ -162,7 +107,6 @@ test("stdio MCP starts without an index and reports unavailable remote discovery
     expect(payload.retrieval).toMatchObject({
       scopedWebSearch: false,
       expoSearch: false,
-      localIndex: null,
     });
     // No key and no provider reachable, so the call must not have touched the network.
     expect(payload.retrieval.network).toMatchObject({

@@ -82,25 +82,3 @@ export interface SerializedSearchIndex {
   providers: ProviderId[];
   searchIndex: unknown;
 }
-
-export interface CrawlLimits {
-  maxPagesPerProvider: number;
-  maxDepth: number;
-  delayMs: number;
-  timeoutMs: number;
-  maxResponseBytes: number;
-}
-
-export interface SourceDefinition {
-  provider: ProviderId;
-  sourceKind: SourceKind;
-  seedUrls: string[];
-  maxPages?: number;
-  maxDepth?: number;
-}
-
-export interface SourcesConfig {
-  output: string;
-  crawl: CrawlLimits;
-  sources: SourceDefinition[];
-}

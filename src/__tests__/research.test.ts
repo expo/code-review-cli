@@ -106,16 +106,14 @@ test("research child environment forwards only locale, proxy variables, and the 
   expect(researchChildEnvironment({ PATH: "/private/bin" })).not.toHaveProperty("PATH");
 });
 
-test("research index fallback is absolute and research remains root-only", () => {
-  expect(
-    ReviewConfigSchema.safeParse({ research: { enabled: true, indexPath: "index.json" } }).success,
-  ).toBe(false);
+test("research is root-only and rejects an unknown key", () => {
   expect(ReviewConfigSchema.safeParse({ research: { enabled: true } }).success).toBe(true);
+  // The offline index is gone; a stale config naming it must fail loudly rather
+  // than be silently ignored.
   expect(
-    ReviewConfigSchema.safeParse({
-      research: { enabled: true, indexPath: path.join(tmpdir(), "index.json") },
-    }).success,
-  ).toBe(true);
+    ReviewConfigSchema.safeParse({ research: { enabled: true, indexPath: "/tmp/index.json" } })
+      .success,
+  ).toBe(false);
   expect(ScopeReviewConfigSchema.safeParse({ research: { enabled: false } }).success).toBe(false);
 });
 
