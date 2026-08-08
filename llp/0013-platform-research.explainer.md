@@ -119,24 +119,24 @@ has the same response-size/schema/URL constraints, is cached only within the MCP
 process, and can never admit a URL outside the OkHttp provider allowlist. Brave is a
 fallback when that first-party index is unavailable.
 
-`review-research-mcp update` is a separate, operator-invoked command for trusted
-scheduled jobs. The updater uses exact HTTPS host/path allowlists, manually
-revalidates redirects, checks response content types, and bounds response size,
-crawl depth, page count, timeout, and delay. The Expo crawl supplies a local fallback;
-precise Expo search uses the live query rather than pretending an empty-query result
-page is a complete Algolia index.
+There is no offline index, and no crawler to build one. Live discovery replaced the
+deterministic prefetch it was designed for, and the fallback it provided was never
+free: an index is an artifact whose bytes sit outside the trust boundary the rest of
+the system establishes. `research.indexPath` had to be an absolute path, so it
+resolved against the runner's filesystem rather than the materialized trusted base —
+the trusted-base mechanism protected the config that NAMED the index, never the
+contents at that path, and nothing carried a digest. Index passages were also the one
+evidence source returned unbounded, while every live source is length-capped.
 
-The crawler is not part of the ordinary review workflow. An adopter requiring an
-offline fallback may run `update` in a separate scheduled secretless job from a
-pinned package and trusted checkout. That job must execute no PR code, receive no
-model credential, and publish a verified read-only index artifact.
+Removing it deletes that whole class of question rather than answering it. Every
+passage a review sees is now fetched during that review from an allowlisted host,
+bounded on entry. A config still naming `research.indexPath` fails to parse, so a
+stale setting surfaces as an error instead of being silently ignored.
 
-The generated index is deliberately not published in the npm package. Documentation
-changes independently of ECR, and coupling a snapshot to every CLI install would make
-releases and invalidation expensive. If supplied, an absolute trusted-base
-`research.indexPath` is fallback evidence when remote discovery fails or misses.
-Research-enabled reviews bypass result-cache reuse because remote search,
-documentation, and optional index content can change without a config change.
+This also removes the reason researched reviews could not reuse a cached result.
+Reuse was disabled whenever research was enabled because evidence depended on mounted
+index contents that the cache key could not represent; with no mounted artifact, the
+ordinary input hash covers the whole review again.
 
 ## Query and Prompt Boundary
 

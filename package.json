@@ -16,8 +16,7 @@
   },
   "files": [
     "build",
-    "templates",
-    "research/sources.json"
+    "templates"
   ],
   "engines": {
     "node": ">=20"
@@ -38,7 +37,6 @@
     "llp:check": "./ref-check",
     "dev": "bun run src/cli.ts",
     "test:unit": "bun test",
-    "research:update": "bun run src/research-mcp/cli.ts update",
     "research:evaluate:corpora": "bun run build && node scripts/research/evaluate-corpora.mjs",
     "research:evaluate:expo": "bun run build && node scripts/research/evaluate-expo-prs.mjs",
     "release": "bash scripts/release.sh",

@@ -9,4 +9,3 @@ build/
 
 # Claude Code local worktrees
 .claude/worktrees/
-research/data/

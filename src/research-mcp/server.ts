@@ -15,7 +15,6 @@ import { searchExpoAlgolia } from "./expo-algolia.js";
 import { searchOkHttpDocumentation } from "./okhttp-search.js";
 import { getProvider, resolveAllowedUrl } from "./providers.js";
 import { searchRemoteDocumentation } from "./remote-search.js";
-import { loadSearchIndex, searchDocumentation } from "./search-index.js";
 import { LANGUAGES, PROVIDERS, SOURCE_KINDS } from "./types.js";
 import type { PlatformFilter, ProviderId, SearchResult } from "./types.js";
 
@@ -29,7 +28,6 @@ const providerGuidance =
   "Provider map: apple=Apple SDK APIs and Human Interface Guidelines; apple-releases=Xcode and Apple platform release notes; swift-evolution=Swift Evolution proposals; sdwebimage=SDWebImage APIs and caching/loading behavior; android=Android, Jetpack, Compose, and Google Play services APIs; android-releases=Android platform releases and behavior changes; media3=Jetpack Media3; glide=Glide; okhttp=OkHttp; kotlin-coroutines=Kotlin coroutines; gradle=Gradle; agp=Android Gradle Plugin; jetbrains-issues=JetBrains YouTrack context; expo=Expo documentation; react-native=React Native core; react-native-reanimated=Reanimated; react-native-gesture-handler=Gesture Handler; react-native-screens=Screens; react-native-worklets=Worklets. Native source retains platform context: use apple/android for OS contracts and add the dependency provider for dependency-owned behavior; an Expo package path does not make a native API an Expo-docs query. Issue-tracker results are context, not API contracts.";
 
 export interface DocumentationServerOptions {
-  indexPath?: string;
   braveApiKey?: string;
   fetchImplementation?: FetchImplementation;
   auditPath?: string;
@@ -47,7 +45,6 @@ function defaultProviders(platform: PlatformFilter): ProviderId[] {
 }
 
 export async function createDocumentationServer(options: DocumentationServerOptions = {}) {
-  const index = options.indexPath ? await loadSearchIndex(options.indexPath) : undefined;
   const maxCalls = Math.min(20, Math.max(1, options.maxCalls ?? 8));
   const maxResultsPerCall = Math.min(3, Math.max(1, options.maxResultsPerCall ?? 3));
   const timeoutMs = Math.min(60_000, Math.max(1_000, options.timeoutMs ?? 30_000));
@@ -62,7 +59,7 @@ export async function createDocumentationServer(options: DocumentationServerOpti
     "search_platform_docs",
     {
       title: "Search official platform documentation",
-      description: `Search official platform, dependency, build-tool, and release documentation. Discovery uses scoped web search (or Expo's public documentation search), then fetches only allowlisted official pages; an optional local index is fallback evidence. Returns short passages with canonical source URLs. ${providerGuidance} ${queryGuidance}`,
+      description: `Search official platform, dependency, build-tool, and release documentation. Discovery uses scoped web search (or Expo's public documentation search), then fetches only allowlisted official pages. Returns short passages with canonical source URLs. ${providerGuidance} ${queryGuidance}`,
       inputSchema: {
         platform: z
           .enum(["apple", "android", "react-native", "all"])
@@ -123,15 +120,6 @@ export async function createDocumentationServer(options: DocumentationServerOpti
       // One deadline and one request ledger for everything this call issues.
       const network = createResearchNetwork(baseFetch, timeoutMs);
       try {
-        const localResults = index
-          ? searchDocumentation(index, sanitizedQuery, {
-              platform,
-              limit: boundedLimit,
-              providers: selectedProviders,
-              ...(sourceKinds ? { sourceKinds } : {}),
-              ...(language ? { language } : {}),
-            })
-          : [];
         const warnings: string[] = [];
         const remoteResults: SearchResult[] = [];
         const perProviderLimit = Math.max(1, Math.ceil(boundedLimit / selectedProviders.length));
@@ -226,7 +214,7 @@ export async function createDocumentationServer(options: DocumentationServerOpti
         }
 
         const seen = new Set<string>();
-        const results = [...remoteResults, ...localResults]
+        const results = remoteResults
           .filter((result) => {
             if (!result.provider) return false;
             try {
@@ -249,12 +237,6 @@ export async function createDocumentationServer(options: DocumentationServerOpti
             // What this single budget unit actually cost.
             network: network_,
             expoSearch: selectedProviders.includes("expo"),
-            localIndex: index
-              ? {
-                  generatedAt: index.serialized.generatedAt,
-                  providers: index.serialized.providers,
-                }
-              : null,
           },
           ...(uniqueWarnings.length > 0 ? { warnings: uniqueWarnings } : {}),
           results,

@@ -325,14 +325,11 @@ downloads the fixed official `lysine.dev` static search index, validates and ind
 it in memory once per MCP process, and rejects any entry outside the existing OkHttp
 allowlist. Brave remains a fallback if that official index is unavailable.
 
-An absolute `research.indexPath` remains available as an optional local fallback.
-The MCP and its trusted updater ship with ECR: build that fallback from this
-repository with `bun run research:update`, or from an installed package with
-`review-research-mcp update`. This is operator/scheduled offline tooling, not a
-step to run before each review. The built-in seed catalog lives in
-`research/sources.json`; `seedUrls` are deterministic starting pages for the
-bounded crawler, and extraction/indexing use no LLM. Installations requiring a fully
-offline review can supply a separately built, verified index and omit the Brave key.
+There is no offline index. Every passage a review sees is fetched live from the
+provider allowlist during that review, so evidence is never served from a local
+artifact whose contents ECR cannot vouch for. The crawler, its seed catalog, and
+`research.indexPath` were removed once live discovery replaced them; a config still
+naming `indexPath` fails to parse rather than silently ignoring it.
 Installation-specific provider configuration is intentionally
 deferred: when added, it should follow the trusted root-config model used for agents
 without permitting PR-controlled URLs, commands, or executable parsers. Expo skills

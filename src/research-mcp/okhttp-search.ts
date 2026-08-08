@@ -73,7 +73,7 @@ async function loadOkHttpSearchIndex(
     }
   });
   const chunks = documents.flatMap((document) => chunkDocument(document, indexedAt));
-  return buildSearchIndex(chunks, documents.length, indexedAt);
+  return buildSearchIndex(chunks);
 }
 
 function cachedOkHttpSearchIndex(

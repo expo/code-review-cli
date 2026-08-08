@@ -146,11 +146,7 @@ export async function createResearchMcpRuntime(
   const auditPath = path.join(directory, "audit.jsonl");
   const claudeConfigPath = path.join(directory, "mcp.json");
   const server = bundledResearchServer();
-  const args = [
-    ...server.args,
-    "serve",
-    ...(config.indexPath ? ["--index", config.indexPath] : []),
-  ];
+  const args = [...server.args, "serve"];
   const child = researchChildEnvironment();
   const environment = Object.fromEntries(
     Object.entries({

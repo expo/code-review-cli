@@ -39,7 +39,8 @@
   //
   // maxQueries bounds MCP CALLS, not requests — one search can issue a discovery
   // request per provider plus a page fetch per candidate. timeoutMs is the MCP's own
-  // end-to-end deadline per call. indexPath remains an optional offline fallback.
+  // end-to-end deadline per call. Every passage is fetched live from the allowlist;
+  // there is no offline index.
   // "research": {
   //   "enabled": true,
   //   "maxQueries": 8,

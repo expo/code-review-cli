@@ -578,11 +578,10 @@ async function runLegacyCi(
   // Dynamic stack context and model-backed reply adjudication have inputs outside
   // the scoped diff. Keep those paths fresh until their inputs join the cache key.
   // A maintainer's explicit /review is also always a real rerun.
-  // Research output depends on the mounted index contents, not merely its configured
-  // path. Until a signed index digest joins the cache key, a researched review must
-  // run fresh rather than reuse evidence from an older artifact at the same path.
-  const cacheAllowed =
-    !bypassTriggerGate && !stack && !feedback && !config.research.enabled && metadata !== undefined;
+  // Research no longer forces a fresh run: with the local index gone, every result
+  // is fetched live from an allowlisted host during the run, so there is no mounted
+  // artifact whose contents could drift out from under the cache key.
+  const cacheAllowed = !bypassTriggerGate && !stack && !feedback && metadata !== undefined;
   let inputHash: string | undefined;
 
   try {
