@@ -137,6 +137,32 @@ export async function reviewInputHash(options: ReviewInputHashOptions): Promise<
   return createHash("sha256").update(canonicalJson(input)).digest("hex");
 }
 
+/**
+ * Whether a run may reuse a cached result at all — the single definition of that
+ * policy, shared by the legacy and routed CI paths.
+ *
+ * It lives here because it was previously written out twice, once per path, and
+ * the copies drifted: when the offline index was removed, only the legacy copy
+ * dropped its research gate, so every routed repo silently kept running fresh
+ * reviews for a reason that no longer existed. Two expressions of one policy is
+ * the bug; one function that both paths call is the fix.
+ *
+ * Each flag means "this run has an input the cache key does not represent":
+ * dynamic stack context and model-backed reply adjudication both reach outside
+ * the scoped diff, and a maintainer's explicit /review is always a real rerun.
+ */
+export function reviewCacheAllowed(run: {
+  bypassTriggerGate: boolean;
+  /** Stack walking is on for this run. */
+  stack: boolean;
+  /** A feedback seam runs this pass (adjudication), not merely annotation. */
+  feedback: boolean;
+  /** PR metadata resolved; without it there is nothing stable to key on. */
+  hasMetadata: boolean;
+}): boolean {
+  return !run.bypassTriggerGate && !run.stack && !run.feedback && run.hasMetadata;
+}
+
 /** Partial/failed reviews must be retried, never made durable by a cache hit. */
 export function reviewCanBeReused(review: CoordinatorOutput): boolean {
   return review.couldNotComplete !== true && review.incomplete.length === 0;

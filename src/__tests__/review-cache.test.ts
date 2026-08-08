@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import type { LoadedConfig } from "../config/schema.js";
-import { reviewCanBeReused, reviewInputHash, reviewMatchesInput } from "../core/review-cache.js";
+import {
+  reviewCacheAllowed,
+  reviewCanBeReused,
+  reviewInputHash,
+  reviewMatchesInput,
+} from "../core/review-cache.js";
 import type { CoordinatorOutput, DiffEntry } from "../core/schema.js";
 
 const config = (over: Partial<LoadedConfig> = {}): LoadedConfig => ({
@@ -170,4 +175,26 @@ test("file hashing refuses traversal and never follows a PR-controlled symlink",
     await rm(root, { recursive: true, force: true });
     await rm(outside, { force: true });
   }
+});
+
+test("reviewCacheAllowed is the one policy both CI paths share", () => {
+  const base = {
+    bypassTriggerGate: false,
+    stack: false,
+    feedback: false,
+    hasMetadata: true,
+  };
+  expect(reviewCacheAllowed(base)).toBe(true);
+
+  // Each flag independently means "this run has an input the key can't represent".
+  expect(reviewCacheAllowed({ ...base, bypassTriggerGate: true })).toBe(false);
+  expect(reviewCacheAllowed({ ...base, stack: true })).toBe(false);
+  expect(reviewCacheAllowed({ ...base, feedback: true })).toBe(false);
+  expect(reviewCacheAllowed({ ...base, hasMetadata: false })).toBe(false);
+
+  // Research is deliberately NOT a gate. It was one only because the offline index
+  // was an artifact the key could not represent; with the index gone, a researched
+  // review fetches everything live during the run. The routed path kept this gate
+  // after the legacy path dropped it, which is the drift this function prevents.
+  expect(reviewCacheAllowed(base)).toBe(true);
 });
