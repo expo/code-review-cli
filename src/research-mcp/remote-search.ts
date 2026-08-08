@@ -98,6 +98,12 @@ export interface RemoteSearchOptions {
   fetchImplementation?: FetchImplementation;
   language?: Language;
   sourceKinds?: SourceKind[];
+  /**
+   * The call deadline. The wrapped fetch already fails once it passes, but the
+   * candidate walk below should stop and return what it has rather than march
+   * through every remaining candidate collecting identical timeout warnings.
+   */
+  deadline?: AbortSignal;
 }
 
 export interface RemoteSearchResponse {
@@ -229,7 +235,11 @@ export async function searchRemoteDocumentation(
   // downloading every discovery candidate.
   const fetched: SearchResult[] = [];
   let candidateIndex = 0;
-  while (fetched.length < limit && candidateIndex < candidates.length) {
+  while (
+    fetched.length < limit &&
+    candidateIndex < candidates.length &&
+    !options.deadline?.aborted
+  ) {
     const outstanding = limit - fetched.length;
     const batch = candidates.slice(candidateIndex, candidateIndex + outstanding);
     candidateIndex += batch.length;

@@ -24,10 +24,20 @@ supplies only enablement, bounds, and an optional absolute fallback index path�
 arbitrary command, endpoint, host, or argument vector.
 
 The MCP remains a process boundary rather than an in-process import. Its stdout is
-the only result channel, its environment is an allowlist, and ECR caps calls and
-results. Each run uses an owner-only temporary MCP configuration and append-only audit.
-A tool failure remains local to research and never skips or weakens an ordinary review
-pass.
+the only result channel, and ECR caps calls, results, and per-call duration. Each run
+uses an owner-only temporary MCP configuration and append-only audit. A tool failure
+remains local to research and never skips or weakens an ordinary review pass.
+
+The environment ECR declares in that configuration is a request, not a boundary. Both
+Claude Code and OpenCode merge a server's `env` onto the environment they already hold
+rather than replacing it, so the declared allowlist alone leaves the engine's model
+credential in the child — and under OpenCode the runner's entire ambient environment,
+because the SDK spawns its server with an unfiltered `process.env`. ECR therefore does
+not rely on the engines for this. The command in the configuration names a wrapper that
+rebuilds the environment from an explicit allowlist and then starts the real server.
+The wrapper is deliberately inert: it loads no parser and opens no socket, so the one
+process that still holds the engine's credentials is not the one that parses untrusted
+remote documents. Anything the engine merged in stops there.
 
 Starting a review does not derive searches from the patch, prefetch documentation, or
 start a crawl. ECR only prepares the bounded MCP configuration and audit path. Reviewer
@@ -41,9 +51,21 @@ identifier searches.
 `review-research-mcp serve` uses Brave Web Search as discovery for non-Expo
 providers. Each request combines the already-sanitized API/concept query with a fixed
 provider-owned `site:` scope. The endpoint is fixed, redirects are rejected, response
-size/time/hit count are capped, and only the fixed `BRAVE_SEARCH_API_KEY` credential
-is forwarded into the MCP child. Search titles, snippets, and ranking are untrusted
-discovery hints, never evidence.
+size/time/hit count are capped, and the fixed `BRAVE_SEARCH_API_KEY` is the only
+credential the wrapper admits into the server's environment. Search titles, snippets,
+and ranking are untrusted discovery hints, never evidence.
+
+One reserved call is not one request. A search selects up to four providers, each of
+which issues its own discovery request and then downloads candidate pages until it has
+enough results, and every page may cost up to six round trips through the redirect
+chain. The call budget alone therefore understates outbound traffic by more than an
+order of magnitude, so each call carries a ledger — discovery requests, page fetches,
+redirect hops, total requests, elapsed time — recorded in the audit and summed for the
+review. The same seam carries one end-to-end deadline per call, because no engine can
+supply it: OpenCode's `mcp.timeout` bounds tool discovery rather than execution, and
+Claude passes no per-call timeout at all, leaving only a per-hop limit that multiplies
+instead of bounding. A call that reaches its deadline returns the evidence it already
+has rather than failing.
 
 Every discovered URL must independently pass the provider's exact HTTPS host/path
 allowlist before a fetch begins. Redirects are handled manually and must remain on
@@ -138,6 +160,15 @@ contracts. Explicit library signals add the owning provider—such as SDWebImage
 Media3, Glide, or OkHttp—when library behavior also matters. Repository ownership is
 not documentation ownership, so a `packages/expo-*` path does not replace Apple or
 Android with Expo documentation.
+
+These checks bound the SHAPE of an outbound request, not its information content. The
+reviewing model reads repository data and then chooses the query terms and URL path,
+and a token that satisfies every rule above — short, low-entropy, API-shaped — can
+still encode repository-derived bytes. The provider allowlist fixes who receives a
+request; it does not constrain what the request says. Research is therefore an
+outbound disclosure channel to Brave and the documentation providers, appropriate only
+where repository-derived terms may be shared with them, and the reviewer prompt's
+instruction not to send repository text is a mitigation rather than an enforcement.
 
 MCP output is schema-validated, limited to HTTPS URLs from the requested provider,
 truncated, and sanitized. Returned passages are labeled untrusted reference data in

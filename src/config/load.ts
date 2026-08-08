@@ -44,7 +44,7 @@ const RESEARCH_CONFIG_DEFAULTS: LoadedConfig["research"] = {
   enabled: false,
   maxQueries: 8,
   resultsPerQuery: 2,
-  timeoutMs: 15_000,
+  timeoutMs: 30_000,
 };
 
 /** Default OpenCode tool toggles for a reviewer: read the repo, never mutate it. */

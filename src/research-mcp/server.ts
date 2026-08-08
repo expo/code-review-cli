@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { ResearchAudit } from "./audit.js";
 import type { FetchImplementation } from "./brave-search.js";
+import { createResearchNetwork } from "./network.js";
 import { sanitizeDocumentationQuery } from "./query-sanitizer.js";
 import {
   DIRECT_DOCUMENT_CONTEXT_MODES,
@@ -34,6 +35,8 @@ export interface DocumentationServerOptions {
   auditPath?: string;
   maxCalls?: number;
   maxResultsPerCall?: number;
+  /** End-to-end deadline for one tool call. Neither engine can enforce this. */
+  timeoutMs?: number;
 }
 
 function defaultProviders(platform: PlatformFilter): ProviderId[] {
@@ -47,7 +50,9 @@ export async function createDocumentationServer(options: DocumentationServerOpti
   const index = options.indexPath ? await loadSearchIndex(options.indexPath) : undefined;
   const maxCalls = Math.min(20, Math.max(1, options.maxCalls ?? 8));
   const maxResultsPerCall = Math.min(3, Math.max(1, options.maxResultsPerCall ?? 3));
+  const timeoutMs = Math.min(60_000, Math.max(1_000, options.timeoutMs ?? 30_000));
   const audit = new ResearchAudit(options.auditPath, maxCalls);
+  const baseFetch = options.fetchImplementation ?? fetch;
   const server = new McpServer({
     name: "review-research-mcp",
     version: "0.2.0",
@@ -115,6 +120,8 @@ export async function createDocumentationServer(options: DocumentationServerOpti
         query: sanitizedQuery,
       };
       const requestId = await audit.reserve("search_platform_docs", auditInput);
+      // One deadline and one request ledger for everything this call issues.
+      const network = createResearchNetwork(baseFetch, timeoutMs);
       try {
         const localResults = index
           ? searchDocumentation(index, sanitizedQuery, {
@@ -145,7 +152,7 @@ export async function createDocumentationServer(options: DocumentationServerOpti
                 const documents = await searchExpoAlgolia(
                   sanitizedQuery,
                   perProviderLimit,
-                  options.fetchImplementation ?? fetch,
+                  network.fetch,
                 );
                 return {
                   results: documents.map((document, position) => ({
@@ -178,7 +185,7 @@ export async function createDocumentationServer(options: DocumentationServerOpti
                 const results = await searchOkHttpDocumentation(
                   sanitizedQuery,
                   perProviderLimit,
-                  options.fetchImplementation ?? fetch,
+                  network.fetch,
                 );
                 if (results.length > 0) {
                   return { results, warnings: [] as string[] };
@@ -199,9 +206,8 @@ export async function createDocumentationServer(options: DocumentationServerOpti
             try {
               return await searchRemoteDocumentation(provider, sanitizedQuery, perProviderLimit, {
                 apiKey: options.braveApiKey,
-                ...(options.fetchImplementation
-                  ? { fetchImplementation: options.fetchImplementation }
-                  : {}),
+                fetchImplementation: network.fetch,
+                deadline: network.signal,
                 ...(language ? { language } : {}),
                 ...(sourceKinds ? { sourceKinds } : {}),
               });
@@ -235,10 +241,13 @@ export async function createDocumentationServer(options: DocumentationServerOpti
           })
           .slice(0, boundedLimit);
         const uniqueWarnings = [...new Set(warnings)].slice(0, 10);
+        const network_ = network.counts();
         const payload = {
           notice: untrustedMaterialNotice,
           retrieval: {
             scopedWebSearch: Boolean(options.braveApiKey),
+            // What this single budget unit actually cost.
+            network: network_,
             expoSearch: selectedProviders.includes("expo"),
             localIndex: index
               ? {
@@ -256,6 +265,7 @@ export async function createDocumentationServer(options: DocumentationServerOpti
           auditInput,
           results,
           uniqueWarnings,
+          network_,
         );
         return {
           content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
@@ -339,16 +349,18 @@ export async function createDocumentationServer(options: DocumentationServerOpti
         context,
       };
       const requestId = await audit.reserve("fetch_platform_doc", auditInput);
+      // A single URL still costs up to six round trips through the redirect
+      // chain, so this call needs the same deadline and ledger as a search.
+      const network = createResearchNetwork(baseFetch, timeoutMs);
       try {
         const fetched = await fetchDocumentationUrl(target.url.href, {
           provider: target.provider,
           ...(sanitizedQuery ? { query: sanitizedQuery } : {}),
           context,
           limit,
-          ...(options.fetchImplementation
-            ? { fetchImplementation: options.fetchImplementation }
-            : {}),
+          fetchImplementation: network.fetch,
         });
+        const network_ = network.counts();
         const payload = {
           notice: untrustedMaterialNotice,
           retrieval: {
@@ -357,6 +369,7 @@ export async function createDocumentationServer(options: DocumentationServerOpti
             sourceKind: fetched.sourceKind,
             canonicalUrl: fetched.canonicalUrl,
             context: fetched.context,
+            network: network_,
           },
           results: fetched.results,
         };
@@ -370,6 +383,8 @@ export async function createDocumentationServer(options: DocumentationServerOpti
             url: fetched.canonicalUrl,
           },
           fetched.results,
+          [],
+          network_,
         );
         return {
           content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
