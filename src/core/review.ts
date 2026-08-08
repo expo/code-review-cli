@@ -1065,12 +1065,21 @@ export async function runReview(
     const findingCountBeforeChecks = output.findings.length;
     const decisionBeforeChecks = output.decision;
     let verifierDropped: { finding: Finding; reason: string }[] = [];
+    // Citations the verifier stripped from kept findings, persisted to the run
+    // log so the removal reason stays auditable — mirrors verifierDropped.
+    let citationStrips: { finding: Finding; reason: string }[] = [];
     // Stripped requalifications (finding + reason), persisted to the run log so the
     // stack-aware decision trail is auditable after the fact — mirrors verifierDropped.
     const requalificationStrips: { finding: Finding; reason: string }[] = [];
     if (output.findings.length > 0) {
       progress("Verifying findings…");
-      const verification = await verifyFindings(handle, output.findings, process.cwd(), progress);
+      const verification = await verifyFindings(
+        handle,
+        output.findings,
+        process.cwd(),
+        progress,
+        researchEvidence,
+      );
       agentCosts["verifier"] = verification.cost;
       trackTokens("verifier", verification.tokens);
       // Mirrors buildOpencodeConfig, which gives the verifier the first agent's model.
@@ -1080,13 +1089,29 @@ export async function runReview(
         verification.model,
       );
       verifierDropped = verification.dropped;
-      if (verification.dropped.length > 0) {
-        progress(`Verification dropped ${verification.dropped.length} unverified finding(s).`);
+      citationStrips = verification.citationStripped;
+      if (verification.dropped.length > 0 || verification.citationStripped.length > 0) {
+        if (verification.dropped.length > 0) {
+          progress(`Verification dropped ${verification.dropped.length} unverified finding(s).`);
+        }
         output = {
           ...output,
           findings: verification.kept,
-          decision: decisionAfterVerification(output.decision, verification.kept),
+          // Re-derive the decision ONLY when findings were dropped. A citation
+          // strip keeps every finding, and decisionAfterVerification would
+          // downgrade a criticals-free request_changes to approve_with_comments —
+          // a blocking review must not stop blocking because a link was removed.
+          decision:
+            verification.dropped.length > 0
+              ? decisionAfterVerification(output.decision, verification.kept)
+              : output.decision,
         };
+      }
+      // The verifier judged these citations unsupportive. Remove the
+      // fingerprint-carried copies too, or the post-coordination merge below
+      // would silently restore the stripped sources.
+      for (const stripped of verification.citationStripped) {
+        sourcesByFp.delete(fingerprintFinding(stripped.finding));
       }
     }
 
@@ -1345,6 +1370,7 @@ export async function runReview(
       coverageNotes,
       verifierDropped,
       requalificationStrips,
+      citationStrips,
       ...(rlTotal > 0
         ? {
             rateLimitEvents: rlTotal,

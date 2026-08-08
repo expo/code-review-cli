@@ -249,6 +249,10 @@ test("reconcileRequalifiedSummary: never claims removal — findings are still l
 
 test("decisionAfterVerification: re-derives after drops", () => {
   expect(decisionAfterVerification("request_changes", [])).toBe("approve");
+  // This downgrade is exactly why the verify gate in review.ts must call this
+  // ONLY when findings were dropped: a citation strip keeps every finding, and
+  // re-deriving over an unchanged warnings-only set would silently un-block a
+  // blocking review.
   expect(decisionAfterVerification("request_changes", [finding({ severity: "warning" })])).toBe(
     "approve_with_comments",
   );

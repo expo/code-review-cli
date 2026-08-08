@@ -407,22 +407,56 @@ export function mergeResearchSources(
     .slice(0, 5);
 }
 
-/** Keep only exact URLs returned by this review's MCP calls and restore canonical titles. */
+/**
+ * Fragment-insensitive lookup key. Models frequently normalize a copied URL by
+ * dropping its `#fragment`; the page identity is unchanged, so a fragment
+ * mismatch must not silently discard an otherwise exact citation. The audited
+ * URL (never the model's variant) is always what gets restored.
+ */
+function citationKey(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = "";
+    return parsed.href;
+  } catch {
+    return url;
+  }
+}
+
+/** Exact-URL map plus a fragment-insensitive fallback; first audited entry wins. */
+function allowedSourceMaps(evidence: ResearchEvidence[]): {
+  exact: Map<string, FindingSource>;
+  byKey: Map<string, FindingSource>;
+} {
+  const exact = new Map<string, FindingSource>();
+  const byKey = new Map<string, FindingSource>();
+  for (const item of evidence) {
+    const canonical = { title: cleanEvidenceText(item.title, 240), url: item.url };
+    if (!exact.has(item.url)) exact.set(item.url, canonical);
+    const key = citationKey(item.url);
+    if (!byKey.has(key)) byKey.set(key, canonical);
+  }
+  return { exact, byKey };
+}
+
+function resolveClaimedSource(
+  source: FindingSource,
+  maps: { exact: Map<string, FindingSource>; byKey: Map<string, FindingSource> },
+): FindingSource | undefined {
+  return maps.exact.get(source.url) ?? maps.byKey.get(citationKey(source.url));
+}
+
+/** Keep only audited URLs from this review's MCP calls and restore canonical titles. */
 export function groundResearchSources(
   findings: Finding[],
   evidence: ResearchEvidence[],
 ): Finding[] {
-  const allowed = new Map(
-    evidence.map((item) => [
-      item.url,
-      { title: cleanEvidenceText(item.title, 240), url: item.url },
-    ]),
-  );
+  const maps = allowedSourceMaps(evidence);
   return findings.map((finding) => {
     const { sources: claimed, ...withoutSources } = finding;
     const sources = mergeResearchSources(
       claimed?.flatMap((source) => {
-        const canonical = allowed.get(source.url);
+        const canonical = resolveClaimedSource(source, maps);
         return canonical ? [canonical] : [];
       }),
     );
@@ -439,16 +473,11 @@ export function groundResearchDecisions(
   evidence: ResearchEvidence[],
   agent: string,
 ): Array<ResearchDecision & { agent: string }> {
-  const allowed = new Map(
-    evidence.map((item) => [
-      item.url,
-      { title: cleanEvidenceText(item.title, 240), url: item.url },
-    ]),
-  );
+  const maps = allowedSourceMaps(evidence);
   return decisions.flatMap((decision) => {
     const sources = mergeResearchSources(
       decision.sources.flatMap((source) => {
-        const canonical = allowed.get(source.url);
+        const canonical = resolveClaimedSource(source, maps);
         return canonical ? [canonical] : [];
       }),
     );

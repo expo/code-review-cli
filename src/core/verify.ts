@@ -4,11 +4,13 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { pathInside } from "./exec.js";
+import type { ResearchEvidence } from "./research.js";
 import type { Finding } from "./schema.js";
 import { parseVerdict } from "./schema.js";
 import { addTokenUsage, promptAndParse, VERIFIER_AGENT } from "./opencode.js";
 import type { OpencodeHandle, TokenUsage } from "./opencode.js";
 import { buildVerifierSystem, buildVerifierTask } from "./prompts.js";
+import type { VerifierCitedSource } from "./prompts.js";
 import { errorMessage, normalizeCode } from "./util.js";
 
 // Verification runs after coordination (a serial tail step); keep it short. It
@@ -20,10 +22,32 @@ const MIN_EVIDENCE_LEN = 12;
 export interface VerificationResult {
   kept: Finding[];
   dropped: Array<{ finding: Finding; reason: string }>;
+  /**
+   * Kept findings whose cited documentation the verifier judged unsupportive,
+   * with the strip reason — the citation slice of the same audit trail as
+   * `dropped` (run-logged by the caller). Their `sources` are already removed
+   * from `kept`; the caller must also drop the fingerprint-carried copies so a
+   * later merge cannot restore them.
+   */
+  citationStripped: Array<{ finding: Finding; reason: string }>;
   cost: number;
   tokens: TokenUsage;
   /** provider/model that actually answered the verify calls (see PromptResult.model). */
   model?: string;
+}
+
+/** The audited passages behind a finding's grounded citations, bounded per source. */
+function citedSourcesFor(
+  finding: Finding,
+  evidence: ResearchEvidence[],
+): VerifierCitedSource[] | undefined {
+  if (!finding.sources?.length || evidence.length === 0) return undefined;
+  const byUrl = new Map(evidence.map((item) => [item.url, item]));
+  const cited = finding.sources.flatMap((source) => {
+    const match = byUrl.get(source.url);
+    return match ? [{ title: match.title, url: match.url, passage: match.passage }] : [];
+  });
+  return cited.length > 0 ? cited : undefined;
 }
 
 // @ref LLP 0005#evidence-grounding-escalate-never-hard-drop [implements] — exact-substring is a good positive but poor negative signal (33a970a revert)
@@ -119,8 +143,13 @@ export async function verifyFindings(
   findings: Finding[],
   cwd: string,
   onProgress?: (message: string) => void,
+  /** This run's audited research evidence, for findings that cite documentation. */
+  researchEvidence: ResearchEvidence[] = [],
 ): Promise<VerificationResult> {
   const dropped: Array<{ finding: Finding; reason: string }> = [];
+  const citationStripped: Array<{ finding: Finding; reason: string }> = [];
+  // Kept findings the verifier rewrote (currently only citation removal).
+  const replacements = new Map<Finding, Finding>();
   let cost = 0;
   let model: string | undefined;
   const tokens: TokenUsage = {};
@@ -130,12 +159,20 @@ export async function verifyFindings(
     findings.map(async (finding) => ({ finding, presence: await evidencePresence(finding, cwd) })),
   );
 
-  // Decide which findings need an LLM check vs. can be kept directly.
+  // Decide which findings need an LLM check vs. can be kept directly. A finding
+  // that cites documentation always gets an LLM check: the repo alone cannot
+  // confirm an external-behavior claim, and the verifier must judge whether the
+  // cited passages support it rather than fall back to model memory.
   const verdicts = new Map<Finding, "keep" | "drop">();
-  const toVerify: Array<{ finding: Finding; presence: "present" | "absent" | "unknown" }> = [];
+  const toVerify: Array<{
+    finding: Finding;
+    presence: "present" | "absent" | "unknown";
+    citedSources?: VerifierCitedSource[];
+  }> = [];
   for (const { finding, presence } of checked) {
-    if (presence === "absent" || finding.severity === "critical") {
-      toVerify.push({ finding, presence });
+    const citedSources = citedSourcesFor(finding, researchEvidence);
+    if (presence === "absent" || finding.severity === "critical" || citedSources) {
+      toVerify.push({ finding, presence, ...(citedSources ? { citedSources } : {}) });
     } else {
       verdicts.set(finding, "keep"); // grounded (or uncheckable) non-critical
     }
@@ -143,7 +180,7 @@ export async function verifyFindings(
 
   // Phase 2 — LLM verify (parallel). Refuted → drop; verified or errored → keep.
   await Promise.all(
-    toVerify.map(async ({ finding, presence }, index) => {
+    toVerify.map(async ({ finding, presence, citedSources }, index) => {
       try {
         const {
           value,
@@ -155,7 +192,10 @@ export async function verifyFindings(
           {
             agent: VERIFIER_AGENT,
             system: buildVerifierSystem(),
-            text: buildVerifierTask(finding, { evidenceUngrounded: presence === "absent" }),
+            text: buildVerifierTask(finding, {
+              evidenceUngrounded: presence === "absent",
+              ...(citedSources ? { citedSources } : {}),
+            }),
             title: `verify-${index}`,
             maxWaitMs: VERIFY_TIMEOUT_MS,
             finalizeOnTimeout: true,
@@ -168,6 +208,19 @@ export async function verifyFindings(
         model = verifyModel ?? model;
         if (value.verified) {
           verdicts.set(finding, "keep");
+          // An explicit false strips the citation; the finding itself stands.
+          // Absent or true leaves the grounded sources untouched (fail open).
+          if (citedSources && value.citationSupported === false) {
+            const { sources: _sources, ...withoutSources } = finding;
+            replacements.set(finding, withoutSources);
+            citationStripped.push({
+              finding,
+              reason: "the verifier judged the cited passages unsupportive of the claim",
+            });
+            onProgress?.(
+              `  verify: kept "${finding.title}" but removed its citation — the cited passages do not support the claim`,
+            );
+          }
         } else {
           verdicts.set(finding, "drop");
           dropped.push({ finding, reason: value.reason || "refuted by verifier" });
@@ -186,6 +239,8 @@ export async function verifyFindings(
   );
 
   // Preserve original order.
-  const kept = findings.filter((finding) => verdicts.get(finding) === "keep");
-  return { kept, dropped, cost, tokens, model };
+  const kept = findings
+    .filter((finding) => verdicts.get(finding) === "keep")
+    .map((finding) => replacements.get(finding) ?? finding);
+  return { kept, dropped, citationStripped, cost, tokens, model };
 }

@@ -164,11 +164,22 @@ reservation.
 The reviewer may select a source for a finding only by copying its exact title and URL
 from an MCP result. Model output crosses an engine-side grounding seam: URLs absent
 from the run's append-only MCP audit are removed and accepted titles are restored from
-canonical evidence. Grounded sources are unioned across duplicate reviewer
-findings, preserved through coordinator rewrites by the finding fingerprint, stored
-in hidden comment state, and rendered as visible links. Sources do not participate
-in fingerprints or severity/decision logic, and findings that did not materially use
-research omit them.
+canonical evidence. URL matching is fragment-insensitive — a model that normalizes a
+copied URL by dropping its `#fragment` keeps its citation, and the audited URL (never
+the model's variant) is what gets restored. Grounded sources are unioned across
+duplicate reviewer findings, preserved through coordinator rewrites by the finding
+fingerprint, stored in hidden comment state, and rendered as visible links. Sources do
+not participate in fingerprints or severity/decision logic, and findings that did not
+materially use research omit them.
+
+A finding that cites research always reaches the adversarial verifier, and its task
+inlines the audited passages behind those citations as fenced untrusted reference
+data. The repository alone cannot confirm an external-behavior claim, so without the
+passages the verifier would judge it from model memory — the failure mode research
+exists to remove. The verifier separately reports whether the cited passages support
+the claim; an explicitly unsupported citation is stripped (including its
+fingerprint-carried copy) while the finding itself still stands or falls on the
+ordinary verdict, and any ambiguity fails open toward keeping the citation.
 
 A reviewer may also emit a bounded, conclusion-only `researchDecisions` record when
 documentation materially confirms a finding candidate or proves one safe. These

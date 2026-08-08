@@ -141,6 +141,12 @@ export function isOverallRiskHandoff(finding: Finding): boolean {
 export const VerdictSchema = z.object({
   verified: z.boolean(),
   reason: z.string().default(""),
+  /**
+   * Only requested when the finding cites research: whether the cited passages
+   * genuinely support the finding's external-behavior claim. `false` strips the
+   * citation while the finding itself stands or falls on `verified`.
+   */
+  citationSupported: z.boolean().optional(),
 });
 export type Verdict = z.infer<typeof VerdictSchema>;
 
