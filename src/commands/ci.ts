@@ -30,7 +30,12 @@ import { summarizePriorReview } from "../core/prior-review.js";
 import { dropStaleVerdict, feedbackApplied, feedbackNeedsRunSeam } from "../core/adjudicate.js";
 import { runReview } from "../core/review.js";
 import type { ReviewRunOptions, ReviewRunResult } from "../core/review.js";
-import { reviewCanBeReused, reviewInputHash, reviewMatchesInput } from "../core/review-cache.js";
+import {
+  reviewCacheAllowed,
+  reviewCanBeReused,
+  reviewInputHash,
+  reviewMatchesInput,
+} from "../core/review-cache.js";
 import { GitHubPRSource } from "../sources/github-pr.js";
 import { memoizeSource, stackConfirmFromConfig, stackWalkFromConfig } from "../sources/source.js";
 import type { PreparedReadRoot, ReviewSource, StackWalkOptions } from "../sources/source.js";
@@ -576,13 +581,12 @@ async function runLegacyCi(
   const stack = resolveStackWalk(config.stack, noStackAware);
   const stackConfirm = resolveStackConfirm(config.stack, noStackAware);
   const feedback = adjudicationSeam(config, reporter);
-  // Dynamic stack context and model-backed reply adjudication have inputs outside
-  // the scoped diff. Keep those paths fresh until their inputs join the cache key.
-  // A maintainer's explicit /review is also always a real rerun.
-  // Research no longer forces a fresh run: with the local index gone, every result
-  // is fetched live from an allowlisted host during the run, so there is no mounted
-  // artifact whose contents could drift out from under the cache key.
-  const cacheAllowed = !bypassTriggerGate && !stack && !feedback && metadata !== undefined;
+  const cacheAllowed = reviewCacheAllowed({
+    bypassTriggerGate,
+    stack: Boolean(stack),
+    feedback: Boolean(feedback),
+    hasMetadata: metadata !== undefined,
+  });
   let inputHash: string | undefined;
 
   // The previous review's embedded comment state, read ONCE: the cache check below
@@ -905,12 +909,12 @@ async function runRoutedCi(
     reporterFor(scopedCommentTag(rootTag, name), true),
   );
 
-  const cacheAllowed =
-    !bypassTriggerGate &&
-    !stackWalk &&
-    !feedbackNeedsRunSeam(rootConfig.feedback) &&
-    !rootConfig.research.enabled &&
-    metadata !== undefined;
+  const cacheAllowed = reviewCacheAllowed({
+    bypassTriggerGate,
+    stack: Boolean(stackWalk),
+    feedback: feedbackNeedsRunSeam(rootConfig.feedback),
+    hasMetadata: metadata !== undefined,
+  });
   let cacheReadRoot: string | undefined;
   if (cacheAllowed) {
     try {
