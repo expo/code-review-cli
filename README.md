@@ -11,6 +11,10 @@ is the **engine** — each repo supplies its own agents and settings under
 
 Inspired in part by Cloudflare's [_How we built our AI code review bot_](https://blog.cloudflare.com/ai-code-review/).
 
+This README is the scannable overview. Every subsystem has a detailed design doc
+under [`llp/`](./llp/) — start with
+[LLP 0000](./llp/0000-expo-code-review-cli.explainer.md), the system map.
+
 ```mermaid
 flowchart TD
   SRC["Source<br/>local git · GitHub PR (gh)"] --> FILTER["Noise filter<br/>drop lockfiles · generated · binary"]
@@ -133,219 +137,92 @@ untrusted external context; see below).
 
 ## Keeping prompts true (`ecr ref-check`)
 
-Good reviewer prompts cite real code: "the only session entry point is
-`server/src/session.ts`", "every webhook router must call `sanitizeSecrets`". Then the
-code moves and the prompt keeps citing a path that no longer exists — the reviewer
-reasons from a fiction, on every PR, with nothing to warn you.
-
-`ecr ref-check` makes those citations checkable. Pin each one with a ref, in a comment
-of its own (`<!-- … -->` in Markdown, `//` in JSONC):
+Good reviewer prompts cite real code ("every webhook router must call
+`sanitizeSecrets`"). Then the code moves and the prompt keeps citing a path that no
+longer exists — the reviewer reasons from a fiction on every PR. `ecr ref-check`
+makes those citations checkable: pin each one with a `@ref` comment (`<!-- … -->` in
+Markdown, `//` in JSONC):
 
 ```md
 <!-- @ref server/src/session.ts#createSession — the only place a session is minted -->
-<!-- @ref server/src/entities/oauth/ — every provider lives here -->
 <!-- @ref glob:**/*WebhookRouter.ts — the routers this rule is about -->
 ```
 
 A target is a file, a `dir/`, `glob:<pattern>`, `file#symbol`, or `doc.md#heading` —
-never a line number, since a line number rots without any signal. Symbol anchors are
-checked by whole-word match, so code moving inside its file is fine and a rename is not.
-
-The check is strict on purpose: a backticked token in `.expo-code-review/` that looks
-like a repo path **must** be a ref, because the stale citations are exactly the ones
-nobody thought to annotate. A token with no extension (`eas-build-worker/terraform`,
-`general-central/{module,production}`, `finops`) counts when it names something that
-exists — so those get pinned too, while `anthropic/claude-opus-5`, shaped the same way,
-stays prose. For a token that only looks like a path, say so once:
-`<!-- @ref-ignore knex.raw() -->`. It also checks what your config already declares —
-`enforceAgents` ids, scope `config` directories, scope path globs.
-
-Refs are repo-root-relative, including in a scope's own setup dir. A scope prompt that
-cites `general-central/module` for `infrastructure/general-central/module` gets told the
-root-relative form to use.
+never a line number (line numbers rot without any signal). The check is strict on
+purpose: any backticked token in `.expo-code-review/` that names something that
+exists in the repo **must** be a ref, because stale citations are exactly the ones
+nobody annotated. Mark the rare false positive once with
+`<!-- @ref-ignore knex.raw() -->`. Refs are always repo-root-relative, including in
+a scope's own setup dir, and config declarations (`enforceAgents` ids, scope
+directories and globs) are checked too.
 
 Two run points:
 
 - `ecr ref-check` exits 1 on any problem. Run it in CI or a pre-commit hook.
-- `ecr review` / `ecr ci` run it too, and never fail a PR's checks with it. The comment
-  carries a **Review setup** note instead: refs that no longer resolve, plus cited code
-  *this PR* changes, where the ref still resolves but the guidance may not.
+- `ecr review` / `ecr ci` run it too but never fail a PR's checks with it — broken
+  refs (and cited code *this PR* changes) surface as a **Review setup** note in the
+  comment.
+
+Full detail: [LLP 0012](./llp/0012-config-ref-integrity.explainer.md).
 
 ---
 
-## Providing context and research capabilities
+## Platform research (bundled MCP)
 
-`@expo/code-review-cli` includes `review-research-mcp` and exposes that one bundled,
-local MCP directly to reviewer and cross-file passes. The agent decides whether an
-external API contract needs research and can either search for an exact symbol or
-fetch an exact supported documentation URL already present in the review context.
-Coordinator, verifier, stack-verifier, and time-critical no-tools passes never receive
-the MCP.
+The package bundles `review-research-mcp`, a local MCP exposed only to the reviewer
+and cross-file passes (never the coordinator, verifier, or no-tools passes). When a
+judgment depends on an externally owned API contract, an agent can search a fixed
+catalog of official documentation providers — Apple/Android platform APIs, Expo,
+React Native, OkHttp, Kotlin coroutines, Gradle/AGP, Swift evolution, and more — or
+fetch one exact supported documentation URL. Queries are short exact symbols
+(`CameraView barcodeScannerSettings` is useful; a source snippet or a question is
+not), and an empty result stays empty rather than becoming a loose guess. There is
+no offline index: every passage is fetched live during that review.
 
-Enable it only in the root config, which CI loads from the PR's trusted base:
+Enable it only in the root config (CI loads it from the PR's trusted base) and add a
+`BRAVE_SEARCH_API_KEY` Actions secret (Expo and OkHttp use their own official search
+and consume no Brave quota):
 
 ```jsonc
 {
-  "research": {
-    "enabled": true,
-    "maxQueries": 8,
-    "resultsPerQuery": 2,
-    "timeoutMs": 30000
-  }
+  "research": { "enabled": true, "maxQueries": 8, "resultsPerQuery": 2, "timeoutMs": 30000 }
 }
 ```
 
-Add a repository Actions secret named `BRAVE_SEARCH_API_KEY`. The generated
-automatic and command-triggered workflows pass only that search credential to the
-MCP. Expo uses its public documentation search and OkHttp uses its official static
-search index; neither consumes Brave quota.
+The boundary, in brief:
 
-ECR resolves the MCP entry point inside its own installed package and starts it with
-the current absolute Node executable, so a PR-owned `PATH` entry cannot replace
-either component. Each review gets an owner-only temporary MCP config and append-only
-audit. Claude receives that explicit config under `--strict-mcp-config`, with project
-settings and slash commands disabled; OpenCode receives the same fixed local command.
+- **Bounded egress, not a confidentiality boundary.** Queries are normalized and
+  sanitized (credential-shaped or secret-labeled input fails closed); direct URLs
+  must be plain HTTPS on a fixed provider host/path allowlist; redirects, response
+  sizes, content types, and per-call deadlines are enforced server-side. The model
+  still chooses the query terms, so enable research only where repository-derived
+  terms may be shared with Brave and the documentation providers.
+- **The server never sees a model credential.** ECR starts the MCP from its own
+  installed package through a wrapper that rebuilds the child environment from an
+  explicit allowlist; the Brave key never enters the model process either.
+- **Audited and citable.** Every outbound query and returned result is audited (job
+  log, Actions step summary, `.runs/reviews.jsonl`). A finding can cite only URLs
+  actually retrieved during that review, and the verifier strips citations whose
+  passage does not support the claim.
+- **`maxQueries` bounds MCP calls, not HTTP requests** — one search can fan out to
+  many discovery and page fetches, so each call reports its own request ledger and
+  the run reports totals.
+- **Root-only in routed monorepos** (it starts a host process); scope configs
+  cannot alter it. Result-cache reuse is disabled while research is enabled,
+  because web content can change without a config change.
 
-That command is a wrapper, not the server. Both engines merge a configured MCP `env`
-onto their own environment instead of replacing it, so the declared block alone cannot
-bound the child — the engine's model credential reaches it, and OpenCode additionally
-passes down the runner's whole ambient environment. The wrapper therefore rebuilds the
-environment from an explicit allowlist before starting the server, and loads no parser
-and opens no socket of its own. The server process sees the search key, the call
-bounds, and locale/proxy settings; it never sees a model credential. The Brave
-credential travels the same way and is never added to the model process env.
-
-The MCP bounds the shape, host, and volume of outbound requests. It is not a
-confidentiality boundary: the reviewing model chooses the query terms and URLs, and a
-low-entropy identifier can carry repository-derived data past every check below.
-Enable research only where repository-derived terms may be shared with Brave and the
-documentation providers. Search queries are normalized before
-logging or networking: quoted literals, URLs, email addresses, paths, prose stop
-words, overlong/high-entropy tokens, and unsupported punctuation are removed;
-credential-shaped or secret-labeled input fails closed. The remaining query must be at
-most eight short tokens and either contain an API-like symbol or be a short multi-word
-lowercase concept phrase. Direct URLs must use plain
-HTTPS with no credentials, port, query string, or fragment; suspicious/high-entropy
-path segments fail closed. The fixed provider host/path allowlist and redirect,
-response-size, content-type, and timeout checks still apply after that first gate.
-These deterministic checks greatly reduce accidental exfiltration; they are not a
-proof that every low-entropy string is harmless, so reviewer prompts also forbid
-sending repository text and the review-wide MCP budget defaults to eight calls.
-
-`maxQueries` bounds MCP calls, not network requests. One search selects up to four
-providers, and each issues its own discovery request plus a page fetch per candidate,
-so eight calls can mean roughly thirty discovery requests and over a hundred page
-downloads. Every call therefore reports its own ledger — discovery requests, page
-fetches, redirect hops, total HTTP requests, and elapsed time — and the review log and
-Actions summary report the totals. `timeoutMs` is the MCP's own end-to-end deadline for
-one call, enforced by the server across discovery, redirects, retrieval, and
-extraction; a call that hits it returns what it already has rather than failing. It has
-to live there because OpenCode's `timeout` bounds only tool discovery and Claude
-provides no per-call timeout at all.
-
-For non-Expo providers, discovery sends a fixed, provider-owned `site:` scope plus
-the bounded query to Brave's fixed Web Search endpoint. Search snippets and titles
-are never treated as evidence. ECR independently rejects off-allowlist result URLs,
-manually validates every redirect, fetches a few official pages, verifies content
-types and response sizes, extracts visible documentation text, and returns locally
-ranked bounded passages. Sparse search-engine coverage therefore produces an honest
-empty result rather than a loose guess.
-
-Research is root-only in routed monorepos because it starts a host process; scope
-configs cannot alter its network behavior or limits. Result-cache reuse remains
-disabled while research is enabled because web results and documentation can change
-without a config change.
-
-The fixed provider catalog covers Apple/Android APIs plus SDWebImage, Media3, Glide, OkHttp,
-Kotlin coroutines, Gradle/AGP, Swift concurrency/evolution, platform release/API
-availability, Expo, React Native, Reanimated, Gesture Handler, Screens, and Worklets.
-Queries are short exact symbols plus at most one useful member or behavior term. For
-example, `CameraView barcodeScannerSettings` is useful; a source snippet, import path,
-or natural-language question is not. The MCP publishes the same guidance in its tool
-metadata. An empty result stays empty; it is not replaced with a loose semantic guess.
-The tool metadata also includes an explicit provider map, so the reviewing model can
-distinguish core platform APIs from release notes, dependency-owned documentation,
-build-tool references, and issue-tracker context before choosing a corpus.
-Reviewer instructions require grounding whenever a judgment depends on an externally
-owned API contract, whether the evidence confirms a finding or dismisses a candidate
-as safe; model memory alone is not treated as sufficient for those decisions.
-Native source keeps its platform context: Apple or Android documents the OS contract,
-while an explicit dependency provider documents library-owned behavior. Providers are
-additive when both contracts matter. A path under `packages/expo-*` does not by itself
-route Swift or Kotlin code to Expo's JavaScript documentation.
-
-Direct clients can also call `fetch_platform_doc` with an exact documentation URL.
-The tool infers the narrowest matching provider (or accepts an explicit provider
-hint), then applies the same fixed HTTPS host/path allowlist, manual redirect checks,
-10-second timeout, 5 MB response limit, content-type validation, extraction, and
-passage bounds as search-discovered pages. It returns normalized extracted text, never
-raw HTML or DocC JSON. An optional `query` selects context only within that one page;
-it never broadens discovery. Context expands progressively:
-
-- `focused` returns the best passage plus adjacent passages.
-- `section` (the default) returns a contiguous window of at most 12,000 characters
-  around the best passage.
-- `document` returns at most 20,000 characters of extracted page text and should be
-  used only when the contract is spread across the page.
-
-The response reports returned and original character counts, whether it was truncated,
-the anchor passage id, and bounded available passage ids. Search results also carry
-neighboring passage ids so an agent can recognize when more local context exists. For example,
-`https://developer.apple.com/documentation/swiftui/view/menustyle(_:)` is resolved to
-Apple's DocC JSON and returned with the canonical page URL and API availability.
-
-Every research-enabled review audits each sanitized outbound query and each returned result's
-title, provider, provenance class, and canonical URL. GitHub Actions receives the
-same audit trail in the step summary, while `.runs/reviews.jsonl` keeps the queries
-plus bounded returned passages for short-lived operational inspection. Reviewers
-are instructed to attach `sources` only when documentation materially supports a
-finding. ECR accepts only exact URLs returned during that review, restores canonical
-titles, carries citations through coordination, and renders them below the finding.
-A citation to a URL this review never retrieved is dropped outright. Relatedness is a
-separate, weaker guarantee: a cited finding is escalated to the verifier with the
-audited passage inline, which judges whether that passage actually supports the claim
-and strips the citation when it does not.
-
-Reviewers also emit a bounded `researchDecisions` record only when documentation
-materially confirms a finding candidate or proves one safe. ECR grounds those records
-against the exact MCP audit and discards ungrounded claims. After verification and
-suppression, the log and Actions summary report final findings with citations,
-supported and dismissed candidates, and unique audited results materially used versus
-unused. Counts use canonical URLs rather than passage count, so repeated hits do not
-inflate usefulness.
-
-For a query routed to the `expo` provider, `serve` POSTs the already-sanitized query
-directly to Expo's public Algolia search endpoint and returns canonical
-`docs.expo.dev` hits. The endpoint, application id, and browser-visible search-only
-key are fixed in the package; redirects are rejected; response size, timeout, hit
-count, and returned URL host are bounded.
-
-OkHttp's newly migrated documentation is still sparse in Brave, so its provider
-downloads the fixed official `lysine.dev` static search index, validates and indexes
-it in memory once per MCP process, and rejects any entry outside the existing OkHttp
-allowlist. Brave remains a fallback if that official index is unavailable.
-
-There is no offline index. Every passage a review sees is fetched live from the
-provider allowlist during that review, so evidence is never served from a local
-artifact whose contents ECR cannot vouch for. The crawler, its seed catalog, and
-`research.indexPath` were removed once live discovery replaced them; a config still
-naming `indexPath` fails to parse rather than silently ignoring it.
-Installation-specific provider configuration is intentionally
-deferred: when added, it should follow the trusted root-config model used for agents
-without permitting PR-controlled URLs, commands, or executable parsers. Expo skills
-are complementary, not another search corpus: their pinned procedural guidance can
-later be supplied to review agents as separately labeled trusted context, while
-documentation search continues to return citable API evidence. Dynamic skills or
-instructions retrieved from documentation must never become executable reviewer
-instructions.
+Full detail — providers, query grammar, `fetch_platform_doc` modes, provenance and
+citation grounding: [LLP 0013](./llp/0013-platform-research.explainer.md).
 
 ## Monorepos (routing manifest)
 
 A monorepo can route different subtrees to different reviewer rosters from a single
 infra-owned manifest. There is still **one workflow, one `ecr ci` process** per PR:
-it reads the changed files once, assigns each to exactly one scope, reviews each
-active scope over only its files, and renders one comment. Because it is a single
-writer in a single process there is no comment/check race and no locking.
+it reads the changed files once, assigns each to exactly one scope (scopes are
+ordered, the **last** match wins — CODEOWNERS discipline), reviews each active scope
+over only its files, and renders one comment — a single writer, so no comment race
+and no locking.
 
 ```
 your-monorepo/
@@ -390,79 +267,56 @@ your-monorepo/
 }
 ```
 
-- **Path glob dialect** — `**` crosses `/`, `*` matches within a segment. Keep a
-  `**/*` catch-all scope so no changed file goes unreviewed (`ecr doctor` flags a
-  coverage gap otherwise). Scopes are ordered and the **last** match wins, so put
-  broad scopes first and specific ones after (CODEOWNERS/Renovate discipline).
-- **Comment modes** — `single` posts one aggregated comment (a scope summary table
-  + a collapsed `<details>` per scope) under the existing marker; `per-scope` posts
-  one cleanly-namespaced comment per scope. A scope with zero matched files gets its
-  stale comment deleted.
-- **Scoped flags** — `ecr ci --scopes a,b` limits the fan-out; `ecr ci --comment
-  single|per-scope` overrides the manifest; `ecr review --scope <name>` runs one
-  scope locally; `ecr review`/`ecr ci --config-dir <dir>` (or `ECR_CONFIG_DIR`)
-  load config from an alternate directory; `ecr doctor --list-scopes` prints the
-  scope table. **`--config-dir` designates an alternate ROOT config dir: both
-  `config.jsonc` and `routing.jsonc` are read from it, so the root config and its
-  manifest always travel together. Scope `config` paths stay repo-root-relative —
-  the override swaps the root config/manifest against the *real* scope tree, it
-  does not relocate the scopes themselves.**
-- **Passes budget** — `defaults`-level `budget` bounds total review time:
-  `totalPassesMinutes` (default 55) is split across active scopes (which run
-  sequentially in one `ecr ci`), clamped up to `minScopeMinutes` (default 5) so a
-  single scope still gets a workable window. When enough scopes are active that the
-  floor would overshoot the total, `ecr ci` keeps the floor but warns, and `ecr
-  doctor` flags the worst case (`scopes × floor` vs total) — raise the workflow
-  `timeout-minutes` or trim scopes.
-- **Adoption is incremental** — with no `routing.jsonc`, behavior is exactly as
-  before (single config). Add the manifest with just a default scope → still one
-  comment, identical behavior. Land per-team scope dirs one at a time; everything
-  else keeps hitting the default scope.
+- **Keep a `**/*` catch-all scope** so no changed file goes unreviewed (`ecr
+  doctor` flags a coverage gap otherwise); broad scopes first, specific ones after.
+- **Comment modes** — `single` posts one aggregated comment; `per-scope` posts one
+  namespaced comment per scope. A scope with zero matched files gets its stale
+  comment deleted.
+- **Passes budget** — a `defaults`-level `budget` splits `totalPassesMinutes`
+  (default 55) across the active scopes, floored at `minScopeMinutes` (default 5)
+  per scope; `ecr ci` and `ecr doctor` warn when the floor can overshoot the total.
+- **Scoped flags** — `ecr ci --scopes a,b`, `ecr ci --comment single|per-scope`,
+  `ecr review --scope <name>`, `--config-dir <dir>` / `ECR_CONFIG_DIR` (alternate
+  ROOT config+manifest dir — scope `config` paths stay repo-root-relative), and
+  `ecr doctor --list-scopes`.
+- **Adoption is incremental** — no `routing.jsonc` means exactly the old
+  single-config behavior; a manifest with just a default scope is identical; land
+  per-team scope dirs one at a time.
 
 ### Security
 
-- **auth and research are locked to the root.** `tokenEnv` (which env var becomes the model
-  credential) is honored in exactly one place: the root `config.jsonc` or
-  `routing.jsonc` `defaults.auth`. A scope config declaring `auth`/`breakGlass`/`research`
-  **fails to parse** (Zod-level rejection). A scope declaring `research` also fails,
-  so PR-controlled routing cannot select a different host index. The CI guard step independently
-  sweeps every `.expo-code-review/config.jsonc`/`routing.jsonc` repo-wide and refuses
-  to run unless `tokenEnv` appears exactly once, in a root-owned file, equal to
-  `ECR_EXPECTED_TOKEN_ENV`. A routing manifest can never widen exposure — globs only
-  choose *which roster* reviews a file, never *which secret* is sent.
-- **enforceAgents can't be weakened.** Agents listed in `defaults.enforceAgents`
-  (e.g. `security`) are injected into every scope with `alwaysRun`, taken from the
-  root roster — a scope defining a same-id agent gets the root one, so a team can't
-  shadow the enforced reviewer with a weaker version on its own subtree.
-- **Configuration comes from the PR's trusted base commit.** In `ecr ci`, review
-  policy and reviewer configuration — `config.jsonc`, `routing.jsonc`, prompts,
-  models, and the auth mapping — load from the PR's immutable **base** commit,
-  materialized via the GitHub API. The PR head is untrusted data: it is
-  materialized separately (pinned to its immutable OID) purely as source content
-  to read and verify against. A PR editing rosters, prompts, or routing is
-  reviewed under the **previous** config; its changes activate after merge. If
-  the base commit can't be materialized, the run fails closed (one terminal
-  comment) — it never falls back to the checkout. A scope config that is new in
-  a PR is reviewed with the root config until it merges.
-- **The model runtime never sees PR-owned ambient config.** The head worktree the
-  agents read from is scrubbed of runtime configuration before the OpenCode
-  server starts: `opencode.json{,c}`, `.opencode/` (plugins), `AGENTS.md`,
-  `CLAUDE.md`, `.claude/`, `.mcp.json`, `.cursor*`, and `.env*` at every depth.
-  A PR can't install a plugin, MCP server, instruction file, or `.env` into the
-  process that holds the model credential and the comment token. (Changes to
-  those files are still reviewed — their diffs are inlined in the prompt — but a
-  finding citing one can't be re-read during verification; that's the tradeoff.)
-- **The scaffolded workflows check out only the base commit** with
-  `persist-credentials: false`; the CLI's own git fetches authenticate through
-  `gh` from `GH_TOKEN`, so the token never lands in `.git/config` or argv. The
-  CLI enforces the trust model itself, so a custom workflow that checks out the
-  PR head still gets base-commit configuration. The temporary escape hatch
-  `ecr ci --unsafe-config-from-head` restores the old behavior with a loud
-  security warning and will be removed on a minor boundary.
+Enforced in code and by an independent CI guard step, not by convention:
 
-Ownership is enforced with CODEOWNERS: `/.expo-code-review/routing.jsonc @your-infra`
-(the single authoritative router) and `/apps/api/.expo-code-review/ @your-api-team`
-(each team owns only its own scope dir). Rerouting globs is gated behind infra review.
+- **auth and research are locked to the root.** `tokenEnv` is honored only in the
+  root `config.jsonc` / `routing.jsonc` `defaults.auth`; a scope config declaring
+  `auth`/`breakGlass`/`research` fails to parse, and the CI guard sweeps every
+  config file repo-wide and refuses to run unless `tokenEnv` appears exactly once,
+  root-owned, equal to `ECR_EXPECTED_TOKEN_ENV`. Routing globs choose *which
+  roster* reviews a file, never *which secret* is sent.
+- **enforceAgents can't be weakened.** Enforced agents (e.g. `security`) are
+  injected into every scope from the ROOT roster with `alwaysRun`; a scope defining
+  a same-id agent gets the root one.
+- **Configuration comes from the PR's trusted base commit.** In `ecr ci`, all
+  review configuration loads from the PR's immutable base; the head is untrusted
+  content, materialized separately only to read and verify against. A PR editing
+  rosters, prompts, or routing is reviewed under the **previous** config, and a
+  missing base fails closed — never a fallback to the checkout. (Temporary escape
+  hatch: `ecr ci --unsafe-config-from-head`, with a loud warning; to be removed.)
+- **The model runtime never sees PR-owned ambient config.** The head worktree is
+  scrubbed of `opencode.json{,c}`, `.opencode/`, `AGENTS.md`, `CLAUDE.md`,
+  `.claude/`, `.mcp.json`, `.cursor*`, and `.env*` before the engine starts, so a
+  PR can't install a plugin, MCP server, instruction file, or `.env` into the
+  process holding the model credential and comment token.
+- **The scaffolded workflows check out only the base commit** with
+  `persist-credentials: false`; git fetches authenticate through `gh`, so the
+  token never lands in `.git/config` or argv. The CLI enforces the trust model
+  itself, so even a custom workflow that checks out the head still gets
+  base-commit configuration.
+
+Enforce ownership with CODEOWNERS: `/.expo-code-review/routing.jsonc @your-infra`,
+`/apps/api/.expo-code-review/ @your-api-team`. Full detail:
+[LLP 0006](./llp/0006-config-schema-loading-routing.explainer.md) (routing) and
+[LLP 0001](./llp/0001-trust-model.principles.md) (trust model).
 
 ---
 
@@ -493,62 +347,42 @@ Ownership is enforced with CODEOWNERS: `/.expo-code-review/routing.jsonc @your-i
   feedback always run fresh.
 
 Built on the [OpenCode](https://opencode.ai) SDK, which spawns the model provider
-and applies the provider's prompt caching automatically.
+and applies the provider's prompt caching automatically. Full detail:
+[LLP 0002](./llp/0002-review-engine-pipeline.explainer.md) (pipeline) and
+[LLP 0005](./llp/0005-verification-fingerprints-rendering.explainer.md)
+(verification and rendering).
 
 </details>
 
 <details>
 <summary><b>Tokens, cost &amp; prompt caching</b></summary>
 
-Every run reports what it spent and how much of it was served from the prompt
-cache, in three places:
+Every run reports what it spent and how much was served from the prompt cache, in
+three places: one `Token usage — …` line in the job log, a per-pass table + cache
+hit rate in the GitHub Actions step summary (which also preserves each run's posted
+comment, since the PR comment is updated in place), and one JSON line per run in
+`.expo-code-review/.runs/reviews.jsonl` (uploaded as a CI artifact) with per-pass
+tokens, raw per-agent findings, bounded reviewer traces, and coverage notes.
 
-- **Job log (stderr)** — one line at the end of the run:
-  `Token usage — input …, output …, cache read …, cache write … (cost $…)`.
-- **GitHub Actions step summary** — a per-pass table (one row per agent, plus the
-  cross-cutting pass, coordinator, and verifier), the run's cache hit rate, and
-  the exact comment that was posted. The PR comment is updated in place on every
-  run, so the step summary is where past runs' comments remain readable.
-- **`.expo-code-review/.runs/reviews.jsonl`** — one JSON line per run (uploaded as
-  a CI artifact) with the same totals plus per-pass `agentTokens`, the raw
-  per-agent findings, bounded reviewer traces, coverage notes, and what the verifier
-  dropped.
+Each reviewer can also return a compact trace (up to three concrete checks and two
+unresolved questions). It is stored only inside the hidden base64 comment marker as
+`review.reviewTrace` — never rendered — declared
+`trust: "unverified-model-diagnostics"`, and capped at 6 KB so it can't crowd
+visible findings out of GitHub's comment-size limit.
 
-Each reviewer can also return a compact trace with up to three concrete checks and
-two unresolved questions. The reporter stores it only inside the existing base64
-`<!-- <commentTag>:state=… -->` comment marker as `review.reviewTrace`; it does not
-render in the visible review. Agents and other machine consumers can decode that
-state to see what a clean review covered. The payload declares
-`trust: "unverified-model-diagnostics"`: it contains bounded conclusions, never a
-raw transcript or chain-of-thought, and must not be treated as a verified finding.
-The engine sorts agent ids and caps the complete decoded trace at 6 KB so this hidden
-diagnostic cannot crowd visible findings out of GitHub's comment-size limit.
+**How the caching works.** Provider prompt caching is a *prefix match*: any byte
+change in the prefix invalidates everything after it. The reviewer keeps the prefix
+stable — the system prompt (`shared.md` + the agent's own `.md`) is byte-identical
+for every chunk an agent reviews, while the volatile parts (diff, file lists, PR
+metadata) travel after it. OpenAI caches automatically at a steep read discount;
+Anthropic charges ~1.25× input to **write** and ~0.1× to **read**. Hit rate =
+`cache read / (cache read + input)`; multi-chunk reviews should show a high rate,
+single-chunk reviews mostly show writes.
 
-**How the caching works.** Provider prompt caching is a *prefix match*: the
-provider caches the rendered prompt up to a point, and any byte change anywhere
-in that prefix invalidates everything after it. The reviewer is laid out so the
-prefix is stable — the system prompt (`shared.md` + the agent's own `.md`) is
-byte-identical for every chunk an agent reviews, while the volatile parts (the
-diff, file lists, PR metadata) travel in the user message *after* the prefix and
-never touch it. OpenAI caches automatically (no write premium; cached input is
-billed at a steep discount and shows up as `cache read`); Anthropic charges a
-small premium to **write** the cache (~1.25× input) and ~0.1× input to **read**
-it. Entries live minutes, refreshed on use — comfortably covering a run's
-concurrent calls.
-
-**Reading the numbers.** Hit rate = `cache read / (cache read + input)` — the
-share of prompt tokens served from cache instead of being reprocessed at full
-price. Multi-chunk reviews should show a high rate; single-chunk reviews mostly
-show writes (there is nothing to re-read within the run).
-
-**Keeping hits high:**
-
-- Keep `shared.md` and `agents/*.md` stable. Any edit writes a new prefix — one
-  extra cache write per agent on the next run, then it is warm again. Never put
-  varying text (dates, PR numbers) into prompt files.
-- Very short prompts may show `cache read 0`: prompts below the model's minimum
-  cacheable size (~1–4K tokens depending on the model) are silently not cached.
-  That is expected, not a bug.
+To keep hits high: keep `shared.md` and `agents/*.md` stable (an edit costs one
+cache write per agent on the next run, then it's warm again), and never put varying
+text (dates, PR numbers) in prompt files. Prompts below the model's minimum
+cacheable size (~1–4K tokens) show `cache read 0` — expected, not a bug.
 
 </details>
 
@@ -637,60 +471,32 @@ change which model reviewed your code. Use an explicit override instead.
 <details>
 <summary><b>Reliability</b> — never hangs, never silently drops work</summary>
 
-- **Per-task time caps** — chunk passes 15 min; coordinator 10 min. A global passes
-  budget (55 min) bounds all passes incl. the subdivision waves, fitting inside the
-  CI job's `timeout-minutes` (90).
-- **The cross-file pass is elastic** — it gets whatever is left of the passes budget
-  rather than a fixed cap, because it's the one pass whose scope can't be traded for
-  convergence: halving its file set deletes exactly the coverage it exists for. Chunk
-  passes run alongside it under their own caps, so a long cross-file pass doesn't
-  starve them.
-- **Tool-call cap** — a pass that makes too many `read`/`grep` calls without
-  finishing is *wandering*, not converging; hitting the cap trips the soft landing.
-  The cross-file ceiling scales with the diff's file count (its diffs are inlined, so
-  tool calls go to *tracing*, not fetching).
-- **Stall detection** — a pass whose reply stops changing entirely (no new tool call,
-  no streamed text or reasoning, no token growth) has a wedged model request, not a
-  hard problem. After 4 min of silence it's abandoned and retried once from a clean
-  session, inside the same budget — instead of spending the whole cap on a dead
-  request. Progress lines say how long a reply has been silent, so this is legible in
-  the CI log.
-- **Rate limits are detected and waited out, not fought.** The reviewer watches the
-  OpenCode server's own log for provider 429s (hard evidence, per run). A stall
-  *with* recent 429 evidence is throttling, not a wedge — the pass waits in 90s
-  beats (without consuming its one retry) instead of re-sending its whole context
-  into a limited account; explicit 429 errors retry on a slow 15s/45s/90s schedule.
-  Subscription (oauth) runs also default to `concurrency` 3 instead of 6, since one
-  account may be serving several PRs' reviews at once. Rate-limit events are
-  reported in the job log and the run log (`rateLimitEvents`), so throttling is a
-  visible fact about a run, never a mystery slowdown.
-- **Soft landing on timeout** — at either cap, the run is interrupted and the agent
-  is asked to return the findings it already has, rather than discarding its work.
-  Tools are disabled for that request, so the salvage step can't resume investigating
-  instead of answering.
-- **Subdivide-on-timeout** — a reviewer pass that times out with nothing to show has
-  its chunk split in half and the halves re-reviewed (recursively, down to a single
-  file), then a fast **no-tools fallback** over the inlined diff (the cross-file pass
-  skips straight to the fallback, which still sees the whole diff). Only a genuinely
-  un-reducible pass reports a coverage gap — and it is always reported, never silent.
-- **Parse failures are retried** (same session, then once in a bounded fresh
-  session) — separate from the timeout path.
-- **Transient API errors are retried** (bounded backoff on 429/5xx/network) —
-  distinct from both the timeout path (abandon) and the parse path; a one-off blip
-  no longer drops an entire pass.
-- **Auth failures surface once, and fail fast** — `ecr` checks the configured
-  provider's credential at startup and stops with one clear message if it's missing
-  (rather than failing every pass); a credential rejected mid-run (401/403)
-  collapses into a single actionable coverage note pointing at
-  `auth.tokenEnv`/`REVIEWER_MODEL`.
-- **A failed run never reads as "Approve"** — all passes fail → "could not
-  complete"; some fail → never a clean approve, and coverage-reduced.
-- **The coordinator can't sink the run** — if consolidation fails, findings are
-  merged deterministically and still posted.
-- **Coverage notes** — passes that timed out/failed are listed (routine noise
-  filtering is *not* flagged — it's expected and stays in the run log).
-- **CI always gets a terminal state** — on any failure the PR gets a "didn't run"
-  comment, not a stuck reaction and silence.
+- **Time caps everywhere** — chunk passes 15 min, coordinator 10 min, and a global
+  55-min passes budget that fits inside the CI job's `timeout-minutes`. The
+  cross-file pass is elastic (it gets whatever budget is left) because halving its
+  file set would delete exactly the coverage it exists for.
+- **Wandering and wedged passes are cut short** — a tool-call cap catches a pass
+  that reads without converging; a 4-minute stall detector abandons a wedged model
+  request and retries once from a clean session, inside the same budget.
+- **Rate limits are waited out, not fought** — provider 429s (observed in the
+  OpenCode server log) turn a stall into 90s waits instead of re-sends; explicit
+  429s retry on a slow schedule; subscription (oauth) runs default to lower
+  concurrency. Rate-limit events are reported in the job and run logs, so
+  throttling is never a mystery slowdown.
+- **Soft landing, then subdivision** — at a cap, the agent is asked to return the
+  findings it already has (tools disabled, so it can't keep investigating). A pass
+  with nothing to show has its chunk split and re-reviewed recursively, down to a
+  no-tools fallback over the inlined diff. Only a genuinely un-reducible pass
+  reports a coverage gap — always reported, never silent.
+- **Bounded retries per failure class** — parse failures, transient API errors
+  (429/5xx/network), and timeouts each have their own separate retry path; a
+  one-off blip never drops a whole pass.
+- **Failure can't read as success** — auth problems fail fast with one actionable
+  message; all-passes-failed reads "could not complete"; a partial run is never a
+  clean pass; a failed coordinator falls back to deterministic merging; and CI
+  always posts a terminal comment, never silence.
+
+Full detail: [LLP 0002](./llp/0002-review-engine-pipeline.explainer.md).
 
 </details>
 
@@ -718,19 +524,19 @@ line: **comments = one-shot actions, labels = persistent configuration.**
 These workflows are comment-only (they never fail the PR's checks). The engine runs
 as the published package via `npx`, so no PR-controlled code is built.
 
+Full detail: [LLP 0009](./llp/0009-adoption-templates-and-ci-workflows.guide.md)
+(workflows) and [LLP 0007](./llp/0007-cli-commands-and-ci.explainer.md) (commands).
+
 </details>
 
 <details>
 <summary><b>Author feedback (replies to findings)</b></summary>
 
 A PR author's reply to a finding is matched to it deterministically — by quoting
-the finding's title back, or by citing its short `` `id:…` `` token (only the id can
-clear a finding, see below) — and recorded
-in the comment's embedded state, no model involved in the matching itself. A
-matched finding shows `💬 @login replied` (linked to the comment) and a visible
-count above the fold; the reply's own text is never stored or rendered, only the
-login, the comment link, and (optionally) an enum-valued verdict. Controlled by
-the root-only `feedback` block in `config.jsonc`:
+the finding's title back, or by citing its short `` `id:…` `` token — with no model
+involved in the matching. A matched finding shows `💬 @login replied` (linked to
+the comment); the reply's own text is never stored or rendered. Controlled by the
+root-only `feedback` block in `config.jsonc`:
 
 ```jsonc
 "feedback": {
@@ -743,36 +549,26 @@ the root-only `feedback` block in `config.jsonc`:
 ```
 
 - **`annotate`** (the default) matches and shows "author replied" with zero effect
-  on the decision — safe and useful even if you never touch this block.
-- **Clearing a finding always needs the `` `id:…` `` token**, in the replier's own words
-  (an id inside a `>` quote does not count). Quoting the title is enough to *annotate*,
-  never to clear: GitHub's "Quote reply" copies the PR author's text verbatim, so a
-  maintainer clicking it would otherwise dismiss a finding on words the author wrote —
-  by accident, or because they were led to.
-- **`adjudicate`** additionally has a model re-check the reply against the actual
-  source (distrust-by-default, like the finding verifier) and record a verdict.
-  Whether that verdict can actually clear a finding is a separate, still-off-by-
-  default choice — `mode` and `dismiss` are independent axes: `dismiss:
-  "maintainers"` lets a maintainer's own reply dismiss with no model involved
-  (it works under plain `annotate` too); `dismiss: "adjudicated"` additionally
-  accepts an author reply the model confirmed (which does need `mode:
-  "adjudicate"` for verdicts to exist). Either way the reply has to cite the finding's
-  `` `id:…` ``. A `critical` finding, or one categorized `secrets`/
-  `security`, can never be cleared this way, whatever the config — that floor is
-  enforced in code, not the prompt.
-- **`/undismiss <id>` wins over a reply.** Running it on a finding a reply cleared
-  puts the finding back in the active list and keeps it there: another reply from
-  the PR author can't clear it again. The restore is recorded against the FINDING
-  in the comment state, not against the reply, so editing or deleting the reply
-  doesn't drop it either. Only a maintainer lifts that — either `/dismiss <id>` on
-  the same finding, or a maintainer's own reply to it.
+  on the decision — safe even if you never touch this block.
+- **Clearing a finding always needs the `` `id:…` `` token** in the replier's own
+  words (an id inside a `>` quote does not count). Quoting the title *annotates*,
+  never clears — otherwise GitHub's "Quote reply" could dismiss a finding on words
+  the PR author wrote.
+- **`mode` and `dismiss` are independent axes.** `adjudicate` has a model re-check
+  the reply against the actual source and record a verdict; `dismiss:
+  "maintainers"` lets a maintainer's own reply dismiss with no model involved;
+  `dismiss: "adjudicated"` additionally accepts an author reply the model
+  confirmed. A `critical`, `secrets`, or `security` finding can never be cleared
+  this way, whatever the config — that floor is enforced in code, not the prompt.
+- **`/undismiss <id>` wins over a reply** — it restores the finding and pins the
+  restore to the FINDING, so another author reply (or editing/deleting the old
+  one) can't clear it again; only a maintainer lifts that.
 
 `ecr feedback` mines this substrate retroactively, with no model call and no
-re-review: it crawls a repo's PRs, reads each one's existing reviewer comment
-(which already embeds its findings), matches non-bot replies against it, and
-reports totals, a reply-rate, breakdowns by category/severity/agent, and — the
-highest-value part — "repeat offenders": findings whose title recurred across 2+
-PRs and drew a reply every single time.
+re-review: it crawls a repo's PRs, matches non-bot replies against each existing
+reviewer comment, and reports totals, a reply-rate, breakdowns by
+category/severity/agent, and "repeat offenders" — findings whose title recurred
+across 2+ PRs and drew a reply every time.
 
 ```bash
 ecr feedback --repo your-org/your-repo --limit 100 --since 2026-06-01
@@ -780,19 +576,13 @@ ecr feedback --as my-review-bot   # if CI posts under a PAT/app identity
 ecr feedback --json               # for scripting
 ```
 
-The crawl matches the reviewer's comments by author. CI posts them as
-`github-actions[bot]` (the default), so a locally-run crawl uses that identity —
-pass `--as <login>` when your workflow posts under something else.
+The crawl matches the reviewer's comments by author (`github-actions[bot]` by
+default — pass `--as <login>` when your workflow posts under something else), and
+always reads config from the LOCAL checkout, warning when `commentTag` may not
+match a different `--repo`.
 
-`ecr feedback` always reads `.expo-code-review/config.jsonc` from the LOCAL
-checkout, even with `--repo`. If `--repo` points at a different repo, it warns
-that `commentTag` may not match, so a zero-findings result there is not read as
-zero pushback. It also warns when every scanned PR had no bot comment at all,
-instead of leaving that as an easy-to-miss "0 with a bot comment" in the totals.
-
-See [LLP 0011](./llp/0011-author-feedback.explainer.md) for why matching is
-deterministic, why reply text is never echoed into the comment, and why the
-defaults are asymmetric.
+Full detail — why matching is deterministic, why reply text is never echoed, why
+the defaults are asymmetric: [LLP 0011](./llp/0011-author-feedback.explainer.md).
 
 </details>
 
@@ -845,39 +635,33 @@ head commit, or local comment-policy fingerprint no longer matches.
 <details>
 <summary><b>Other providers & auth modes</b></summary>
 
-The scaffolded default is **Anthropic via the Claude Code CLI** — see First-time
-setup above and the Anthropic bullet below for how it authenticates and is
-sandboxed. Everything is set in `config.auth`; non-anthropic providers get their
-credentials through OpenCode.
+Everything is set in `config.auth`. Engines are inferred **per agent** from that
+agent's resolved model: an `anthropic/…` agent runs through the Claude Code CLI,
+any other provider runs through OpenCode — in the SAME run. `REVIEWER_MODEL`
+overrides every agent's model (and therefore engine) at once. There is no shared
+fallback key; `ecr doctor` diagnoses setup.
 
-- **Anthropic / Claude (the default)** — use `anthropic/...` model ids and every
-  anthropic pass runs through the **Claude Code CLI** (`claude -p
-  --output-format stream-json --verbose`), inferred from the model. The
-  credential is (in order) a `tokenEnv` you name, an ambient
-  `CLAUDE_CODE_OAUTH_TOKEN`, or your local
-  `claude` login — an `auth` entry is entirely optional. Run `claude setup-token`
-  for a Max/Team subscription token or point `tokenEnv` at an Anthropic Console
-  API key (`sk-ant-api…`, forwarded as `ANTHROPIC_API_KEY`); the CLI reads
-  either. `ecr setup-auth` walks you through it. Each pass is trust-isolated and
-  read-only: it runs with `--safe-mode` (no `CLAUDE.md`/hooks/MCP/plugins),
-  `--strict-mcp-config`, `--permission-mode dontAsk`, and only the
-  `Read`/`Grep`/`Glob` tools — never `Bash`/`Edit`/`Write`/`WebFetch`/`WebSearch`.
-  The child env is an allowlist that omits ambient `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`
-  (only the configured credential is re-injected).
+- **Anthropic / Claude (the scaffolded default).** The credential is (in order) a
+  `tokenEnv` you name, an ambient `CLAUDE_CODE_OAUTH_TOKEN`, or your local
+  `claude` login — an `auth` entry is entirely optional. `claude setup-token`
+  mints a Max/Team subscription token for CI, or point `tokenEnv` at a Console API
+  key (`sk-ant-api…`); the CLI reads either. Each pass is trust-isolated and
+  read-only: `--safe-mode` (no `CLAUDE.md`/hooks/MCP/plugins),
+  `--strict-mcp-config`, only `Read`/`Grep`/`Glob`, and an allowlisted child env
+  that omits ambient Anthropic credentials.
+
   ```jsonc
-  // The scaffolded default. No anthropic entry at all falls back to your
-  // `claude` login.
+  // The scaffolded default. No anthropic entry at all falls back to `claude` login.
   "auth": { "providers": {
     "anthropic": { "tokenEnv": "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN" }
   } }
   ```
-- **OpenAI: ChatGPT/Codex subscription (OAuth) + usage-based API key — the
-  recommended mix if you review with OpenAI.** OpenAI permits subscription auth
-  in third-party tools, and OpenCode
-  ships the plugin for it — so the reviewer runs its default models on the
-  subscription (zero marginal cost) and reserves the metered key for pro-tier
-  models the subscription doesn't offer (`gpt-5.5-pro` is subscription-excluded).
-  Use the per-provider map form:
+
+- **OpenAI: ChatGPT/Codex subscription (OAuth) + usage-based API key** — the
+  recommended mix if you review with OpenAI. Default models run on the
+  subscription (zero marginal cost); a metered key covers subscription-excluded
+  pro models via a synthesized `openai-api` alias (agents reference
+  `openai-api/gpt-5.5-pro` in frontmatter):
 
   ```jsonc
   "auth": { "providers": {
@@ -886,63 +670,26 @@ credentials through OpenCode.
   } }
   ```
 
-  `openai-api` is an alias the reviewer synthesizes in the OpenCode config
-  (`upstream` names the SDK it's backed by): agents reference `openai-api/gpt-5.5-pro`
-  in frontmatter while everything else stays on `openai/gpt-5.5`. Notes:
+  The oauth `tokenEnv` holds the ACCESS token from an `opencode auth login`
+  ChatGPT sign-in (`ecr setup-auth` extracts it) — never the single-use refresh
+  token. Access tokens expire (~10 days observed), so CI secrets need periodic
+  re-minting; `doctor` and the run preflight warn before expiry. The API key
+  needs only *Responses → Request* and *Chat completions → Request*, in a
+  dedicated budget-capped project. In CI, set `ECR_EXPECTED_TOKEN_ENV` to both
+  env names, comma-separated. Every pass logs which provider/model answered it,
+  so the subscription/API split is visible per run (alias-model passes report
+  `$0` cost — OpenCode can't price config-declared aliases; the OpenAI dashboard
+  is the source of truth for spend).
 
-  - **The oauth `tokenEnv` holds the ACCESS token** from an `opencode auth login`
-    ChatGPT sign-in (`ecr setup-auth` extracts it) — a plain bearer, valid for
-    days, with no rotation involvement. Do **not** use the refresh token as a
-    shared secret: refresh tokens are single-use (rotation), so a static copy is
-    spent by its first use and the sign-in dies with it. Access tokens expire
-    (~10 days observed), so CI secrets need periodic re-minting — see the
-    token-rotator item in the [roadmap](./ROADMAP.md); `doctor` and the run
-    preflight warn before expiry.
-  - **The API key needs exactly two permissions** — a *Restricted* key with
-    *Model capabilities*: **Responses → Request** and **Chat completions →
-    Request**; everything else (including *List models*) stays None. Create it
-    in a dedicated, budget-capped project. (`ecr setup-auth` prints these
-    instructions too.)
-  - **In CI**, set the `ECR_EXPECTED_TOKEN_ENV` repo variable to the
-    comma-separated set of both env names
-    (`CODEX_OAUTH_ACCESS_TOKEN,OPENAI_API_KEY`) and pass both secrets in the
-    workflow.
-  - **Auditability**: every pass logs which provider/model answered it (job log,
-    step summary, run log), so the subscription/API split is visible per run.
-    One caveat: OpenCode can't price alias models (they're config-declared), so
-    pro passes report `$0` in the run log's cost column — token counts are
-    correct, and the OpenAI project dashboard is the source of truth for spend.
-- **Another provider** — the current path is the `REVIEWER_MODEL`
-  env override: `opencode auth login` once (pick the provider), then run with
-  e.g. `REVIEWER_MODEL=google/gemini-3-pro`. It overrides every agent's model
-  and uses your OpenCode login, so no `auth` block is needed.
+- **Another provider** — `opencode auth login` once, then run with e.g.
+  `REVIEWER_MODEL=google/gemini-3-pro`. No `auth` block needed.
 
-Engines are inferred **per agent** from that agent's resolved model alone: an
-`anthropic/…` agent runs through the Claude Code CLI while other agents run through
-OpenCode — in the SAME run. So an anthropic model may coexist with an `openai` (or
-any other) OpenCode provider, and each agent's `model` selects its engine.
-`REVIEWER_MODEL` still overrides every agent's model (and therefore every agent's
-engine), converging the whole run onto one engine.
+Setup errors fail fast, with the fix in the message, instead of failing every pass
+identically: the credential's shape is checked by name before any pass runs,
+configured OpenCode model ids are validated against the running server (with close
+matches suggested; `anthropic/…` ids are validated per-request by Claude instead),
+and `ecr doctor` reports the `opencode` version actually in use.
 
-There is no shared fallback key; if a run fails for lack of credentials, log in
-with `claude` (the default) or authenticate a provider in OpenCode. `ecr doctor`
-diagnoses setup.
-
-**Setup errors fail fast, with the fix in the message.** A bad credential or model id
-would otherwise fail every pass identically — a run that spends its whole budget
-rediscovering one fixable thing, then reports N coverage gaps. So before any pass runs:
-
-- **The credential's shape is checked.** OpenCode refuses a malformed credential by
-  dropping the provider entirely, which then surfaces as "model not found" for every
-  model, with nothing pointing at the credential. A truncated value, surrounding
-  whitespace, or a token that can't work for the configured `auth.mode` is rejected
-  by name.
-- **Configured model ids for OpenCode-routed providers are checked against the running
-  server**, so a typo or an id the provider doesn't have is reported once, up front,
-  with the close matches. `anthropic/…` (Claude Code) model ids aren't checked up
-  front — Claude validates them per-request, so a typo there surfaces as a per-pass
-  error instead.
-- **`ecr doctor` reports the `opencode` version actually in use** and warns when a
-  different one is first on your `PATH` — runs use the version this package pins.
+Full detail: [LLP 0003](./llp/0003-model-runtimes-and-credentials.explainer.md).
 
 </details>
