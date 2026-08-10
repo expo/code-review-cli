@@ -59,7 +59,7 @@ The degraded paths keep a failed run honest:
 - **Coordinator failure never discards findings.** If `coordinate()` throws, `fallbackConsolidation()` merges and dedupes the agents' findings by fingerprint and picks a conservative decision — `request_changes` on any critical, else `approve_with_comments`, never a clean approve when findings exist [observed] (`review.ts:800-809`, `978-1009`).
 - **`applyReviewPolicy` runs identically on both paths** — the coordinator's normal output and the local fallback both pass through the same policy (drop suggestions unless opted in, sort by severity, cap by `maxFindings`, downgrade `approve_with_comments`→`approve` when nothing remains), so enforcement can't diverge between the happy and degraded paths [observed] (`review.ts:792` and `998-1008`).
 - **Any failed/timed-out pass forces the decision off a clean approve** — downgraded to `approve_with_comments` at minimum, independent of what the coordinator decided [observed] (`review.ts:810-815`).
-- **An all-failed run sets `couldNotComplete`.** When every pass fails or times out, the run is never rendered as a normal decision string; the flag overrides presentation so the comment header can't read "Approve with comments" over a review that reviewed nothing [observed] (`review.ts:764-777`; commit `188f852`, euxy#8).
+- **An all-failed run sets `couldNotComplete`.** When every pass fails or times out, the run is never rendered as a normal decision string; the flag overrides presentation so the comment header can't read "Ready for human review (with comments)" over a review that reviewed nothing [observed] (`review.ts:764-777`; commit `188f852`, euxy#8).
 
 ## Post-Coordination Order
 

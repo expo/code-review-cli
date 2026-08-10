@@ -82,9 +82,9 @@ test("renderAggregateMarkdown: per-scope addressed bucket, count excludes requal
   const out = renderAggregateMarkdown(results, "tag", []);
   // Worst decision across scopes is approve_with_comments (the requalified-only scope
   // contributes approve, not request_changes).
-  expect(out).toContain("**Decision:** Approve with comments");
+  expect(out).toContain("**Decision:** Ready for human review (with comments)");
   // The api scope's blocking count is 0 (the requalified finding is not counted).
-  expect(out).toMatch(/\| api \| Approve \| 0 \|/);
+  expect(out).toMatch(/\| api \| Ready for human review \| 0 \|/);
   expect(out).toContain("Addressed in stacked PRs (1)");
   expect(out).toContain("marked addressed by stacked PR(s) (#42)");
 });

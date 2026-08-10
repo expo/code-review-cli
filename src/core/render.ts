@@ -86,9 +86,12 @@ export function buildDiffLineIndex(
   return index;
 }
 
+// User-facing labels only — the wire/schema enum stays `approve` etc. The review
+// is advisory and never approves anything, so the labels must not read as an
+// approval either: a clean result is "ready for a human", not "approved".
 const DECISION_LABEL: Record<Decision, string> = {
-  approve: "Approve",
-  approve_with_comments: "Approve with comments",
+  approve: "Ready for human review",
+  approve_with_comments: "Ready for human review (with comments)",
   request_changes: "Request changes",
 };
 

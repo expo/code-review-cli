@@ -222,7 +222,7 @@ PRs** (do these first, in this order):
   `gh pr checkout`s the PR head; it builds/runs only the trusted base ref. See
   "Reliability & security" below for the residual work.
 - **Failure-path hardening (audit 2026-07-22)** — a failed/timed-out run never
-  renders as a clean "Approve"; the coordinator has its own 5-min cap +
+  renders as a clean "Ready for human review"; the coordinator has its own 5-min cap +
   soft-landing and a deterministic local-merge fallback (a coordinator hiccup no
   longer discards all findings); CI always posts a terminal state on failure;
   coverage notes now include filtered (binary/generated/ignored) files; the
@@ -342,7 +342,7 @@ Guarantees (priority order; ✅ = shipped):
 4. ✅ **Always post a result** — a failed run reports "could not complete"; CI
    posts a terminal state on any failure; the coordinator has a deterministic
    fallback so its failure can't discard findings; and a failed/timed-out run
-   never renders as a clean "Approve".
+   never renders as a clean "Ready for human review".
 5. ✅ **Global time budget.** *(Shipped 2026-07-22; retuned 2026-07-26.)*
    `PASSES_BUDGET_MS` (55m) is a hard wall-clock ceiling for all passes incl.
    subdivision/fallback waves: past it, a timed-out pass is reported as a gap rather

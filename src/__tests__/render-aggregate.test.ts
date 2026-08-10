@@ -61,7 +61,7 @@ test("aggregate: root marker first line, a table row + <details> per scope, wors
   expect(body.split("\n")[0]).toBe(commentMarker("tag"));
   expect(body).toContain("**Decision:** Request changes"); // worst across scopes
   expect(body).toContain("| Scope | Decision | Findings |");
-  expect(body).toContain("| default | Approve | 1 |");
+  expect(body).toContain("| default | Ready for human review | 1 |");
   expect(body).toContain("| api | Request changes | 1 |");
   // one details block per scope, in manifest order
   expect(body.indexOf("<summary>default")).toBeLessThan(body.indexOf("<summary>api"));
@@ -141,7 +141,7 @@ test("aggregate: a default-scope finding dismissed pre-routing (plain fp) lands 
   ]);
   expect(body).toContain("Dismissed on this PR (1)");
   expect(body).toContain(`id:${plainFp}`);
-  expect(body).toContain("| default | Approve | 0 |"); // moved out of the active count
+  expect(body).toContain("| default | Ready for human review | 0 |"); // moved out of the active count
 });
 
 test("aggregate: dismissed findings survive in embedded state so /undismiss can restore them", () => {
@@ -162,7 +162,7 @@ test("aggregate: dismissed findings survive in embedded state so /undismiss can 
   // (what /undismiss does) restores the finding to the active list.
   const restored = renderAggregateMarkdown(state.scopes!, "tag", []);
   expect(restored).toContain(`id:${fp}`);
-  expect(restored).toContain("| api | Approve | 2 |");
+  expect(restored).toContain("| api | Ready for human review | 2 |");
   expect(restored).not.toContain("Dismissed on this PR");
 });
 
@@ -220,7 +220,7 @@ test("aggregate: a scope whose reply cleared every finding opens its fold (visib
     ],
   );
   // The finding is suppressed (moved to Dismissed); the scope shows no active finding.
-  expect(body).toContain("<summary>api — Approve (0)</summary>");
+  expect(body).toContain("<summary>api — Ready for human review (0)</summary>");
   // ...but the fold OPENS so the audit note is above-the-fold, not collapsed away.
   expect(body).toMatch(/<details open>\n<summary>api —/);
   expect(body).toContain("have an author response");
