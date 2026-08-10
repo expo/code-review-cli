@@ -27,6 +27,70 @@ flowchart TD
   VERIFY --> REPORT["Reporter<br/>one PR comment (CI) · terminal (local)"]
 ```
 
+## Why not just `claude -p "review this diff"`?
+
+A one-shot prompt in a workflow works — until the failure modes show up. The
+engine exists for those:
+
+- **Everything the reviewer reads is attacker-controlled.** The diff, the PR
+  description, and the repo files are all input an outside contributor wrote —
+  and a bare CLI run obeys instruction files from that same checkout
+  (`CLAUDE.md`, `.mcp.json`, plugins) while holding the model credential and
+  comment token. Here, configuration comes only from the trusted base commit,
+  those files are scrubbed before the engine starts, and every pass is read-only
+  ([details below](#the-security-gap-specifically)).
+- **Confident-but-wrong findings post as-is.** Raw model output is the review.
+  Here, every finding is quote-grounded against the real file and criticals are
+  adversarially verified before anything is posted.
+- **Failures read as silence or approval.** A one-shot call that stalls, gets
+  rate-limited, or returns garbage either fails the job or posts nothing. Here,
+  each failure class has its own bounded retry, a failed run never renders as a
+  clean result, and CI always posts a terminal comment.
+- **Big diffs blow the context window.** Large PRs are chunked with a separate
+  cross-cutting pass for multi-file issues; specialist agents run in parallel; the
+  prompt layout is cache-stable, and every run reports tokens, cost, and cache
+  hit rate.
+- **Noise wastes the model's attention.** Lockfiles, generated bundles, and
+  binaries are filtered before the model sees them — recorded, never silently
+  dropped.
+- **Comment spam.** One fingerprinted comment updated in place, with `/dismiss`,
+  severity floors, inline ignores, and author-reply tracking — not a new wall of
+  text per push.
+- **Review prompts rot.** `ecr ref-check` fails when a prompt cites code that
+  moved or vanished, and every run warns loudly if a provider substituted a
+  different model than configured.
+
+### The security gap, specifically
+
+A review bot is a process holding a model credential and a GitHub write token
+that reads attacker-controlled input for a living. A bare `claude -p` workflow
+typically checks out the PR head and hands the model broad tools — so a PR that
+says the right words can run code, read secrets, or post as you. The trust model
+here ([LLP 0001](./llp/0001-trust-model.principles.md)) is built around that:
+
+- **No PR-controlled code is ever built or executed.** The engine runs as the
+  published npm package via `npx`; the scaffolded workflows check out only the
+  base commit, with `persist-credentials: false`.
+- **The model has no write tools and no ambient web.** `Read`/`Grep`/`Glob` only
+  — never `Bash`, `Edit`, or `WebFetch`. An injected instruction has nothing to
+  act with; the worst it can do is produce a wrong finding, which then has to
+  survive verification.
+- **Review policy is not PR-editable.** Config, prompts, rosters, and the auth
+  mapping load from the PR's immutable base commit; `tokenEnv` is honored in
+  exactly one root-owned place, enforced at the schema level and again by an
+  independent CI guard step.
+- **Credentials are compartmentalized.** Child environments are allowlists that
+  omit ambient keys; the research MCP never sees a model credential, the model
+  process never sees the search key, and outbound research queries fail closed
+  on credential-shaped input.
+- **Untrusted text can't impersonate the reviewer.** PR prose travels inside
+  sanitized boundary markers, and every `<!--` in it is escaped so a forged
+  state marker can't hijack the dismissal list. `critical`/`secrets` findings
+  can't be dismissed or cleared by replies — enforced in code, not the prompt.
+- **The blast radius is capped by design.** The review is advisory and
+  comment-only: even a fully fooled model can't approve, merge, or block
+  anything.
+
 ## Usage
 
 Run via `npx @expo/code-review-cli <command>` (or the `ecr` / `expo-code-review`
