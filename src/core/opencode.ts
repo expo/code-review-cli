@@ -259,7 +259,12 @@ export function buildOpencodeConfig(
     config.coordinator.model,
   ];
   for (const entry of config.auth) {
-    if (entry.provider === "meta" && entry.mode === "api-key" && entry.tokenEnv) {
+    if (
+      entry.provider === "meta" &&
+      entry.mode === "api-key" &&
+      entry.tokenEnv &&
+      !entry.upstream
+    ) {
       // Muse needs the Responses adapter; openai-compatible uses Chat Completions.
       provider.meta = {
         npm: "@ai-sdk/openai",

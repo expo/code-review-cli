@@ -373,6 +373,33 @@ test("Meta auth synthesizes the public Muse Responses provider without embedding
   });
 });
 
+test("a Meta-named upstream alias does not redirect the upstream credential to Meta", () => {
+  const config = configWith({
+    agents: [{ id: "correctness", model: "meta/muse-spark-1.2" }],
+    coordinatorModel: "meta/muse-spark-1.2",
+    auth: [
+      {
+        mode: "api-key",
+        provider: "meta",
+        tokenEnv: "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN",
+        upstream: "anthropic",
+      },
+    ],
+  });
+  const opencode = buildOpencodeConfig(config) as {
+    provider?: Record<
+      string,
+      { npm: string; options: { apiKey: string; baseURL?: string }; models: object }
+    >;
+  };
+  const alias = opencode.provider?.meta;
+  expect(alias).toBeDefined();
+  expect(alias!.npm).toBe("@ai-sdk/anthropic");
+  expect(alias!.options).toEqual({ apiKey: "{env:CLAUDE_CODE_REVIEW_SHARED_API_TOKEN}" });
+  expect(alias!.options.baseURL).toBeUndefined();
+  expect(Object.keys(alias!.models)).toEqual(["muse-spark-1.2"]);
+});
+
 test("Meta provider does not register an unknown Muse id, so preflight can reject it", () => {
   const config = configWith({
     agents: [{ id: "correctness", model: "meta/muse-spark-typo" }],

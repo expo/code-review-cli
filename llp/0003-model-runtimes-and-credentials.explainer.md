@@ -100,11 +100,13 @@ oversight, and must not be silently reintroduced as a "fix" ([observed]
 
 Muse Spark uses the existing OpenCode engine, but OpenCode `1.18.4` does not ship a
 resolvable `meta` provider. `buildOpencodeConfig` therefore synthesizes one only for an
-in-use `meta` API-key entry. Its destination is fixed to `https://api.meta.ai/v1`, its
-credential is an environment interpolation (never the key value), and its adapter is
-`@ai-sdk/openai` so requests use the Responses API and preserve encrypted reasoning
-across tool turns. The generic `@ai-sdk/openai-compatible` adapter is deliberately not
-used because its Chat Completions path loses that continuity [observed:
+in-use `meta` API-key entry without an `upstream`; an entry with `upstream` remains an
+alias and never redirects that upstream's credential to Meta. The native provider's
+destination is fixed to `https://api.meta.ai/v1`, its credential is an environment
+interpolation (never the key value), and its adapter is `@ai-sdk/openai` so requests use
+the Responses API and preserve encrypted reasoning across tool turns. The generic
+`@ai-sdk/openai-compatible` adapter is deliberately not used because its Chat
+Completions path loses that continuity [observed:
 `opencode.ts` `META_MODEL_API_BASE_URL` / `META_MUSE_MODELS` / `buildOpencodeConfig`].
 
 The declared model catalog is an allowlist (`muse-spark-1.2` and
