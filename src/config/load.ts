@@ -177,12 +177,11 @@ async function loadConfigDir(
   for (const file of agentFiles) {
     const md = parseFrontmatter(await readFile(path.join(agentsDir, file), "utf8"));
     const id = file.replace(/\.md$/, "");
-    const model = resolveModel(md.data.model);
     agents.push({
       id,
       description: md.data.description ?? "",
       alwaysRun: /^(true|yes|1)$/i.test(md.data.alwaysRun ?? ""),
-      model,
+      model: resolveModel(md.data.model),
       temperature: resolveTemp(md.data.temperature, 0.1),
       tools: DEFAULT_AGENT_TOOLS,
       promptText: md.body,
