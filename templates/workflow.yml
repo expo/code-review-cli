@@ -114,6 +114,8 @@ jobs:
           # by `claude setup-token`, or an `sk-ant-api…` Console key (the Claude
           # Code CLI reads either).
           CLAUDE_CODE_REVIEW_SHARED_API_TOKEN: ${{ secrets.CLAUDE_CODE_REVIEW_SHARED_API_TOKEN }}
+          # Muse alternative (also set ECR_EXPECTED_TOKEN_ENV=META_API_KEY):
+          # META_API_KEY: ${{ secrets.META_API_KEY }}
           # Optional search-only credential for trusted platform documentation research.
           BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
           # Optional: override the model for every agent.

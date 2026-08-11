@@ -86,6 +86,13 @@
   //              store the key as a repo secret and pass it under that env var.
   //   "auth": { "mode": "api-key", "provider": "openai", "tokenEnv": "OPENAI_API_KEY" }
   //
+  //   Muse Spark via the public Meta Model API Responses endpoint:
+  //   set models to `meta/muse-spark-1.2` and configure:
+  //   "auth": { "providers": {
+  //     "meta": { "mode": "api-key", "tokenEnv": "META_API_KEY" }
+  //   } }
+  //   Map META_API_KEY in the workflows and set ECR_EXPECTED_TOKEN_ENV to match.
+  //
   //   ChatGPT/Codex subscription ("oauth"): tokenEnv holds the ACCESS token from
   //   an `opencode auth login` ChatGPT sign-in — `ecr setup-auth` extracts it.
   //   NEVER share the refresh token: it is single-use and dies on first rotation.

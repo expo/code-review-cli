@@ -21,7 +21,7 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { constants } from "node:os";
+import { constants, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { researchWrapperEnvironment } from "./child-env.js";
@@ -36,6 +36,8 @@ const child = spawn(
   [existsSync(builtEntry) ? builtEntry : sourceEntry, ...process.argv.slice(2)],
   {
     env: researchWrapperEnvironment(process.env),
+    // Prevent runtimes such as Bun from reloading the reviewed repo's .env.
+    cwd: tmpdir(),
     // The child owns the engine's stdio directly, so the wrapper never sits in
     // the MCP byte stream and cannot truncate, buffer, or reorder a message.
     stdio: "inherit",

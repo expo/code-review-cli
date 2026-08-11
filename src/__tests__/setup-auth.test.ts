@@ -14,6 +14,14 @@ test("plan: the mixed setup needs one ChatGPT login and one manual key", () => {
   expect(plan.unsupported).toEqual([]);
 });
 
+test("plan: Meta Model API is a manual API key setup", () => {
+  const plan = planFromAuth([{ provider: "meta", mode: "api-key", tokenEnv: "META_API_KEY" }]);
+  expect(plan.manualKeys).toEqual([
+    { provider: "meta", tokenEnv: "META_API_KEY", upstream: undefined },
+  ]);
+  expect(plan.unsupported).toEqual([]);
+});
+
 test("plan: an anthropic entry (any mode) → claudeLogin; api-key without tokenEnv needs nothing", () => {
   const plan = planFromAuth([
     // Mode is irrelevant for anthropic — it is always served by the Claude Code CLI.

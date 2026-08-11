@@ -55,6 +55,15 @@ The three workflows share a posture built entirely around one fact: a reviewer j
 
 **Concurrency defaults by auth mode.** The commented `chunk.concurrency` default is 6 for an API key and 3 for a subscription (OAuth) credential, "one account handles many parallel streams poorly, and several PRs may review on the same credential at once" [observed: `templates/config.jsonc:28-30`].
 
+**Muse Spark is opt-in without weakening the default secret surface.** The root config
+documents `meta/muse-spark-1.2` plus a `META_API_KEY` auth entry, and each
+review-running workflow shows the corresponding secret line commented out. It is not
+forwarded by the default scaffold: adopters replace the Anthropic line and set
+`ECR_EXPECTED_TOKEN_ENV=META_API_KEY`, so the model process receives only the
+credential actually selected by trusted config. The default remains Anthropic and
+`dismiss.yml` still receives no model credential [observed: `templates/config.jsonc`;
+`templates/workflow.yml`, `command.yml`, and `atlantis.yml`].
+
 **Keep the `**/*` catch-all first in `routing.jsonc`.** Scopes match last-match-wins, so a `**/*` catch-all must come first and more specific scopes come after to override it [observed: `templates/routing.jsonc:27-31`; `AGENTS.md:17-18`]. Nothing validates the order — reversing it silently changes which config applies to already-routed files [inferred: no code checks that the `**/*` catch-all comes first, so reversing it silently changes routing].
 
 **`scope-config.jsonc` deliberately omits `auth` and `commentTag`.** It is a *different* template from the root `config.jsonc`, not a copy. A scope config carries no `auth` block — credentials are root-only, and the loader plus the CI guard reject a scope config that declares one [observed: `templates/scope-config.jsonc:1-3`; `AGENTS.md:51`]. It also omits `commentTag`, because a scope's PR-comment marker is always derived as `<rootTag>:<scope-name>` so `ecr ci` and `ecr review --scope --post` target the same comment; declaring one is rejected by the scope schema [observed: `templates/scope-config.jsonc:23-25`]. Reusing the root `config.jsonc` template for a scope — a tempting "simplification" — would break the trust boundary (LLP 0006).

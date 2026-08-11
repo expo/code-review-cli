@@ -270,6 +270,25 @@ test("checkProviderAuth: an entry for an IN-USE provider is still enforced", () 
   expect(r.detail).toContain("openai");
 });
 
+test("checkProviderAuth: Meta uses META_API_KEY and rejects cross-provider reuse", () => {
+  const meta = cfgWithModels(["meta/muse-spark-1.2"], {
+    mode: "api-key",
+    provider: "meta",
+    tokenEnv: "META_API_KEY",
+  });
+  expect(checkProviderAuth(meta, {}).detail).toContain("META_API_KEY");
+  expect(checkProviderAuth(meta, { META_API_KEY: "meta-review-key" }).ok).toBe(true);
+
+  const wrongOwner = cfgWithModels(["openai/gpt-5.5"], {
+    mode: "api-key",
+    provider: "openai",
+    tokenEnv: "META_API_KEY",
+  });
+  const result = checkProviderAuth(wrongOwner, { META_API_KEY: "meta-review-key" });
+  expect(result.ok).toBe(false);
+  expect(result.detail).toContain("meta's well-known credential env");
+});
+
 test("prepareAuth: does not forward a dead unused-provider api-key into its key env", async () => {
   // An entry for a provider no model uses must not have its tokenEnv copied into the
   // provider key env — checkProviderAuth skips its guard, so forwarding would

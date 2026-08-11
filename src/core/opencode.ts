@@ -19,6 +19,44 @@ import type { ResearchMcpRuntime } from "./research.js";
 /** Discriminant for the Claude Code CLI engine (see core/claude-code.ts). */
 export const CLAUDE_CODE_ENGINE = "claude-code" as const;
 
+/** Fixed so repo config cannot redirect the Meta credential. */
+// @ref LLP 0003#muse-spark-via-meta-model-api [implements] — fixed endpoint and model allowlist
+export const META_MODEL_API_BASE_URL = "https://api.meta.ai/v1";
+
+/** Supported public Muse models. Unknown ids remain visible to preflight. */
+export const META_MUSE_MODELS: Record<string, Record<string, unknown>> = {
+  "muse-spark-1.2": {
+    name: "Muse Spark 1.2",
+    reasoning: true,
+    limit: { context: 1_048_576, output: 131_072 },
+    modalities: {
+      input: ["text", "image", "pdf", "video"],
+      output: ["text"],
+    },
+    options: {
+      store: false,
+      reasoningEffort: "high",
+      reasoningSummary: "auto",
+      include: ["reasoning.encrypted_content"],
+    },
+  },
+  "muse-spark-1.2-contributor": {
+    name: "Muse Spark 1.2 Contributor",
+    reasoning: true,
+    limit: { context: 1_048_576, output: 131_072 },
+    modalities: {
+      input: ["text", "image", "pdf", "video"],
+      output: ["text"],
+    },
+    options: {
+      store: false,
+      reasoningEffort: "high",
+      reasoningSummary: "auto",
+      include: ["reasoning.encrypted_content"],
+    },
+  },
+};
+
 /**
  * Resolve which engine an agent's pass dispatches to, and (when claude) which
  * claude handle to run it against. The per-agent router (engineOf) wins; absent it
@@ -221,6 +259,23 @@ export function buildOpencodeConfig(
     config.coordinator.model,
   ];
   for (const entry of config.auth) {
+    if (entry.provider === "meta" && entry.mode === "api-key" && entry.tokenEnv) {
+      // Muse needs the Responses adapter; openai-compatible uses Chat Completions.
+      provider.meta = {
+        npm: "@ai-sdk/openai",
+        name: "Meta Model API",
+        options: {
+          baseURL: META_MODEL_API_BASE_URL,
+          apiKey: `{env:${entry.tokenEnv}}`,
+        },
+        models: Object.fromEntries(
+          Object.entries(META_MUSE_MODELS).filter(([model]) =>
+            referencedModels.includes(`meta/${model}`),
+          ),
+        ),
+      };
+      continue;
+    }
     if (!entry.upstream || !entry.tokenEnv) {
       continue;
     }
