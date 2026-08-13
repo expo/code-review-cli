@@ -120,15 +120,16 @@ npx @expo/code-review-cli doctor
 The scaffolded default is **Anthropic via the Claude Code CLI**: locally your
 `claude` login is enough, and for CI it helps you mint a token with
 `claude setup-token`. It also handles the alternatives (an OpenAI **API key**,
-a **ChatGPT/Codex subscription** sign-in). `doctor` offers to run it whenever a
-credential is missing.
+a **ChatGPT/Codex subscription** sign-in, or a Meta Model API key for **Muse
+Spark**). `doctor` offers to run it whenever a credential is missing.
 
 In CI, store the credential as the repo secret the scaffolded workflow forwards
 (`CLAUDE_CODE_REVIEW_SHARED_API_TOKEN` by default — an `sk-ant-oat…` token from
 `claude setup-token`, or an `sk-ant-api…` Console key; the CLI reads either).
 
-Prefer **OpenAI** (API key, or a ChatGPT/Codex subscription, or both mixed) or
-another provider? See [Other providers & auth modes](#other-providers) below.
+Prefer **Muse Spark**, **OpenAI** (API key, or a ChatGPT/Codex subscription, or
+both mixed), or another provider? See [Other providers & auth modes](#other-providers)
+below.
 
 ### Reviewing (already configured)
 
@@ -720,6 +721,27 @@ fallback key; `ecr doctor` diagnoses setup.
     "anthropic": { "tokenEnv": "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN" }
   } }
   ```
+
+- **Meta / Muse Spark 1.2 (public Model API).** Set the default model and any
+  model-pinned agent frontmatter to `meta/muse-spark-1.2`. ECR supplies the fixed
+  public Responses endpoint and the `@ai-sdk/openai` adapter; the generic
+  Chat-Completions compatibility adapter is intentionally not used because it
+  loses Muse's reasoning continuity across tool turns. Standard and Contributor
+  model ids are supported.
+
+  ```jsonc
+  "model": "meta/muse-spark-1.2",
+  "auth": { "providers": {
+    "meta": { "mode": "api-key", "tokenEnv": "META_API_KEY" }
+  } }
+  ```
+
+  Create the key in the [Meta AI developer portal](https://developer.meta.com/ai/).
+  Locally, export it as `META_API_KEY`. In each review-running workflow, replace
+  the Anthropic credential line with
+  `META_API_KEY: ${{ secrets.META_API_KEY }}`, set the repo variable
+  `ECR_EXPECTED_TOKEN_ENV=META_API_KEY`, and remove the Claude CLI install step
+  if no configured agent uses an `anthropic/…` model. Muse runs with high reasoning.
 
 - **OpenAI: ChatGPT/Codex subscription (OAuth) + usage-based API key** — the
   recommended mix if you review with OpenAI. Default models run on the

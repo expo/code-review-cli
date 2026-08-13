@@ -25,7 +25,8 @@ getting each credential:
     opens your browser) and prints the \`export <tokenEnv>=…\` line for
     CI/headless runs.
   • an API key (api-key entries): prints where to create the key, the exact
-    permissions it needs, and the export line to fill in.
+    permissions it needs, and the export line to fill in. Meta Model API
+    (\`meta/muse-spark-…\`) uses META_API_KEY from the Meta AI developer portal.
 
 Without a repo config, it offers the recommended ChatGPT/Codex subscription flow
 with the default env name.
@@ -300,6 +301,10 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
       } else if (upstream === "anthropic") {
         err("  https://console.anthropic.com/settings/keys — a workspace-scoped key");
         err("  with a spend limit is all the reviewer needs.");
+      } else if (upstream === "meta") {
+        // @ref LLP 0007#doctor-and-setup-auth [implements] — Meta uses a manual API key
+        err("  https://developer.meta.com/ai/ — create a Model API key with access to");
+        err("  Muse Spark, then store it as a dedicated review secret.");
       } else {
         err(`  mint a key for the "${upstream}" provider.`);
       }

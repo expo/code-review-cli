@@ -13,6 +13,7 @@ import {
   resolveEngineDispatch,
   resolveOpencodeCli,
   STACK_VERIFIER_AGENT,
+  META_MODEL_API_BASE_URL,
 } from "../core/opencode.js";
 import type { OpencodeHandle } from "../core/opencode.js";
 import type { ClaudeCodeHandle } from "../core/claude-code.js";
@@ -339,6 +340,85 @@ test("an upstream-alias auth entry synthesizes a provider block with exactly the
   expect(Object.keys(alias!.models)).toEqual(["gpt-5.5-pro"]);
   // The real "openai" provider is NOT synthesized — the oauth credential owns it.
   expect(opencode.provider?.openai).toBeUndefined();
+});
+
+test("Meta auth synthesizes the public Muse Responses provider without embedding its key", () => {
+  const config = configWith({
+    agents: [{ id: "correctness", model: "meta/muse-spark-1.2" }],
+    coordinatorModel: "meta/muse-spark-1.2",
+    auth: [{ mode: "api-key", provider: "meta", tokenEnv: "META_API_KEY" }],
+  });
+  const opencode = buildOpencodeConfig(config) as {
+    provider?: Record<
+      string,
+      {
+        npm: string;
+        options: { baseURL: string; apiKey: string };
+        models: Record<string, { reasoning?: boolean; options?: Record<string, unknown> }>;
+      }
+    >;
+  };
+  const meta = opencode.provider?.meta;
+  expect(meta).toBeDefined();
+  expect(meta!.npm).toBe("@ai-sdk/openai");
+  expect(meta!.options).toEqual({
+    baseURL: META_MODEL_API_BASE_URL,
+    apiKey: "{env:META_API_KEY}",
+  });
+  expect(Object.keys(meta!.models)).toEqual(["muse-spark-1.2"]);
+  expect(meta!.models["muse-spark-1.2"]?.reasoning).toBe(true);
+  expect(meta!.models["muse-spark-1.2"]?.options).toMatchObject({
+    reasoningEffort: "high",
+    include: ["reasoning.encrypted_content"],
+  });
+});
+
+test("a Meta-named upstream alias does not redirect the upstream credential to Meta", () => {
+  const config = configWith({
+    agents: [{ id: "correctness", model: "meta/muse-spark-1.2" }],
+    coordinatorModel: "meta/muse-spark-1.2",
+    auth: [
+      {
+        mode: "api-key",
+        provider: "meta",
+        tokenEnv: "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN",
+        upstream: "anthropic",
+      },
+    ],
+  });
+  const opencode = buildOpencodeConfig(config) as {
+    provider?: Record<
+      string,
+      { npm: string; options: { apiKey: string; baseURL?: string }; models: object }
+    >;
+  };
+  const alias = opencode.provider?.meta;
+  expect(alias).toBeDefined();
+  expect(alias!.npm).toBe("@ai-sdk/anthropic");
+  expect(alias!.options).toEqual({ apiKey: "{env:CLAUDE_CODE_REVIEW_SHARED_API_TOKEN}" });
+  expect(alias!.options.baseURL).toBeUndefined();
+  expect(Object.keys(alias!.models)).toEqual(["muse-spark-1.2"]);
+});
+
+test("Meta provider does not register an unknown Muse id, so preflight can reject it", () => {
+  const config = configWith({
+    agents: [{ id: "correctness", model: "meta/muse-spark-typo" }],
+    coordinatorModel: "meta/muse-spark-typo",
+    auth: [{ mode: "api-key", provider: "meta", tokenEnv: "META_API_KEY" }],
+  });
+  const opencode = buildOpencodeConfig(config) as {
+    provider?: Record<string, { models: Record<string, unknown> }>;
+  };
+  expect(opencode.provider?.meta?.models).toEqual({});
+  expect(
+    findUnknownModels(["meta/muse-spark-typo"], { meta: ["muse-spark-1.2"] }, ["meta"]),
+  ).toEqual([
+    {
+      model: "meta/muse-spark-typo",
+      reason: "model",
+      suggestions: ["muse-spark-1.2"],
+    },
+  ]);
 });
 
 test("buildOpencodeConfig registers the no-tools stack verifier (empty tool list)", () => {

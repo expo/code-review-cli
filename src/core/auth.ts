@@ -15,6 +15,7 @@ const PROVIDER_KEY_ENV: Record<string, string> = {
   openai: "OPENAI_API_KEY",
   google: "GOOGLE_GENERATIVE_AI_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
+  meta: "META_API_KEY",
 };
 
 /**

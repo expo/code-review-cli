@@ -96,6 +96,26 @@ POSIX, where `execvp` never searches cwd. This is a knowingly accepted residual,
 oversight, and must not be silently reintroduced as a "fix" ([observed]
 `opencode.ts:305-314`).
 
+### Muse Spark via Meta Model API
+
+Muse Spark uses the existing OpenCode engine, but OpenCode `1.18.4` does not ship a
+resolvable `meta` provider. `buildOpencodeConfig` therefore synthesizes one only for an
+in-use `meta` API-key entry without an `upstream`; an entry with `upstream` remains an
+alias and never redirects that upstream's credential to Meta. The native provider's
+destination is fixed to `https://api.meta.ai/v1`, its credential is an environment
+interpolation (never the key value), and its adapter is `@ai-sdk/openai` so requests use
+the Responses API and preserve encrypted reasoning across tool turns. The generic
+`@ai-sdk/openai-compatible` adapter is deliberately not used because its Chat
+Completions path loses that continuity [observed:
+`opencode.ts` `META_MODEL_API_BASE_URL` / `META_MUSE_MODELS` / `buildOpencodeConfig`].
+
+The declared model catalog is an allowlist (`muse-spark-1.2` and
+`muse-spark-1.2-contributor`), not a reflection of arbitrary config strings. This keeps
+the existing preflight honest: a misspelled or not-yet-supported Meta model remains
+absent from the server's provider model list and fails once before any pass. Both models
+declare their public context/output limits, multimodal inputs, high reasoning, and
+encrypted reasoning inclusion [observed: `opencode.ts` `META_MUSE_MODELS`].
+
 ## Claude Code CLI Containment
 
 The Claude Code engine runs each review pass as a single stateless

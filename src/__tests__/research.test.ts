@@ -52,6 +52,7 @@ test("the wrapper hands the MCP server a constructed environment, not an inherit
           PATH: process.env.PATH ?? "",
           HOME: "/root",
           ANTHROPIC_API_KEY: "must-not-reach-the-server",
+          META_API_KEY: "must-not-reach-the-server",
           CLAUDE_CODE_OAUTH_TOKEN: "must-not-reach-the-server",
           AWS_SECRET_ACCESS_KEY: "must-not-reach-the-server",
           GITHUB_TOKEN: "must-not-reach-the-server",
@@ -93,6 +94,7 @@ test("research child environment forwards only locale, proxy variables, and the 
       no_proxy: "localhost",
       BRAVE_SEARCH_API_KEY: "search-only",
       SECRET_TOKEN: "must-not-be-forwarded",
+      META_API_KEY: "must-not-be-forwarded",
       PATH: "/private/bin",
     }),
   ).toMatchObject({
@@ -103,6 +105,7 @@ test("research child environment forwards only locale, proxy variables, and the 
     BRAVE_SEARCH_API_KEY: "search-only",
   });
   expect(researchChildEnvironment({ SECRET_TOKEN: "nope" })).not.toHaveProperty("SECRET_TOKEN");
+  expect(researchChildEnvironment({ META_API_KEY: "nope" })).not.toHaveProperty("META_API_KEY");
   expect(researchChildEnvironment({ PATH: "/private/bin" })).not.toHaveProperty("PATH");
 });
 
