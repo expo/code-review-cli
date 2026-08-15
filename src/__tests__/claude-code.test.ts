@@ -285,6 +285,52 @@ test("parseClaudeResult: success maps text/cost/tokens/model", () => {
   expect(r.structuredOutputFailure).toBe(false);
 });
 
+test("parseClaudeResult: records thinking tokens as reasoning, without inflating output", () => {
+  const stdout = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "the findings",
+    total_cost_usd: 0.5,
+    usage: {
+      input_tokens: 10,
+      output_tokens: 200,
+      output_tokens_details: { thinking_tokens: 170 },
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    },
+  });
+  const r = parseClaudeResult(stdout);
+  expect(r.tokens.reasoning).toBe(170);
+  expect(r.tokens.output).toBe(200);
+});
+
+test("parseClaudeResult: omits reasoning when the CLI reports no breakdown", () => {
+  const stdout = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "the findings",
+    total_cost_usd: 0.5,
+    usage: { input_tokens: 10, output_tokens: 200 },
+  });
+  expect(parseClaudeResult(stdout).tokens.reasoning).toBeUndefined();
+});
+
+test("parseClaudeResult: survives a null/!object output_tokens_details", () => {
+  for (const details of [null, "nope", 7]) {
+    const stdout = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "x",
+      total_cost_usd: 0,
+      usage: { input_tokens: 1, output_tokens: 2, output_tokens_details: details },
+    });
+    expect(parseClaudeResult(stdout).tokens.reasoning).toBeUndefined();
+  }
+});
+
 test("parseClaudeResult: reads the final result from stream-json JSONL", () => {
   const stdout = [
     JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5" }),

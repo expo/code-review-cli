@@ -582,6 +582,9 @@ export function parseClaudeResult(stdout: string): ClaudeResult {
   const tokens: TokenUsage = {
     input: num(usage.input_tokens),
     output: num(usage.output_tokens),
+    reasoning: num(
+      (usage.output_tokens_details as Record<string, unknown> | null | undefined)?.thinking_tokens,
+    ),
     cache: {
       write: num(usage.cache_creation_input_tokens),
       read: num(usage.cache_read_input_tokens),
