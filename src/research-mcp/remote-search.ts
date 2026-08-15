@@ -91,6 +91,10 @@ const providerSearchDefinitions: Record<Exclude<ProviderId, "expo">, ProviderSea
     scopes: ["docs.swmansion.com/react-native-worklets/docs"],
     sourceKind: "official-api",
   },
+  metro: {
+    scopes: ["metrobundler.dev/docs"],
+    sourceKind: "official-guide",
+  },
 };
 
 export interface RemoteSearchOptions {

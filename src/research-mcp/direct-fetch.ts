@@ -33,6 +33,7 @@ const DIRECT_PROVIDER_ORDER: readonly ProviderId[] = [
   "react-native-screens",
   "react-native-worklets",
   "react-native",
+  "metro",
   "expo",
 ];
 
@@ -56,6 +57,7 @@ const DIRECT_SOURCE_KIND: Record<ProviderId, SourceKind> = {
   "react-native-gesture-handler": "official-guide",
   "react-native-screens": "official-guide",
   "react-native-worklets": "official-guide",
+  metro: "official-guide",
 };
 
 export interface DirectDocumentationTarget {

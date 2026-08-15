@@ -39,6 +39,7 @@ test("stdio MCP advertises the read-only documentation tools and their enforced 
     );
     expect(searchTool?.description ?? "").toContain("Native source retains platform context");
     expect(searchTool?.description ?? "").toContain("react-native-worklets=Worklets");
+    expect(searchTool?.description ?? "").toContain("metro=Metro bundler");
     expect(fetchTool?.annotations?.readOnlyHint).toBe(true);
     expect(fetchTool?.description ?? "").toMatch(/every redirect/);
     const inputSchema = searchTool?.inputSchema as {

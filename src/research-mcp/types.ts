@@ -23,6 +23,7 @@ export const PROVIDERS = [
   "react-native-gesture-handler",
   "react-native-screens",
   "react-native-worklets",
+  "metro",
 ] as const;
 
 export type ProviderId = (typeof PROVIDERS)[number];

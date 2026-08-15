@@ -431,6 +431,10 @@ export const reactNativeWorkletsProvider = htmlProvider(
   true,
 );
 
+export const metroProvider = htmlProvider("metro", "react-native", "Metro bundler documentation", [
+  { hostname: "metrobundler.dev", prefixes: [""] },
+]);
+
 const providers: Record<ProviderId, DocumentationProvider> = {
   apple: appleProvider,
   "apple-releases": appleReleasesProvider,
@@ -451,6 +455,7 @@ const providers: Record<ProviderId, DocumentationProvider> = {
   "react-native-gesture-handler": reactNativeGestureHandlerProvider,
   "react-native-screens": reactNativeScreensProvider,
   "react-native-worklets": reactNativeWorkletsProvider,
+  metro: metroProvider,
 };
 
 export function getProvider(provider: ProviderId): DocumentationProvider {

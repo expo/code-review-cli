@@ -7,6 +7,7 @@ import {
   expoProvider,
   glideProvider,
   jetbrainsIssuesProvider,
+  metroProvider,
   okHttpProvider,
   reactNativeGestureHandlerProvider,
   reactNativeProvider,
@@ -180,6 +181,7 @@ test("React Native ecosystem providers stay on their exact documentation hosts a
       reactNativeWorkletsProvider,
       "https://docs.swmansion.com/react-native-worklets/docs/fundamentals/getting-started/",
     ],
+    [metroProvider, "https://metrobundler.dev/docs/configuration"],
   ] as const) {
     expect(resolveAllowedUrl(provider, url).hostname).toBe(new URL(url).hostname);
   }
@@ -193,4 +195,7 @@ test("React Native ecosystem providers stay on their exact documentation hosts a
   expect(() => resolveAllowedUrl(expoProvider, "https://expo.dev/accounts")).toThrow(
     /outside the expo documentation allowlist/,
   );
+  expect(() =>
+    resolveAllowedUrl(metroProvider, "https://metrobundler.dev.evil.example/docs/configuration"),
+  ).toThrow(/outside the metro documentation allowlist/);
 });
