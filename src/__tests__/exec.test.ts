@@ -50,6 +50,36 @@ test("run with input: timeout kills the child and resolves timedOut (no throw)",
   expect(Date.now() - started).toBeLessThan(10_000);
 });
 
+/**
+ * Wait until `pid` no longer names a LIVE process. `kill(pid, 0)` alone is racy
+ * here: it still succeeds while the killed grandchild is a zombie awaiting init's
+ * reap (the direct `sh` dies first, the orphaned `sleep` reparents, and reaping is
+ * asynchronous) — which is exactly what flaked on loaded CI runners. A zombie is
+ * dead for this test's purpose, so a `ps` state of `Z` (or no row) counts as gone.
+ * A process that genuinely survived the group kill (`sleep 30`) outlives the whole
+ * poll window and still fails the assertion.
+ */
+async function processGone(pid: number, timeoutMs = 5000): Promise<boolean> {
+  const started = Date.now();
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true; // ESRCH: fully gone
+    }
+    const state = (
+      await run("ps", ["-o", "state=", "-p", String(pid)], { check: false })
+    ).stdout.trim();
+    if (state === "" || state.startsWith("Z")) {
+      return true; // reaped between the two checks, or dead-but-unreaped
+    }
+    if (Date.now() - started >= timeoutMs) {
+      return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 test("run with input: timeout kills the whole process group, not just the direct child", async () => {
   const dir = await mkdtemp(join(tmpdir(), "ecr-exec-test-"));
   const pidFile = join(dir, "grandchild.pid");
@@ -61,13 +91,14 @@ test("run with input: timeout kills the whole process group, not just the direct
     });
     expect(result.timedOut).toBe(true);
     const grandchildPid = Number((await readFile(pidFile, "utf8")).trim());
-    // If only the direct `sh` had been signaled, this detached grandchild `sleep`
-    // would still be alive; process.kill throws ESRCH once the whole group is gone.
-    expect(() => process.kill(grandchildPid, 0)).toThrow();
+    // If only the direct `sh` had been signaled, this grandchild `sleep 30` would
+    // still be alive well past the poll window; the group kill leaves it dead (or
+    // momentarily zombie) within milliseconds.
+    expect(await processGone(grandchildPid)).toBe(true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-});
+}, 10_000);
 
 test("run with input: escalates to SIGKILL after the grace period when the child traps SIGTERM", async () => {
   const started = Date.now();
