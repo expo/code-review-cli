@@ -40,12 +40,17 @@ test("stdio MCP advertises the read-only documentation tools and their enforced 
     expect(searchTool?.description ?? "").toContain("Native source retains platform context");
     expect(searchTool?.description ?? "").toContain("react-native-worklets=Worklets");
     expect(searchTool?.description ?? "").toContain("metro=Metro bundler");
+    expect(searchTool?.description ?? "").toContain(
+      "web-standards=WHATWG and W3C web platform standards",
+    );
+    expect(searchTool?.description ?? "").toContain("android-ndk=Android NDK");
     expect(fetchTool?.annotations?.readOnlyHint).toBe(true);
     expect(fetchTool?.description ?? "").toMatch(/every redirect/);
     const inputSchema = searchTool?.inputSchema as {
       properties?: {
         query?: { description?: string };
-        providers?: { description?: string };
+        providers?: { description?: string; items?: { enum?: string[] } };
+        sourceKinds?: { description?: string; items?: { enum?: string[] } };
       };
     };
     const fetchInputSchema = fetchTool?.inputSchema as {
@@ -59,6 +64,12 @@ test("stdio MCP advertises the read-only documentation tools and their enforced 
     );
     expect(inputSchema.properties?.providers?.description ?? "").toContain(
       "jetbrains-issues=JetBrains YouTrack context",
+    );
+    expect(inputSchema.properties?.providers?.items?.enum).toContain("typescript");
+    expect(inputSchema.properties?.providers?.items?.enum).toContain("chrome-devtools-protocol");
+    expect(inputSchema.properties?.sourceKinds?.items?.enum).toContain("standard");
+    expect(inputSchema.properties?.sourceKinds?.description ?? "").toContain(
+      "external compatibility specification",
     );
     expect(fetchInputSchema.properties?.context?.default).toBe("section");
     expect(fetchInputSchema.properties?.context?.description ?? "").toContain(

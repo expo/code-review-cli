@@ -71,9 +71,41 @@ const providerSearchDefinitions: Record<Exclude<ProviderId, "expo">, ProviderSea
     scopes: ["youtrack.jetbrains.com/issue"],
     sourceKind: "issue-tracker",
   },
+  react: {
+    scopes: ["react.dev/reference/react", "react.dev/reference/rules"],
+    sourceKind: "official-api",
+  },
   "react-native": {
     scopes: ["reactnative.dev"],
     sourceKind: "official-api",
+  },
+  "web-standards": {
+    scopes: ["whatwg.org", "w3c.github.io"],
+    sourceKind: "standard",
+  },
+  "chrome-devtools-protocol": {
+    scopes: ["chromedevtools.github.io/devtools-protocol"],
+    sourceKind: "standard",
+  },
+  flow: {
+    scopes: ["flow.org/en/docs"],
+    sourceKind: "official-guide",
+  },
+  typescript: {
+    scopes: ["typescriptlang.org/docs"],
+    sourceKind: "official-guide",
+  },
+  "android-ndk": {
+    scopes: ["developer.android.com/ndk"],
+    sourceKind: "official-guide",
+  },
+  cmake: {
+    scopes: ["cmake.org/cmake/help/latest"],
+    sourceKind: "official-guide",
+  },
+  cocoapods: {
+    scopes: ["guides.cocoapods.org/syntax", "guides.cocoapods.org/using"],
+    sourceKind: "official-guide",
   },
   "react-native-reanimated": {
     scopes: ["docs.swmansion.com/react-native-reanimated/docs"],

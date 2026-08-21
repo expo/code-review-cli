@@ -345,6 +345,10 @@ export const expoProvider = htmlProvider("expo", "react-native", "Expo documenta
   { hostname: "docs.expo.dev", prefixes: [""] },
 ]);
 
+export const reactProvider = htmlProvider("react", "react-native", "React documentation", [
+  { hostname: "react.dev", prefixes: ["/reference/react", "/reference/rules"] },
+]);
+
 export const reactNativeProvider = htmlProvider(
   "react-native",
   "react-native",
@@ -356,6 +360,66 @@ export const reactNativeProvider = htmlProvider(
     },
   ],
 );
+
+export const webStandardsProvider = htmlProvider(
+  "web-standards",
+  "react-native",
+  "Web platform standards",
+  [
+    { hostname: "fetch.spec.whatwg.org", prefixes: [""] },
+    { hostname: "xhr.spec.whatwg.org", prefixes: [""] },
+    { hostname: "websockets.spec.whatwg.org", prefixes: [""] },
+    { hostname: "dom.spec.whatwg.org", prefixes: [""] },
+    { hostname: "streams.spec.whatwg.org", prefixes: [""] },
+    { hostname: "url.spec.whatwg.org", prefixes: [""] },
+    { hostname: "encoding.spec.whatwg.org", prefixes: [""] },
+    { hostname: "console.spec.whatwg.org", prefixes: [""] },
+    { hostname: "html.spec.whatwg.org", prefixes: ["/multipage"] },
+    {
+      hostname: "w3c.github.io",
+      prefixes: [
+        "/FileAPI",
+        "/hr-time",
+        "/performance-timeline",
+        "/resource-timing",
+        "/IntersectionObserver",
+      ],
+    },
+  ],
+);
+
+export const chromeDevtoolsProtocolProvider = htmlProvider(
+  "chrome-devtools-protocol",
+  "react-native",
+  "Chrome DevTools Protocol documentation",
+  [{ hostname: "chromedevtools.github.io", prefixes: ["/devtools-protocol"] }],
+);
+
+export const flowProvider = htmlProvider("flow", "react-native", "Flow documentation", [
+  { hostname: "flow.org", prefixes: ["/en/docs"] },
+]);
+
+export const typescriptProvider = htmlProvider(
+  "typescript",
+  "react-native",
+  "TypeScript documentation",
+  [{ hostname: "www.typescriptlang.org", prefixes: ["/docs"] }],
+);
+
+export const androidNdkProvider = htmlProvider(
+  "android-ndk",
+  "android",
+  "Android NDK documentation",
+  [{ hostname: "developer.android.com", prefixes: ["/ndk"] }],
+);
+
+export const cmakeProvider = htmlProvider("cmake", "android", "CMake documentation", [
+  { hostname: "cmake.org", prefixes: ["/cmake/help"] },
+]);
+
+export const cocoaPodsProvider = htmlProvider("cocoapods", "apple", "CocoaPods guides", [
+  { hostname: "guides.cocoapods.org", prefixes: ["/syntax", "/using"] },
+]);
 
 export const reactNativeReanimatedProvider = htmlProvider(
   "react-native-reanimated",
@@ -450,7 +514,15 @@ const providers: Record<ProviderId, DocumentationProvider> = {
   agp: agpProvider,
   "jetbrains-issues": jetbrainsIssuesProvider,
   expo: expoProvider,
+  react: reactProvider,
   "react-native": reactNativeProvider,
+  "web-standards": webStandardsProvider,
+  "chrome-devtools-protocol": chromeDevtoolsProtocolProvider,
+  flow: flowProvider,
+  typescript: typescriptProvider,
+  "android-ndk": androidNdkProvider,
+  cmake: cmakeProvider,
+  cocoapods: cocoaPodsProvider,
   "react-native-reanimated": reactNativeReanimatedProvider,
   "react-native-gesture-handler": reactNativeGestureHandlerProvider,
   "react-native-screens": reactNativeScreensProvider,

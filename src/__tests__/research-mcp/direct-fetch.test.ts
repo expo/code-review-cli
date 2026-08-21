@@ -221,4 +221,16 @@ test("direct URL inference prefers narrow release and dependency providers", () 
       "https://developer.android.com/reference/androidx/media3/common/Player",
     ).provider,
   ).toBe("media3");
+  expect(
+    resolveDirectDocumentationTarget("https://developer.android.com/ndk/guides/cpp-support"),
+  ).toMatchObject({ provider: "android-ndk", sourceKind: "official-guide" });
+  expect(resolveDirectDocumentationTarget("https://fetch.spec.whatwg.org/")).toMatchObject({
+    provider: "web-standards",
+    sourceKind: "standard",
+  });
+  expect(
+    resolveDirectDocumentationTarget(
+      "https://chromedevtools.github.io/devtools-protocol/tot/Runtime/",
+    ),
+  ).toMatchObject({ provider: "chrome-devtools-protocol", sourceKind: "standard" });
 });
