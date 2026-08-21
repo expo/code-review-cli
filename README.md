@@ -274,8 +274,8 @@ The boundary, in brief:
   many discovery and page fetches, so each call reports its own request ledger and
   the run reports totals.
 - **Root-only in routed monorepos** (it starts a host process); scope configs
-  cannot alter it. Result-cache reuse is disabled while research is enabled,
-  because web content can change without a config change.
+  cannot alter it. Research results are fetched and audited per run; cached review
+  results remain keyed by the ordinary trusted review inputs and make no network call.
 
 Full detail — providers, query grammar, `fetch_platform_doc` modes, provenance and
 citation grounding: [LLP 0013](./llp/0013-platform-research.explainer.md).
