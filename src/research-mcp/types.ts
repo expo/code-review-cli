@@ -18,7 +18,15 @@ export const PROVIDERS = [
   "agp",
   "jetbrains-issues",
   "expo",
+  "react",
   "react-native",
+  "web-standards",
+  "chrome-devtools-protocol",
+  "flow",
+  "typescript",
+  "android-ndk",
+  "cmake",
+  "cocoapods",
   "react-native-reanimated",
   "react-native-gesture-handler",
   "react-native-screens",
@@ -31,6 +39,7 @@ export type ProviderId = (typeof PROVIDERS)[number];
 export const SOURCE_KINDS = [
   "official-api",
   "official-guide",
+  "standard",
   "release-notes",
   "issue-tracker",
 ] as const;

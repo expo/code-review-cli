@@ -228,7 +228,16 @@ the queries and bounded results.
 
 The built-in source catalog covers Apple, Android, platform releases, Swift
 Evolution, SDWebImage, Media3, Glide, OkHttp, Kotlin coroutines, Gradle/AGP, selected JetBrains
-issues, Expo, React Native, Reanimated, Gesture Handler, Screens, and Worklets.
+issues, Expo, React, React Native, WHATWG and W3C web specifications, Chrome DevTools
+Protocol, Flow, TypeScript, the Android NDK, CMake, CocoaPods, Metro, Reanimated,
+Gesture Handler, Screens, and Worklets. The React Native
+additions cover the contracts its implementation must preserve: React semantics, its
+web-compatible APIs, the repository's type systems, and its native build and dependency
+managers. Hermes documentation is intentionally not fetched from the engine's `main`
+branch because it can disagree with React Native's vendored revision. Repository PR and
+issue history is intentionally not a
+live evidence provider: it belongs in a versioned offline evaluation corpus used to
+improve prompts, while the runtime MCP remains an API-contract channel.
 The canonical OkHttp host is backed by both the
 [maintainer's transfer announcement](https://jakewharton.com/the-lysine-contingency/)
 and [Commonhaus's project-transfer record](https://www.commonhaus.org/activity/315.html).

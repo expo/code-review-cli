@@ -149,6 +149,40 @@ test("search filters named corpora and provenance classes", () => {
   ]);
 });
 
+test("search filters external standards separately from implementation documentation", () => {
+  const index = buildSearchIndex([
+    {
+      id: "standard:fetch",
+      platform: "react-native",
+      provider: "web-standards",
+      sourceKind: "standard",
+      title: "Fetch Standard",
+      url: "https://fetch.spec.whatwg.org/",
+      passage: "AbortSignal controls cancellation of a fetch request.",
+      indexedAt: "2026-08-06T00:00:00.000Z",
+    },
+    {
+      id: "rn:fetch",
+      platform: "react-native",
+      provider: "react-native",
+      sourceKind: "official-api",
+      title: "React Native global fetch",
+      url: "https://reactnative.dev/docs/global-fetch",
+      passage: "React Native exposes fetch as a global API.",
+      indexedAt: "2026-08-06T00:00:00.000Z",
+    },
+  ]);
+
+  const results = searchDocumentation(index, "fetch AbortSignal", {
+    platform: "react-native",
+    sourceKinds: ["standard"],
+    limit: 5,
+  });
+  expect(results.map(({ provider, sourceKind }) => ({ provider, sourceKind }))).toEqual([
+    { provider: "web-standards", sourceKind: "standard" },
+  ]);
+});
+
 test("a language filter excludes otherwise matching untagged documents", () => {
   const index = buildSearchIndex([
     ...chunks,

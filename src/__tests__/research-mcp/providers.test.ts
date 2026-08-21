@@ -1,10 +1,15 @@
 import { expect, test } from "bun:test";
 
 import {
+  androidNdkProvider,
   androidProvider,
   appleProvider,
   appleReleasesProvider,
+  chromeDevtoolsProtocolProvider,
+  cmakeProvider,
+  cocoaPodsProvider,
   expoProvider,
+  flowProvider,
   glideProvider,
   jetbrainsIssuesProvider,
   metroProvider,
@@ -14,10 +19,13 @@ import {
   reactNativeReanimatedProvider,
   reactNativeScreensProvider,
   reactNativeWorkletsProvider,
+  reactProvider,
   resolveAllowedUrl,
   resolveAllowedRequestUrl,
   sdWebImageProvider,
   swiftEvolutionProvider,
+  typescriptProvider,
+  webStandardsProvider,
 } from "../../research-mcp/providers.js";
 
 test("Apple provider accepts only HTTPS documentation paths on the exact host", () => {
@@ -198,4 +206,50 @@ test("React Native ecosystem providers stay on their exact documentation hosts a
   expect(() =>
     resolveAllowedUrl(metroProvider, "https://metrobundler.dev.evil.example/docs/configuration"),
   ).toThrow(/outside the metro documentation allowlist/);
+});
+
+test("React Native contract providers admit only their fixed authoritative corpora", () => {
+  for (const [provider, url] of [
+    [reactProvider, "https://react.dev/reference/react/useEffect"],
+    [flowProvider, "https://flow.org/en/docs/types/unions/"],
+    [typescriptProvider, "https://www.typescriptlang.org/docs/handbook/declaration-files/"],
+    [androidNdkProvider, "https://developer.android.com/ndk/guides/cpp-support"],
+    [cmakeProvider, "https://cmake.org/cmake/help/v3.31/command/add_library.html"],
+    [cocoaPodsProvider, "https://guides.cocoapods.org/syntax/podfile.html"],
+    [webStandardsProvider, "https://fetch.spec.whatwg.org/"],
+    [webStandardsProvider, "https://w3c.github.io/IntersectionObserver/"],
+    [
+      chromeDevtoolsProtocolProvider,
+      "https://chromedevtools.github.io/devtools-protocol/tot/Runtime/",
+    ],
+  ] as const) {
+    expect(resolveAllowedUrl(provider, url).hostname).toBe(new URL(url).hostname);
+  }
+
+  for (const [provider, url] of [
+    [reactProvider, "https://react.dev/reference/react-dom/components/form"],
+    [reactProvider, "https://react.dev/learn/escape-hatches"],
+    [flowProvider, "https://flow.org/blog/"],
+    [typescriptProvider, "https://www.typescriptlang.org/play"],
+    [androidNdkProvider, "https://developer.android.com/studio/projects/install-ndk"],
+    [cmakeProvider, "https://cmake.org/community/"],
+    [cocoaPodsProvider, "https://guides.cocoapods.org/blog/"],
+    [webStandardsProvider, "https://w3c.github.io/permissions/"],
+    [webStandardsProvider, "https://whatwg.org/"],
+    [chromeDevtoolsProtocolProvider, "https://chromedevtools.github.io/debugger-protocol-viewer/"],
+  ] as const) {
+    expect(() => resolveAllowedUrl(provider, url)).toThrow(
+      /outside the .* documentation allowlist/,
+    );
+  }
+
+  expect(() =>
+    resolveAllowedUrl(webStandardsProvider, "https://user:password@fetch.spec.whatwg.org/"),
+  ).toThrow(/outside the web-standards documentation allowlist/);
+  expect(() =>
+    resolveAllowedUrl(androidNdkProvider, "https://developer.android.com.evil.example/ndk/guides"),
+  ).toThrow(/outside the android-ndk documentation allowlist/);
+  expect(() =>
+    resolveAllowedUrl(reactNativeProvider, "https://reactnative.dev/contributing/overview"),
+  ).toThrow(/outside the react-native documentation allowlist/);
 });

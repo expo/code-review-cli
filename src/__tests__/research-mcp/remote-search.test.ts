@@ -299,3 +299,67 @@ test("Apple release searches select the platform-specific fixed scope", async ()
   expect(queries[0]).toContain("site:developer.apple.com/documentation/xcode-release-notes");
   expect(queries[1]).toContain("site:developer.apple.com/documentation/ios-ipados-release-notes");
 });
+
+test("web standards discovery uses fixed WHATWG and W3C scopes with standards provenance", async () => {
+  let searchRequests = 0;
+  const fetchImplementation = async (input: string | URL | Request): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    if (url.hostname === "api.search.brave.com") {
+      searchRequests++;
+      const query = url.searchParams.get("q") ?? "";
+      expect(query).toContain("site:whatwg.org");
+      expect(query).toContain("site:w3c.github.io");
+      return jsonResponse({
+        web: {
+          results: [
+            { title: "Fetch Standard", url: "https://fetch.spec.whatwg.org/" },
+            { title: "Unrelated W3C draft", url: "https://w3c.github.io/permissions/" },
+          ],
+        },
+      });
+    }
+    expect(url.href).toBe("https://fetch.spec.whatwg.org/");
+    return new Response(
+      "<!doctype html><html><head><title>Fetch Standard</title></head><body><main>" +
+        "<h1>Fetch</h1><p>The AbortSignal controls cancellation of a fetch request and " +
+        "causes the fetch promise to reject when the operation is terminated.</p>" +
+        "</main></body></html>",
+      { headers: { "content-type": "text/html; charset=utf-8" } },
+    );
+  };
+
+  const response = await searchRemoteDocumentation(
+    "web-standards",
+    "AbortSignal fetch cancellation",
+    2,
+    { apiKey: "test-key", fetchImplementation, sourceKinds: ["standard"] },
+  );
+
+  expect(searchRequests).toBe(1);
+  expect(response.warnings).toEqual([]);
+  expect(response.results).toHaveLength(1);
+  expect(response.results[0]).toMatchObject({
+    provider: "web-standards",
+    sourceKind: "standard",
+    url: "https://fetch.spec.whatwg.org/",
+  });
+});
+
+test("provenance filtering skips a standards provider before network access", async () => {
+  let requests = 0;
+  const response = await searchRemoteDocumentation(
+    "chrome-devtools-protocol",
+    "Runtime evaluate",
+    1,
+    {
+      apiKey: "test-key",
+      sourceKinds: ["official-api"],
+      fetchImplementation: async () => {
+        requests++;
+        return jsonResponse({ web: { results: [] } });
+      },
+    },
+  );
+  expect(requests).toBe(0);
+  expect(response).toEqual({ results: [], warnings: [] });
+});
