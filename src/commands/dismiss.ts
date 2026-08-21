@@ -98,6 +98,8 @@ export async function dismissCommand(argv: string[], mode: "add" | "remove"): Pr
       // feedback policy in force now — without it a reply-cleared finding would be
       // un-hidden by an unrelated /dismiss.
       feedback: config.feedback,
+      // Lets the dismissal stub/revive the finding's inline thread (additive-only).
+      inline: config.inline,
     });
     const result = await reporter.applyDismissal(
       mode === "add" ? args.ids : [],

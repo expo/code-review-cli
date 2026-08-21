@@ -3,6 +3,9 @@ import type { FeedbackRecord, Finding } from "./schema.js";
 
 /** One human comment on the PR, as the reporter hands it over. */
 export interface ReplyComment {
+  /** Issue-comment id, or the NEGATED PR-review-comment id for an inline reply.
+   * The two GitHub id sequences are independent, so negation keeps them
+   * collision-free in every stored/compared FeedbackRecord.commentId. */
   id: number;
   body: string;
   login: string;
@@ -12,6 +15,15 @@ export interface ReplyComment {
    * Absent/false is fail-closed — an unresolved author can never clear a finding. */
   author?: boolean;
   url?: string;
+  /**
+   * For an inline (PR review) reply: the fingerprint of OUR finding whose thread it
+   * answers, resolved by the reporter from `in_reply_to_id` chaining to an
+   * author-verified, marker-anchored inline comment of ours. A structural signal
+   * chosen by the replier (they replied to that thread), so it matches in EVERY
+   * `match` mode — but it never sets `citedId`: clearing still requires the
+   * replier's own unquoted `id:` token.
+   */
+  threadFp?: string;
 }
 
 /** Blockquote lines read per comment. A reply that quotes half the review is
@@ -34,6 +46,23 @@ const FINDING_ID_RE = /\bid:([a-f0-9]{6,64})\b/gi;
  * would let the review answer itself, so this is the tag-independent backstop.
  */
 const OWN_COMMENT_RE = /<!--[^\n]*:(?:state|fingerprints)=/;
+
+/** The tag-independent shape of an inline finding comment's identity marker. */
+const INLINE_MARKER_RE = /<!--[^\n]*:inline:fp=/;
+
+/**
+ * Tag-independent backstop for OUR inline finding comments, which carry an
+ * UNQUOTED `id:<fp>` token in the body (so a maintainer can copy it into a
+ * reply). If the author/tag filters ever miss one — a bot-login fallback, a
+ * commentTag rename, a second posting identity — matching it as a reply would
+ * let the review cite (and, with maintainer association, CLEAR) its own
+ * finding. Only UNQUOTED lines count: GitHub's "Quote reply" copies our marker
+ * verbatim behind `> `, and that comment is a genuine human reply that must
+ * still be matched.
+ */
+export function hasUnquotedInlineMarker(body: string): boolean {
+  return body.split("\n").some((line) => !/^\s*>/.test(line) && INLINE_MARKER_RE.test(line));
+}
 
 /**
  * Markdown → comparable text: link text without the target, no backticks or
@@ -80,6 +109,20 @@ export function extractQuotedLines(body: string): string[] {
     }
   }
   return out;
+}
+
+/**
+ * Is `candidate` a more recent reply than `incumbent`? Issue comments carry
+ * positive ids; inline (PR review) replies carry NEGATED ids, so within the
+ * inline stream recency is the raw id's magnitude, not the signed value. The two
+ * sequences are independent, so cross-stream recency is undecidable — the issue
+ * comment wins deterministically (the main thread is the formal reply channel).
+ */
+export function replyIsNewer(candidate: number, incumbent: number): boolean {
+  if (candidate >= 0 === incumbent >= 0) {
+    return Math.abs(candidate) > Math.abs(incumbent);
+  }
+  return candidate >= 0;
 }
 
 /** The `id:<hex>` tokens a comment cites, lowercased and deduped. */
@@ -137,7 +180,7 @@ export function matchReplies(
 
   const newest = new Map<string, FeedbackRecord>();
   for (const comment of comments) {
-    if (OWN_COMMENT_RE.test(comment.body)) {
+    if (OWN_COMMENT_RE.test(comment.body) || hasUnquotedInlineMarker(comment.body)) {
       continue;
     }
     const matched = new Set<string>();
@@ -145,6 +188,11 @@ export function matchReplies(
     // quote-matched reply still records WHETHER it cites the finding, because that is
     // what decides clearing.
     const cited = new Set(extractCitedFindingIds(comment.body));
+    // An inline reply names its finding structurally — the replier chose which
+    // thread to answer — so it matches in every `match` mode. Never sets `citedId`.
+    if (comment.threadFp && known.has(comment.threadFp)) {
+      matched.add(comment.threadFp);
+    }
     if (opts.match !== "quote") {
       for (const id of extractFindingIds(comment.body)) {
         if (known.has(id)) {
@@ -168,7 +216,7 @@ export function matchReplies(
     }
     for (const fp of matched) {
       const previous = newest.get(fp);
-      if (previous && previous.commentId >= comment.id) {
+      if (previous && !replyIsNewer(comment.id, previous.commentId)) {
         continue;
       }
       newest.set(fp, {

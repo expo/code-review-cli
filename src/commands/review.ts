@@ -276,6 +276,8 @@ export async function reviewCommand(argv: string[]): Promise<void> {
                 cwd,
                 // Root-only feedback config (loadScopeConfig inherits it from the root).
                 feedback: config.feedback,
+                // Root-only too (loadScopeConfig inherits it from the root).
+                inline: config.inline,
                 headSha: await reviewedHeadSha(source),
               })
             : null;
@@ -361,6 +363,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
             breakGlassMarker: config.breakGlassMarker,
             cwd,
             feedback: config.feedback,
+            inline: config.inline,
             headSha,
           })
         : null;

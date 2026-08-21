@@ -652,6 +652,44 @@ the defaults are asymmetric: [LLP 0011](./llp/0011-author-feedback.explainer.md)
 </details>
 
 <details>
+<summary><b>Inline PR comments (findings on the diff line)</b></summary>
+
+Off by default. When enabled, each finding anchored to a line that is actually in
+the PR's diff is posted as an inline review comment on that line, carrying the
+full rationale, sources, and suggestion. The main comment still lists every
+finding, but an inlined one renders short — title, links, category, id, and a
+one-line rationale — plus a `💬 inline comment` link to the thread. The main
+comment remains the single durable state store: `/dismiss`, embedded state, and
+reply adjudication are unchanged.
+
+```jsonc
+"inline": {
+  "enabled": false,
+  "maxComments": 20   // per PR (single comment mode) / per scope (per-scope mode)
+}
+```
+
+Behavior notes:
+
+- **Threads converge, never churn.** Each inline comment carries a per-finding
+  marker and is patched in place across re-reviews. The cap is sticky: a live
+  thread is never evicted to create a new one. A finding that leaves the set is
+  stubbed if humans replied in its thread (never deleted), deleted only when bare.
+- **Fail-safe teardown.** A failed run, a `--scopes` partial run, or a truncated
+  aggregate never tears threads down — teardown only runs when the target set is
+  provably complete. Creates are skipped (and logged) when the PR head moved
+  during the review.
+- **Replies on inline threads count as author feedback.** Replying in a thread
+  matches the reply to that finding structurally; clearing still requires the
+  `id:…` token in the replier's own words, same as main-comment replies.
+- **Notification fan-out.** The first enabled run on a PR sends one notification
+  per created inline comment; `maxComments` bounds it.
+- **Disabling later** leaves existing threads up (the sync no longer runs); a
+  comment-mode switch — or the reporter's clear path — stubs/removes them.
+
+</details>
+
+<details>
 <summary><b>External context (--context-file)</b></summary>
 
 `ecr review --context-file <path>` and `ecr ci --context-file <path>` inject the

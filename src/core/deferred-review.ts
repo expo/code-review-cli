@@ -56,6 +56,10 @@ export function reviewPostingConfigFingerprint(config: LoadedConfig): string {
         commentTag: config.commentTag,
         breakGlassMarker: config.breakGlassMarker,
         feedback: config.feedback,
+        // Inline comments change what posting does (N review-comment mutations), so a
+        // saved review must not post under a different inline policy than it was
+        // saved with.
+        inline: config.inline,
       }),
     )
     .digest("hex");

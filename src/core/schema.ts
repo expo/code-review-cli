@@ -428,7 +428,16 @@ export function applyPins(
       pin.commentId === undefined ||
       !records.some(
         (record) =>
-          record.fp === pin.fp && record.maintainer === true && record.commentId > pin.commentId!,
+          record.fp === pin.fp &&
+          record.maintainer === true &&
+          // "Posted after the pin" is only decidable within one id sequence. Issue
+          // comments carry positive ids and inline (PR review) replies carry NEGATED
+          // ones (see the reporter's replyComments); the two sequences are
+          // independent, so a cross-stream comparison says nothing about time — keep
+          // the pin. Within a stream, recency is the raw id's magnitude (negation
+          // inverts the signed order for inline ids).
+          record.commentId >= 0 === pin.commentId! >= 0 &&
+          Math.abs(record.commentId) > Math.abs(pin.commentId!),
       ),
   );
   const pinnedFps = new Set(kept.map((pin) => pin.fp));

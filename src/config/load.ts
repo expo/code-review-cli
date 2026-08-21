@@ -39,6 +39,12 @@ const FEEDBACK_CONFIG_DEFAULTS: LoadedConfig["feedback"] = {
   maxAdjudications: 10,
 };
 
+/** Inline-comment config for a scope load (where `inline` is schema-rejected). */
+const INLINE_CONFIG_DEFAULTS: LoadedConfig["inline"] = {
+  enabled: false,
+  maxComments: 20,
+};
+
 /** Research defaults for a scope load (where `research` is schema-rejected). */
 const RESEARCH_CONFIG_DEFAULTS: LoadedConfig["research"] = {
   enabled: false,
@@ -76,7 +82,7 @@ export interface LoadConfigOptions {
 /** Parsed config with the centrally-locked keys optional (scope configs omit them). */
 type ParsedConfig = Omit<
   RawReviewConfig,
-  "auth" | "breakGlass" | "commentTag" | "stack" | "feedback" | "research"
+  "auth" | "breakGlass" | "commentTag" | "stack" | "feedback" | "research" | "inline"
 > & {
   auth?: RawReviewConfig["auth"];
   breakGlass?: RawReviewConfig["breakGlass"];
@@ -84,6 +90,7 @@ type ParsedConfig = Omit<
   stack?: RawReviewConfig["stack"];
   feedback?: RawReviewConfig["feedback"];
   research?: RawReviewConfig["research"];
+  inline?: RawReviewConfig["inline"];
 };
 
 export function hasConfig(repoRoot: string, options: LoadConfigOptions = {}): boolean {
@@ -219,6 +226,8 @@ async function loadConfigDir(
     // for a scope config and the defaults stand in (unused — the command layer
     // reads the ROOT config's feedback values; the comment lifecycle is global).
     feedback: parsed.feedback ?? FEEDBACK_CONFIG_DEFAULTS,
+    // Root-only, same reasoning as feedback.
+    inline: parsed.inline ?? INLINE_CONFIG_DEFAULTS,
   };
   return { config, raw: rawObject };
 }
@@ -386,6 +395,7 @@ export async function loadScopeConfig(
     // run the default policy instead of the repo's real one.
     stack: rootConfig.stack,
     feedback: rootConfig.feedback,
+    inline: rootConfig.inline,
     research: rootConfig.research,
     scopeName: scope.name,
   };

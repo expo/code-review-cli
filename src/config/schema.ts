@@ -224,6 +224,20 @@ export const ReviewConfigSchema = z.object({
       protectedCategories: ["secrets", "security"],
       maxAdjudications: 10,
     }),
+  // Inline PR review comments for findings anchored to a line in the diff: the
+  // main comment stays the durable state store and renders such findings short,
+  // linking to the inline thread. ROOT-ONLY (the comment lifecycle is global) and
+  // off by default — a feature that mutates N comments per run earns trust with
+  // field data first. Turning it off later leaves existing threads up (documented);
+  // clear() still sweeps them on comment-mode switches.
+  inline: z
+    .object({
+      enabled: z.boolean().default(false),
+      // Cap on inline comments PER REPORTER: per PR in single/legacy comment mode,
+      // per scope in per-scope mode. Bounds create-notification fan-out and API use.
+      maxComments: z.number().int().positive().default(20),
+    })
+    .default({ enabled: false, maxComments: 20 }),
 });
 export type RawReviewConfig = z.infer<typeof ReviewConfigSchema>;
 
@@ -335,6 +349,7 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
   stack: true,
   feedback: true,
   research: true,
+  inline: true,
 }).extend({
   auth: z
     .never({ error: "auth is locked to the root config; remove it from this scope config" })
@@ -362,6 +377,12 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
     .never({
       error:
         "research is locked to the root config because it starts a trusted host process; remove it from this scope config",
+    })
+    .optional(),
+  inline: z
+    .never({
+      error:
+        "inline is locked to the root config (the comment lifecycle is global); remove it from this scope config",
     })
     .optional(),
 });
@@ -467,5 +488,10 @@ export interface LoadedConfig {
     dismiss: "never" | "maintainers" | "adjudicated";
     protectedCategories: Category[];
     maxAdjudications: number;
+  };
+  /** Root-only inline-comment settings (see ReviewConfigSchema.inline). */
+  inline: {
+    enabled: boolean;
+    maxComments: number;
   };
 }

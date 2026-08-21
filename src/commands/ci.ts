@@ -563,6 +563,7 @@ async function runLegacyCi(
     breakGlassMarker: config.breakGlassMarker,
     cwd,
     feedback: config.feedback,
+    inline: config.inline,
     headSha,
   });
 
@@ -685,6 +686,10 @@ async function runLegacyCi(
         findings: [],
         summary: `⚠️ The AI reviewer failed to run, so this change was **not** reviewed:\n\n> ${publicFailureReason(error)}`,
         incomplete: [],
+        // A failed run's empty findings list proves nothing: this flag is what keeps
+        // the inline sync additive-only (no thread teardown) — and it renders the
+        // accurate "No review" decision label.
+        couldNotComplete: true,
       });
     } catch (postError) {
       process.stderr.write(
@@ -701,6 +706,10 @@ function failureReview(scopeName: string, reason: string): CoordinatorOutput {
     findings: [],
     summary: `⚠️ The AI reviewer failed to run for scope **${scopeName}**, so those changes were **not** reviewed:\n\n> ${reason}`,
     incomplete: [],
+    // Empty-but-not-clean: keeps the inline sync additive-only for the whole
+    // aggregate (a failed scope's findings may still be live on the PR) and renders
+    // the accurate "No review" label in the scope table.
+    couldNotComplete: true,
   };
 }
 
@@ -889,6 +898,7 @@ async function runRoutedCi(
       // Root-only feedback config (see loadScopeConfig): lets a reporter posting with
       // no explicit records match replies itself (annotate mode) at report time.
       feedback: rootConfig.feedback,
+      inline: rootConfig.inline,
       headSha,
     });
 
@@ -1123,7 +1133,12 @@ async function runRoutedCi(
             aggState?.pins,
           )
         : undefined;
-      await aggregate.reportAggregate(finalResults, resolution.unmatched, aggFeedback);
+      // A --scopes partial run carries the other scopes out of (possibly truncated)
+      // embedded state, so its target set is incomplete: inline teardown must not
+      // run (failed scopes are handled inside reportAggregate itself).
+      await aggregate.reportAggregate(finalResults, resolution.unmatched, aggFeedback, {
+        inlineTeardown: !scopesFilter,
+      });
     }
     // Clean up any per-scope comments from a previous per-scope run. A partial run
     // only ever touches the named scopes' comments.

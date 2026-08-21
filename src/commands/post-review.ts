@@ -147,6 +147,7 @@ export async function postReviewCommand(argv: string[]): Promise<void> {
       breakGlassMarker: config.breakGlassMarker,
       cwd,
       feedback: config.feedback,
+      inline: config.inline,
       headSha,
     });
     const result = await publishDeferredReview(reporter, artifact, async () => {

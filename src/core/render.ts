@@ -36,6 +36,16 @@ export interface LinkContext {
   prNumber: number;
   diffLines?: Map<string, Set<number>>;
   /**
+   * Permalinks to this run's live inline finding comments, keyed by the SAME id the
+   * comment renders (plain fingerprint, or scope-namespaced for an aggregate). A
+   * finding with an entry renders in SHORT form — title, links, one-line rationale —
+   * because its full text lives in the inline thread; a finding without one renders
+   * in full exactly as before. Callers must pass a per-render COPY of a shared
+   * LinkContext (`{ ...link, inlineUrls }`), never mutate the shared object: the
+   * routed ci flow shares one context across every scope reporter.
+   */
+  inlineUrls?: Map<string, string>;
+  /**
    * The PR base commit SHA (the branch the PR targets, e.g. `main`). When a finding
    * points at code NOT in the diff — a caller or helper the PR merely references,
    * which is by definition unchanged and therefore identical on the base — we link
@@ -119,6 +129,29 @@ export function groupBySeverity(findings: Finding[]): Record<Severity, Finding[]
 /** HTML marker identifying the reviewer's single PR comment (used for upsert). */
 export function commentMarker(tag: string): string {
   return `<!-- ${tag} -->`;
+}
+
+/**
+ * Per-finding identity marker of an inline (PR review) comment, always rendered at
+ * byte 0 of the body. Substring-safe against `commentMarker(tag)` and any derived
+ * scope tag (`<tag>:<scope>`) in both directions — the closing ` -->` differs —
+ * including a scope literally named `inline`.
+ */
+export function inlineCommentMarker(tag: string, fp: string): string {
+  return `<!-- ${tag}:inline:fp=${fp} -->`;
+}
+
+/**
+ * The fingerprint an inline comment of OURS carries, or null. Anchored at byte 0
+ * and constrained to the fingerprint alphabet, so a marker echoed later in a body
+ * (untrusted prose, a quote-reply) can never parse as identity — mechanical
+ * safety, not just the incidental "our renderer emits it first". Identity itself
+ * is author + this marker (see the reporter); the parse alone proves nothing.
+ */
+export function parseInlineMarkerFp(body: string, tag: string): string | null {
+  const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = body.match(new RegExp(`^<!-- ${escapedTag}:inline:fp=([a-f0-9]{6,64}) -->`));
+  return match ? match[1]! : null;
 }
 
 // @ref LLP 0011#forged-state-markers [implements] — the first-match parsers make an earlier forged marker win, so untrusted prose never keeps a raw `<!--`
@@ -348,12 +381,49 @@ function sourceLabel(value: string): string {
     .replace(/([\\[\]])/g, "\\$1");
 }
 
+/** Longest one-line rationale excerpt the short form keeps in the main comment. */
+const SHORT_RATIONALE_CHARS = 160;
+
+/**
+ * A rationale reduced to one plain line for the short (inlined) form: whitespace
+ * collapsed, every `<` escaped so a truncated HTML block (`<details>`) can never
+ * leave an unclosed tag in the comment, cut at a word boundary with an ellipsis.
+ * This excerpt is the audit trail that survives the PR author collapsing or
+ * resolving the inline thread, so it must always be non-empty when the rationale is.
+ */
+export function oneLineRationale(text: string): string {
+  const flat = text.replace(/</g, "&lt;").replace(/\s+/g, " ").trim();
+  if (flat.length <= SHORT_RATIONALE_CHARS) {
+    return flat;
+  }
+  const cut = flat.slice(0, SHORT_RATIONALE_CHARS);
+  const atWord = cut.slice(0, cut.lastIndexOf(" "));
+  return `${atWord.length > 0 ? atWord : cut}…`;
+}
+
+/** Only ever link to github.com from a stored/returned URL (see REPLY_URL_RE). */
+function validInlineUrl(link: LinkContext | undefined, id: string): string | null {
+  const url = link?.inlineUrls?.get(id);
+  return url && REPLY_URL_RE.test(url) ? url : null;
+}
+
 function renderFindingLines(
   finding: Finding,
   link?: LinkContext,
   id: string = fingerprintFinding(finding),
   reply?: FeedbackRecord,
 ): string[] {
+  const inlineUrl = validInlineUrl(link, id);
+  if (inlineUrl) {
+    // Short form: the full text lives in the inline thread on the flagged line.
+    // The one-line rationale stays here as the durable audit trail (the author
+    // can collapse/resolve the thread; they cannot edit this comment).
+    return [
+      `- **${stripStateMarkers(finding.title)}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\` · 💬 [inline comment](${inlineUrl})${replyAnnotation(reply)}`,
+      ...indentContinuation(oneLineRationale(stripStateMarkers(finding.rationale))),
+      "",
+    ];
+  }
   const out = [
     `- **${stripStateMarkers(finding.title)}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\`${replyAnnotation(reply)}`,
     ...indentContinuation(stripStateMarkers(finding.rationale)),
@@ -374,6 +444,53 @@ function renderFindingLines(
   // bullet. Findings are already loose list items, so this changes no spacing.
   out.push("");
   return out;
+}
+
+/**
+ * Full body of one inline (PR review) finding comment: identity marker at byte 0,
+ * then the finding rendered whole — everything model-written passes
+ * stripStateMarkers, same as the main comment. The footer teaches the clearing
+ * flow (an UNQUOTED id citation), since the main comment only shows the short form.
+ * The body must never contain `:state=`/`:fingerprints=` (it would be dropped as
+ * our own main comment by the reply matcher's backstop) — it doesn't.
+ */
+export function renderInlineCommentBody(finding: Finding, tag: string, fp: string): string {
+  const lines = [
+    inlineCommentMarker(tag, fp),
+    `**${severityHeading(finding.severity)}: ${stripStateMarkers(finding.title)}** _(${finding.category})_ · \`id:${fp}\``,
+    "",
+    stripStateMarkers(finding.rationale),
+  ];
+  if (finding.sources?.length) {
+    const sources = finding.sources
+      .map((source) => `[${sourceLabel(source.title)}](<${source.url}>)`)
+      .join(", ");
+    lines.push("", `**Sources:** ${sources}`);
+  }
+  if (finding.suggestion) {
+    lines.push("", `**Suggestion:** ${stripStateMarkers(finding.suggestion)}`);
+  }
+  lines.push(
+    "",
+    "---",
+    `_🤖 AI review finding — reply here to respond; write \`id:${fp}\` (outside any quote) in your reply to formally answer it. Full review in the main PR comment._`,
+  );
+  return lines.join("\n");
+}
+
+/**
+ * What a no-longer-tracked inline comment is patched to when its thread has human
+ * replies (a bare one is deleted instead). Deliberately NEUTRAL: a finding leaves
+ * the inline set for many reasons that are not resolution — capped out, its line
+ * left the diff, aggregate-state truncation — so this text must never assert
+ * "resolved" or "dismissed". The marker stays, so a returning finding revives the
+ * same thread instead of opening a new one.
+ */
+export function inlineStubBody(tag: string, fp: string): string {
+  return [
+    inlineCommentMarker(tag, fp),
+    "_🤖 This finding is no longer tracked inline — see the main review comment for current status._",
+  ].join("\n");
 }
 
 // @ref LLP 0012#run-points-command-and-review [implements] — setup advice renders outside the findings list, so it never blocks

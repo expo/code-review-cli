@@ -4,12 +4,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { resolveTrustedTool, run } from "../core/exec.js";
+import { errorMessage } from "../core/util.js";
 import { parseUnifiedDiff } from "../core/diff.js";
 import {
   buildDiffLineIndex,
   commentMarker,
+  inlineStubBody,
+  parseInlineMarkerFp,
   parseReviewState,
   renderAggregateMarkdown,
+  renderInlineCommentBody,
   renderMarkdown,
 } from "../core/render.js";
 import type { LinkContext, ReviewState, ScopeReviewResult } from "../core/render.js";
@@ -17,7 +21,13 @@ import { matchReplies } from "../core/responses.js";
 import type { ReplyComment } from "../core/responses.js";
 import { dropStaleVerdict, feedbackApplied, feedbackNeedsPrAuthor } from "../core/adjudicate.js";
 import type { AdjudicationItem } from "../core/adjudicate.js";
-import { applyPins, collectPins, fingerprintFinding, scopedFingerprint } from "../core/schema.js";
+import {
+  applyPins,
+  collectPins,
+  fingerprintFinding,
+  scopedFingerprint,
+  SEVERITY_RANK,
+} from "../core/schema.js";
 import type {
   CoordinatorOutput,
   DismissalRecord,
@@ -52,6 +62,13 @@ export interface GitHubReporterOptions {
    * the reporter behaves exactly as before until a caller opts in.
    */
   feedback?: LoadedConfig["feedback"];
+  /**
+   * Root-only inline-comment config (see LoadedConfig.inline). Absent ⇒ the
+   * reporter never touches PR review comments at all (zero extra API calls);
+   * present with `enabled: false` ⇒ no sync, but `clear()` still sweeps this
+   * tag's inline comments so a comment-mode switch or a disable cleans up.
+   */
+  inline?: LoadedConfig["inline"];
   /**
    * The head commit this run reviews (the PR's immutable head OID, from the source's
    * metadata). Feedback merging binds a stored verdict to the source it judged, so a
@@ -146,6 +163,188 @@ export interface IssueComment {
   user?: { login?: string };
   /** Permalink to the comment, used as the reply link on an annotated finding. */
   html_url?: string;
+}
+
+/** One PR review (inline/diff) comment, as the pulls comments API returns it. */
+export interface ReviewCommentApi {
+  id: number;
+  body?: string;
+  path?: string;
+  line?: number | null;
+  user?: { login?: string };
+  html_url?: string;
+  /** Present on replies; points at the thread's root comment. */
+  in_reply_to_id?: number;
+  author_association?: string;
+}
+
+/**
+ * Burst-collapsing cache over the paginated review-comments listing, shared across
+ * reporter INSTANCES per PR (same motivation and key shape as prAuthorByPr): routed
+ * single-mode CI builds a fresh reporter per scope for its clear() reconciliation,
+ * and per-instance caching would re-fetch the identical list once per scope. The
+ * short TTL and mutation invalidation mirror fetchAllComments.
+ */
+const reviewCommentsByPr = new Map<string, { at: number; comments: Promise<ReviewCommentApi[]> }>();
+
+/** An existing inline comment of OURS (author + anchored marker), as the planner sees it. */
+export interface ExistingInlineComment {
+  id: number;
+  fp: string;
+  body: string;
+  url?: string;
+  /** Any listed comment replies to it (`in_reply_to_id` === its id). */
+  hasReplies: boolean;
+}
+
+/** What one inline sync run will do. Bodies are rendered by the executor. */
+export interface InlineSyncPlan {
+  /** Findings to POST a new inline comment for (needs a commit id). */
+  create: Array<{ fp: string; finding: Finding }>;
+  /** Live threads whose body converges to the finding's current render. */
+  patch: Array<{ comment: ExistingInlineComment; finding: Finding }>;
+  /** No-longer-tracked threads WITH replies: patch to the neutral stub. */
+  stub: ExistingInlineComment[];
+  /** No-longer-tracked threads with no replies (and older duplicates): delete. */
+  remove: ExistingInlineComment[];
+}
+
+// @ref LLP 0011#suppression-is-never-silent [constrained-by] — leaving the inline set is
+// not resolution: teardown only stubs/deletes when the caller proved the target set is
+// complete, and the stub text (see inlineStubBody) never claims resolved/dismissed
+/**
+ * Decide the inline mutations for one sync, purely. `targets` are the ACTIVE,
+ * diff-anchored findings; `existing` are OUR live inline comments.
+ *
+ * The cap is STICKY and deterministic: candidates order by severity rank then fp,
+ * and fps that already have a live thread fill slots before new ones are admitted —
+ * a live thread is never evicted (and its replies destroyed) just to create a
+ * different one, and a tie at the boundary cannot flip membership run to run.
+ *
+ * `teardown: false` (a failed/partial/carried run whose target set may be
+ * incomplete) makes the plan additive-only: no stubs, no deletes of live threads —
+ * except older DUPLICATES of a kept fp (a crash window between create and list),
+ * which are ours and redundant whatever the target set says.
+ */
+export function planInlineSync(opts: {
+  targets: Array<{ fp: string; finding: Finding }>;
+  existing: ExistingInlineComment[];
+  maxComments: number;
+  teardown: boolean;
+}): InlineSyncPlan {
+  const ordered = [...opts.targets].sort(
+    (a, b) =>
+      SEVERITY_RANK[a.finding.severity] - SEVERITY_RANK[b.finding.severity] ||
+      a.fp.localeCompare(b.fp),
+  );
+
+  // Newest comment per fp is the live thread; older ones are duplicates.
+  const liveByFp = new Map<string, ExistingInlineComment>();
+  const duplicates: ExistingInlineComment[] = [];
+  for (const comment of [...opts.existing].sort((a, b) => a.id - b.id)) {
+    const previous = liveByFp.get(comment.fp);
+    if (previous) {
+      duplicates.push(previous);
+    }
+    liveByFp.set(comment.fp, comment);
+  }
+
+  const selected: Array<{ fp: string; finding: Finding }> = [];
+  for (const entry of ordered) {
+    if (selected.length >= opts.maxComments) {
+      break;
+    }
+    if (liveByFp.has(entry.fp)) {
+      selected.push(entry);
+    }
+  }
+  for (const entry of ordered) {
+    if (selected.length >= opts.maxComments) {
+      break;
+    }
+    if (!liveByFp.has(entry.fp)) {
+      selected.push(entry);
+    }
+  }
+
+  const plan: InlineSyncPlan = { create: [], patch: [], stub: [], remove: [] };
+  const selectedFps = new Set(selected.map((entry) => entry.fp));
+  for (const entry of selected) {
+    const live = liveByFp.get(entry.fp);
+    if (live) {
+      plan.patch.push({ comment: live, finding: entry.finding });
+    } else {
+      plan.create.push(entry);
+    }
+  }
+  for (const [fp, live] of liveByFp) {
+    if (selectedFps.has(fp)) {
+      continue;
+    }
+    if (!opts.teardown) {
+      continue;
+    }
+    if (live.hasReplies) {
+      plan.stub.push(live);
+    } else {
+      plan.remove.push(live);
+    }
+  }
+  // A duplicate with human replies is still a conversation: stub it like any other
+  // retired thread rather than deleting what people wrote in.
+  for (const duplicate of duplicates) {
+    if (duplicate.hasReplies) {
+      plan.stub.push(duplicate);
+    } else {
+      plan.remove.push(duplicate);
+    }
+  }
+  return plan;
+}
+
+/** `\r\n`-insensitive body comparison: the API returns CRLF-normalized bodies. */
+export function inlineBodiesEqual(a: string, b: string): boolean {
+  return a.replace(/\r\n/g, "\n") === b.replace(/\r\n/g, "\n");
+}
+
+/** Does a body's UNQUOTED text carry this marker? Quoted (`> `) lines are the
+ * replier quoting US, which is a genuine reply, not our comment. */
+export function hasUnquotedMarker(body: string, marker: string): boolean {
+  return body.split("\n").some((line) => !/^\s*>/.test(line) && line.includes(marker));
+}
+
+/**
+ * The findings the main comment renders in its ACTIVE list — not dismissed, not
+ * cleared by an applied reply, not requalified — which is exactly the inline sync's
+ * target set. Mirrors the isDropped/kept split in renderMarkdown and
+ * renderAggregateMarkdown (first record per fp wins, like matchedFeedback there).
+ * Exported for tests.
+ */
+export function activeFindings(
+  withFp: Array<{ finding: Finding; fp: string }>,
+  dismissed: DismissalRecord[],
+  records: FeedbackRecord[],
+): Array<{ finding: Finding; fp: string }> {
+  const dismissedFps = new Set(dismissed.map((record) => record.fp));
+  const appliedFps = new Set<string>();
+  const seen = new Set<string>();
+  for (const record of records) {
+    if (!seen.has(record.fp)) {
+      seen.add(record.fp);
+      if (record.applied) {
+        appliedFps.add(record.fp);
+      }
+    }
+  }
+  return withFp.filter(
+    ({ finding, fp }) => !dismissedFps.has(fp) && !appliedFps.has(fp) && !finding.requalifiedBy,
+  );
+}
+
+/** A per-render COPY of the link context carrying this run's inline thread URLs —
+ * the routed ci flow shares one LinkContext across reporters, so never mutate it. */
+function withInlineUrls(link: LinkContext, inlineUrls: Map<string, string>): LinkContext {
+  return inlineUrls.size > 0 ? { ...link, inlineUrls } : link;
 }
 
 // @ref LLP 0011#suppression-is-never-silent [implements] — a verdict carries only while BOTH the reply and the reviewed source are unchanged
@@ -490,16 +689,38 @@ export class GitHubReporter implements Reporter {
       ? applyPins(feedback, pinsIn)
       : await this.computeFeedback(withFp, priorRecords, pinsIn);
     const link = await this.linkContextAsync();
+    // Inline threads converge to the ACTIVE findings before the body renders, so
+    // the short form can link each one. A failed run (couldNotComplete) posts an
+    // empty findings list that proves nothing — additive-only, no teardown.
+    const inlineUrls = await this.syncInline(activeFindings(withFp, dismissed, records), link, {
+      teardown: review.couldNotComplete !== true,
+    });
     await this.upsertComment(
-      renderMarkdown(review, this.options.commentTag, dismissed, link, records, pins, inputHash),
+      renderMarkdown(
+        review,
+        this.options.commentTag,
+        dismissed,
+        withInlineUrls(link, inlineUrls),
+        records,
+        pins,
+        inputHash,
+      ),
     );
   }
 
-  /** Post/update the aggregate multi-scope comment (comment:'single' mode). */
+  /**
+   * Post/update the aggregate multi-scope comment (comment:'single' mode).
+   * `opts.inlineTeardown: false` marks a run whose result set is NOT the complete
+   * truth about the PR — a `--scopes` partial run carries the other scopes out of
+   * (possibly truncated) embedded state — so the inline sync must not stub/delete
+   * threads it merely cannot see. Any failed scope forces the same, since its
+   * findings list is empty without being clean.
+   */
   async reportAggregate(
     results: ScopeReviewResult[],
     unmatchedFiles: string[],
     feedback?: FeedbackRecord[],
+    opts?: { inlineTeardown?: boolean },
   ): Promise<void> {
     const existing = await this.findExistingComment();
     const state = existing ? parseReviewState(existing.body, this.options.commentTag) : null;
@@ -518,12 +739,18 @@ export class GitHubReporter implements Reporter {
       ? applyPins(feedback, pinsIn)
       : await this.computeFeedback(withFp, priorRecords, pinsIn);
     const link = await this.linkContextAsync();
+    const teardown =
+      (opts?.inlineTeardown ?? true) &&
+      results.every((result) => result.review.couldNotComplete !== true);
+    const inlineUrls = await this.syncInline(activeFindings(withFp, dismissed, records), link, {
+      teardown,
+    });
     await this.upsertComment(
       renderAggregateMarkdown(
         results,
         this.options.commentTag,
         dismissed,
-        link,
+        withInlineUrls(link, inlineUrls),
         { unmatchedFiles },
         records,
         pins,
@@ -698,10 +925,17 @@ export class GitHubReporter implements Reporter {
    * failed lookup gives, and under any other `dismiss` value nothing reads the flag.
    */
   private async replyComments(): Promise<ReplyComment[]> {
-    const [comments, ownLogin, prAuthor] = await Promise.all([
+    // Inline replies are read only when the reporter carries an ENABLED inline
+    // config: the `ecr feedback` crawl and every non-inline repo keep exactly the
+    // API footprint they had.
+    const inlineEnabled = this.options.inline?.enabled === true;
+    const [comments, ownLogin, prAuthor, reviewComments] = await Promise.all([
       this.fetchAllComments(),
       this.resolveOwnLogin(),
       feedbackNeedsPrAuthor(this.options.feedback) ? this.resolvePrAuthor() : null,
+      inlineEnabled
+        ? this.fetchAllReviewComments().catch(() => [] as ReviewCommentApi[])
+        : ([] as ReviewCommentApi[]),
     ]);
     const out: ReplyComment[] = [];
     for (const comment of comments) {
@@ -722,6 +956,64 @@ export class GitHubReporter implements Reporter {
         author: prAuthor != null && login === prAuthor,
         ...(comment.html_url ? { url: comment.html_url } : {}),
       });
+    }
+    if (inlineEnabled && reviewComments.length > 0) {
+      // fp per OUR top-level inline comment (author + anchored marker), so a reply
+      // threading to it names its finding structurally.
+      const fpByRootId = new Map<number, string>();
+      if (ownLogin) {
+        for (const comment of reviewComments) {
+          if (comment.in_reply_to_id != null || comment.user?.login !== ownLogin) {
+            continue;
+          }
+          const fp = parseInlineMarkerFp(comment.body ?? "", this.options.commentTag);
+          if (fp) {
+            fpByRootId.set(comment.id, fp);
+          }
+        }
+      }
+      const byId = new Map(reviewComments.map((comment) => [comment.id, comment]));
+      // `in_reply_to_id` points at the thread root, but chase a short chain anyway
+      // so an unexpected reply-to-reply shape still resolves.
+      const threadFpOf = (comment: ReviewCommentApi): string | undefined => {
+        let parentId = comment.in_reply_to_id;
+        for (let hop = 0; parentId != null && hop < 5; hop++) {
+          const fp = fpByRootId.get(parentId);
+          if (fp) {
+            return fp;
+          }
+          parentId = byId.get(parentId)?.in_reply_to_id;
+        }
+        return undefined;
+      };
+      for (const comment of reviewComments) {
+        const login = comment.user?.login;
+        if (!login || (ownLogin && login === ownLogin)) {
+          continue;
+        }
+        const body = comment.body ?? "";
+        // Unquoted-line marker tests only: a GitHub "Quote reply" copies our marker
+        // behind `> ` and is a genuine human reply that must still be matched.
+        if (
+          hasUnquotedMarker(body, this.marker) ||
+          body.split("\n").some((line) => !/^\s*>/.test(line) && line.includes(":inline:fp="))
+        ) {
+          continue;
+        }
+        const threadFp = threadFpOf(comment);
+        out.push({
+          // NEGATED: PR-review-comment ids are an independent sequence from issue
+          // comments; negation keeps stored commentIds collision-free across streams
+          // (and applyPins refuses cross-stream pin-lift comparisons).
+          id: -comment.id,
+          body,
+          login,
+          maintainer: MAINTAINER_ASSOCIATIONS.has(comment.author_association ?? ""),
+          author: prAuthor != null && login === prAuthor,
+          ...(comment.html_url ? { url: comment.html_url } : {}),
+          ...(threadFp ? { threadFp } : {}),
+        });
+      }
     }
     return out;
   }
@@ -747,6 +1039,35 @@ export class GitHubReporter implements Reporter {
     // someone else (see selectOwnComments).
     for (const comment of await this.ownComments()) {
       await this.deleteComment(comment.id);
+    }
+    // Sweep this tag's inline threads too, gated on the config KEY being present
+    // (not on `enabled`), so a comment-mode switch or a later disable still cleans
+    // up — while callers that never wire `inline` (break-glass reporter, terminal
+    // failure notes) keep their zero-review-API footprint. A thread humans replied
+    // in is stubbed, never deleted. Fail-soft per thread.
+    if (this.options.inline !== undefined) {
+      let own: ExistingInlineComment[] = [];
+      try {
+        own = await this.ownInlineComments();
+      } catch {
+        return; // fail-soft: the main-comment clear above already happened
+      }
+      for (const comment of own) {
+        try {
+          if (comment.hasReplies) {
+            const stub = inlineStubBody(this.options.commentTag, comment.fp);
+            if (!inlineBodiesEqual(comment.body, stub)) {
+              await this.patchReviewComment(comment.id, stub);
+            }
+          } else {
+            await this.deleteReviewComment(comment.id);
+          }
+        } catch (error) {
+          process.stderr.write(
+            `inline sync: clear failed for one inline comment (skipped): ${errorMessage(error)}\n`,
+          );
+        }
+      }
     }
   }
 
@@ -791,6 +1112,365 @@ export class GitHubReporter implements Reporter {
       })(),
     ]);
     return link;
+  }
+
+  /**
+   * Fetch ALL PR review (inline) comments, paginating manually like
+   * fetchAllCommentsUncached. Unlike the issue-comments endpoint this one honors
+   * sort/direction, but a full scan is needed anyway (we reconcile every own
+   * thread), so the same oldest-first walk keeps the two fetchers uniform.
+   */
+  private async fetchAllReviewCommentsUncached(): Promise<ReviewCommentApi[]> {
+    const all: ReviewCommentApi[] = [];
+    const gh = await resolveTrustedTool("gh");
+    for (let page = 1; page <= GitHubReporter.MAX_COMMENT_PAGES; page++) {
+      const { stdout } = await run(
+        gh,
+        [
+          "api",
+          "-X",
+          "GET",
+          `repos/${this.options.repo}/pulls/${this.options.prNumber}/comments`,
+          "-f",
+          "per_page=100",
+          "-f",
+          `page=${page}`,
+        ],
+        { cwd: this.options.cwd },
+      );
+      let batch: ReviewCommentApi[];
+      try {
+        batch = JSON.parse(stdout) as ReviewCommentApi[];
+      } catch {
+        break;
+      }
+      if (!Array.isArray(batch) || batch.length === 0) {
+        break;
+      }
+      all.push(...batch);
+      if (batch.length < 100) {
+        break;
+      }
+    }
+    return all;
+  }
+
+  /** Shared-per-PR, TTL'd review-comments listing (see reviewCommentsByPr). */
+  private fetchAllReviewComments(): Promise<ReviewCommentApi[]> {
+    const key = prAuthorCacheKey(this.options.repo, this.options.prNumber, this.options.cwd);
+    const now = Date.now();
+    const cached = reviewCommentsByPr.get(key);
+    if (cached && now - cached.at <= GitHubReporter.COMMENTS_CACHE_TTL_MS) {
+      return cached.comments;
+    }
+    const comments = this.fetchAllReviewCommentsUncached().catch((error: unknown) => {
+      // Never cache a failure.
+      if (reviewCommentsByPr.get(key)?.comments === comments) {
+        reviewCommentsByPr.delete(key);
+      }
+      throw error;
+    });
+    reviewCommentsByPr.set(key, { at: now, comments });
+    return comments;
+  }
+
+  private invalidateReviewComments(): void {
+    reviewCommentsByPr.delete(
+      prAuthorCacheKey(this.options.repo, this.options.prNumber, this.options.cwd),
+    );
+  }
+
+  /**
+   * OUR live inline finding comments under THIS tag: top-level, authored by our
+   * own login (unspoofable), carrying the anchored byte-0 marker. Identity is
+   * author + marker exactly like selectOwnComments; an unresolved login returns
+   * nothing (fail closed). `hasReplies` is derived from the same listed snapshot.
+   */
+  private async ownInlineComments(): Promise<ExistingInlineComment[]> {
+    const [comments, ownLogin] = await Promise.all([
+      this.fetchAllReviewComments(),
+      this.resolveOwnLogin(),
+    ]);
+    if (!ownLogin) {
+      return [];
+    }
+    const repliedTo = new Set(
+      comments
+        .filter((comment) => comment.in_reply_to_id != null)
+        .map((comment) => comment.in_reply_to_id!),
+    );
+    const own: ExistingInlineComment[] = [];
+    for (const comment of comments) {
+      if (comment.in_reply_to_id != null || comment.user?.login !== ownLogin) {
+        continue;
+      }
+      const fp = parseInlineMarkerFp(comment.body ?? "", this.options.commentTag);
+      if (!fp) {
+        continue;
+      }
+      own.push({
+        id: comment.id,
+        fp,
+        body: comment.body ?? "",
+        ...(comment.html_url ? { url: comment.html_url } : {}),
+        hasReplies: repliedTo.has(comment.id),
+      });
+    }
+    return own;
+  }
+
+  /** The PR's CURRENT head OID, fetched live — or null. Used to refuse creates
+   * whose commit_id (the head this run reviewed) is no longer the head. */
+  private async liveHeadOid(): Promise<string | null> {
+    try {
+      const gh = await resolveTrustedTool("gh");
+      const { stdout } = await run(
+        gh,
+        [
+          "pr",
+          "view",
+          String(this.options.prNumber),
+          "--repo",
+          this.options.repo,
+          "--json",
+          "headRefOid",
+          "--jq",
+          ".headRefOid",
+        ],
+        { cwd: this.options.cwd },
+      );
+      return stdout.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Secondary-rate-limit shapes (403/429): abort the rest of the sync, not just
+   * this mutation — hammering on would dig the hole deeper. */
+  private static isRateLimitError(error: unknown): boolean {
+    return /HTTP 403|HTTP 429|rate limit|secondary rate/i.test(errorMessage(error));
+  }
+
+  // @ref LLP 0008#github-reporter-identity [constrained-by] — inline threads are
+  // patched/deleted only when author + anchored marker both match; creates also require
+  // a resolved own login, or every run would duplicate what it cannot recognize
+  /**
+   * Converge this reporter's inline comments to `targets` (the ACTIVE, in-diff
+   * findings), returning fp → thread permalink for the live full-form threads.
+   * Never throws and never blocks the main comment: every failure degrades to
+   * "that finding renders full-form in the main comment".
+   *
+   * `teardown: false` marks a run whose target set may be INCOMPLETE — a failed
+   * review, a `--scopes` partial run, carried/truncated aggregate state — and makes
+   * the sync additive-only (see planInlineSync): a finding this run cannot see must
+   * not have its thread torn down.
+   *
+   * Creates require the reviewed head (`options.headSha`) to still BE the live head:
+   * after a mid-review push the diff we validated lines against no longer matches
+   * the commit we'd anchor to — a stale commit_id can silently pin the comment to
+   * the wrong code (or 422 wholesale after a force-push) — so creates are skipped
+   * and logged; patches/stubs/deletes are body-only and safe either way.
+   */
+  private async syncInline(
+    targets: Array<{ finding: Finding; fp: string }>,
+    link: LinkContext,
+    opts: { teardown: boolean },
+  ): Promise<Map<string, string>> {
+    const urls = new Map<string, string>();
+    const config = this.options.inline;
+    if (!config?.enabled || !link.diffLines) {
+      return urls;
+    }
+    const eligible = targets.filter(
+      ({ finding }) =>
+        finding.line != null && link.diffLines!.get(finding.file)?.has(finding.line) === true,
+    );
+    let existing: ExistingInlineComment[];
+    try {
+      existing = await this.ownInlineComments();
+      if (eligible.length > 0 && (await this.resolveOwnLogin()) == null) {
+        // Without an own login we cannot recognize our previous comments, so a
+        // create now would duplicate on every future run. Fail closed.
+        process.stderr.write(
+          "inline sync: could not resolve the posting identity; skipping inline comments this run.\n",
+        );
+        return urls;
+      }
+    } catch (error) {
+      process.stderr.write(
+        `inline sync: could not list review comments (findings render in the main comment): ${errorMessage(error)}\n`,
+      );
+      return urls;
+    }
+
+    const plan = planInlineSync({
+      targets: eligible,
+      existing,
+      maxComments: config.maxComments,
+      teardown: opts.teardown,
+    });
+
+    // One live-head check per sync, only when creating. A mismatch (or an unknown
+    // reviewed head) skips creates; everything body-only still runs.
+    let creates = plan.create;
+    if (creates.length > 0) {
+      const reviewedHead = this.options.headSha;
+      const live = reviewedHead ? await this.liveHeadOid() : null;
+      if (!reviewedHead || live !== reviewedHead) {
+        process.stderr.write(
+          `inline sync: PR head ${reviewedHead ? "moved during the review" : "is unknown"}; ` +
+            `skipping ${creates.length} new inline comment(s) this run.\n`,
+        );
+        creates = [];
+      }
+    }
+
+    const counts = { created: 0, patched: 0, stubbed: 0, deleted: 0, failed: 0 };
+    let aborted = false;
+    const attempt = async (fn: () => Promise<void>): Promise<void> => {
+      if (aborted) {
+        return;
+      }
+      try {
+        await fn();
+      } catch (error) {
+        counts.failed++;
+        if (GitHubReporter.isRateLimitError(error)) {
+          aborted = true;
+          process.stderr.write(
+            `inline sync: rate-limited; aborting remaining inline mutations this run: ${errorMessage(error)}\n`,
+          );
+        } else {
+          process.stderr.write(`inline sync: mutation failed (skipped): ${errorMessage(error)}\n`);
+        }
+      }
+    };
+
+    // Sequential on purpose: parallel content creation is what trips GitHub's
+    // secondary rate limit.
+    for (const { comment, finding } of plan.patch) {
+      if (comment.url) {
+        urls.set(comment.fp, comment.url);
+      }
+      const body = renderInlineCommentBody(finding, this.options.commentTag, comment.fp);
+      if (inlineBodiesEqual(comment.body, body)) {
+        continue;
+      }
+      await attempt(async () => {
+        await this.patchReviewComment(comment.id, body);
+        counts.patched++;
+      });
+    }
+    for (const entry of creates) {
+      await attempt(async () => {
+        const created = await this.createReviewComment(
+          renderInlineCommentBody(entry.finding, this.options.commentTag, entry.fp),
+          entry.finding.file,
+          entry.finding.line!,
+        );
+        counts.created++;
+        if (created?.html_url) {
+          urls.set(entry.fp, created.html_url);
+        }
+      });
+    }
+    for (const comment of plan.stub) {
+      const body = inlineStubBody(this.options.commentTag, comment.fp);
+      if (inlineBodiesEqual(comment.body, body)) {
+        continue;
+      }
+      await attempt(async () => {
+        await this.patchReviewComment(comment.id, body);
+        counts.stubbed++;
+      });
+    }
+    for (const comment of plan.remove) {
+      await attempt(async () => {
+        await this.deleteReviewComment(comment.id);
+        counts.deleted++;
+      });
+    }
+
+    const total = counts.created + counts.patched + counts.stubbed + counts.deleted + counts.failed;
+    if (total > 0) {
+      const summary =
+        `inline sync: ${counts.created} created, ${counts.patched} patched, ` +
+        `${counts.stubbed} stubbed, ${counts.deleted} deleted, ${counts.failed} failed`;
+      process.stderr.write(`${summary}\n`);
+      // Inline comments are mutated in place like the main comment, so this line is
+      // the only per-run record of what changed (mirrors upsertComment's mirror).
+      await appendStepSummary(`🤖 AI review — ${summary}`);
+    }
+    return urls;
+  }
+
+  private async createReviewComment(
+    body: string,
+    path_: string,
+    line: number,
+  ): Promise<{ html_url?: string } | null> {
+    this.invalidateReviewComments();
+    const gh = await resolveTrustedTool("gh");
+    const payload = JSON.stringify({
+      body,
+      commit_id: this.options.headSha,
+      path: path_,
+      line,
+      side: "RIGHT",
+    });
+    const dir = await mkdtemp(path.join(tmpdir(), "ecr-"));
+    const jsonPath = path.join(dir, "review-comment.json");
+    try {
+      await writeFile(jsonPath, payload, "utf8");
+      const { stdout } = await run(
+        gh,
+        [
+          "api",
+          "-X",
+          "POST",
+          `repos/${this.options.repo}/pulls/${this.options.prNumber}/comments`,
+          "--input",
+          jsonPath,
+        ],
+        { cwd: this.options.cwd },
+      );
+      try {
+        return JSON.parse(stdout) as { html_url?: string };
+      } catch {
+        return null;
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  private async patchReviewComment(commentId: number, body: string): Promise<void> {
+    this.invalidateReviewComments();
+    const gh = await resolveTrustedTool("gh");
+    await this.withBodyFile(body, (jsonPath) =>
+      run(
+        gh,
+        [
+          "api",
+          "-X",
+          "PATCH",
+          `repos/${this.options.repo}/pulls/comments/${commentId}`,
+          "--input",
+          jsonPath,
+        ],
+        { cwd: this.options.cwd },
+      ),
+    );
+  }
+
+  private async deleteReviewComment(commentId: number): Promise<void> {
+    this.invalidateReviewComments();
+    const gh = await resolveTrustedTool("gh");
+    await run(
+      gh,
+      ["api", "-X", "DELETE", `repos/${this.options.repo}/pulls/comments/${commentId}`],
+      { cwd: this.options.cwd },
+    );
   }
 
   /**
@@ -841,6 +1521,45 @@ export class GitHubReporter implements Reporter {
           state.inputHash,
         );
     await this.patchComment(existing.id, body);
+    // Additive-only inline updates for exactly the fps this action named — never a
+    // full stale sweep: the embedded state an aggregate stores may be TRUNCATED
+    // (renderAggregateMarkdown trims kept findings to fit GitHub's body cap), so
+    // "not in state" here does not mean "gone" and must not tear a thread down.
+    // Fail-soft: a dismissal must never fail on the inline layer.
+    if (this.options.inline?.enabled) {
+      try {
+        const own = await this.ownInlineComments();
+        const byFp = new Map(own.map((comment) => [comment.fp, comment]));
+        const findingById = stateFindingsById(state);
+        for (const fp of next.matched) {
+          const comment = byFp.get(fp);
+          if (!comment) {
+            continue;
+          }
+          const stub = inlineStubBody(this.options.commentTag, fp);
+          if (!inlineBodiesEqual(comment.body, stub)) {
+            await this.patchReviewComment(comment.id, stub);
+          }
+        }
+        for (const fp of remove) {
+          const comment = byFp.get(fp);
+          const finding = findingById.get(fp);
+          // A finding truncated out of the state (or a thread that was deleted) just
+          // renders full-form in the main comment until the next review re-creates it.
+          if (!comment || !finding) {
+            continue;
+          }
+          const full = renderInlineCommentBody(finding, this.options.commentTag, fp);
+          if (!inlineBodiesEqual(comment.body, full)) {
+            await this.patchReviewComment(comment.id, full);
+          }
+        }
+      } catch (error) {
+        process.stderr.write(
+          `inline sync: dismissal update skipped (main comment already updated): ${errorMessage(error)}\n`,
+        );
+      }
+    }
     return {
       dismissedCount: next.dismissed.length,
       matched: next.matched,
