@@ -4,7 +4,13 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { CONFIG_DIRNAME, stripJsonComments, stripTrailingCommas } from "../config/load.js";
+import {
+  CONFIG_DIRNAME,
+  LEGACY_CONFIG_DIRNAME,
+  configDirFor,
+  stripJsonComments,
+  stripTrailingCommas,
+} from "../config/load.js";
 import { ROUTING_FILENAME } from "../config/routing.js";
 import { git, pathInside } from "./exec.js";
 import { matchesIgnore } from "./noise.js";
@@ -518,9 +524,17 @@ export async function discoverSetupDirs(root: string): Promise<string[]> {
         continue;
       }
       const child = path.join(dir, entry.name);
-      if (entry.name === CONFIG_DIRNAME) {
+      if (entry.name === LEGACY_CONFIG_DIRNAME) {
         found.push(child);
         continue; // a setup dir never nests another
+      }
+      if (entry.name === ".expo-agents") {
+        // The shared Expo agent-tools dir: only its code-review/ child is ours.
+        const setup = path.join(dir, CONFIG_DIRNAME);
+        if ((await pathKind(setup)) === "dir") {
+          found.push(setup);
+        }
+        continue;
       }
       // Other dot dirs are skipped wholesale: `.claude/worktrees/` holds checkouts of
       // this same repo, whose setup dirs would otherwise be swept as if they were scopes.
@@ -617,7 +631,7 @@ async function checkRoutingManifest(
     }
     const configDir = typeof entry.config === "string" ? entry.config : null;
     if (configDir) {
-      const setupDir = path.resolve(index.root, configDir, CONFIG_DIRNAME);
+      const setupDir = configDirFor(path.resolve(index.root, configDir));
       if (!pathInside(setupDir, index.root)) {
         problems.push({
           file: relative,
@@ -630,7 +644,7 @@ async function checkRoutingManifest(
           file: relative,
           line: 1,
           kind: "structural",
-          problem: `scope "${name}" has no ${configDir}/${CONFIG_DIRNAME}/ directory`,
+          problem: `scope "${name}" has no ${configDir}/${CONFIG_DIRNAME}/ (or ${LEGACY_CONFIG_DIRNAME}/) directory`,
         });
       }
     }

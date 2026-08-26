@@ -503,7 +503,9 @@ test("setup problems are labelled by setup-dir position when the config lives ou
     setupDirs: [path.join(trustedBase, ".expo-code-review")],
   });
   expect(report.problems).toHaveLength(1);
-  expect(report.problems[0]!.file).toBe(path.join(".expo-code-review", "agents", "security.md"));
+  expect(report.problems[0]!.file).toBe(
+    path.join(".expo-agents", "code-review", "agents", "security.md"),
+  );
 });
 
 test("citedPathsTouchedBy reports cited paths a PR changed, dirs included", async () => {

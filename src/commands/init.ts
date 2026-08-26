@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CONFIG_DIRNAME } from "../config/load.js";
+import { CONFIG_DIRNAME, configDirFor } from "../config/load.js";
 import { ROUTING_FILENAME } from "../config/routing.js";
 import { RoutingScopeSchema, type RoutingScope } from "../config/schema.js";
 import { FORBIDDEN_TOKEN_ENVS } from "../core/auth.js";
@@ -13,7 +13,7 @@ import { errorMessage } from "../core/util.js";
 
 const TEMPLATES_DIR = fileURLToPath(new URL("../../templates/", import.meta.url));
 
-const USAGE = `ecr init — scaffold .expo-code-review/ in the current repo
+const USAGE = `ecr init — scaffold .expo-agents/code-review/ in the current repo (a legacy .expo-code-review/ is reused)
 
 Usage:
   ecr init [--no-workflow] [--force]      Scaffold the root config (+ CI workflow)
@@ -22,8 +22,8 @@ Usage:
                                           register it in the root routing.jsonc
 
 Options:
-  --monorepo      Also write .expo-code-review/routing.jsonc (routing manifest)
-  --scope <dir>   Scaffold <dir>/.expo-code-review/ (no auth) + add a scope entry
+  --monorepo      Also write routing.jsonc in the setup dir (routing manifest)
+  --scope <dir>   Scaffold <dir>/.expo-agents/code-review/ (no auth) + add a scope entry
   --no-workflow   Skip writing the CI workflows (review, command, and dismiss
                   under .github/workflows/)
   --token-env <name[,name…]>
@@ -83,7 +83,7 @@ async function scaffold(argv: string[]): Promise<void> {
   }
 
   const root = (await repoRoot()) ?? process.cwd();
-  const configDir = path.join(root, CONFIG_DIRNAME);
+  const configDir = configDirFor(root); // an existing legacy .expo-code-review/ is kept, never doubled
 
   // A non-default --token-env only takes effect through the review workflows,
   // but existing workflow files are skipped (not rewritten) without --force —
@@ -286,7 +286,7 @@ async function scaffoldScope(argv: string[], scopeDirRaw: string): Promise<void>
     );
   }
 
-  const configDir = path.join(root, scopeDir, CONFIG_DIRNAME);
+  const configDir = configDirFor(path.join(root, scopeDir));
   await mkdir(configDir, { recursive: true });
 
   const created: string[] = [];

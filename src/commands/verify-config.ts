@@ -2,7 +2,13 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { CONFIG_DIRNAME, stripJsonComments, stripTrailingCommas } from "../config/load.js";
+import {
+  CONFIG_DIRNAME,
+  configDirFor,
+  isConfigDirPath,
+  stripJsonComments,
+  stripTrailingCommas,
+} from "../config/load.js";
 import { ROUTING_FILENAME } from "../config/routing.js";
 import { repoRoot } from "../core/exec.js";
 import { errorMessage } from "../core/util.js";
@@ -76,11 +82,7 @@ async function discoverConfigFiles(root: string): Promise<string[]> {
           continue;
         }
         await walk(path.join(dir, entry.name));
-      } else if (
-        entry.isFile() &&
-        path.basename(dir) === CONFIG_DIRNAME &&
-        CONFIG_FILENAMES.has(entry.name)
-      ) {
+      } else if (entry.isFile() && isConfigDirPath(dir) && CONFIG_FILENAMES.has(entry.name)) {
         found.push(path.join(dir, entry.name));
       }
     }
@@ -145,7 +147,7 @@ export async function verifyConfig(
   options: { expected?: string } = {},
 ): Promise<VerifyResult> {
   const findings: VerifyFinding[] = [];
-  const rootConfigDir = path.join(root, CONFIG_DIRNAME);
+  const rootConfigDir = configDirFor(root);
   const rel = (file: string): string => path.relative(root, file) || path.basename(file);
 
   const files = await discoverConfigFiles(root);

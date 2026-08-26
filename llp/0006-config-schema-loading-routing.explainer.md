@@ -184,8 +184,7 @@ hardcoded to a read-only tool set (`read`/`grep`/`glob`/`list`) with no schema k
 write/bash [observed: `load.ts:126-155`, `load.ts:22-23`].
 
 `resolveConfigDir` is the escape hatch (graft 1): precedence is explicit param → `ECR_CONFIG_DIR` env
-→ the repo's default `.expo-code-review/`, and with neither override the result is byte-identical to
-the default path [observed: `load.ts:29-41`]. `hasConfig` resolves the config dir the same way, so
+→ the repo's default setup dir [observed: `load.ts`]. **The default setup dir has two spellings** (0.15.0): `.expo-agents/code-review/` is the home — one `.expo-agents/` directory holds every Expo agent tool's per-repo files (this tool's and `@expo/verify`'s) instead of one root dot-directory per tool — and the pre-0.15 `.expo-code-review/` stays fully supported. `configDirFor(base)` returns whichever exists, new name first, and the new name when neither does; it is used for the root and for every scope directory, `ecr init` writes into an existing legacy directory rather than doubling it, the config-file sweep (`isConfigDirPath`) and the reference index accept both, and the CI templates upload `.runs/reviews.jsonl` from either location. `.agents/` was rejected as the shared name because Codex, Cursor, Gemini CLI and Copilot already scan `.agents/skills/`. `hasConfig` resolves the config dir the same way, so
 `doctor`'s "no config" diagnostic can never disagree with what the loader actually reads
 [observed: `load.ts:55-60`]. The override designates an alternate ROOT config dir, so `config.jsonc`
 and `routing.jsonc` always travel together: `loadRoutingManifest` reads through the same

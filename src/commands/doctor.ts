@@ -4,6 +4,7 @@ import {
   loadScopeConfig,
   loadAuthFromRoot,
   hasConfig,
+  CONFIG_DIRNAME,
   resolveConfigDir,
   tokenEnvMismatch,
 } from "../config/load.js";
@@ -246,7 +247,7 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
   }
 
   if (!hasConfig(root)) {
-    line(false, `no ${".expo-code-review"}/config.jsonc (run \`ecr init\`)`);
+    line(false, `no ${CONFIG_DIRNAME}/config.jsonc (run \`ecr init\`)`);
   } else {
     try {
       // Reuse the engine-detection peek above; re-load only if that failed so
@@ -479,9 +480,7 @@ async function listScopes(root: string): Promise<void> {
     return;
   }
   if (!manifest) {
-    process.stdout.write(
-      `No ${".expo-code-review"}/routing.jsonc — run \`ecr init --monorepo\`.\n`,
-    );
+    process.stdout.write(`No ${CONFIG_DIRNAME}/routing.jsonc — run \`ecr init --monorepo\`.\n`);
     process.exitCode = 0;
     return;
   }

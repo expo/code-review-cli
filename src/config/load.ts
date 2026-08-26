@@ -17,7 +17,25 @@ import type {
 } from "./schema.js";
 import { toolMap } from "../core/tools.js";
 
-export const CONFIG_DIRNAME = ".expo-code-review";
+/**
+ * The setup directory. `.expo-agents/code-review/` is the home from 0.15.0 —
+ * one `.expo-agents/` directory holds every Expo agent tool's per-repo files
+ * (code-review, verify) instead of one dot directory per tool at the root.
+ * The pre-0.15 `.expo-code-review/` keeps working unchanged: every lookup
+ * takes whichever of the two exists (new first), and scaffolding writes into
+ * an existing legacy directory rather than starting a second one.
+ */
+export const CONFIG_DIRNAME = path.join(".expo-agents", "code-review");
+export const LEGACY_CONFIG_DIRNAME = ".expo-code-review";
+export const CONFIG_DIRNAMES: readonly string[] = [CONFIG_DIRNAME, LEGACY_CONFIG_DIRNAME];
+
+/** Does this directory path name a setup dir (either spelling)? */
+export function isConfigDirPath(dir: string): boolean {
+  const normalized = path.normalize(dir);
+  return CONFIG_DIRNAMES.some(
+    (name) => normalized === name || normalized.endsWith(path.sep + name),
+  );
+}
 
 /** Stack config for a scope load (where `stack` is schema-rejected and absent). */
 const STACK_CONFIG_DEFAULTS: LoadedConfig["stack"] = {
@@ -56,22 +74,34 @@ const RESEARCH_CONFIG_DEFAULTS: LoadedConfig["research"] = {
 /** Default OpenCode tool toggles for a reviewer: read the repo, never mutate it. */
 const DEFAULT_AGENT_TOOLS = toolMap(["read", "grep", "glob", "list"]);
 
-export function configDirFor(repoRoot: string): string {
-  return path.join(repoRoot, CONFIG_DIRNAME);
+/**
+ * The setup dir under `base`: `.expo-agents/code-review/` when it exists, else
+ * the legacy `.expo-code-review/` when THAT exists, else the new name (for
+ * messages and for scaffolding a fresh repo). Works for the repo root and for
+ * scope directories alike.
+ */
+export function configDirFor(base: string): string {
+  for (const name of CONFIG_DIRNAMES) {
+    const candidate = path.join(base, name);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return path.join(base, CONFIG_DIRNAME);
 }
 
 /**
  * Resolve the config directory: an explicit override (absolute or repo-relative)
- * → the ECR_CONFIG_DIR env var → the repo's default `.expo-code-review/`. This is
- * the escape hatch (graft 1); with neither override present the result is exactly
- * `configDirFor(repoRoot)`, so the default behavior is byte-identical.
+ * → the ECR_CONFIG_DIR env var → the repo's default setup dir (new name, then
+ * legacy). This is the escape hatch (graft 1); with neither override present the
+ * result is exactly `configDirFor(repoRoot)`.
  */
 export function resolveConfigDir(repoRoot: string, override?: string): string {
   const chosen = override ?? process.env.ECR_CONFIG_DIR;
   if (chosen) {
     return path.isAbsolute(chosen) ? chosen : path.join(repoRoot, chosen);
   }
-  return path.join(repoRoot, CONFIG_DIRNAME);
+  return configDirFor(repoRoot);
 }
 
 export interface LoadConfigOptions {
@@ -320,7 +350,7 @@ export function hasScopeConfig(root: string, scope: RoutingScope): boolean {
   if (scope.config === ".") {
     return true;
   }
-  const dir = path.join(root, scope.config, CONFIG_DIRNAME);
+  const dir = configDirFor(path.join(root, scope.config));
   return existsSync(path.join(dir, "config.jsonc")) || existsSync(path.join(dir, "config.json"));
 }
 
@@ -354,7 +384,7 @@ export async function loadScopeConfig(
         `scope "${scope.name}": config "${scope.config}" resolves outside the repo checkout`,
       );
     }
-    const dir = path.join(root, scope.config, CONFIG_DIRNAME);
+    const dir = configDirFor(path.join(root, scope.config));
     const { config } = await loadConfigDir(dir, ScopeReviewConfigSchema);
     base = config;
     // Non-default scopes never carry their own marker (the scope schema rejects

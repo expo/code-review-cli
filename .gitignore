@@ -9,3 +9,4 @@ build/
 
 # Claude Code local worktrees
 .claude/worktrees/
+.expo-agents/code-review/.runs/

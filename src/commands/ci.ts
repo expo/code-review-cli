@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
-  CONFIG_DIRNAME,
+  configDirFor,
   hasScopeConfig,
   loadAuthFromRoot,
   loadReviewConfig,
@@ -495,7 +495,7 @@ function resolveStackConfirm(
  * `.expo-code-review/.runs/reviews.jsonl` from the workspace as an artifact.
  */
 function workspaceRunsDir(cwd: string): string {
-  return path.join(cwd, CONFIG_DIRNAME, ".runs");
+  return path.join(configDirFor(cwd), ".runs");
 }
 
 /**

@@ -4,7 +4,10 @@ A config-driven, multi-agent AI code reviewer. Specialist agents review a diff i
 parallel; a coordinator consolidates their findings into one structured review.
 The same engine runs locally (advisory) and in CI (posts one PR comment). The CLI
 is the **engine** — each repo supplies its own agents and settings under
-`.expo-code-review/`, so behavior is configured per-repo, not baked in.
+`.expo-agents/code-review/`, so behavior is configured per-repo, not baked in.
+(Repos set up before 0.15 keep their `.expo-code-review/` directory: every command
+looks for the new name first and falls back to the old one, and `ecr init` reuses
+an existing legacy directory rather than starting a second one.)
 
 > **Status: experimental.** Comment-only and non-blocking — it never blocks a merge
 > and never auto-approves. See [`ROADMAP.md`](./ROADMAP.md).
@@ -94,7 +97,7 @@ here ([LLP 0001](./llp/0001-trust-model.principles.md)) is built around that:
 ## Usage
 
 Run via `npx @expo/code-review-cli <command>` (or the `ecr` / `expo-code-review`
-binary once installed). On a repo that already has `.expo-code-review/` set up,
+binary once installed). On a repo that already has `.expo-agents/code-review/` set up,
 getting model credentials for local runs is one command:
 
 ```bash
@@ -108,7 +111,7 @@ package.
 ### First-time setup
 
 ```bash
-# 1. Scaffold .expo-code-review/ + a CI workflow (--no-workflow to skip)
+# 1. Scaffold .expo-agents/code-review/ + a CI workflow (--no-workflow to skip)
 npx @expo/code-review-cli init
 # 2. Get model credentials — guided; prints the export lines for your shell config
 npx @expo/code-review-cli setup-auth
@@ -142,7 +145,7 @@ ecr review --pr 123
 ecr review --pr 123 --post
 # Preview once, save the exact result, and post it later without another model run
 ecr review --repo owner/repo --pr 123 --save-review --json
-ecr post-review --artifact .expo-code-review/.runs/deferred/<artifact>.json --repo owner/repo --pr 123
+ecr post-review --artifact .expo-agents/code-review/.runs/deferred/<artifact>.json --repo owner/repo --pr 123
 ```
 
 Options (most to least common):
@@ -178,7 +181,7 @@ is a ready example to adapt.
 
 | Command | What it does |
 | --- | --- |
-| `ecr init [--no-workflow] [--force]` | Scaffold `.expo-code-review/` (config, agents, prompts) + a CI workflow. |
+| `ecr init [--no-workflow] [--force]` | Scaffold `.expo-agents/code-review/` (config, agents, prompts) + a CI workflow. |
 | `ecr init --monorepo` | …and add a `routing.jsonc` routing manifest (one default scope). |
 | `ecr init --scope <dir>` | Scaffold a per-team scope under `<dir>` and register it in the manifest. |
 | `ecr setup-auth [--yes]` | Walk through getting model credentials for local runs (ChatGPT/Claude sign-in and/or API keys), printing the `export` lines for your shell config. |
@@ -215,7 +218,7 @@ Markdown, `//` in JSONC):
 
 A target is a file, a `dir/`, `glob:<pattern>`, `file#symbol`, or `doc.md#heading` —
 never a line number (line numbers rot without any signal). The check is strict on
-purpose: any backticked token in `.expo-code-review/` that names something that
+purpose: any backticked token in `.expo-agents/code-review/` that names something that
 exists in the repo **must** be a ref, because stale citations are exactly the ones
 nobody annotated. Mark the rare false positive once with
 `<!-- @ref-ignore knex.raw() -->`. Refs are always repo-root-relative, including in
@@ -291,18 +294,18 @@ and no locking.
 
 ```
 your-monorepo/
-  .expo-code-review/
+  .expo-agents/code-review/
     routing.jsonc          # the manifest — infra-owned, ordered scope list + locked defaults
     config.jsonc           # the default/root scope; the ONLY place auth/tokenEnv lives
     shared.md coordinator.md agents/
   apps/
-    api/.expo-code-review/{config.jsonc(NO auth),coordinator.md,agents/}   # api team
-    web/.expo-code-review/{config.jsonc(NO auth),coordinator.md,agents/}   # web team
+    api/.expo-agents/code-review/{config.jsonc(NO auth),coordinator.md,agents/}   # api team
+    web/.expo-agents/code-review/{config.jsonc(NO auth),coordinator.md,agents/}   # web team
   .github/workflows/expo-code-review.yml   # unchanged shape: one workflow, one `ecr ci`
 ```
 
 ```jsonc
-// .expo-code-review/routing.jsonc
+// .expo-agents/code-review/routing.jsonc
 {
   // Central guardrails every scope inherits and CANNOT override.
   "defaults": {
@@ -322,7 +325,7 @@ your-monorepo/
 ```
 
 ```jsonc
-// apps/api/.expo-code-review/config.jsonc  (the api team owns this)
+// apps/api/.expo-agents/code-review/config.jsonc  (the api team owns this)
 {
   // NO "auth" block — locked centrally; a tokenEnv here is rejected by loader + CI guard.
   "model": "anthropic/claude-sonnet-5",
@@ -378,8 +381,8 @@ Enforced in code and by an independent CI guard step, not by convention:
   itself, so even a custom workflow that checks out the head still gets
   base-commit configuration.
 
-Enforce ownership with CODEOWNERS: `/.expo-code-review/routing.jsonc @your-infra`,
-`/apps/api/.expo-code-review/ @your-api-team`. Full detail:
+Enforce ownership with CODEOWNERS: `/.expo-agents/code-review/routing.jsonc @your-infra`,
+`/apps/api/.expo-agents/code-review/ @your-api-team`. Full detail:
 [LLP 0006](./llp/0006-config-schema-loading-routing.explainer.md) (routing) and
 [LLP 0001](./llp/0001-trust-model.principles.md) (trust model).
 
@@ -396,7 +399,7 @@ Enforce ownership with CODEOWNERS: `/.expo-code-review/routing.jsonc @your-infra
 - **Chunking** — small PRs run in a single pass; large PRs are split into chunks
   bounded by changed lines, plus one combined **cross-cutting pass** that looks
   for issues spanning multiple changed files across every agent's concern.
-- **Agents** — every `.md` file in `.expo-code-review/agents/` is an agent. They
+- **Agents** — every `.md` file in `.expo-agents/code-review/agents/` is an agent. They
   run in parallel with read-only repo tools (`read`/`grep`/`glob`/`list`).
 - **Coordinator** — a single pass that dedupes, re-judges severity, and produces
   the final `{ decision, findings, summary }`.
@@ -426,7 +429,7 @@ Every run reports what it spent and how much was served from the prompt cache, i
 three places: one `Token usage — …` line in the job log, a per-pass table + cache
 hit rate in the GitHub Actions step summary (which also preserves each run's posted
 comment, since the PR comment is updated in place), and one JSON line per run in
-`.expo-code-review/.runs/reviews.jsonl` (uploaded as a CI artifact) with per-pass
+`.expo-agents/code-review/.runs/reviews.jsonl` (uploaded as a CI artifact) with per-pass
 tokens, raw per-agent findings, bounded reviewer traces, and coverage notes.
 
 Each reviewer can also return a compact trace (up to three concrete checks and two
@@ -452,10 +455,10 @@ cacheable size (~1–4K tokens) show `cache read 0` — expected, not a bug.
 </details>
 
 <details>
-<summary><b>Configuration — <code>.expo-code-review/</code></b></summary>
+<summary><b>Configuration — <code>.expo-agents/code-review/</code></b></summary>
 
 ```
-.expo-code-review/
+.expo-agents/code-review/
   config.jsonc        # model, policy, noise, auth, break-glass, comment tag
   shared.md           # instructions prepended to every agent (optional)
   coordinator.md      # the consolidation prompt (required)
@@ -480,7 +483,7 @@ temperature: 0.1
 ```
 
 For a real-world example, see eas-cli's
-[`.expo-code-review/`](https://github.com/expo/eas-cli/tree/main/.expo-code-review)
+[`.expo-agents/code-review/`](https://github.com/expo/eas-cli/tree/main/.expo-code-review)
 — correctness/security/consistency agents, a stronger model for security, and
 per-repo `noise.additionalIgnores`.
 
@@ -718,7 +721,7 @@ variables: `ATLANTIS_BOT_LOGIN` (the Atlantis bot's comment login, e.g.
 <details>
 <summary><b>Run logs</b></summary>
 
-Each run appends a JSON line to `.expo-code-review/.runs/reviews.jsonl` with the
+Each run appends a JSON line to `.expo-agents/code-review/.runs/reviews.jsonl` with the
 inputs, decision, finding count, duration, per-agent cost, and aggregate token
 usage (incl. prompt-cache read/write counts) — for auditing and measuring
 cost/latency/cache reuse over time. It also records the same bounded `reviewTrace`
@@ -727,7 +730,7 @@ one-line summary to the terminal / CI job log at the end of each run, so cache r
 is visible even in CI (where the run log is ephemeral).
 
 `ecr review --save-review` additionally writes a versioned artifact under
-`.expo-code-review/.runs/deferred/` with owner-only permissions. It contains the
+`.expo-agents/code-review/.runs/deferred/` with owner-only permissions. It contains the
 verified final review and bounded feedback metadata, but no credential. `ecr
 post-review` schema-validates it and refuses to post if its explicit repo/PR, live
 head commit, or local comment-policy fingerprint no longer matches.
