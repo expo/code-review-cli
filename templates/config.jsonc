@@ -87,7 +87,7 @@
   //   "auth": { "mode": "api-key", "provider": "openai", "tokenEnv": "OPENAI_API_KEY" }
   //
   //   Muse Spark via the public Meta Model API Responses endpoint:
-  //   set models to `meta/muse-spark-1.2` and configure:
+  //   set models to `meta/muse-spark-1.3` and configure:
   //   "auth": { "providers": {
   //     "meta": { "mode": "api-key", "tokenEnv": "META_API_KEY" }
   //   } }

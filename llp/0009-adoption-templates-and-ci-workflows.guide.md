@@ -56,7 +56,7 @@ The three workflows share a posture built entirely around one fact: a reviewer j
 **Concurrency defaults by auth mode.** The commented `chunk.concurrency` default is 6 for an API key and 3 for a subscription (OAuth) credential, "one account handles many parallel streams poorly, and several PRs may review on the same credential at once" [observed: `templates/config.jsonc:28-30`].
 
 **Muse Spark is opt-in without weakening the default secret surface.** The root config
-documents `meta/muse-spark-1.2` plus a `META_API_KEY` auth entry, and each
+documents `meta/muse-spark-1.3` plus a `META_API_KEY` auth entry, and each
 review-running workflow shows the corresponding secret line commented out. It is not
 forwarded by the default scaffold: adopters replace the Anthropic line and set
 `ECR_EXPECTED_TOKEN_ENV=META_API_KEY`, so the model process receives only the

@@ -20,10 +20,10 @@ import type { ResearchMcpRuntime } from "./research.js";
 export const CLAUDE_CODE_ENGINE = "claude-code" as const;
 
 /** Fixed so repo config cannot redirect the Meta credential. */
-// @ref LLP 0003#muse-spark-via-meta-model-api [implements] — fixed endpoint and model allowlist
+// @ref LLP 0003#muse-spark-via-meta-model-api [implements] — fixed endpoint, provider routing, and known-model metadata
 export const META_MODEL_API_BASE_URL = "https://api.meta.ai/v1";
 
-/** Supported public Muse models. Unknown ids remain visible to preflight. */
+/** Known public Muse models. Other explicit `meta/...` ids use neutral metadata. */
 export const META_MUSE_MODELS: Record<string, Record<string, unknown>> = {
   "muse-spark-1.2": {
     name: "Muse Spark 1.2",
@@ -44,6 +44,36 @@ export const META_MUSE_MODELS: Record<string, Record<string, unknown>> = {
     name: "Muse Spark 1.2 Contributor",
     reasoning: true,
     limit: { context: 1_048_576, output: 131_072 },
+    modalities: {
+      input: ["text", "image", "pdf", "video"],
+      output: ["text"],
+    },
+    options: {
+      store: false,
+      reasoningEffort: "high",
+      reasoningSummary: "auto",
+      include: ["reasoning.encrypted_content"],
+    },
+  },
+  "muse-spark-1.3": {
+    name: "Muse Spark 1.3",
+    reasoning: true,
+    limit: { context: 1_048_576, output: 1_048_576 },
+    modalities: {
+      input: ["text", "image", "pdf", "video"],
+      output: ["text"],
+    },
+    options: {
+      store: false,
+      reasoningEffort: "high",
+      reasoningSummary: "auto",
+      include: ["reasoning.encrypted_content"],
+    },
+  },
+  "muse-spark-1.3-contributor": {
+    name: "Muse Spark 1.3 Contributor",
+    reasoning: true,
+    limit: { context: 1_048_576, output: 1_048_576 },
     modalities: {
       input: ["text", "image", "pdf", "video"],
       output: ["text"],
@@ -87,7 +117,7 @@ export function resolveEngineDispatch(
   if (!handle.claude) {
     throw new Error(
       `Agent "${agent}" is routed to the claude-code engine but this handle has no ` +
-        `.claude carrier — the handle was assembled inconsistently.`,
+      `.claude carrier — the handle was assembled inconsistently.`,
     );
   }
   return { engine, claudeHandle: handle.claude };
@@ -265,7 +295,19 @@ export function buildOpencodeConfig(
       entry.tokenEnv &&
       !entry.upstream
     ) {
-      // Muse needs the Responses adapter; openai-compatible uses Chat Completions.
+      // Meta's Model API uses the Responses adapter; openai-compatible uses Chat
+      // Completions. Register every explicitly referenced `meta/…` model so a new
+      // Meta family/name does not require an ECR release merely to select the right
+      // provider. Known Muse ids get their published capabilities; unknown ids stay
+      // neutral and are validated by Meta on their first request.
+      const models: Record<string, unknown> = {};
+      for (const id of referencedModels) {
+        const slash = id.indexOf("/");
+        if (slash > 0 && id.slice(0, slash) === "meta" && id.length > slash + 1) {
+          const model = id.slice(slash + 1);
+          models[model] = META_MUSE_MODELS[model] ?? {};
+        }
+      }
       provider.meta = {
         npm: "@ai-sdk/openai",
         name: "Meta Model API",
@@ -273,11 +315,7 @@ export function buildOpencodeConfig(
           baseURL: META_MODEL_API_BASE_URL,
           apiKey: `{env:${entry.tokenEnv}}`,
         },
-        models: Object.fromEntries(
-          Object.entries(META_MUSE_MODELS).filter(([model]) =>
-            referencedModels.includes(`meta/${model}`),
-          ),
-        ),
+        models,
       };
       continue;
     }
@@ -309,16 +347,16 @@ export function buildOpencodeConfig(
     agent,
     ...(research
       ? {
-          mcp: {
-            platform_docs: {
-              type: "local",
-              command: [research.command, ...research.args],
-              environment: research.environment,
-              enabled: true,
-              timeout: config.research.timeoutMs,
-            },
+        mcp: {
+          platform_docs: {
+            type: "local",
+            command: [research.command, ...research.args],
+            environment: research.environment,
+            enabled: true,
+            timeout: config.research.timeoutMs,
           },
-        }
+        },
+      }
       : {}),
     ...(Object.keys(provider).length > 0 ? { provider } : {}),
   };
@@ -554,8 +592,8 @@ export function formatUnknownModels(
       `The credential itself is often FINE. Check these in order:\n` +
       (tokenEnv
         ? `  1. The credential is wrong for the mode. ` +
-          `auth.mode "api-key" expects a plain API key for ${provider}; an OAuth/subscription ` +
-          `token is not an API key. A truncated or half-pasted ${tokenEnv} fails the same way.\n`
+        `auth.mode "api-key" expects a plain API key for ${provider}; an OAuth/subscription ` +
+        `token is not an API key. A truncated or half-pasted ${tokenEnv} fails the same way.\n`
         : `  1. The credential is wrong for the configured auth.mode.\n`) +
       `Providers the server does offer: ${refused[0]!.suggestions.join(", ") || "(none)"}.`
     );
@@ -976,8 +1014,8 @@ export async function promptAgent(
         if (action === "wait") {
           args.onActivity?.(
             `provider is rate-limiting this account (429 in the server log; ` +
-              `${handle.rateLimit.events} so far) — waiting ${Math.round(RATE_LIMIT_WAIT_MS / 1000)}s ` +
-              `instead of retrying (${Math.round(remaining / 60000)}m of budget left)`,
+            `${handle.rateLimit.events} so far) — waiting ${Math.round(RATE_LIMIT_WAIT_MS / 1000)}s ` +
+            `instead of retrying (${Math.round(remaining / 60000)}m of budget left)`,
           );
           await sleep(RATE_LIMIT_WAIT_MS);
           continue;
@@ -986,7 +1024,7 @@ export async function promptAgent(
           wedgedRetries++;
           args.onActivity?.(
             `stalled — no output for ${Math.round(error.idleMs / 1000)}s; ` +
-              `retrying once from a clean session (${Math.round(remaining / 60000)}m of budget left)`,
+            `retrying once from a clean session (${Math.round(remaining / 60000)}m of budget left)`,
           );
           await sleep(STALL_RETRY_BACKOFF_MS);
           continue;
@@ -1083,8 +1121,7 @@ export async function withTransientRetry<T>(
         throw error;
       }
       onActivity?.(
-        `${label}: transient API error (${errorMessage(error)}); retry ${attempt + 1}/${
-          schedule.length
+        `${label}: transient API error (${errorMessage(error)}); retry ${attempt + 1}/${schedule.length
         } in ${Math.round(waitMs / 1000)}s`,
       );
       await sleep(waitMs);
@@ -1177,8 +1214,7 @@ export async function promptAndParse<T>(
         return { value: parse(fresh.text), cost, truncated, tokens, model };
       } catch (finalError) {
         throw new Error(
-          `Agent "${args.agent}" did not return parseable JSON after retries: ${
-            finalError instanceof Error ? finalError.message : String(finalError)
+          `Agent "${args.agent}" did not return parseable JSON after retries: ${finalError instanceof Error ? finalError.message : String(finalError)
           }`,
         );
       }
@@ -1282,7 +1318,7 @@ async function pollForCompletion(
     lastEmitAt = Date.now();
     opts.onActivity?.(line);
   };
-  for (;;) {
+  for (; ;) {
     if (Date.now() > opts.deadline) {
       throw new DeadlineReached(lastCost, lastTokens);
     }
@@ -1297,7 +1333,7 @@ async function pollForCompletion(
       const idleMs = Date.now() - lastProgressAt;
       emit(
         `still working… ${Math.round((Date.now() - startedAt) / 1000)}s elapsed` +
-          (idleMs >= HEARTBEAT_MS ? ` (no new output for ${Math.round(idleMs / 1000)}s)` : ""),
+        (idleMs >= HEARTBEAT_MS ? ` (no new output for ${Math.round(idleMs / 1000)}s)` : ""),
       );
     }
 
