@@ -20,10 +20,10 @@ import type { ResearchMcpRuntime } from "./research.js";
 export const CLAUDE_CODE_ENGINE = "claude-code" as const;
 
 /** Fixed so repo config cannot redirect the Meta credential. */
-// @ref LLP 0003#muse-spark-via-meta-model-api [implements] — fixed endpoint and model allowlist
+// @ref LLP 0003#muse-spark-via-meta-model-api [implements] — fixed endpoint, provider routing, and known-model metadata
 export const META_MODEL_API_BASE_URL = "https://api.meta.ai/v1";
 
-/** Supported public Muse models. Unknown ids remain visible to preflight. */
+/** Known public Muse models. Other explicit `meta/...` ids use neutral metadata. */
 export const META_MUSE_MODELS: Record<string, Record<string, unknown>> = {
   "muse-spark-1.2": {
     name: "Muse Spark 1.2",
@@ -44,6 +44,36 @@ export const META_MUSE_MODELS: Record<string, Record<string, unknown>> = {
     name: "Muse Spark 1.2 Contributor",
     reasoning: true,
     limit: { context: 1_048_576, output: 131_072 },
+    modalities: {
+      input: ["text", "image", "pdf", "video"],
+      output: ["text"],
+    },
+    options: {
+      store: false,
+      reasoningEffort: "high",
+      reasoningSummary: "auto",
+      include: ["reasoning.encrypted_content"],
+    },
+  },
+  "muse-spark-1.3": {
+    name: "Muse Spark 1.3",
+    reasoning: true,
+    limit: { context: 1_048_576, output: 1_048_576 },
+    modalities: {
+      input: ["text", "image", "pdf", "video"],
+      output: ["text"],
+    },
+    options: {
+      store: false,
+      reasoningEffort: "high",
+      reasoningSummary: "auto",
+      include: ["reasoning.encrypted_content"],
+    },
+  },
+  "muse-spark-1.3-contributor": {
+    name: "Muse Spark 1.3 Contributor",
+    reasoning: true,
+    limit: { context: 1_048_576, output: 1_048_576 },
     modalities: {
       input: ["text", "image", "pdf", "video"],
       output: ["text"],
@@ -265,7 +295,19 @@ export function buildOpencodeConfig(
       entry.tokenEnv &&
       !entry.upstream
     ) {
-      // Muse needs the Responses adapter; openai-compatible uses Chat Completions.
+      // Meta's Model API uses the Responses adapter; openai-compatible uses Chat
+      // Completions. Register every explicitly referenced `meta/…` model so a new
+      // Meta family/name does not require an ECR release merely to select the right
+      // provider. Known Muse ids get their published capabilities; unknown ids stay
+      // neutral and are validated by Meta on their first request.
+      const models: Record<string, unknown> = {};
+      for (const id of referencedModels) {
+        const slash = id.indexOf("/");
+        if (slash > 0 && id.slice(0, slash) === "meta" && id.length > slash + 1) {
+          const model = id.slice(slash + 1);
+          models[model] = META_MUSE_MODELS[model] ?? {};
+        }
+      }
       provider.meta = {
         npm: "@ai-sdk/openai",
         name: "Meta Model API",
@@ -273,11 +315,7 @@ export function buildOpencodeConfig(
           baseURL: META_MODEL_API_BASE_URL,
           apiKey: `{env:${entry.tokenEnv}}`,
         },
-        models: Object.fromEntries(
-          Object.entries(META_MUSE_MODELS).filter(([model]) =>
-            referencedModels.includes(`meta/${model}`),
-          ),
-        ),
+        models,
       };
       continue;
     }

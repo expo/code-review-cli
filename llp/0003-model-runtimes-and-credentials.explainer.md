@@ -109,12 +109,15 @@ the Responses API and preserve encrypted reasoning across tool turns. The generi
 Completions path loses that continuity [observed:
 `opencode.ts` `META_MODEL_API_BASE_URL` / `META_MUSE_MODELS` / `buildOpencodeConfig`].
 
-The declared model catalog is an allowlist (`muse-spark-1.2` and
-`muse-spark-1.2-contributor`), not a reflection of arbitrary config strings. This keeps
-the existing preflight honest: a misspelled or not-yet-supported Meta model remains
-absent from the server's provider model list and fails once before any pass. Both models
-declare their public context/output limits, multimodal inputs, high reasoning, and
-encrypted reasoning inclusion [observed: `opencode.ts` `META_MUSE_MODELS`].
+Provider selection is forward-compatible at the provider boundary, not coupled to the
+current Muse family name: every referenced non-empty `meta/<model>` id is declared on
+the synthesized Meta provider. Known Muse Spark 1.2 and 1.3 standard/Contributor ids
+receive their published limits, multimodal inputs, high reasoning, and encrypted
+reasoning inclusion from `META_MUSE_MODELS`; a future id such as `meta/muse-foo` is
+declared with neutral metadata rather than guessed capabilities. This deliberately
+moves validation of an unknown-but-well-formed Meta id from OpenCode's local preflight
+to its first Meta request, in exchange for new Meta names working without an ECR
+release [observed: `opencode.ts` `META_MUSE_MODELS` / `buildOpencodeConfig`].
 
 ## Claude Code CLI Containment
 
