@@ -117,7 +117,7 @@ export function resolveEngineDispatch(
   if (!handle.claude) {
     throw new Error(
       `Agent "${agent}" is routed to the claude-code engine but this handle has no ` +
-      `.claude carrier — the handle was assembled inconsistently.`,
+        `.claude carrier — the handle was assembled inconsistently.`,
     );
   }
   return { engine, claudeHandle: handle.claude };
@@ -347,16 +347,16 @@ export function buildOpencodeConfig(
     agent,
     ...(research
       ? {
-        mcp: {
-          platform_docs: {
-            type: "local",
-            command: [research.command, ...research.args],
-            environment: research.environment,
-            enabled: true,
-            timeout: config.research.timeoutMs,
+          mcp: {
+            platform_docs: {
+              type: "local",
+              command: [research.command, ...research.args],
+              environment: research.environment,
+              enabled: true,
+              timeout: config.research.timeoutMs,
+            },
           },
-        },
-      }
+        }
       : {}),
     ...(Object.keys(provider).length > 0 ? { provider } : {}),
   };
@@ -592,8 +592,8 @@ export function formatUnknownModels(
       `The credential itself is often FINE. Check these in order:\n` +
       (tokenEnv
         ? `  1. The credential is wrong for the mode. ` +
-        `auth.mode "api-key" expects a plain API key for ${provider}; an OAuth/subscription ` +
-        `token is not an API key. A truncated or half-pasted ${tokenEnv} fails the same way.\n`
+          `auth.mode "api-key" expects a plain API key for ${provider}; an OAuth/subscription ` +
+          `token is not an API key. A truncated or half-pasted ${tokenEnv} fails the same way.\n`
         : `  1. The credential is wrong for the configured auth.mode.\n`) +
       `Providers the server does offer: ${refused[0]!.suggestions.join(", ") || "(none)"}.`
     );
@@ -1014,8 +1014,8 @@ export async function promptAgent(
         if (action === "wait") {
           args.onActivity?.(
             `provider is rate-limiting this account (429 in the server log; ` +
-            `${handle.rateLimit.events} so far) — waiting ${Math.round(RATE_LIMIT_WAIT_MS / 1000)}s ` +
-            `instead of retrying (${Math.round(remaining / 60000)}m of budget left)`,
+              `${handle.rateLimit.events} so far) — waiting ${Math.round(RATE_LIMIT_WAIT_MS / 1000)}s ` +
+              `instead of retrying (${Math.round(remaining / 60000)}m of budget left)`,
           );
           await sleep(RATE_LIMIT_WAIT_MS);
           continue;
@@ -1024,7 +1024,7 @@ export async function promptAgent(
           wedgedRetries++;
           args.onActivity?.(
             `stalled — no output for ${Math.round(error.idleMs / 1000)}s; ` +
-            `retrying once from a clean session (${Math.round(remaining / 60000)}m of budget left)`,
+              `retrying once from a clean session (${Math.round(remaining / 60000)}m of budget left)`,
           );
           await sleep(STALL_RETRY_BACKOFF_MS);
           continue;
@@ -1121,7 +1121,8 @@ export async function withTransientRetry<T>(
         throw error;
       }
       onActivity?.(
-        `${label}: transient API error (${errorMessage(error)}); retry ${attempt + 1}/${schedule.length
+        `${label}: transient API error (${errorMessage(error)}); retry ${attempt + 1}/${
+          schedule.length
         } in ${Math.round(waitMs / 1000)}s`,
       );
       await sleep(waitMs);
@@ -1214,7 +1215,8 @@ export async function promptAndParse<T>(
         return { value: parse(fresh.text), cost, truncated, tokens, model };
       } catch (finalError) {
         throw new Error(
-          `Agent "${args.agent}" did not return parseable JSON after retries: ${finalError instanceof Error ? finalError.message : String(finalError)
+          `Agent "${args.agent}" did not return parseable JSON after retries: ${
+            finalError instanceof Error ? finalError.message : String(finalError)
           }`,
         );
       }
@@ -1318,7 +1320,7 @@ async function pollForCompletion(
     lastEmitAt = Date.now();
     opts.onActivity?.(line);
   };
-  for (; ;) {
+  for (;;) {
     if (Date.now() > opts.deadline) {
       throw new DeadlineReached(lastCost, lastTokens);
     }
@@ -1333,7 +1335,7 @@ async function pollForCompletion(
       const idleMs = Date.now() - lastProgressAt;
       emit(
         `still working… ${Math.round((Date.now() - startedAt) / 1000)}s elapsed` +
-        (idleMs >= HEARTBEAT_MS ? ` (no new output for ${Math.round(idleMs / 1000)}s)` : ""),
+          (idleMs >= HEARTBEAT_MS ? ` (no new output for ${Math.round(idleMs / 1000)}s)` : ""),
       );
     }
 
