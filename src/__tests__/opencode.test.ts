@@ -342,10 +342,10 @@ test("an upstream-alias auth entry synthesizes a provider block with exactly the
   expect(opencode.provider?.openai).toBeUndefined();
 });
 
-test("Meta auth synthesizes the public Muse Responses provider without embedding its key", () => {
+test("Meta auth synthesizes the public Muse 1.3 Responses provider without embedding its key", () => {
   const config = configWith({
-    agents: [{ id: "correctness", model: "meta/muse-spark-1.2" }],
-    coordinatorModel: "meta/muse-spark-1.2",
+    agents: [{ id: "correctness", model: "meta/muse-spark-1.3" }],
+    coordinatorModel: "meta/muse-spark-1.3-contributor",
     auth: [{ mode: "api-key", provider: "meta", tokenEnv: "META_API_KEY" }],
   });
   const opencode = buildOpencodeConfig(config) as {
@@ -354,7 +354,14 @@ test("Meta auth synthesizes the public Muse Responses provider without embedding
       {
         npm: string;
         options: { baseURL: string; apiKey: string };
-        models: Record<string, { reasoning?: boolean; options?: Record<string, unknown> }>;
+        models: Record<
+          string,
+          {
+            reasoning?: boolean;
+            limit?: { context: number; output: number };
+            options?: Record<string, unknown>;
+          }
+        >;
       }
     >;
   };
@@ -365,12 +372,17 @@ test("Meta auth synthesizes the public Muse Responses provider without embedding
     baseURL: META_MODEL_API_BASE_URL,
     apiKey: "{env:META_API_KEY}",
   });
-  expect(Object.keys(meta!.models)).toEqual(["muse-spark-1.2"]);
-  expect(meta!.models["muse-spark-1.2"]?.reasoning).toBe(true);
-  expect(meta!.models["muse-spark-1.2"]?.options).toMatchObject({
+  expect(Object.keys(meta!.models)).toEqual(["muse-spark-1.3", "muse-spark-1.3-contributor"]);
+  expect(meta!.models["muse-spark-1.3"]?.reasoning).toBe(true);
+  expect(meta!.models["muse-spark-1.3"]?.limit).toEqual({
+    context: 1_048_576,
+    output: 1_048_576,
+  });
+  expect(meta!.models["muse-spark-1.3"]?.options).toMatchObject({
     reasoningEffort: "high",
     include: ["reasoning.encrypted_content"],
   });
+  expect(meta!.models["muse-spark-1.3-contributor"]?.reasoning).toBe(true);
 });
 
 test("a Meta-named upstream alias does not redirect the upstream credential to Meta", () => {
@@ -400,25 +412,22 @@ test("a Meta-named upstream alias does not redirect the upstream credential to M
   expect(Object.keys(alias!.models)).toEqual(["muse-spark-1.2"]);
 });
 
-test("Meta provider does not register an unknown Muse id, so preflight can reject it", () => {
+test("Meta provider registers future model families neutrally and only for the meta prefix", () => {
   const config = configWith({
-    agents: [{ id: "correctness", model: "meta/muse-spark-typo" }],
-    coordinatorModel: "meta/muse-spark-typo",
+    agents: [
+      { id: "correctness", model: "meta/muse-foo" },
+      { id: "security", model: "openai/muse-foo" },
+    ],
+    coordinatorModel: "meta/a-future-family-2",
     auth: [{ mode: "api-key", provider: "meta", tokenEnv: "META_API_KEY" }],
   });
   const opencode = buildOpencodeConfig(config) as {
     provider?: Record<string, { models: Record<string, unknown> }>;
   };
-  expect(opencode.provider?.meta?.models).toEqual({});
-  expect(
-    findUnknownModels(["meta/muse-spark-typo"], { meta: ["muse-spark-1.2"] }, ["meta"]),
-  ).toEqual([
-    {
-      model: "meta/muse-spark-typo",
-      reason: "model",
-      suggestions: ["muse-spark-1.2"],
-    },
-  ]);
+  expect(opencode.provider?.meta?.models).toEqual({
+    "muse-foo": {},
+    "a-future-family-2": {},
+  });
 });
 
 test("buildOpencodeConfig registers the no-tools stack verifier (empty tool list)", () => {
