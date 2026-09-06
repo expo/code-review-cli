@@ -55,6 +55,215 @@ PRs** (do these first, in this order):
    isn't on `main` yet (nothing to build from base until this merges). See §3.9.
 5. **Inline PR comments** (§1).
 
+## Next up (2026-08-08)
+
+The biggest items on deck. Each has substrate already in the repo, so the work is
+mostly extending or simplifying something that exists — not greenfield.
+
+### A. Cross-run state reuse — pick up where the last review left off
+
+Today a re-review is stateless three times over. `review-cache.ts` (LLP
+0005#review-result-cache) caches only a **whole** review result, keyed by a hash
+of the entire input, so one changed byte anywhere discards everything. Every
+Claude pass runs with `--no-session-persistence` (`claude-code.ts:343`), so
+there is no session to resume even in principle. And — the cheapest gap to close
+— **no prior-run state reaches the prompt at all**: prior findings live in the
+comment's embedded state and are used only afterward, for suppression and
+fingerprint matching. The model is never told it has seen this PR before.
+
+(The research half of this is already fixed: removing the offline index let
+`ci.ts` drop `!config.research.enabled` from `cacheAllowed`, so researched
+reviews are cacheable again.)
+
+Two independent levers, worth not conflating:
+
+1. **Finer-grained result reuse.** Move below whole-review granularity so a
+   push that touches one file doesn't re-run every pass. §4 item 4 already
+   documents why this is hard and should be read first: chunk boundaries shift
+   under small edits (one modified file reshuffles every downstream chunk →
+   every hash misses), and findings depend on more than their own chunk, so
+   reusing an "unchanged" chunk's verdict can miss a break introduced by a
+   sibling change. The safer variant named there — reuse only when the *rest*
+   of the PR is unchanged (rebase / comment-only push) — reuses much less but
+   doesn't trade recall, and is probably the place to start.
+2. **Prior-review context in the prompt (do this first).** Give the reviewer a
+   host-built block naming what it reported last time and what changed since —
+   built from the embedded comment state we already carry, so it is trusted,
+   structured, small, and bounded like every other prompt input.
+
+   The data is already there and needs no new storage: `ReviewState`
+   (`render.ts:518`) round-trips the whole `CoordinatorOutput` — every prior
+   finding with file, line, severity, category and rationale — plus `dismissed`,
+   `feedback`, `pins`, and the `inputHash`, through the PR comment on every run.
+   It is decoded on each run and used only afterward. Note this is *richer* than
+   a resumed transcript would be: it knows which findings a maintainer dismissed
+   and which ones the author answered. Note also the precedent — cross-run state
+   in this tool already travels in the comment, not in CI storage. This is what
+   actually delivers "this is a re-review, here is what moved"; it needs no
+   persisted engine state, survives a CLI upgrade, and works on any harness
+   (see C). Findings must still be re-derived from the current code — prior
+   findings are context, never a verdict to restate.
+
+3. **Engine session reuse.** Mechanically confirmed to work (2026-08-08, claude
+   2.1.226): `--session-id <uuid>` *pre-assigns* an id, so ids can be derived
+   deterministically rather than scraped from stream-json; `--resume <id>` works
+   under `-p` and restores full history **across a different cwd**, so the
+   per-run `mkdtemp` head worktree is not a blocker; `CLAUDE_CONFIG_DIR` (already
+   in `CHILD_ENV_ALLOWLIST`) relocates transcripts somewhere cacheable. A warm
+   resume is much cheaper than a fresh pass — in a toy 4-turn measurement,
+   37k cached vs 18.5k re-created tokens.
+
+   Four things to settle before building it:
+
+   - **The economics invert when the cache is cold.** Prompt-cache TTL is 1 hour
+     on a subscription, 5 minutes on an API key. Warm, resume is a large win.
+     Cold, resume reprocesses the *entire* transcript (~100k+ tokens for a real
+     pass, per §4 item 1) where a fresh pass pays ~10–18k of new input. That is
+     roughly a 5× penalty on exactly the re-review that arrives the next day.
+     A resume that falls back to a fresh session past the TTL is strictly better
+     than either alone — and needs only a stored timestamp.
+   - **A session is per agent×chunk, and chunks are not stable across pushes**
+     (`review.ts:546`, and §4 item 4). Only single-chunk reviews — a diff under
+     `chunk.maxChangedLines` — have a session unit that survives a push at all.
+     For chunked PRs, "resume the session for chunk 3" is meaningless once
+     chunk 3 covers different files.
+   - **Injection gains persistence.** Today an injection can only affect the run
+     whose diff carries it. A resumed transcript lets text pushed in commit 1
+     shape the review of commit 5, after that text is gone. This is the real
+     security cost, and it argues for capping resume depth/age, re-running the
+     verifier statelessly, and never resuming across a base change.
+   - **The transcript format is internal and version-coupled.** Upstream states
+     it "changes between versions", and resuming after a CLI upgrade reprocesses
+     everything with no cache hits — and we pin and bump that CLI. The cache key
+     must include the CLI version, which means every bump discards every session.
+
+   If caching transcripts in the GitHub Actions cache: scope is favorable — a
+   PR's cache is written to `refs/pull/N/merge` and restorable **only by re-runs
+   of that same PR**, and a PR cannot write the default-branch scope, so there is
+   no cross-PR path. Cache **only** the `projects/<dir>/<id>.jsonl` files, never
+   `$CLAUDE_CONFIG_DIR` itself — that directory also holds credentials.
+
+Decide the staleness budget before implementing. The tool's value proposition is
+recall, and every reuse strategy above buys latency and quota by accepting some
+probability of a stale conclusion.
+
+### B. A feedback loop that tunes the reviewer
+
+Author feedback shipped 2026-08-01 (LLP 0011) and already produces the signal:
+replies matched deterministically to findings, enum-only records embedded in the
+comment, adjudication verdicts, and `ecr feedback` mining a repo's whole PR
+history into totals, reply rates, category/severity/agent breakdowns, and
+"repeat offenders" — findings whose title recurs across PRs and draws a reply
+every time. Adjacent signals already exist too: verifier keep/drop verdicts,
+suppression, and the research usefulness counters.
+
+What's missing is the loop. None of it feeds back into the prompts or config —
+`ecr feedback` prints a report a human reads and acts on. The item is to close
+that: aggregate the signal into a durable, reviewable tuning artifact and let a
+run consume it.
+
+Constraints to design against, all of which fall out of the existing trust
+model rather than being new:
+
+- **A PR author must not be able to tune the reviewer.** Feedback is authored by
+  untrusted parties on untrusted PRs. Anything derived from it must land in the
+  trusted base and go through review like any other config change — never be
+  applied live from the PR that produced it.
+- **Prefer a reviewable artifact over auto-edited prompts.** A checked-in tuning
+  file a human approves keeps the change auditable and revertible; a model
+  silently rewriting `agents/*.md` does not.
+- **Guard against the obvious degenerate outcome:** "authors disliked this
+  finding" is a signal about friction, not about correctness. Optimizing it
+  directly teaches the reviewer to stop reporting true positives people find
+  annoying. The hard floors from LLP 0011 (`critical`/`secrets`/`security` can
+  never be cleared) are the precedent for what must stay out of reach.
+- Start read-only: report what a tuning change *would* do before letting it
+  change anything.
+
+### C. Drop OpenCode, and make the harness seam real while doing it
+
+Claude is the only harness we intend to support for now. Removing OpenCode is
+mostly deletion, but the *point* of the item is the part that isn't: today the
+engine abstraction is owned by one of its implementations, so "add a harness"
+means editing the Claude module. The goal is that adding Codex, Gemini CLI, or a
+direct-API harness later is a new file plus a registry entry — not a refactor.
+
+What the seam looks like now:
+
+- `Engine`, `engineForModel`, and `buildEngineMap` all live in
+  `src/core/claude-code.ts`. The interface is hosted inside an implementation.
+- `engineForModel` hardcodes the whole routing rule as
+  `provider === "anthropic" ? claude-code : opencode`, so **OpenCode is the
+  silent fallback for every non-Anthropic model**. `engineOf[agent] ?? "opencode"`
+  appears at more than one dispatch site.
+- Engine-specific knowledge leaks outward: `auth.ts` writes an OpenCode
+  `auth.json` under XDG, `setup-auth.ts` knows that path, `throttle.ts` parses
+  OpenCode's own log file for rate-limit evidence, and `doctor.ts` seeds its
+  engine set with `["opencode"]`.
+
+So the work is:
+
+1. **Extract the interface before deleting anything.** A `ReviewEngine` a harness
+   implements — start/stop, run one pass with (agent, model, system, prompt,
+   tools, schema), report usage/model-that-answered, surface throttle evidence —
+   living in its own module, not in a harness. `claude-code.ts` becomes one
+   implementation of it.
+2. **Make model→harness a registry lookup, not a conditional.** A harness
+   declares the model prefixes it serves. An unmatched model must fail fast and
+   name the fix, never fall through to a default harness.
+3. **Give harness-specific concerns a home in the harness.** Credential
+   materialization, CLI resolution, throttle/log parsing, and doctor probes are
+   per-harness behavior behind the same interface, not `if` branches in shared
+   code.
+4. **Then delete OpenCode**: `opencode.ts`, the `opencode-ai`/`@opencode-ai/sdk`
+   dependencies, its auth.json path, its log parsing, and the mixed-engine
+   machinery in `review.ts` that exists only because one run could drive two
+   harnesses at once.
+
+Two things to preserve rather than lose in the simplification. Mixed-engine
+support is what makes step 2 honest — the abstraction should still permit two
+harnesses in one run even while only one exists, because that is the case that
+would otherwise be designed out and need rebuilding. And the per-agent model
+override stays: harness choice follows from the model, so it stays a property of
+an agent, never a global run mode.
+
+The immediate payoff beyond deletion is that the research MCP wiring, the tool
+allow/deny lists, and the session work in (A) each currently need a per-harness
+implementation, and today that means editing both harness modules in step.
+
+### Considered and deferred: repo-configurable research sources
+
+Moving the documentation allowlist into `config.jsonc` so each repo points
+research at its own stack. **Deferred 2026-08-08** — not the cost of building
+it, but what it trades away.
+
+`src/research-mcp/providers.ts` holds the runtime host/path allowlist and is the
+outbound security boundary. Making it repo-owned reverses a stated invariant:
+"Root config supplies only enablement, bounds, and an optional absolute fallback
+index path—not an arbitrary command, endpoint, host, or argument vector" (LLP
+0013#one-package-two-binaries). A PR head still could not add a host — research
+config loads from the trusted base — but a repo admin could, and the 2026-08-07
+audit established that research is an outbound disclosure channel where the
+reviewing model chooses the query terms and URL path. So the feature widens who
+can receive repository-derived terms. Two things also make it more than a config
+change: retrieval is bespoke per provider (Apple DocC JSON, YouTrack JSON,
+raw-markdown rewrites), so a repo-declared source realistically gets the generic
+HTML path only; and the MCP tool schema is generated from the fixed list
+(`z.enum(PROVIDERS)`), so per-repo sources make the tool schema, prompt provider
+map, citation grounding, and audit provider field all vary by repo.
+
+Revisit if adopters actually ask for internal documentation hosts. If so, the
+shape most likely to survive is repo sources *added to* the package catalog
+rather than replacing it, with exact hostname plus path prefix only — no pattern
+language, and no pluggable adapters.
+
+Note for whoever picks this up: `research/sources.json` is **not** this
+allowlist. It is the seed catalog for the operator-only `update` crawler
+(`cli.ts` lazily imports `crawler.js` there and nowhere else); no review-time
+code path reads it. Editing it changes what an offline index build crawls, not
+what a review is allowed to fetch.
+
+
 ## Recently shipped
 
 - **Author feedback on findings (shipped 2026-08-01)** — a PR author's reply is
