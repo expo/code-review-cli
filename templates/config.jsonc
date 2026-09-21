@@ -48,19 +48,16 @@
   //   "timeoutMs": 30000
   // },
 
-  // Optional Jev shadow evaluation (ROOT-ONLY; off by default). Jev receives each
-  // final finding plus a bounded patch for that finding's file and returns typed
-  // support/severity probabilities. ECR writes those observations to reviews.jsonl
-  // but never changes, hides, or re-severities a finding from them. Pin the model
-  // while calibrating: aliases such as jev-latest can move underneath thresholds.
-  // Set TYPESAFE_API_KEY in the environment (the workflow templates show the
-  // optional secret mapping) before enabling this.
+  // Optional Jev verification cascade (ROOT-ONLY). Adding this block activates it:
+  // confident local support keeps a finding, confident contradiction drops an
+  // ordinary finding, and uncertainty or protected findings defer to the reasoning
+  // verifier. Pin the model because moving aliases can invalidate the threshold.
+  // Set TYPESAFE_API_KEY in the environment before adding the block.
   // "jev": {
-  //   "enabled": true,
   //   "model": "jev-1.13.0",
-  //   "maxFindings": 20,
+  //   "minConfidence": 0.9,
   //   "timeoutMs": 10000,
-  //   "maxPatchChars": 30000
+  //   "maxContextChars": 30000
   // },
 
   // Large diffs are split into focused chunks by changed-line count, plus a

@@ -31,14 +31,13 @@
     "timeoutMs": 30000
   },
 
-  // Shadow-only Jev second opinion. Keep disabled until TYPESAFE_API_KEY is added
-  // as a repository secret; enabling it changes only reviews.jsonl telemetry.
+  // Active Jev verification cascade. Confident local judgments act immediately;
+  // ambiguous and protected findings defer to the reasoning verifier.
   "jev": {
-    "enabled": false,
     "model": "jev-1.13.0",
-    "maxFindings": 20,
+    "minConfidence": 0.9,
     "timeoutMs": 10000,
-    "maxPatchChars": 30000
+    "maxContextChars": 30000
   },
 
   // Large diffs are split into focused chunks by changed-line count, plus a

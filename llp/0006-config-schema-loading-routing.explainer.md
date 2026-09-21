@@ -85,12 +85,12 @@ commit `43b31a4` follow-up]. The actual secret values never enter this subsystem
 owns the wiring and the `FORBIDDEN_TOKEN_ENVS` list, and schema/load only ever touch the env-var
 NAME [observed: `AGENTS.md` security invariants; `src/core/auth.ts:28,45,206`].
 
-`jev` is root-only for the same trust reason as research: enabling it sends bounded
-repository-derived text to another provider. A scope may neither enable it nor alter
-its model or limits. Nested scopes inherit the root's fully resolved Jev settings, so
+`jev` is root-only for the same trust reason as research: adding it sends bounded
+repository-derived text to another provider. A scope may neither activate it nor alter
+its model, threshold, or limits. Nested scopes inherit the root's resolved settings, so
 one PR has one centrally owned disclosure policy [observed: `schema.ts`
-`ScopeReviewConfigSchema`; `load.ts` `loadScopeConfig`]. The data boundary and
-shadow-only behavior live in [LLP 0014](0014-jev-shadow-evaluation.explainer.md).
+`ScopeReviewConfigSchema`; `load.ts` `loadScopeConfig`]. The data boundary and active
+selective cascade live in [LLP 0014](0014-jev-selective-verification.explainer.md).
 
 ## Model Resolution
 

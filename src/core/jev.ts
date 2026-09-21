@@ -1,9 +1,9 @@
-// @ref LLP 0014#shadow-first-integration [implements] — Jev records a bounded second opinion without entering the decision path
+// @ref LLP 0014#active-selective-cascade [implements] — Jev handles narrow judgments and defers uncertainty
 import { TypeSafeClient, choice } from "@typesafe-ai/sdk";
 import { z } from "zod";
 
 import type { LoadedConfig } from "../config/schema.js";
-import type { DiffEntry, Finding } from "./schema.js";
+import type { Finding } from "./schema.js";
 import { fingerprintFinding } from "./schema.js";
 
 const TYPESAFE_API_URL = "https://api.typesafe.ai";
@@ -12,17 +12,14 @@ const MAX_FILE_CHARS = 1_000;
 const MAX_TITLE_CHARS = 1_000;
 const MAX_RATIONALE_CHARS = 6_000;
 const MAX_EVIDENCE_CHARS = 6_000;
+const INPUT_COST_PER_MILLION = 0.042;
 
 const SUPPORT_CRITERIA = {
-  supported: "The supplied patch contains concrete evidence for the reported problem.",
-  insufficient: "The supplied patch does not contain enough evidence to decide.",
-  contradicted: "The supplied patch shows that the reported problem is not present.",
-} as const;
-
-const SEVERITY_CRITERIA = {
-  suggestion: "A non-blocking improvement with no demonstrated shipped failure.",
-  warning: "A real defect with a plausible user, reliability, or maintainability impact.",
-  critical: "A severe security, secret-exposure, data-loss, or broadly breaking defect.",
+  supported: "The supplied source context directly demonstrates the exact reported problem.",
+  needs_reasoning:
+    "The context is insufficient, or the claim needs multi-file, runtime, arithmetic, temporal, or indirect reasoning.",
+  contradicted:
+    "The supplied source context directly demonstrates that the reported problem is not present.",
 } as const;
 
 const probability = z.number().min(0).max(1);
@@ -31,22 +28,12 @@ const JevResponseSchema = z.object({
   answers: z.object({
     support: z.object({
       type: z.literal("choice"),
-      choice: z.enum(["supported", "insufficient", "contradicted"]),
+      choice: z.enum(["supported", "needs_reasoning", "contradicted"]),
       confidence: probability,
       probabilities: z.object({
         supported: probability,
-        insufficient: probability,
+        needs_reasoning: probability,
         contradicted: probability,
-      }),
-    }),
-    severity: z.object({
-      type: z.literal("choice"),
-      choice: z.enum(["suggestion", "warning", "critical"]),
-      confidence: probability,
-      probabilities: z.object({
-        suggestion: probability,
-        warning: probability,
-        critical: probability,
       }),
     }),
   }),
@@ -56,35 +43,40 @@ const JevResponseSchema = z.object({
   }),
 });
 
-export interface JevFindingObservation {
+export interface JevCandidate {
+  finding: Finding;
+  sourceContext: string;
+}
+
+export interface JevEvaluation {
   fingerprint: string;
   model: string;
   support: keyof typeof SUPPORT_CRITERIA;
-  supportConfidence: number;
-  supportProbabilities: Record<keyof typeof SUPPORT_CRITERIA, number>;
-  severity: keyof typeof SEVERITY_CRITERIA;
-  severityConfidence: number;
-  severityProbabilities: Record<keyof typeof SEVERITY_CRITERIA, number>;
+  confidence: number;
+  probabilities: Record<keyof typeof SUPPORT_CRITERIA, number>;
 }
 
-export interface JevObservation {
+export interface JevVerificationSummary {
   configuredModel: string;
+  actualModel?: string;
   durationMs: number;
   evaluated: number;
-  skipped: number;
   failed: number;
   inputTokens: number;
   outputTokens: number;
-  findings: JevFindingObservation[];
-  error?: string;
+  cost: number;
+  unavailable?: string;
 }
 
-export interface ObserveWithJevOptions {
-  config: LoadedConfig["jev"];
-  findings: readonly Finding[];
-  files: readonly DiffEntry[];
+export interface JevVerificationResult {
+  evaluations: Map<string, JevEvaluation>;
+  summary: JevVerificationSummary;
+}
+
+export interface EvaluateWithJevOptions {
+  config: NonNullable<LoadedConfig["jev"]>;
+  candidates: readonly JevCandidate[];
   env?: NodeJS.ProcessEnv;
-  /** Explicit key captured before reviewer engines start; never forwarded to them. */
   apiKey?: string;
   client?: TypeSafeClient;
 }
@@ -99,33 +91,22 @@ export async function withoutJevCredential<T>(
     delete env.TYPESAFE_API_KEY;
     return await run();
   } finally {
-    if (apiKey === undefined) {
-      delete env.TYPESAFE_API_KEY;
-    } else {
-      env.TYPESAFE_API_KEY = apiKey;
-    }
+    if (apiKey === undefined) delete env.TYPESAFE_API_KEY;
+    else env.TYPESAFE_API_KEY = apiKey;
   }
 }
 
-/**
- * Ask Jev typed questions about final findings. The returned record is telemetry
- * only: callers must never use it to mutate a finding or review decision.
- */
-export async function observeFindingsWithJev({
+/** Classify candidates with one atomic question; failures become missing evaluations. */
+export async function evaluateFindingsWithJev({
   config,
-  findings,
-  files,
+  candidates,
   env = process.env,
   apiKey: explicitApiKey,
   client,
-}: ObserveWithJevOptions): Promise<JevObservation | undefined> {
-  if (!config.enabled) return undefined;
-
+}: EvaluateWithJevOptions): Promise<JevVerificationResult> {
   const started = Date.now();
   const apiKey = (explicitApiKey ?? env.TYPESAFE_API_KEY)?.trim();
-  if (!client && !apiKey) {
-    return emptyObservation(config, started, "TYPESAFE_API_KEY is not set");
-  }
+  if (!client && !apiKey) return emptyResult(config, started, "TYPESAFE_API_KEY is not set");
 
   let resolvedClient: TypeSafeClient;
   try {
@@ -140,73 +121,97 @@ export async function observeFindingsWithJev({
         logLevel: "off",
       });
   } catch {
-    return emptyObservation(config, started, "Jev client could not be initialized");
+    return emptyResult(config, started, "Jev client could not be initialized");
   }
 
-  const selected = findings.slice(0, config.maxFindings);
-  const patches = new Map(files.map((file) => [file.path, file.patch]));
-  const results: JevFindingObservation[] = [];
+  const evaluations = new Map<string, JevEvaluation>();
   let failed = 0;
   let inputTokens = 0;
   let outputTokens = 0;
+  let actualModel: string | undefined;
   let next = 0;
 
   const worker = async (): Promise<void> => {
-    while (next < selected.length) {
-      const finding = selected[next++];
-      if (!finding) continue;
+    while (next < candidates.length) {
+      const candidate = candidates[next++];
+      if (!candidate) continue;
       try {
         const response = JevResponseSchema.parse(
           await resolvedClient.systemOne({
             model: config.model,
-            state: buildJevState(finding, patches.get(finding.file) ?? "", config.maxPatchChars),
+            state: buildJevState(
+              candidate.finding,
+              candidate.sourceContext,
+              config.maxContextChars,
+            ),
             questions: {
               support: choice(
-                "Does the supplied changed-code patch support this exact code-review finding? Judge only the supplied evidence; do not assume missing repository context.",
+                "Does this source context directly support or contradict this exact code-review finding? Select needs_reasoning whenever the answer depends on omitted context or non-local reasoning.",
                 SUPPORT_CRITERIA,
-              ),
-              severity: choice(
-                "If the finding is real, what is its appropriate review severity?",
-                SEVERITY_CRITERIA,
               ),
             },
           }),
         );
         inputTokens += response.usage.input_tokens;
         outputTokens += response.usage.output_tokens;
-        results.push({
-          fingerprint: fingerprintFinding(finding),
+        actualModel = response.model;
+        const fingerprint = fingerprintFinding(candidate.finding);
+        evaluations.set(fingerprint, {
+          fingerprint,
           model: response.model,
           support: response.answers.support.choice,
-          supportConfidence: response.answers.support.confidence,
-          supportProbabilities: response.answers.support.probabilities,
-          severity: response.answers.severity.choice,
-          severityConfidence: response.answers.severity.confidence,
-          severityProbabilities: response.answers.severity.probabilities,
+          confidence: response.answers.support.confidence,
+          probabilities: response.answers.support.probabilities,
         });
       } catch {
-        // Observation is fail-open and provider errors may contain request details.
         failed += 1;
       }
     }
   };
 
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, selected.length) }, () => worker()));
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, candidates.length) }, () => worker()),
+  );
 
   return {
-    configuredModel: config.model,
-    durationMs: Date.now() - started,
-    evaluated: results.length,
-    skipped: Math.max(0, findings.length - selected.length),
-    failed,
-    inputTokens,
-    outputTokens,
-    findings: results.sort((a, b) => a.fingerprint.localeCompare(b.fingerprint)),
+    evaluations,
+    summary: {
+      configuredModel: config.model,
+      ...(actualModel ? { actualModel } : {}),
+      durationMs: Date.now() - started,
+      evaluated: evaluations.size,
+      failed,
+      inputTokens,
+      outputTokens,
+      cost: (inputTokens * INPUT_COST_PER_MILLION) / 1_000_000,
+    },
   };
 }
 
-/** Build the only state sent to TypeSafe: finding metadata plus its bounded file patch. */
-export function buildJevState(finding: Finding, patch: string, maxPatchChars: number) {
+/** High-confidence local answers act; sensitive or uncertain answers defer. */
+export function jevDisposition(
+  finding: Finding,
+  evaluation: JevEvaluation | undefined,
+  minConfidence: number,
+): "keep" | "drop" | "defer" {
+  if (!evaluation || evaluation.confidence < minConfidence) return "defer";
+  // Jev sees repository source, not the audited external passage. The reasoning
+  // verifier remains responsible for citation support in either direction.
+  if (finding.sources?.length) return "defer";
+  if (evaluation.support === "supported") return "keep";
+  if (evaluation.support === "needs_reasoning") return "defer";
+  if (
+    finding.severity === "critical" ||
+    finding.category === "security" ||
+    finding.category === "secrets"
+  ) {
+    return "defer";
+  }
+  return "drop";
+}
+
+/** Build the only state sent to TypeSafe: finding metadata plus bounded local source. */
+export function buildJevState(finding: Finding, sourceContext: string, maxContextChars: number) {
   return {
     finding: {
       severity: finding.severity,
@@ -217,7 +222,7 @@ export function buildJevState(finding: Finding, patch: string, maxPatchChars: nu
       rationale: boundText(finding.rationale, MAX_RATIONALE_CHARS),
       evidence: finding.evidence ? boundText(finding.evidence, MAX_EVIDENCE_CHARS) : null,
     },
-    changedCodePatch: boundPatch(patch, finding.evidence, maxPatchChars),
+    sourceContext: boundContext(sourceContext, finding.evidence, maxContextChars),
   };
 }
 
@@ -225,33 +230,36 @@ function boundText(value: string, maxChars: number): string {
   return value.length <= maxChars ? value : `${value.slice(0, maxChars - 1)}…`;
 }
 
-function boundPatch(patch: string, evidence: string | undefined, maxChars: number): string {
-  if (patch.length <= maxChars) return patch;
-  const omitted = "\n... patch omitted by ecr ...\n";
+function boundContext(context: string, evidence: string | undefined, maxChars: number): string {
+  if (context.length <= maxChars) return context;
+  const omitted = "\n... source omitted by ecr ...\n";
   const budget = Math.max(1, maxChars - omitted.length);
-  const evidenceAt = evidence ? patch.indexOf(evidence) : -1;
+  const evidenceAt = evidence ? context.indexOf(evidence) : -1;
   if (evidenceAt >= 0) {
     const start = Math.max(0, evidenceAt - Math.floor(budget / 2));
-    return patch.slice(start, start + budget) + omitted;
+    return context.slice(start, start + budget) + omitted;
   }
-  const half = Math.floor(budget / 2);
-  return patch.slice(0, half) + omitted + patch.slice(-half);
+  const first = Math.floor(budget / 2);
+  const last = budget - first;
+  return context.slice(0, first) + omitted + context.slice(-last);
 }
 
-function emptyObservation(
-  config: LoadedConfig["jev"],
+function emptyResult(
+  config: NonNullable<LoadedConfig["jev"]>,
   started: number,
-  error: string,
-): JevObservation {
+  unavailable: string,
+): JevVerificationResult {
   return {
-    configuredModel: config.model,
-    durationMs: Date.now() - started,
-    evaluated: 0,
-    skipped: 0,
-    failed: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    findings: [],
-    error,
+    evaluations: new Map(),
+    summary: {
+      configuredModel: config.model,
+      durationMs: Date.now() - started,
+      evaluated: 0,
+      failed: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cost: 0,
+      unavailable,
+    },
   };
 }

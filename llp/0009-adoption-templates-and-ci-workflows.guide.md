@@ -65,13 +65,13 @@ credential actually selected by trusted config. The default remains Anthropic an
 `templates/workflow.yml`, `command.yml`, and `atlantis.yml`].
 
 **Jev is an independent optional secret.** Each review-running workflow maps
-`TYPESAFE_API_KEY`, while the root config keeps `jev.enabled` false. GitHub supplies an
-empty value when the repository secret is absent, so the default scaffold does not
-gain a working external call. Once enabled from trusted root config, ECR sends bounded
-finding/file-patch state directly to TypeSafe and writes only probabilities to the run
-log; the key never enters `auth.tokenEnv` or the reviewer engines. `dismiss.yml` still
-receives no model or Jev credential. [LLP 0014](0014-jev-shadow-evaluation.explainer.md)
-owns the disclosure and promotion rules.
+`TYPESAFE_API_KEY`; adding `jev` to trusted root config activates the selective cascade.
+GitHub supplies an empty value when the repository secret is absent, so the original
+verification path remains available. ECR sends bounded finding/file source directly
+to TypeSafe and logs aggregate usage; the key never enters `auth.tokenEnv` or reviewer
+engines. `dismiss.yml` still receives no model or Jev credential.
+[LLP 0014](0014-jev-selective-verification.explainer.md) owns the disclosure and
+fallback rules.
 
 **Keep the `**/*` catch-all first in `routing.jsonc`.** Scopes match last-match-wins, so a `**/*` catch-all must come first and more specific scopes come after to override it [observed: `templates/routing.jsonc:27-31`; `AGENTS.md:17-18`]. Nothing validates the order — reversing it silently changes which config applies to already-routed files [inferred: no code checks that the `**/*` catch-all comes first, so reversing it silently changes routing].
 

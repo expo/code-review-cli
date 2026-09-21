@@ -1,4 +1,5 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
+import { TypeSafeClient } from "@typesafe-ai/sdk";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -82,6 +83,34 @@ const finding = (over: Partial<Finding>): Finding => ({
 // (keep the finding). Grounded non-criticals never reach the LLM at all.
 const handle = {} as OpencodeHandle;
 
+const contradictedJev = new TypeSafeClient({
+  apiKey: "test-key",
+  retry: { maxRetries: 0 },
+  fetch: async () =>
+    new Response(
+      JSON.stringify({
+        model: "jev-1.13.0",
+        answers: {
+          support: {
+            type: "choice",
+            choice: "contradicted",
+            confidence: 0.97,
+            probabilities: { supported: 0.01, needs_reasoning: 0.02, contradicted: 0.97 },
+          },
+        },
+        usage: { input_tokens: 20, output_tokens: 0 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ),
+});
+
+const jevConfig = {
+  model: "jev-1.13.0",
+  minConfidence: 0.9,
+  timeoutMs: 10_000,
+  maxContextChars: 30_000,
+};
+
 test("grounded non-critical is kept without an LLM call", async () => {
   const res = await verifyFindings(
     handle,
@@ -89,6 +118,40 @@ test("grounded non-critical is kept without an LLM call", async () => {
     "/",
   );
   expect(res.kept.map((f) => f.title)).toEqual(["present"]);
+  expect(res.dropped).toEqual([]);
+});
+
+test("Jev actively drops a confidently contradicted ordinary finding", async () => {
+  const res = await verifyFindings(
+    handle,
+    [finding({ title: "contradicted", evidence: "return items[next++]!;" })],
+    "/",
+    undefined,
+    [],
+    { config: jevConfig, client: contradictedJev },
+  );
+  expect(res.kept).toEqual([]);
+  expect(res.dropped[0]?.reason).toContain("Jev directly contradicted");
+  expect(res.jev?.evaluated).toBe(1);
+});
+
+test("Jev defers a contradicted security finding to the reasoning verifier", async () => {
+  const res = await verifyFindings(
+    handle,
+    [
+      finding({
+        title: "protected",
+        category: "security",
+        evidence: "return items[next++]!;",
+      }),
+    ],
+    "/",
+    undefined,
+    [],
+    { config: jevConfig, client: contradictedJev },
+  );
+  // The dummy reasoning handle fails, and the existing fail-open rule keeps it.
+  expect(res.kept.map((item) => item.title)).toEqual(["protected"]);
   expect(res.dropped).toEqual([]);
 });
 

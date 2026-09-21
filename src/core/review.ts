@@ -84,8 +84,8 @@ import {
   summarizeResearchUsefulness,
 } from "./research.js";
 import type { ResearchEvidence, ResearchMcpRuntime, ResearchProvenance } from "./research.js";
-import { observeFindingsWithJev, withoutJevCredential } from "./jev.js";
-import type { JevObservation } from "./jev.js";
+import { withoutJevCredential } from "./jev.js";
+import type { JevVerificationSummary } from "./jev.js";
 
 export interface ReviewRunOptions {
   config: LoadedConfig;
@@ -299,7 +299,7 @@ export async function runReview(
 
   let researchEvidence: ResearchEvidence[] = [];
   let researchRecord: ResearchProvenance | undefined;
-  let jevRecord: JevObservation | undefined;
+  let jevRecord: JevVerificationSummary | undefined;
 
   // Materialize the PR-head tree (not the current checkout) when the source can, so
   // the agents' surrounding-source reads and the verifier's re-reads see the versions
@@ -393,7 +393,7 @@ export async function runReview(
   // OpenCode's SDK copies process.env into its server. Withhold the unrelated Jev
   // credential at spawn time, then restore the parent immediately; Claude uses an
   // allowlisted child env already. The captured value is passed directly to Jev.
-  // @ref LLP 0014#shadow-first-integration [constrained-by] — the reviewer engines never receive the Jev credential
+  // @ref LLP 0014#active-selective-cascade [constrained-by] — reviewer engines never receive the Jev credential
   const jevApiKey = process.env.TYPESAFE_API_KEY;
   try {
     if (usesOpencode) {
@@ -1099,6 +1099,9 @@ export async function runReview(
         process.cwd(),
         progress,
         researchEvidence,
+        config.jev
+          ? { config: config.jev, ...(jevApiKey ? { apiKey: jevApiKey } : {}) }
+          : undefined,
       );
       agentCosts["verifier"] = verification.cost;
       trackTokens("verifier", verification.tokens);
@@ -1108,6 +1111,15 @@ export async function runReview(
         config.agents[0]?.model ?? config.coordinator.model,
         verification.model,
       );
+      if (verification.jev) {
+        jevRecord = verification.jev;
+        agentCosts["jev-verifier"] = verification.jev.cost;
+        trackTokens("jev-verifier", {
+          input: verification.jev.inputTokens,
+          output: verification.jev.outputTokens,
+        });
+        trackModel("jev-verifier", verification.jev.configuredModel, verification.jev.actualModel);
+      }
       verifierDropped = verification.dropped;
       citationStrips = verification.citationStripped;
       if (verification.dropped.length > 0 || verification.citationStripped.length > 0) {
@@ -1338,24 +1350,6 @@ export async function runReview(
       await appendStepSummary(renderResearchUsefulnessMarkdown(researchRecord));
     }
 
-    // @ref LLP 0014#shadow-first-integration [implements] — run after the final
-    // finding set exists and never feed the answers back into `output`.
-    jevRecord = await observeFindingsWithJev({
-      config: config.jev,
-      findings: output.findings,
-      files: kept,
-      apiKey: jevApiKey,
-    });
-    if (jevRecord) {
-      if (jevRecord.error) {
-        progress(`Jev shadow evaluation unavailable (${jevRecord.error}); review unchanged.`);
-      } else {
-        progress(
-          `Jev shadow evaluation: ${jevRecord.evaluated} observed, ${jevRecord.failed} failed, ${jevRecord.skipped} over cap; review unchanged.`,
-        );
-      }
-    }
-
     // Surface provider throttling as a fact about the run: passes already waited or
     // backed off, but the operator should still SEE that it happened (a run that
     // was rate-limited is slower and may carry partial passes — that's the cause).
@@ -1398,7 +1392,7 @@ export async function runReview(
     await safeLog(logPath, {
       ...baseRecord,
       ...(researchRecord ? { research: researchRecord } : {}),
-      ...(jevRecord ? { jev: jevRecord } : {}),
+      ...(jevRecord ? { jevVerification: jevRecord } : {}),
       agentCosts,
       totalCost: sum(agentCosts),
       tokens: tokenTotals,
@@ -1437,7 +1431,7 @@ export async function runReview(
     await safeLog(logPath, {
       ...baseRecord,
       ...(researchRecord ? { research: researchRecord } : {}),
-      ...(jevRecord ? { jev: jevRecord } : {}),
+      ...(jevRecord ? { jevVerification: jevRecord } : {}),
       agentCosts,
       totalCost: sum(agentCosts),
       tokens: tokenTotals,

@@ -283,37 +283,34 @@ The boundary, in brief:
 Full detail — providers, query grammar, `fetch_platform_doc` modes, provenance and
 citation grounding: [LLP 0013](./llp/0013-platform-research.explainer.md).
 
-## Jev shadow evaluation (experimental)
+## Jev selective verification
 
-ECR can ask [TypeSafe AI's Jev](https://docs.typesafe.ai/) for a typed second opinion
-on each final finding. This integration is deliberately observation-only: Jev's
-support and severity probabilities go to `.runs/reviews.jsonl`, but they never alter
-the posted findings or decision. That makes real review traffic the calibration set
-before any future filtering or routing policy is considered.
+ECR can use [TypeSafe AI's Jev](https://docs.typesafe.ai/) as the fast first stage of
+finding verification. Generative agents still discover and explain problems. Jev
+answers one narrow typed question against bounded local source, then either keeps a
+clearly supported finding, drops a clearly contradicted ordinary finding, or defers
+to the existing reasoning verifier.
 
-Enable it in the root config and provide `TYPESAFE_API_KEY` (the scaffolded workflows
-already map the optional repository secret):
+There is no shadow mode or separate `enabled` flag. Add the root-only block and provide
+`TYPESAFE_API_KEY`; removing the block restores the original verification path:
 
 ```jsonc
 {
   "jev": {
-    "enabled": true,
     "model": "jev-1.13.0",
-    "maxFindings": 20,
+    "minConfidence": 0.9,
     "timeoutMs": 10000,
-    "maxPatchChars": 30000
+    "maxContextChars": 30000
   }
 }
 ```
 
-Each request contains one finding and only the bounded patch for its file. The model
-is pinned because probability thresholds must be calibrated against a stable version.
-Jev is an evaluator, not a generator: it cannot explain a defect or propose a fix,
-and its confidence is distribution concentration rather than proof that an answer is
-correct. It is also not a prompt-injection or security boundary. Missing credentials,
-timeouts, and provider errors leave the review unchanged and are recorded as reduced
-shadow coverage. See [LLP 0014](./llp/0014-jev-shadow-evaluation.explainer.md) for the
-research, threat model, and promotion criteria.
+Each request contains one finding and bounded source from its file. Critical, security,
+secrets, and cited findings are never dropped by Jev alone. Low confidence, missing
+context, credentials, timeouts, and provider errors fall back to the reasoning or
+original verification path. Confidence is distribution concentration, not proof, so
+the model and threshold are explicit. See [LLP 0014](./llp/0014-jev-selective-verification.explainer.md)
+for the research, decision table, and threat model.
 
 ## Monorepos (routing manifest)
 

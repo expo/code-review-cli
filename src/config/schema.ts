@@ -87,25 +87,19 @@ export const ReviewConfigSchema = z.object({
       resultsPerQuery: 2,
       timeoutMs: 30_000,
     }),
-  // Optional Jev second opinion. This is deliberately observation-only: its
-  // answers are written to the run log and never alter findings or decisions.
-  // ROOT-ONLY because it sends bounded source context to a separate provider.
-  // @ref LLP 0014#shadow-first-integration [implements] — collect calibration data before granting Jev decision authority
+  // Optional Jev verification cascade. Presence enables it: confident local
+  // judgments act immediately, while ambiguous or protected findings defer to
+  // the reasoning verifier. ROOT-ONLY because it sends bounded source context
+  // to a separate provider.
+  // @ref LLP 0014#active-selective-cascade [implements] — narrow decisions act; uncertainty defers
   jev: z
     .object({
-      enabled: z.boolean().default(false),
       model: z.string().min(1).default("jev-1.13.0"),
-      maxFindings: z.number().int().min(1).max(100).default(20),
+      minConfidence: z.number().min(0.5).max(1).default(0.9),
       timeoutMs: z.number().int().min(1000).max(60_000).default(10_000),
-      maxPatchChars: z.number().int().min(1000).max(30_000).default(30_000),
+      maxContextChars: z.number().int().min(1000).max(30_000).default(30_000),
     })
-    .default({
-      enabled: false,
-      model: "jev-1.13.0",
-      maxFindings: 20,
-      timeoutMs: 10_000,
-      maxPatchChars: 30_000,
-    }),
+    .optional(),
   breakGlass: z
     .object({ marker: z.string().default("/skip-review") })
     .default({ marker: "/skip-review" }),
@@ -488,13 +482,12 @@ export interface LoadedConfig {
     resultsPerQuery: number;
     timeoutMs: number;
   };
-  /** Root-only, observation-only Jev evaluation settings. */
-  jev: {
-    enabled: boolean;
+  /** Root-only Jev selective-verification settings; absent means disabled. */
+  jev?: {
     model: string;
-    maxFindings: number;
+    minConfidence: number;
     timeoutMs: number;
-    maxPatchChars: number;
+    maxContextChars: number;
   };
   breakGlassMarker: string;
   commentTag: string;
