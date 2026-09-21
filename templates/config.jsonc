@@ -48,6 +48,21 @@
   //   "timeoutMs": 30000
   // },
 
+  // Optional Jev shadow evaluation (ROOT-ONLY; off by default). Jev receives each
+  // final finding plus a bounded patch for that finding's file and returns typed
+  // support/severity probabilities. ECR writes those observations to reviews.jsonl
+  // but never changes, hides, or re-severities a finding from them. Pin the model
+  // while calibrating: aliases such as jev-latest can move underneath thresholds.
+  // Set TYPESAFE_API_KEY in the environment (the workflow templates show the
+  // optional secret mapping) before enabling this.
+  // "jev": {
+  //   "enabled": true,
+  //   "model": "jev-1.13.0",
+  //   "maxFindings": 20,
+  //   "timeoutMs": 10000,
+  //   "maxPatchChars": 30000
+  // },
+
   // Large diffs are split into focused chunks by changed-line count, plus a
   // cross-cutting pass for multi-file issues. Diffs under maxChangedLines are one
   // full-context pass. Defaults shown; raise/lower per your model + PR sizes.

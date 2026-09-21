@@ -87,6 +87,25 @@ export const ReviewConfigSchema = z.object({
       resultsPerQuery: 2,
       timeoutMs: 30_000,
     }),
+  // Optional Jev second opinion. This is deliberately observation-only: its
+  // answers are written to the run log and never alter findings or decisions.
+  // ROOT-ONLY because it sends bounded source context to a separate provider.
+  // @ref LLP 0014#shadow-first-integration [implements] — collect calibration data before granting Jev decision authority
+  jev: z
+    .object({
+      enabled: z.boolean().default(false),
+      model: z.string().min(1).default("jev-1.13.0"),
+      maxFindings: z.number().int().min(1).max(100).default(20),
+      timeoutMs: z.number().int().min(1000).max(60_000).default(10_000),
+      maxPatchChars: z.number().int().min(1000).max(30_000).default(30_000),
+    })
+    .default({
+      enabled: false,
+      model: "jev-1.13.0",
+      maxFindings: 20,
+      timeoutMs: 10_000,
+      maxPatchChars: 30_000,
+    }),
   breakGlass: z
     .object({ marker: z.string().default("/skip-review") })
     .default({ marker: "/skip-review" }),
@@ -334,7 +353,7 @@ export type RoutingDefaults = RoutingManifest["defaults"];
  * Scope config = root config MINUS the centrally locked keys. Allowlist of
  * scope-overridable keys (Turborepo-style, graft 6): model, policy, chunk,
  * noise (+ the prompt files living beside it: shared.md, coordinator.md,
- * agents/). NEVER auth, breakGlass, or research — declaring one fails parsing at the
+ * agents/). NEVER auth, breakGlass, research, or jev — declaring one fails parsing at the
  * Zod level so IDE/doctor catch it before CI. commentTag is also locked: a
  * scope's comment marker is always DERIVED (`<rootTag>:<scope>`; the default
  * scope keeps the root tag) so `ecr ci`'s post/clear/reconcile paths and a
@@ -349,6 +368,7 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
   stack: true,
   feedback: true,
   research: true,
+  jev: true,
   inline: true,
 }).extend({
   auth: z
@@ -377,6 +397,12 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
     .never({
       error:
         "research is locked to the root config because it starts a trusted host process; remove it from this scope config",
+    })
+    .optional(),
+  jev: z
+    .never({
+      error:
+        "jev is locked to the root config because it sends bounded source context to an external provider; remove it from this scope config",
     })
     .optional(),
   inline: z
@@ -461,6 +487,14 @@ export interface LoadedConfig {
     maxQueries: number;
     resultsPerQuery: number;
     timeoutMs: number;
+  };
+  /** Root-only, observation-only Jev evaluation settings. */
+  jev: {
+    enabled: boolean;
+    model: string;
+    maxFindings: number;
+    timeoutMs: number;
+    maxPatchChars: number;
   };
   breakGlassMarker: string;
   commentTag: string;

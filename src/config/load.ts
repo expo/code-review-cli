@@ -71,6 +71,15 @@ const RESEARCH_CONFIG_DEFAULTS: LoadedConfig["research"] = {
   timeoutMs: 30_000,
 };
 
+/** Jev defaults for a scope load (where `jev` is schema-rejected). */
+const JEV_CONFIG_DEFAULTS: LoadedConfig["jev"] = {
+  enabled: false,
+  model: "jev-1.13.0",
+  maxFindings: 20,
+  timeoutMs: 10_000,
+  maxPatchChars: 30_000,
+};
+
 /** Default OpenCode tool toggles for a reviewer: read the repo, never mutate it. */
 const DEFAULT_AGENT_TOOLS = toolMap(["read", "grep", "glob", "list"]);
 
@@ -112,7 +121,7 @@ export interface LoadConfigOptions {
 /** Parsed config with the centrally-locked keys optional (scope configs omit them). */
 type ParsedConfig = Omit<
   RawReviewConfig,
-  "auth" | "breakGlass" | "commentTag" | "stack" | "feedback" | "research" | "inline"
+  "auth" | "breakGlass" | "commentTag" | "stack" | "feedback" | "research" | "jev" | "inline"
 > & {
   auth?: RawReviewConfig["auth"];
   breakGlass?: RawReviewConfig["breakGlass"];
@@ -120,6 +129,7 @@ type ParsedConfig = Omit<
   stack?: RawReviewConfig["stack"];
   feedback?: RawReviewConfig["feedback"];
   research?: RawReviewConfig["research"];
+  jev?: RawReviewConfig["jev"];
   inline?: RawReviewConfig["inline"];
 };
 
@@ -240,6 +250,7 @@ async function loadConfigDir(
     // Root-only: scope schemas reject research configuration, so an untrusted
     // subtree cannot select the index or alter the network-facing runtime.
     research: parsed.research ?? RESEARCH_CONFIG_DEFAULTS,
+    jev: parsed.jev ?? JEV_CONFIG_DEFAULTS,
     // parsed.breakGlass/auth are always present for the root schema (defaults) and
     // absent for the scope schema; loadScopeConfig overrides both afterwards.
     breakGlassMarker: parsed.breakGlass?.marker ?? "/skip-review",
@@ -427,6 +438,7 @@ export async function loadScopeConfig(
     feedback: rootConfig.feedback,
     inline: rootConfig.inline,
     research: rootConfig.research,
+    jev: rootConfig.jev,
     scopeName: scope.name,
   };
 }

@@ -84,6 +84,8 @@ import {
   summarizeResearchUsefulness,
 } from "./research.js";
 import type { ResearchEvidence, ResearchMcpRuntime, ResearchProvenance } from "./research.js";
+import { observeFindingsWithJev, withoutJevCredential } from "./jev.js";
+import type { JevObservation } from "./jev.js";
 
 export interface ReviewRunOptions {
   config: LoadedConfig;
@@ -297,6 +299,7 @@ export async function runReview(
 
   let researchEvidence: ResearchEvidence[] = [];
   let researchRecord: ResearchProvenance | undefined;
+  let jevRecord: JevObservation | undefined;
 
   // Materialize the PR-head tree (not the current checkout) when the source can, so
   // the agents' surrounding-source reads and the verifier's re-reads see the versions
@@ -387,9 +390,16 @@ export async function runReview(
   // close it. Two separate try blocks keep the precise per-engine error messages.
   let opencodeHandle: OpencodeHandle | null = null;
   let claudeHandle: ClaudeCodeHandle | null = null;
+  // OpenCode's SDK copies process.env into its server. Withhold the unrelated Jev
+  // credential at spawn time, then restore the parent immediately; Claude uses an
+  // allowlisted child env already. The captured value is passed directly to Jev.
+  // @ref LLP 0014#shadow-first-integration [constrained-by] — the reviewer engines never receive the Jev credential
+  const jevApiKey = process.env.TYPESAFE_API_KEY;
   try {
     if (usesOpencode) {
-      opencodeHandle = await startOpencode(buildOpencodeConfig(config, researchRuntime));
+      opencodeHandle = await withoutJevCredential(() =>
+        startOpencode(buildOpencodeConfig(config, researchRuntime)),
+      );
     }
   } catch (error) {
     await auth.cleanup();
@@ -1328,6 +1338,24 @@ export async function runReview(
       await appendStepSummary(renderResearchUsefulnessMarkdown(researchRecord));
     }
 
+    // @ref LLP 0014#shadow-first-integration [implements] — run after the final
+    // finding set exists and never feed the answers back into `output`.
+    jevRecord = await observeFindingsWithJev({
+      config: config.jev,
+      findings: output.findings,
+      files: kept,
+      apiKey: jevApiKey,
+    });
+    if (jevRecord) {
+      if (jevRecord.error) {
+        progress(`Jev shadow evaluation unavailable (${jevRecord.error}); review unchanged.`);
+      } else {
+        progress(
+          `Jev shadow evaluation: ${jevRecord.evaluated} observed, ${jevRecord.failed} failed, ${jevRecord.skipped} over cap; review unchanged.`,
+        );
+      }
+    }
+
     // Surface provider throttling as a fact about the run: passes already waited or
     // backed off, but the operator should still SEE that it happened (a run that
     // was rate-limited is slower and may carry partial passes — that's the cause).
@@ -1370,6 +1398,7 @@ export async function runReview(
     await safeLog(logPath, {
       ...baseRecord,
       ...(researchRecord ? { research: researchRecord } : {}),
+      ...(jevRecord ? { jev: jevRecord } : {}),
       agentCosts,
       totalCost: sum(agentCosts),
       tokens: tokenTotals,
@@ -1408,6 +1437,7 @@ export async function runReview(
     await safeLog(logPath, {
       ...baseRecord,
       ...(researchRecord ? { research: researchRecord } : {}),
+      ...(jevRecord ? { jev: jevRecord } : {}),
       agentCosts,
       totalCost: sum(agentCosts),
       tokens: tokenTotals,

@@ -283,6 +283,38 @@ The boundary, in brief:
 Full detail — providers, query grammar, `fetch_platform_doc` modes, provenance and
 citation grounding: [LLP 0013](./llp/0013-platform-research.explainer.md).
 
+## Jev shadow evaluation (experimental)
+
+ECR can ask [TypeSafe AI's Jev](https://docs.typesafe.ai/) for a typed second opinion
+on each final finding. This integration is deliberately observation-only: Jev's
+support and severity probabilities go to `.runs/reviews.jsonl`, but they never alter
+the posted findings or decision. That makes real review traffic the calibration set
+before any future filtering or routing policy is considered.
+
+Enable it in the root config and provide `TYPESAFE_API_KEY` (the scaffolded workflows
+already map the optional repository secret):
+
+```jsonc
+{
+  "jev": {
+    "enabled": true,
+    "model": "jev-1.13.0",
+    "maxFindings": 20,
+    "timeoutMs": 10000,
+    "maxPatchChars": 30000
+  }
+}
+```
+
+Each request contains one finding and only the bounded patch for its file. The model
+is pinned because probability thresholds must be calibrated against a stable version.
+Jev is an evaluator, not a generator: it cannot explain a defect or propose a fix,
+and its confidence is distribution concentration rather than proof that an answer is
+correct. It is also not a prompt-injection or security boundary. Missing credentials,
+timeouts, and provider errors leave the review unchanged and are recorded as reduced
+shadow coverage. See [LLP 0014](./llp/0014-jev-shadow-evaluation.explainer.md) for the
+research, threat model, and promotion criteria.
+
 ## Monorepos (routing manifest)
 
 A monorepo can route different subtrees to different reviewer rosters from a single
@@ -355,9 +387,9 @@ your-monorepo/
 
 Enforced in code and by an independent CI guard step, not by convention:
 
-- **auth and research are locked to the root.** `tokenEnv` is honored only in the
+- **auth, research, and Jev are locked to the root.** `tokenEnv` is honored only in the
   root `config.jsonc` / `routing.jsonc` `defaults.auth`; a scope config declaring
-  `auth`/`breakGlass`/`research` fails to parse, and the CI guard sweeps every
+  `auth`/`breakGlass`/`research`/`jev` fails to parse, and the CI guard sweeps every
   config file repo-wide and refuses to run unless `tokenEnv` appears exactly once,
   root-owned, equal to `ECR_EXPECTED_TOKEN_ENV`. Routing globs choose *which
   roster* reviews a file, never *which secret* is sent.

@@ -6,6 +6,7 @@ import type { CoordinatorOutput, Finding, ReviewMetadata, ReviewTrace } from "./
 import type { FilteredFile } from "./noise.js";
 import type { TokenUsage } from "./opencode.js";
 import type { ResearchProvenance } from "./research.js";
+import type { JevObservation } from "./jev.js";
 
 export interface RunLogRecord {
   timestamp: string;
@@ -21,6 +22,8 @@ export interface RunLogRecord {
   filteredFiles: FilteredFile[];
   /** Bounded queries/results plus grounded research decisions and final usefulness metrics. */
   research?: ResearchProvenance;
+  /** Observation-only Jev results; these never influence findings or decisions. */
+  jev?: JevObservation;
   agentCosts: Record<string, number>;
   totalCost: number;
   // Aggregate token usage across all agent + coordinator requests, for cache
