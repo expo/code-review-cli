@@ -115,7 +115,7 @@ jobs:
       # engine). Pinned exactly — see workflow.yml (expo-code-review.yml).
       - name: Install Claude Code CLI
         if: steps.cmd.outputs.run == 'true'
-        run: npm install -g @anthropic-ai/claude-code@2.1.212
+        run: npm install -g @anthropic-ai/claude-code@2.1.280
 
       # SECURITY: the base-ref checkout above includes every .expo-code-review/
       # config.jsonc + routing.jsonc, whose auth.tokenEnv names the env var the CLI

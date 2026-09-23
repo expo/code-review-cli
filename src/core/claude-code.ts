@@ -92,7 +92,7 @@ const READ_TOOL_MAP: Record<string, "Read" | "Grep" | "Glob"> = {
   glob: "Glob",
 };
 const ALL_READ_TOOLS = ["Read", "Grep", "Glob"] as const;
-// @ref LLP 0003#claude-code-cli-containment [implements] — deny enumeration (not allow-only) because an empty/absent --allowedTools list default-ALLOWS reads; verified against claude 2.1.212, revisit on every CLI version bump
+// @ref LLP 0003#claude-code-cli-containment [implements] — deny enumeration (not allow-only) because an empty/absent --allowedTools list default-ALLOWS reads; verified against claude 2.1.212, tool list re-checked against 2.1.280 (ListAgents added), revisit on every CLI version bump
 /**
  * Tools never available to a review pass, whatever the role. A DENY enumeration is
  * the only workable containment: permission rules cannot fail closed here — reads
@@ -117,6 +117,7 @@ const ALWAYS_DENIED_TOOLS = [
   "BashOutput",
   "KillShell",
   "ExitPlanMode",
+  "ListAgents",
 ];
 
 /**

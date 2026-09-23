@@ -5,7 +5,7 @@
 # than the small serial-tail latency it adds (no repo tools, one bounded pass).
 # Override with a cheaper model if you'd rather trade decision quality for latency.
 # @ref LLP 0009#config-and-prompt-templates [implements]
-model: anthropic/claude-opus-5
+model: anthropic/claude-opus-5-5
 ---
 
 # Coordinator — consolidation & decision

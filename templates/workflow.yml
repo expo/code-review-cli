@@ -72,7 +72,7 @@ jobs:
       # would silently drift on every CI run; bump it deliberately. Remove this
       # step if you switch every model to an OpenCode-served provider.
       - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code@2.1.212
+        run: npm install -g @anthropic-ai/claude-code@2.1.280
 
       # SECURITY: the TRUSTED BASE checkout above includes every
       # .expo-code-review/config.jsonc + routing.jsonc, whose auth.tokenEnv names the

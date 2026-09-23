@@ -4,7 +4,7 @@
 {
   // Default model for every agent in this scope. Override per-agent via frontmatter,
   // or at runtime with REVIEWER_MODEL.
-  "model": "anthropic/claude-sonnet-5",
+  "model": "anthropic/claude-opus-5-5",
 
   // Agents: every markdown file in agents/ beside this file is one reviewer for this
   // scope (id = filename). shared.md + coordinator.md are this scope's prompts.

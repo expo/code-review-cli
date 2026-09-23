@@ -599,9 +599,9 @@ test("buildClaudeArgs: reviewer tools honor the configured read set (list ignore
     "--allowedTools Read(//work/repo/**) Grep(//work/repo/**) Glob(//work/repo/**)",
   );
   // `list` has no scoped Claude equivalent and is silently ignored (no crash, no rule).
-  expect(joined).not.toContain("List");
+  expect(args.some((arg) => arg.startsWith("List("))).toBe(false);
   expect(joined).toContain(
-    "--disallowedTools Bash Edit Write NotebookEdit NotebookRead WebFetch WebSearch Task TodoWrite BashOutput KillShell ExitPlanMode",
+    "--disallowedTools Bash Edit Write NotebookEdit NotebookRead WebFetch WebSearch Task TodoWrite BashOutput KillShell ExitPlanMode ListAgents",
   );
 });
 

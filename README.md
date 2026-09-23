@@ -328,7 +328,7 @@ your-monorepo/
 // apps/api/.expo-agents/code-review/config.jsonc  (the api team owns this)
 {
   // NO "auth" block — locked centrally; a tokenEnv here is rejected by loader + CI guard.
-  "model": "anthropic/claude-sonnet-5",
+  "model": "anthropic/claude-opus-5-5",
   "policy": { "includeSuggestions": false },
   "noise":  { "additionalIgnores": ["apps/api/**/__generated__/**"] }
   // shared.md, coordinator.md, agents/*.md live beside this file — the api team's roster.
@@ -475,7 +475,7 @@ cacheable size (~1–4K tokens) show `cache read 0` — expected, not a bug.
 ---
 description: One line the router uses to decide relevance.
 alwaysRun: true        # run even when the router would skip this agent
-model: anthropic/claude-opus-5   # override the default model
+model: anthropic/claude-haiku-4-5   # override the default model
 temperature: 0.1
 ---
 
@@ -491,7 +491,7 @@ per-repo `noise.additionalIgnores`.
 
 ```jsonc
 {
-  "model": "anthropic/claude-sonnet-5",       // default model for the specialists
+  "model": "anthropic/claude-opus-5-5",       // default model for the specialists
   "policy": { "includeSuggestions": false },  // suppress suggestion-severity findings
   "chunk": { "maxChangedLines": 1000, "maxFiles": 20 },  // concurrency defaults: 6 (API key) / 3 (subscription)
   "noise": { "additionalIgnores": ["packages/*/build/**"] },
@@ -514,15 +514,17 @@ Precedence: **`REVIEWER_MODEL` env** (global override) → per-file **frontmatte
 `model:`** → **`config.jsonc` `model`** (the default). So a repo can run a mixed
 setup, and a developer can override everything locally.
 
-- **Specialist agents** (correctness/security/consistency) benefit from a
-  reasoning-tier model — **`anthropic/claude-sonnet-5`** is the quality/speed
-  sweet spot (the scaffolded default). The **Opus tier** finds more but is slower
-  and more expensive, so scope it to the highest-stakes agent: **security runs on
-  `anthropic/claude-opus-5`** (set in `security.md` frontmatter), the rest on the
-  default.
+- **Specialist agents** (correctness/security/consistency) run on
+  **`anthropic/claude-opus-5-5`**, the scaffolded default. It finds more than the
+  Sonnet tier but is slower and costs about twice as much per token, so
+  `anthropic/claude-sonnet-5` is the step down when a repo needs faster or cheaper
+  reviews. **Security stays pinned to `anthropic/claude-opus-5-5`** in `security.md`
+  frontmatter, so a lower default does not move the highest-stakes agent.
 - **The coordinator** makes the final call (dedupe / re-judge / decide) — worth a
-  strong model; the scaffold pins it to `anthropic/claude-opus-5` in
+  strong model; the scaffold pins it to `anthropic/claude-opus-5-5` in
   `coordinator.md` frontmatter.
+- **Opus 5.5 needs Claude Code 2.1.280 or newer.** Older CLIs reject it with a 400,
+  so keep the workflow's `@anthropic-ai/claude-code` pin at 2.1.280 or later.
 - If latency/timeouts dominate on big PRs, moving the specialists to a faster model
   (e.g. `anthropic/claude-haiku-4-5`) is the most direct lever (a real recall
   tradeoff — measure it).

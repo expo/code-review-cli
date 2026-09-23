@@ -7,7 +7,7 @@ alwaysRun: true
 # default model. Scoped to this one agent to limit the extra latency/rate-limit cost;
 # subdivide-on-timeout + the per-fetch deadline keep a slow Opus pass from hanging.
 # @ref LLP 0009#config-and-prompt-templates [implements]
-model: anthropic/claude-opus-5
+model: anthropic/claude-opus-5-5
 ---
 
 # Security & secrets

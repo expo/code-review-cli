@@ -84,7 +84,7 @@ jobs:
       # The anthropic/… models run through the Claude Code CLI (claude-code
       # engine). Pinned exactly — see workflow.yml (expo-code-review.yml).
       - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code@2.1.212
+        run: npm install -g @anthropic-ai/claude-code@2.1.280
 
       # SECURITY: the base-ref checkout includes every .expo-code-review/ config,
       # whose auth.tokenEnv names the forwarded model credential. `ecr verify-config`
