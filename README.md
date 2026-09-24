@@ -283,6 +283,35 @@ The boundary, in brief:
 Full detail — providers, query grammar, `fetch_platform_doc` modes, provenance and
 citation grounding: [LLP 0013](./llp/0013-platform-research.explainer.md).
 
+## Jev selective verification
+
+ECR can use [TypeSafe AI's Jev](https://docs.typesafe.ai/) as the fast first stage of
+finding verification. Generative agents still discover and explain problems. Jev
+answers one narrow typed question against bounded local source, then either keeps a
+clearly supported finding, drops a clearly contradicted ordinary finding, or defers
+to the existing reasoning verifier.
+
+There is no shadow mode or separate `enabled` flag. Add the root-only block and provide
+`TYPESAFE_API_KEY`; removing the block restores the original verification path:
+
+```jsonc
+{
+  "jev": {
+    "model": "jev-1.13.0",
+    "minConfidence": 0.9,
+    "timeoutMs": 10000,
+    "maxContextChars": 30000
+  }
+}
+```
+
+Each request contains one finding and bounded source from its file. Critical, security,
+secrets, and cited findings are never dropped by Jev alone. Low confidence, missing
+context, credentials, timeouts, and provider errors fall back to the reasoning or
+original verification path. Confidence is distribution concentration, not proof, so
+the model and threshold are explicit. See [LLP 0014](./llp/0014-jev-selective-verification.explainer.md)
+for the research, decision table, and threat model.
+
 ## Monorepos (routing manifest)
 
 A monorepo can route different subtrees to different reviewer rosters from a single
@@ -355,9 +384,9 @@ your-monorepo/
 
 Enforced in code and by an independent CI guard step, not by convention:
 
-- **auth and research are locked to the root.** `tokenEnv` is honored only in the
+- **auth, research, and Jev are locked to the root.** `tokenEnv` is honored only in the
   root `config.jsonc` / `routing.jsonc` `defaults.auth`; a scope config declaring
-  `auth`/`breakGlass`/`research` fails to parse, and the CI guard sweeps every
+  `auth`/`breakGlass`/`research`/`jev` fails to parse, and the CI guard sweeps every
   config file repo-wide and refuses to run unless `tokenEnv` appears exactly once,
   root-owned, equal to `ECR_EXPECTED_TOKEN_ENV`. Routing globs choose *which
   roster* reviews a file, never *which secret* is sent.

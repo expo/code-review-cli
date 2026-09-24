@@ -45,6 +45,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
     "@opencode-ai/sdk": "1.18.4",
+    "@typesafe-ai/sdk": "0.6.0",
     "cheerio": "1.1.2",
     "minisearch": "7.2.0",
     "opencode-ai": "1.18.4",

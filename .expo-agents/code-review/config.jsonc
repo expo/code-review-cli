@@ -31,6 +31,15 @@
     "timeoutMs": 30000
   },
 
+  // Active Jev verification cascade. Confident local judgments act immediately;
+  // ambiguous and protected findings defer to the reasoning verifier.
+  "jev": {
+    "model": "jev-1.13.0",
+    "minConfidence": 0.9,
+    "timeoutMs": 10000,
+    "maxContextChars": 30000
+  },
+
   // Large diffs are split into focused chunks by changed-line count, plus a
   // cross-cutting pass for multi-file issues. Diffs under maxChangedLines are one
   // full-context pass. Defaults shown; raise/lower per your model + PR sizes.

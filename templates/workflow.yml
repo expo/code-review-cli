@@ -118,6 +118,8 @@ jobs:
           # META_API_KEY: ${{ secrets.META_API_KEY }}
           # Optional search-only credential for trusted platform documentation research.
           BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+          # Optional Jev verification credential (used when the root config has `jev`).
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           # Optional: override the model for every agent.
           REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}
 

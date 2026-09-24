@@ -112,7 +112,7 @@ export interface LoadConfigOptions {
 /** Parsed config with the centrally-locked keys optional (scope configs omit them). */
 type ParsedConfig = Omit<
   RawReviewConfig,
-  "auth" | "breakGlass" | "commentTag" | "stack" | "feedback" | "research" | "inline"
+  "auth" | "breakGlass" | "commentTag" | "stack" | "feedback" | "research" | "jev" | "inline"
 > & {
   auth?: RawReviewConfig["auth"];
   breakGlass?: RawReviewConfig["breakGlass"];
@@ -120,6 +120,7 @@ type ParsedConfig = Omit<
   stack?: RawReviewConfig["stack"];
   feedback?: RawReviewConfig["feedback"];
   research?: RawReviewConfig["research"];
+  jev?: RawReviewConfig["jev"];
   inline?: RawReviewConfig["inline"];
 };
 
@@ -240,6 +241,7 @@ async function loadConfigDir(
     // Root-only: scope schemas reject research configuration, so an untrusted
     // subtree cannot select the index or alter the network-facing runtime.
     research: parsed.research ?? RESEARCH_CONFIG_DEFAULTS,
+    ...(parsed.jev ? { jev: parsed.jev } : {}),
     // parsed.breakGlass/auth are always present for the root schema (defaults) and
     // absent for the scope schema; loadScopeConfig overrides both afterwards.
     breakGlassMarker: parsed.breakGlass?.marker ?? "/skip-review",
@@ -427,6 +429,7 @@ export async function loadScopeConfig(
     feedback: rootConfig.feedback,
     inline: rootConfig.inline,
     research: rootConfig.research,
+    jev: rootConfig.jev,
     scopeName: scope.name,
   };
 }
