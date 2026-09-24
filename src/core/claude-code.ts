@@ -92,17 +92,16 @@ const READ_TOOL_MAP: Record<string, "Read" | "Grep" | "Glob"> = {
   glob: "Glob",
 };
 const ALL_READ_TOOLS = ["Read", "Grep", "Glob"] as const;
-// @ref LLP 0003#claude-code-cli-containment [implements] — deny enumeration (not allow-only) because an empty/absent --allowedTools list default-ALLOWS reads; verified against claude 2.1.212, tool list re-checked against 2.1.280 (ListAgents added), revisit on every CLI version bump
+// @ref LLP 0003#claude-code-cli-containment [implements] — inner deny layer behind --tools, because an empty/absent --allowedTools list default-ALLOWS reads; verified against claude 2.1.212, tool list re-checked against 2.1.280 (ListAgents added)
 /**
- * Tools never available to a review pass, whatever the role. A DENY enumeration is
- * the only workable containment: permission rules cannot fail closed here — reads
+ * Tools never available to a review pass, whatever the role. The primary bound is
+ * `--tools` (see buildClaudeArgs), which loads only the granted read tools; this
+ * list is the inner layer behind it. Permission rules alone cannot fail closed — reads
  * inside the workspace are default-ALLOWED even when an allow list is present but
  * unmatched, and a `*` deny breaks tool calling outright (both verified against
- * claude 2.1.212). The residual risk — a FUTURE CLI version shipping a new
- * read-capable tool this list doesn't name — is bounded by pinning the CLI version
- * (the scaffolded workflow installs an exact @anthropic-ai/claude-code version;
- * bump it deliberately and revisit this list). Unknown names are ignored by the
- * CLI, so denying tools that don't exist in a given version is harmless.
+ * claude 2.1.212). A FUTURE CLI version shipping a new tool this list doesn't name
+ * is no longer the gap it was: `--tools` does not load it. Unknown names are ignored
+ * by the CLI, so denying tools that don't exist in a given version is harmless.
  */
 const ALWAYS_DENIED_TOOLS = [
   "Bash",
@@ -274,6 +273,16 @@ export function claudeModelMatches(requested: string, actualKey: string): boolea
  * tree itself (paths resolve to absolute), and `Read(~/**)` denies the whole tree
  * whenever the repo lives under the home directory — the common case.
  *
+ * `--tools` is the outer bound: it names the built-in tools the CLI LOADS, so
+ * everything else (including tools a future CLI version adds) never reaches the
+ * model. It is an availability allowlist, not a permission rule, so it fails closed
+ * where `--allowedTools` does not. Verified against claude 2.1.280: `dontAsk` does
+ * NOT stop tools that ask no permission — EnterWorktree created a git worktree,
+ * RemoteTrigger listed the account's cloud routines, SendMessage and Skill ran — and
+ * `--tools` removes them all. MCP tools (the research tools) and the CLI's own
+ * StructuredOutput tool (`--json-schema`) are not in the built-in set and stay
+ * loaded. The scoped allow rules and ALWAYS_DENIED_TOOLS stay as the inner layers.
+ *
  * This is NOT, by itself, a boundary against a symlink committed inside the PR-head
  * tree (e.g. `docs/notes.md -> ~/.claude/.credentials.json`): the permission rule
  * matches the literal path ARGUMENT, which is in-tree, but Read/Grep then follow the
@@ -325,6 +334,9 @@ export function buildClaudeArgs(opts: {
     "--append-system-prompt",
     opts.system,
     ...(opts.jsonSchema ? ["--json-schema", JSON.stringify(opts.jsonSchema)] : []),
+    // @ref LLP 0003#claude-code-cli-containment [implements] — load only the granted read tools; "" loads none
+    "--tools",
+    enabled.join(","),
     ...(allowedTools.length > 0 ? ["--allowedTools", ...allowedTools] : []),
     "--disallowedTools",
     ...deniedReadTools,

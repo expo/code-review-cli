@@ -174,12 +174,22 @@ reads are denied by the unmatched-rule denial, and a withheld tool is denied by 
 ([observed] `claude-code.ts:241-321`; behavior verified against `claude 2.1.212`).
 Write/exec/network tools (`Bash`, `Edit`, `Write`, `NotebookEdit`, `WebFetch`,
 `WebSearch`, `Task`, …) are always denied for every pass regardless of role, via the
-`ALWAYS_DENIED_TOOLS` enumeration. A deny **enumeration** is used rather than an
-allow-only model because permission rules cannot fail closed for tools outside the read
-set and a `*` deny breaks tool calling outright — both verified against `claude 2.1.212`.
-The residual (a future CLI version shipping a new read-capable tool this list does not
-name) is bounded by pinning the CLI version, so **the list must be revisited on every
-pinned-version bump** ([observed] `claude-code.ts:86-111`).
+`ALWAYS_DENIED_TOOLS` enumeration. Permission rules alone cannot fail closed for tools
+outside the read set, and a `*` deny breaks tool calling outright — both verified
+against `claude 2.1.212`.
+
+**`--tools` is the outer bound.** `--tools` is not a permission rule: it names the
+built-in tools the CLI **loads**. ecr passes exactly the granted read tools
+(`Read,Grep,Glob` or fewer), and `""` for the coordinator and the no-tools fallback.
+A tool that is not loaded cannot be called, so a new tool in a future CLI version
+stays out without anyone adding its name. The deny list was not enough on its own:
+against `claude 2.1.280`, `dontAsk` rejected `Monitor` and `Workflow`, but
+`EnterWorktree` created a git worktree, `RemoteTrigger` listed the logged-in
+account's cloud routines, and `SendMessage` and `Skill` ran, because those tools ask
+no permission. MCP tools (the research tools) and the CLI's `StructuredOutput` tool
+(used by `--json-schema`) are outside the built-in set and stay loaded — also verified
+against `2.1.280`. The scoped allow rules and `ALWAYS_DENIED_TOOLS` stay as inner
+layers ([observed] `claude-code.ts` `buildClaudeArgs`, `ALWAYS_DENIED_TOOLS`).
 
 **The env is an allowlist.** The child env is built from `CHILD_ENV_ALLOWLIST` (PATH,
 HOME, locale, tmp, proxies, config dirs — what a CLI needs and nothing else), never a

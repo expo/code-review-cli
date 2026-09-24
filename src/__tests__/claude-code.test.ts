@@ -245,6 +245,9 @@ test("buildClaudeArgs: read-only, trust-isolated, subscription argv; never --bar
   );
   expect(joined).not.toContain(" Grep ");
   expect(joined).not.toContain(" Glob ");
+  // --tools loads only the granted read tools, so an ungranted built-in (a new one
+  // in a future CLI included) never reaches the model.
+  expect(args[args.indexOf("--tools") + 1]).toBe("Read,Grep,Glob");
   // Write/exec/net tools are denied outright; out-of-tree reads are denied by
   // dontAsk's unmatched-rule denial (NO explicit Read deny: `Read(~/**)` would
   // deny the whole tree whenever the repo lives under the home directory).
@@ -582,6 +585,7 @@ test("buildClaudeArgs: cross-cutting/verifier get Read+Grep scoped, Glob denied 
   // withheld read tool must be denied BY NAME, not just left out of --allowedTools.
   expect(joined).toContain("--allowedTools Read(//work/repo/**) Grep(//work/repo/**)");
   expect(joined).not.toContain("Glob(/");
+  expect(args[args.indexOf("--tools") + 1]).toBe("Read,Grep");
   expect(joined).toContain(
     "--disallowedTools Glob Bash Edit Write NotebookEdit NotebookRead WebFetch WebSearch Task TodoWrite BashOutput KillShell ExitPlanMode",
   );
@@ -616,6 +620,8 @@ test("buildClaudeArgs: empty tools (coordinator/no-tools fallback) deny every re
   // No --allowedTools at all, and Read/Grep/Glob explicitly denied so dontAsk's
   // default-allow can't grant a read.
   expect(joined).not.toContain("--allowedTools");
+  // An empty --tools value loads no built-in tool at all.
+  expect(args[args.indexOf("--tools") + 1]).toBe("");
   expect(joined).toContain(
     "--disallowedTools Read Grep Glob Bash Edit Write NotebookEdit NotebookRead WebFetch WebSearch Task TodoWrite BashOutput KillShell ExitPlanMode",
   );
@@ -643,6 +649,8 @@ test("buildClaudeArgs: explicit research MCP replaces safe mode without loading 
   expect(joined).toContain("mcp__platform_docs__search_platform_docs");
   expect(joined).toContain("mcp__platform_docs__fetch_platform_doc");
   expect(joined).toContain("--mcp-config /private/mcp.json");
+  // MCP tools sit outside the built-in set, so --tools does not remove them.
+  expect(args[args.indexOf("--tools") + 1]).toBe("Read");
   expect(joined).toContain("--setting-sources  --disable-slash-commands");
   expect(joined).toContain("--strict-mcp-config");
   expect(joined).toContain("--no-session-persistence");
