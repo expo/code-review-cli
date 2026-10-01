@@ -89,9 +89,17 @@ test("inlineStubBody: neutral — never claims resolved or dismissed", () => {
 
 // ---- oneLineRationale ----
 
-test("oneLineRationale: collapses whitespace, escapes <, truncates at a word boundary", () => {
+test("oneLineRationale: strips HTML tags, collapses whitespace, escapes <, truncates at a word boundary", () => {
   expect(oneLineRationale("a\n\nb   c")).toBe("a b c");
-  expect(oneLineRationale("<details>x</details>")).toBe("&lt;details>x&lt;/details>");
+  expect(oneLineRationale("<details>x</details>")).toBe("x");
+  expect(oneLineRationale("High — reason.<br>**Impact:** Medium<BR/>end")).toBe(
+    "High — reason. **Impact:** Medium end",
+  );
+  expect(oneLineRationale("<details><summary>Why</summary>\n\nbody</details>")).toBe("Why body");
+  // Non-formatting angle brackets stay, escaped.
+  expect(oneLineRationale("returns `Promise<void>` when a < b")).toBe(
+    "returns `Promise&lt;void>` when a &lt; b",
+  );
   const long = Array.from({ length: 60 }, (_, i) => `word${i}`).join(" ");
   const short = oneLineRationale(long);
   expect(short.length).toBeLessThanOrEqual(161);

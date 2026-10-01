@@ -385,14 +385,27 @@ function sourceLabel(value: string): string {
 const SHORT_RATIONALE_CHARS = 160;
 
 /**
- * A rationale reduced to one plain line for the short (inlined) form: whitespace
- * collapsed, every `<` escaped so a truncated HTML block (`<details>`) can never
- * leave an unclosed tag in the comment, cut at a word boundary with an ellipsis.
- * This excerpt is the audit trail that survives the PR author collapsing or
- * resolving the inline thread, so it must always be non-empty when the rationale is.
+ * HTML formatting tags a model writes into a rationale (`<br>`, `<details>`, ...).
+ * A fixed list, not "anything in angle brackets", so a type like `Promise<void>`
+ * in the prose survives.
+ */
+const FORMATTING_TAG_RE =
+  /<\/?(?:a|b|blockquote|br|code|del|details|div|em|h[1-6]|hr|i|kbd|li|ol|p|pre|s|span|strong|sub|summary|sup|table|tbody|td|th|thead|tr|u|ul)\b[^<>]*>/gi;
+
+/**
+ * A rationale reduced to one plain line for the short (inlined) form: HTML
+ * formatting tags removed (an escaped `<br>` would show as literal text),
+ * whitespace collapsed, every remaining `<` escaped so a truncated HTML block can
+ * never leave an unclosed tag in the comment, cut at a word boundary with an
+ * ellipsis. This excerpt is the audit trail that survives the PR author collapsing
+ * or resolving the inline thread, so it must always be non-empty when the rationale is.
  */
 export function oneLineRationale(text: string): string {
-  const flat = text.replace(/</g, "&lt;").replace(/\s+/g, " ").trim();
+  const flat = text
+    .replace(FORMATTING_TAG_RE, " ")
+    .replace(/</g, "&lt;")
+    .replace(/\s+/g, " ")
+    .trim();
   if (flat.length <= SHORT_RATIONALE_CHARS) {
     return flat;
   }
