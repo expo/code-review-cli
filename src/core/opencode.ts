@@ -606,7 +606,7 @@ export function formatUnknownModels(
   return (
     `The configured model id(s) do not exist on the running OpenCode server:\n${lines.join("\n")}\n` +
     `Fix the model in .expo-code-review/config.jsonc (agents' \`model\`, \`coordinator.model\`) ` +
-    `or REVIEWER_MODEL. Note that a model id must be "provider/model" (e.g. anthropic/claude-sonnet-5), ` +
+    `or REVIEWER_MODEL. Note that a model id must be "provider/model" (e.g. anthropic/claude-sonnet-5-5), ` +
     `and that an out-of-date \`opencode\` can reject an id a newer one accepts — run \`ecr doctor\`.`
   );
 }

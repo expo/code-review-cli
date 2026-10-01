@@ -517,7 +517,7 @@ setup, and a developer can override everything locally.
 - **Specialist agents** (correctness/security/consistency) run on
   **`anthropic/claude-opus-5-5`**, the scaffolded default. It finds more than the
   Sonnet tier but is slower and costs about twice as much per token, so
-  `anthropic/claude-sonnet-5` is the step down when a repo needs faster or cheaper
+  `anthropic/claude-sonnet-5-5` is the step down when a repo needs faster or cheaper
   reviews. **Security stays pinned to `anthropic/claude-opus-5-5`** in `security.md`
   frontmatter, so a lower default does not move the highest-stakes agent.
 - **The coordinator** makes the final call (dedupe / re-judge / decide) — worth a

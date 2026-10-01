@@ -176,7 +176,7 @@ async function loadConfigDir(
   // doesn't exist — which both scaffolded workflows do — so `??` (which only falls
   // through on null/undefined) silently replaced every configured model with "". Every
   // agent and the coordinator then ran on whatever OpenCode picked by default, so a
-  // config saying `anthropic/claude-sonnet-5` reviewed with something else entirely and
+  // config saying `anthropic/claude-sonnet-5-5` reviewed with something else entirely and
   // nothing anywhere said so. Trim too: a stray newline is the same class of accident.
   // @ref LLP 0006#model-resolution [constrained-by] — never ??; GitHub Actions passes an unset var as empty string, not undefined
   const override = process.env.REVIEWER_MODEL?.trim() || undefined;
