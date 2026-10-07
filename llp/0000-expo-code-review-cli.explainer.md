@@ -6,7 +6,7 @@
 **Author:** Philippe Loulidi / Claude
 **Date:** 2026-07-30
 **Role:** Root
-**Related:** [LLP 0001](0001-trust-model.principles.md), [LLP 0002](0002-review-engine-pipeline.explainer.md), [LLP 0003](0003-model-runtimes-and-credentials.explainer.md), [LLP 0004](0004-diff-noise-and-prompts.explainer.md), [LLP 0005](0005-verification-fingerprints-rendering.explainer.md), [LLP 0006](0006-config-schema-loading-routing.explainer.md), [LLP 0007](0007-cli-commands-and-ci.explainer.md), [LLP 0008](0008-sources-and-reporters.explainer.md), [LLP 0009](0009-adoption-templates-and-ci-workflows.guide.md), [LLP 0013](0013-platform-research.explainer.md)
+**Related:** [LLP 0001](0001-trust-model.principles.md), [LLP 0002](0002-review-engine-pipeline.explainer.md), [LLP 0003](0003-model-runtimes-and-credentials.explainer.md), [LLP 0004](0004-diff-noise-and-prompts.explainer.md), [LLP 0005](0005-verification-fingerprints-rendering.explainer.md), [LLP 0006](0006-config-schema-loading-routing.explainer.md), [LLP 0007](0007-cli-commands-and-ci.explainer.md), [LLP 0008](0008-sources-and-reporters.explainer.md), [LLP 0009](0009-adoption-templates-and-ci-workflows.guide.md), [LLP 0013](0013-platform-research.explainer.md), [LLP 0014](0014-jev-selective-verification.explainer.md)
 
 This is the root map for `@expo/code-review-cli` (`ecr`). It records what the system does, how the subsystems divide, the invariants that hold across all of them, and where each concern's rationale lives. It is intentionally thin: every subsystem's detail belongs in the doc that owns it. Read this first, then follow the link for the part you care about.
 
@@ -29,6 +29,7 @@ The code divides by concern. Each directory maps to the doc that owns its ration
 - `src/sources/` (`local-git`, `github-pr`) + `src/reporters/` (`terminal`, `github`) — where the diff comes from and where findings go [observed: AGENTS.md:14-15; src/sources/, src/reporters/]. Owned by [LLP 0008](0008-sources-and-reporters.explainer.md).
 - `templates/` + the scaffolded CI workflow — the files `ecr init` writes into an adopting repo; they define adopter-facing behavior and must stay in sync with the code [observed: AGENTS.md:19-20]. Owned by [LLP 0009](0009-adoption-templates-and-ci-workflows.guide.md).
 - `src/research-mcp/` + `research/` — the bundled read-only documentation MCP, scoped remote discovery and allowlisted fetch adapters, optional index builder, source catalog, and host-side evidence prepass. Owned by [LLP 0013](0013-platform-research.explainer.md).
+- `src/core/jev.ts` — optional typed first stage of finding verification against bounded local source. Owned by [LLP 0014](0014-jev-selective-verification.explainer.md).
 - The trust model spans all of the above and is stated as principles in [LLP 0001](0001-trust-model.principles.md).
 
 ## Cross-Cutting Invariants
@@ -70,5 +71,6 @@ Start here, then follow the owning doc.
 | What do the CLI commands do, and how does CI orchestrate them? | [LLP 0007](0007-cli-commands-and-ci.explainer.md) | `src/cli.ts`, `src/commands/*` |
 | Where does the diff come from and where do findings go? | [LLP 0008](0008-sources-and-reporters.explainer.md) | `src/sources/*`, `src/reporters/*` |
 | What does `ecr init` scaffold into an adopting repo? | [LLP 0009](0009-adoption-templates-and-ci-workflows.guide.md) | `templates/`, scaffolded CI workflow |
+| How does Jev make narrow decisions and defer uncertain findings? | [LLP 0014](0014-jev-selective-verification.explainer.md) | `src/core/jev.ts`, `src/core/verify.ts` |
 
 Non-doc sources of truth: `AGENTS.md` holds the working conventions (import style, error handling, the `opencode-ai`/`@opencode-ai/sdk` pinning rule, security invariants); `ROADMAP.md` lists open and deferred items — incremental review, inline PR comments, result-level caching, and a Codex token rotator among them are still open and must not be assumed implemented [observed: ROADMAP.md]; and `templates/` is the adopter-facing contract, so treat it as behavior, not sample text.

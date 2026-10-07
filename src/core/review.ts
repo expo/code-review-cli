@@ -84,6 +84,8 @@ import {
   summarizeResearchUsefulness,
 } from "./research.js";
 import type { ResearchEvidence, ResearchMcpRuntime, ResearchProvenance } from "./research.js";
+import { withoutJevCredential } from "./jev.js";
+import type { JevVerificationSummary } from "./jev.js";
 
 export interface ReviewRunOptions {
   config: LoadedConfig;
@@ -297,6 +299,7 @@ export async function runReview(
 
   let researchEvidence: ResearchEvidence[] = [];
   let researchRecord: ResearchProvenance | undefined;
+  let jevRecord: JevVerificationSummary | undefined;
 
   // Materialize the PR-head tree (not the current checkout) when the source can, so
   // the agents' surrounding-source reads and the verifier's re-reads see the versions
@@ -387,9 +390,16 @@ export async function runReview(
   // close it. Two separate try blocks keep the precise per-engine error messages.
   let opencodeHandle: OpencodeHandle | null = null;
   let claudeHandle: ClaudeCodeHandle | null = null;
+  // OpenCode's SDK copies process.env into its server. Withhold the unrelated Jev
+  // credential at spawn time, then restore the parent immediately; Claude uses an
+  // allowlisted child env already. The captured value is passed directly to Jev.
+  // @ref LLP 0014#active-selective-cascade [constrained-by] — reviewer engines never receive the Jev credential
+  const jevApiKey = process.env.TYPESAFE_API_KEY;
   try {
     if (usesOpencode) {
-      opencodeHandle = await startOpencode(buildOpencodeConfig(config, researchRuntime));
+      opencodeHandle = await withoutJevCredential(() =>
+        startOpencode(buildOpencodeConfig(config, researchRuntime)),
+      );
     }
   } catch (error) {
     await auth.cleanup();
@@ -1089,6 +1099,9 @@ export async function runReview(
         process.cwd(),
         progress,
         researchEvidence,
+        config.jev
+          ? { config: config.jev, ...(jevApiKey ? { apiKey: jevApiKey } : {}) }
+          : undefined,
       );
       agentCosts["verifier"] = verification.cost;
       trackTokens("verifier", verification.tokens);
@@ -1098,6 +1111,15 @@ export async function runReview(
         config.agents[0]?.model ?? config.coordinator.model,
         verification.model,
       );
+      if (verification.jev) {
+        jevRecord = verification.jev;
+        agentCosts["jev-verifier"] = verification.jev.cost;
+        trackTokens("jev-verifier", {
+          input: verification.jev.inputTokens,
+          output: verification.jev.outputTokens,
+        });
+        trackModel("jev-verifier", verification.jev.configuredModel, verification.jev.actualModel);
+      }
       verifierDropped = verification.dropped;
       citationStrips = verification.citationStripped;
       if (verification.dropped.length > 0 || verification.citationStripped.length > 0) {
@@ -1370,6 +1392,7 @@ export async function runReview(
     await safeLog(logPath, {
       ...baseRecord,
       ...(researchRecord ? { research: researchRecord } : {}),
+      ...(jevRecord ? { jevVerification: jevRecord } : {}),
       agentCosts,
       totalCost: sum(agentCosts),
       tokens: tokenTotals,
@@ -1408,6 +1431,7 @@ export async function runReview(
     await safeLog(logPath, {
       ...baseRecord,
       ...(researchRecord ? { research: researchRecord } : {}),
+      ...(jevRecord ? { jevVerification: jevRecord } : {}),
       agentCosts,
       totalCost: sum(agentCosts),
       tokens: tokenTotals,
