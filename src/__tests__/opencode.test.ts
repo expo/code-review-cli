@@ -12,6 +12,8 @@ import {
   buildOpencodeConfig,
   resolveEngineDispatch,
   resolveOpencodeCli,
+  CROSS_CUTTING_AGENT,
+  VERIFIER_AGENT,
   STACK_VERIFIER_AGENT,
   META_MODEL_API_BASE_URL,
 } from "../core/opencode.js";
@@ -385,32 +387,90 @@ test("Meta auth synthesizes the public Muse 1.3 Responses provider without embed
   expect(meta!.models["muse-spark-1.3-contributor"]?.reasoning).toBe(true);
 });
 
-test("a Meta-named upstream alias does not redirect the upstream credential to Meta", () => {
-  const config = configWith({
-    agents: [{ id: "correctness", model: "meta/muse-spark-1.2" }],
-    coordinatorModel: "meta/muse-spark-1.2",
-    auth: [
-      {
-        mode: "api-key",
-        provider: "meta",
-        tokenEnv: "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN",
-        upstream: "anthropic",
+test.each(["reviewer", "coordinator"])(
+  "Meta auth registers Muse Wonder 1.0 metadata when used by the %s",
+  (role) => {
+    const wonder = "meta/muse-wonder-1.0";
+    const spark = "meta/muse-spark-1.3";
+    const reviewerModel = role === "reviewer" ? wonder : spark;
+    const coordinatorModel = role === "coordinator" ? wonder : spark;
+    const opencode = buildOpencodeConfig(
+      configWith({
+        agents: [
+          { id: "correctness", model: reviewerModel },
+          { id: "security", model: "openai/muse-wonder-1.0" },
+        ],
+        coordinatorModel,
+        auth: [{ mode: "api-key", provider: "meta", tokenEnv: "META_API_KEY" }],
+      }),
+    ) as {
+      agent: Record<string, { model: string }>;
+      provider: Record<string, { npm: string; options: object; models: Record<string, unknown> }>;
+    };
+    const meta = opencode.provider.meta!;
+    expect(meta.npm).toBe("@ai-sdk/openai");
+    expect(meta.options).toEqual({
+      baseURL: META_MODEL_API_BASE_URL,
+      apiKey: "{env:META_API_KEY}",
+    });
+    expect(Object.keys(meta.models).sort()).toEqual(["muse-spark-1.3", "muse-wonder-1.0"]);
+    expect(meta.models["muse-wonder-1.0"]).toEqual({
+      name: "Muse Wonder 1.0",
+      reasoning: true,
+      limit: { context: 1_048_576, output: 131_072 },
+      modalities: {
+        input: ["text", "image", "pdf", "video", "audio"],
+        output: ["text"],
       },
-    ],
-  });
-  const opencode = buildOpencodeConfig(config) as {
-    provider?: Record<
-      string,
-      { npm: string; options: { apiKey: string; baseURL?: string }; models: object }
-    >;
-  };
-  const alias = opencode.provider?.meta;
-  expect(alias).toBeDefined();
-  expect(alias!.npm).toBe("@ai-sdk/anthropic");
-  expect(alias!.options).toEqual({ apiKey: "{env:CLAUDE_CODE_REVIEW_SHARED_API_TOKEN}" });
-  expect(alias!.options.baseURL).toBeUndefined();
-  expect(Object.keys(alias!.models)).toEqual(["muse-spark-1.2"]);
-});
+      options: {
+        store: false,
+        reasoningEffort: "high",
+        reasoningSummary: "auto",
+        include: ["reasoning.encrypted_content"],
+      },
+    });
+    expect(meta.models["muse-spark-1.3"]).toMatchObject({
+      reasoning: true,
+      limit: { context: 1_048_576, output: 1_048_576 },
+    });
+    for (const id of ["correctness", CROSS_CUTTING_AGENT, VERIFIER_AGENT, STACK_VERIFIER_AGENT]) {
+      expect(opencode.agent[id]!.model).toBe(reviewerModel);
+    }
+    expect(opencode.agent.coordinator!.model).toBe(coordinatorModel);
+    expect(opencode.agent.security!.model).toBe("openai/muse-wonder-1.0");
+    expect(opencode.provider.openai).toBeUndefined();
+  },
+);
+
+test.each(["muse-spark-1.2", "muse-wonder-1.0"])(
+  "a Meta-named upstream alias does not redirect the upstream credential to Meta for %s",
+  (model) => {
+    const config = configWith({
+      agents: [{ id: "correctness", model: `meta/${model}` }],
+      coordinatorModel: `meta/${model}`,
+      auth: [
+        {
+          mode: "api-key",
+          provider: "meta",
+          tokenEnv: "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN",
+          upstream: "anthropic",
+        },
+      ],
+    });
+    const opencode = buildOpencodeConfig(config) as {
+      provider?: Record<
+        string,
+        { npm: string; options: { apiKey: string; baseURL?: string }; models: object }
+      >;
+    };
+    const alias = opencode.provider?.meta;
+    expect(alias).toBeDefined();
+    expect(alias!.npm).toBe("@ai-sdk/anthropic");
+    expect(alias!.options).toEqual({ apiKey: "{env:CLAUDE_CODE_REVIEW_SHARED_API_TOKEN}" });
+    expect(alias!.options.baseURL).toBeUndefined();
+    expect(Object.keys(alias!.models)).toEqual([model]);
+  },
+);
 
 test("Meta provider registers future model families neutrally and only for the meta prefix", () => {
   const config = configWith({

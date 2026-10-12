@@ -765,24 +765,27 @@ fallback key; `ecr doctor` diagnoses setup.
   } }
   ```
 
-- **Meta / Muse Spark 1.3 (public Model API).** Set the default model and any
-  model-pinned agent frontmatter to `meta/muse-spark-1.3`. ECR supplies the fixed
-  public Responses endpoint and the `@ai-sdk/openai` adapter; the generic
-  Chat-Completions compatibility adapter is intentionally not used because it
-  loses Muse's reasoning continuity across tool turns. Standard and Contributor
-  model ids are supported.
+- **Meta / Muse Wonder 1.0 and Muse Spark (public Model API).** Set the default
+  model and any model-pinned agent frontmatter to `meta/muse-wonder-1.0`. ECR
+  supplies the fixed public Responses endpoint and the `@ai-sdk/openai` adapter;
+  the generic Chat-Completions compatibility adapter is intentionally not used
+  because it loses Muse's reasoning continuity across tool turns. Muse Spark
+  standard and Contributor model ids also remain supported.
 
   ```jsonc
-  "model": "meta/muse-spark-1.3",
+  "model": "meta/muse-wonder-1.0",
   "auth": { "providers": {
     "meta": { "mode": "api-key", "tokenEnv": "META_API_KEY" }
   } }
   ```
 
-  Standard and Contributor 1.2/1.3 model ids have known capability metadata. Any
-  future model explicitly named as `meta/<model>` is still routed to the fixed Meta
-  endpoint with neutral metadata, so a renamed family such as `meta/muse-foo` does
-  not require an ECR release; Meta validates an unknown id on its first request.
+  Muse Wonder 1.0 and standard/Contributor Muse Spark 1.2/1.3 model ids have known
+  capability metadata. Wonder uses a 1,048,576-token context and a practical
+  131,072-token output cap, with text, image, PDF, video, and audio inputs. Existing
+  Spark configs remain supported; select `meta/muse-spark-1.3` to keep using Spark.
+  Any future model explicitly named as `meta/<model>` is still routed to the fixed
+  Meta endpoint with neutral metadata, so a renamed family such as `meta/muse-foo`
+  does not require an ECR release; Meta validates an unknown id on its first request.
 
   Create the key in the [Meta AI developer portal](https://developer.meta.com/ai/).
   Locally, export it as `META_API_KEY`. In each review-running workflow, replace
