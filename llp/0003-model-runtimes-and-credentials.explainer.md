@@ -111,15 +111,10 @@ Completions path loses that continuity [observed:
 
 Provider selection is forward-compatible at the provider boundary, not coupled to the
 current Muse family name: every referenced non-empty `meta/<model>` id is declared on
-the synthesized Meta provider. Known Muse Wonder 1.0 and Muse Spark 1.2/1.3
-standard/Contributor ids receive capability metadata, multimodal inputs, high
-reasoning, and encrypted reasoning inclusion from `META_MUSE_MODELS`. Wonder's
-1,048,576-token context and practical 131,072-token output cap follow the
-[public models.dev catalog](https://github.com/anomalyco/models.dev/blob/949b366b555d42eced53e0870b994def848a797e/models/meta/muse-wonder-1.0.toml);
-the output cap bounds reserved output TPM, not a separately published Meta maximum.
-Its input modalities include audio in addition to text, images, PDFs, and video.
-A future id such as `meta/muse-foo` is declared with neutral metadata rather than
-guessed capabilities. This deliberately
+the synthesized Meta provider. Known Muse Spark 1.2 and 1.3 standard/Contributor ids
+receive their published limits, multimodal inputs, high reasoning, and encrypted
+reasoning inclusion from `META_MUSE_MODELS`; a future id such as `meta/muse-foo` is
+declared with neutral metadata rather than guessed capabilities. This deliberately
 moves validation of an unknown-but-well-formed Meta id from OpenCode's local preflight
 to its first Meta request, in exchange for new Meta names working without an ECR
 release [observed: `opencode.ts` `META_MUSE_MODELS` / `buildOpencodeConfig`].

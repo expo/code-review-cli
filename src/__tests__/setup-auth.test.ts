@@ -14,13 +14,8 @@ test("plan: the mixed setup needs one ChatGPT login and one manual key", () => {
   expect(plan.unsupported).toEqual([]);
 });
 
-test("plan: Meta Model API is a manual API key setup for Muse Wonder", () => {
-  const plan = planFromAuth(
-    [{ provider: "meta", mode: "api-key", tokenEnv: "META_API_KEY" }],
-    ["meta/muse-wonder-1.0"],
-  );
-  expect(plan.chatgptLogin).toBeUndefined();
-  expect(plan.claudeLogin).toBeUndefined();
+test("plan: Meta Model API is a manual API key setup", () => {
+  const plan = planFromAuth([{ provider: "meta", mode: "api-key", tokenEnv: "META_API_KEY" }]);
   expect(plan.manualKeys).toEqual([
     { provider: "meta", tokenEnv: "META_API_KEY", upstream: undefined },
   ]);

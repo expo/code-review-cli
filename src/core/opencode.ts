@@ -88,7 +88,6 @@ export const META_MUSE_MODELS: Record<string, Record<string, unknown>> = {
   "muse-wonder-1.0": {
     name: "Muse Wonder 1.0",
     reasoning: true,
-    // models.dev's public catalog uses a practical output cap to bound reserved TPM.
     limit: { context: 1_048_576, output: 131_072 },
     modalities: {
       input: ["text", "image", "pdf", "video", "audio"],
