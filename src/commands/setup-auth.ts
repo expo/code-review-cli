@@ -26,7 +26,8 @@ getting each credential:
     CI/headless runs.
   • an API key (api-key entries): prints where to create the key, the exact
     permissions it needs, and the export line to fill in. Meta Model API
-    (\`meta/muse-spark-…\`) uses META_API_KEY from the Meta AI developer portal.
+    (\`meta/muse-wonder-1.0\` or \`meta/muse-spark-…\`) uses META_API_KEY
+    from the Meta AI developer portal.
 
 Without a repo config, it offers the recommended ChatGPT/Codex subscription flow
 with the default env name.
