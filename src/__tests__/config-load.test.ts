@@ -73,6 +73,16 @@ test("parseFrontmatter: an empty flow list and a bare `-` item are kept for vali
   expect(parseFrontmatter(`---\npaths: ["a/**",]\n---\n`).lists.paths).toEqual(["a/**"]);
 });
 
+test("parseFrontmatter: CRLF line endings parse every key", () => {
+  const { data, lists, body } = parseFrontmatter(
+    '---\r\nmodel: x\r\npaths:\r\n  - "a/**"\r\nalwaysRun: true\r\n---\r\nBody',
+  );
+  expect(data.model).toBe("x");
+  expect(lists.paths).toEqual(["a/**"]);
+  expect(data.alwaysRun).toBe("true");
+  expect(body).toBe("Body");
+});
+
 test("parseFrontmatter: a scalar or an unterminated flow list is not a list", () => {
   expect(parseFrontmatter("---\npaths: packages/a/**\n---\n").lists.paths).toBeUndefined();
   expect(parseFrontmatter(`---\npaths: ["a/**]\n---\n`).lists.paths).toBeUndefined();
@@ -113,6 +123,10 @@ test("loadReviewConfig: invalid `paths` fails once, naming the agent file and th
     ['paths: ["./packages/ios/**"]', 'write "packages/ios/**"'],
     ['paths: ["packages/ios/"]', 'write "packages/ios/**"'],
     ['paths: ["!packages/ios/**"]', "negation"],
+    ['paths:\n  - "packages/ios/**"  # iOS only', 'write "packages/ios/**" and move the comment'],
+    ["paths:\n  - packages/ios/** # iOS only", 'write "packages/ios/**" and move the comment'],
+    ['paths: ["packages/ios/**"]  # iOS only', "move the comment to its own line"],
+    ['paths:\n  - "packages/ios/**" extra', "text after its closing quote"],
   ];
   for (const [line, expected] of cases) {
     const root = await configDirWithAgent(`---\n${line}\n---\nIOS`);

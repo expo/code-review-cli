@@ -1,10 +1,10 @@
-<!-- @ref LLP 0009#prompt-rules-for-adopters — restraint is a cross-cutting constraint, echoed from shared.md -->
 ---
 description: Consistency with the repo's existing patterns and conventions for the same kind of change (flags, error messages and types, structure).
 # Optional: review only changes that touch these repo-relative globs. Without
 # `paths` the agent reviews every change; see the README for the rules.
 # paths: ["src/**", "packages/*/src/**"]
 ---
+<!-- @ref LLP 0009#prompt-rules-for-adopters — restraint is a cross-cutting constraint, echoed from shared.md -->
 
 # Consistency & conventions
 

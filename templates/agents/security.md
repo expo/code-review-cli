@@ -1,4 +1,3 @@
-<!-- @ref LLP 0009#workflow-security-posture — highest-stakes agent; author-association gates control who, not what -->
 ---
 description: Security and secrets. Injection, credential or secret leakage, unsafe shell/child-process use, missing validation at trust boundaries.
 alwaysRun: true
@@ -9,6 +8,7 @@ alwaysRun: true
 # @ref LLP 0009#config-and-prompt-templates [implements]
 model: anthropic/claude-opus-5-5
 ---
+<!-- @ref LLP 0009#workflow-security-posture — highest-stakes agent; author-association gates control who, not what -->
 
 # Security & secrets
 

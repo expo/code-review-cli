@@ -474,14 +474,20 @@ cacheable size (~1–4K tokens) show `cache read 0` — expected, not a bug.
 ```markdown
 ---
 description: One line the router uses to decide relevance.
-alwaysRun: true        # run even when the router would skip this agent
-model: anthropic/claude-haiku-4-5   # override the default model
+# Run even when the router would skip this agent.
+alwaysRun: true
+# Override the default model.
+model: anthropic/claude-haiku-4-5
 temperature: 0.1
 paths: ["packages/ios/**", "**/*.swift"]
 ---
 
 # Agent instructions in Markdown…
 ```
+
+The frontmatter must start on the file's first line, and it is not full YAML: put
+a `# comment` on its own line, because a comment after a value stays part of the
+value.
 
 `paths` limits an agent to the changes it covers. It takes a list of repo-relative
 globs in the routing dialect: `*` stays within a directory, `**` crosses
@@ -506,9 +512,10 @@ paths:
   agent only when its `paths` match (or it has no `paths`).
 - With a `routing.jsonc`, each scope matches `paths` against its own changed files.
 - An invalid `paths` stops the run before any pass and names the agent file and
-  the fix: a value that is not a list, an empty list or entry, or a glob that can
-  never match a repo-relative path (`/x/**`, `./x/**`, `x/`, `!x/**`). `ecr doctor`
-  reports it too.
+  the fix: a value that is not a list, an empty list or entry, a glob that can
+  never match a repo-relative path (`/x/**`, `./x/**`, `x/`, `!x/**`), or an entry
+  with a trailing `# comment` or text after its closing quote. `ecr doctor` reports
+  it too.
 - Quote each glob. A YAML value that starts with `*` must be quoted to stay valid
   YAML for other tools.
 

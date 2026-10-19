@@ -461,7 +461,7 @@ export function parseFrontmatter(md: string): {
   // The key with an empty value, whose following `- item` lines form its block list.
   // Blank and comment lines inside the list are skipped; the next key ends it.
   let blockKey: string | null = null;
-  for (const line of header.split("\n")) {
+  for (const line of header.split(/\r?\n/)) {
     const item = line.match(/^\s*-(?:\s+(.*))?$/);
     if (blockKey && item) {
       (lists[blockKey] ??= []).push(unquote((item[1] ?? "").trim()));
@@ -548,6 +548,12 @@ function parseAgentPaths(
   const remove = "or remove `paths` to run the agent on every change";
   const globs = md.lists.paths;
   if (!globs) {
+    if (TRAILING_COMMENT.test(md.data.paths ?? "")) {
+      throw new Error(
+        `${file}: \`paths\` must be a list of globs, and frontmatter does not strip the ` +
+          `\`# comment\` after it. Fix: move the comment to its own line, ${remove}.`,
+      );
+    }
     throw new Error(
       `${file}: \`paths\` must be a list of globs. Fix: write it as ` +
         `\`paths: ["packages/app/**", ".changeset/*.md"]\` or as \`- "glob"\` lines, ${remove}.`,
@@ -570,10 +576,30 @@ function parseAgentPaths(
   return globs;
 }
 
+/** A `#` that starts a YAML comment: at the start of a value or after whitespace. */
+const TRAILING_COMMENT = /(?:^|\s)#/;
+
 /** Why a `paths` glob can never match a repo-relative changed file, or null when it can. */
 function pathGlobIssue(glob: string): { problem: string; fix: string } | null {
   if (glob.trim() === "") {
     return { problem: "is empty", fix: "delete the entry" };
+  }
+  const comment = glob.search(TRAILING_COMMENT);
+  if (comment !== -1) {
+    const value = unquote(glob.slice(0, comment).trim());
+    return {
+      problem: 'contains a "# comment", which frontmatter does not strip',
+      fix: value
+        ? `write ${JSON.stringify(value)} and move the comment to its own line`
+        : "move the comment to its own line",
+    };
+  }
+  if (/^["']/.test(glob)) {
+    // unquote() leaves the quotes when text follows the closing one.
+    return {
+      problem: "has text after its closing quote, or no closing quote",
+      fix: "quote the whole glob",
+    };
   }
   if (glob.startsWith("/")) {
     return {

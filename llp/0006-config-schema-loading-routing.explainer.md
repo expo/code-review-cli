@@ -145,9 +145,11 @@ in exactly the routing dialect; a change to it changes scope assignment and agen
 ## Agent Frontmatter and `paths`
 
 `parseFrontmatter` is a minimal YAML-ish reader, not a YAML library, for the same reason the JSONC
-reader is: agent prompts are trusted config read from the base commit. Every `key: value` line lands
-in `data` as a scalar, exactly as before lists existed, so `description`, `alwaysRun`, `model`, and
-`temperature` parse byte-identically. Keys whose value is a list ALSO land in `lists`: a one-line
+reader is: agent prompts are trusted config read from the base commit. The frontmatter must open on
+the first byte of the file, and lines split on LF or CRLF. Every `key: value` line lands in `data`
+as a scalar, exactly as before lists existed, so `description`, `alwaysRun`, `model`, and
+`temperature` parse byte-identically. A `# comment` after a value is NOT stripped; it stays part of
+the value. Keys whose value is a list ALSO land in `lists`: a one-line
 flow list (`paths: ["a/**", 'b/**', c/**]`, trailing comma allowed) or a block list (`paths:`
 followed by `- item` lines; blank and `#` lines inside are skipped, and the next key ends it)
 [observed: `load.ts` `parseFrontmatter`, `parseFlowList`]. Only `paths` reads `lists`.
@@ -157,7 +159,9 @@ before any pass, naming the agent file and the fix (the AGENTS.md "fail fast" ru
 glob would otherwise skip the agent on every PR with nothing reporting it as an error. It rejects a
 value that is not a list, an empty list, an empty entry, and a glob that can never match a
 repo-relative changed-file path: a leading `/` or `./`, a trailing `/` (the CODEOWNERS directory
-form), and a leading `!` (negation is not supported) [observed: `load.ts` `pathGlobIssue`]. The
+form), and a leading `!` (negation is not supported). It also rejects an entry with a `# comment`
+or with text after its closing quote: the reader keeps both in the glob, which then matches no file
+[observed: `load.ts` `pathGlobIssue`]. The
 matcher itself never rejects a string, because `matchesIgnore` escapes every regex metacharacter,
 so these are the only globs that can be "invalid". Characters such as `[`, `]`, `{`, and `?` stay
 literal and legal: route file names such as `app/[id].tsx` contain them. The loader reports through

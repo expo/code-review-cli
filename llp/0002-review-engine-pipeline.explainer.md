@@ -24,7 +24,7 @@ The engine map is built from the **selected** agent subset, not the full roster 
 
 An agent's frontmatter `paths` limits it to the changes it covers (syntax and validation: [LLP 0006](0006-config-schema-loading-routing.explainer.md#agent-frontmatter-and-paths)). `selectAgentsByPaths()` in `src/core/agent-paths.ts` applies the globs to the reviewable files: after scope isolation and noise filtering, and before the read root or any engine exists [observed: `review.ts` calls it right after the noise early return]. That position gives three properties:
 
-- A skipped agent costs no model call. The engine map is built from the agents the filter kept, so a run whose only Claude-model agent is skipped never starts the Claude Code engine.
+- A skipped agent costs no model call. The engine map is built from the agents the filter kept, so a skipped agent's engine starts only when a fixed role still needs it: the cross-file and verifier passes use the first roster agent's model, and the coordinator uses its own [observed: `buildEngineMap` in `src/core/claude-code.ts`].
 - When no agent is left, `runReview` returns the way a noise-only diff does: a clean `approve` whose summary says no reviewer applies, with no coverage note and no `couldNotComplete`. Nothing failed; the configured agents do not cover these files.
 - In a routed monorepo each `runReview` call already sees only its scope's files (`includePaths`), so `paths` is matched against each scope's own files with no extra code.
 
