@@ -55,6 +55,8 @@ The three workflows share a posture built entirely around one fact: a reviewer j
 
 **Concurrency defaults by auth mode.** The commented `chunk.concurrency` default is 6 for an API key and 3 for a subscription (OAuth) credential, "one account handles many parallel streams poorly, and several PRs may review on the same credential at once" [observed: `templates/config.jsonc:28-30`].
 
+**Agent `paths` ship commented out, and not on security.** `correctness.md` and `consistency.md` carry a commented `# paths: [...]` frontmatter example, and `config.jsonc` names the key, so an adopter can find it [observed: `templates/agents/correctness.md`, `templates/agents/consistency.md`, `templates/config.jsonc`]. No template sets it: the right globs are repo-specific, and a scaffolded value would narrow review on the first PR. `security.md` gets no example because it is the `alwaysRun` agent, and narrowing it by path would let a change outside the globs (a workflow file, a new package) skip the highest-stakes review. The engine rules for `paths` are in [LLP 0002](0002-review-engine-pipeline.explainer.md#agent-paths-filter).
+
 **Muse Spark is opt-in without weakening the default secret surface.** The root config
 documents `meta/muse-spark-1.3` plus a `META_API_KEY` auth entry, and each
 review-running workflow shows the corresponding secret line commented out. It is not

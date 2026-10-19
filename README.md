@@ -158,7 +158,7 @@ Options (most to least common):
 | `--staged` | Review only staged changes (index vs HEAD; not combinable with `--base`/`--head`). |
 | `--base <ref>` | Base ref to diff against (default: merge-base with the default branch). |
 | `--head <ref>` | Head ref to diff (default: working tree, incl. uncommitted changes). |
-| `--agents <a,b>` | Run only these agents (comma-separated ids); default: all. |
+| `--agents <a,b>` | Run only these agents (comma-separated ids), even when their `paths` match no changed file; default: all. |
 | `--route` | Let an LLM router pick the relevant agents from the diff. |
 | `--repo <owner/repo>` | Repo for `--pr` (default: inferred from the current checkout). |
 | `--json` | Emit machine-readable JSON on stdout. |
@@ -477,10 +477,40 @@ description: One line the router uses to decide relevance.
 alwaysRun: true        # run even when the router would skip this agent
 model: anthropic/claude-haiku-4-5   # override the default model
 temperature: 0.1
+paths: ["packages/ios/**", "**/*.swift"]
 ---
 
 # Agent instructions in Markdown…
 ```
+
+`paths` limits an agent to the changes it covers. It takes a list of repo-relative
+globs in the routing dialect: `*` stays within a directory, `**` crosses
+directories, and a leading `**/` also matches files at the repo root. Write the
+list on one line, as above, or as a block list:
+
+```yaml
+paths:
+  - "packages/ios/**"
+  - "**/*.swift"
+```
+
+- The agent runs only when at least one reviewable changed file (after noise
+  filtering and `noise.additionalIgnores`) matches. Otherwise the run skips it with
+  no model call, and the job log, the Actions step summary, and the run log say so.
+- On a chunked review, the agent skips each chunk that has no matching file. A
+  chunk it reviews keeps its full diff, so related files such as `.changeset/*.md`
+  still reach it.
+- `--agents` (and `/review <agents>` in CI) runs the named agents even when their
+  `paths` match nothing, because you asked for them.
+- `--route` chooses only among agents whose `paths` match, and `alwaysRun` adds an
+  agent only when its `paths` match (or it has no `paths`).
+- With a `routing.jsonc`, each scope matches `paths` against its own changed files.
+- An invalid `paths` stops the run before any pass and names the agent file and
+  the fix: a value that is not a list, an empty list or entry, or a glob that can
+  never match a repo-relative path (`/x/**`, `./x/**`, `x/`, `!x/**`). `ecr doctor`
+  reports it too.
+- Quote each glob. A YAML value that starts with `*` must be quoted to stay valid
+  YAML for other tools.
 
 For a real-world example, see eas-cli's
 [`.expo-agents/code-review/`](https://github.com/expo/eas-cli/tree/main/.expo-code-review)
@@ -727,9 +757,10 @@ Each run appends a JSON line to `.expo-agents/code-review/.runs/reviews.jsonl` w
 inputs, decision, finding count, duration, per-agent cost, and aggregate token
 usage (incl. prompt-cache read/write counts) — for auditing and measuring
 cost/latency/cache reuse over time. It also records the same bounded `reviewTrace`
-that the PR comment embeds for machine consumers. The same totals are printed as a
-one-line summary to the terminal / CI job log at the end of each run, so cache reuse
-is visible even in CI (where the run log is ephemeral).
+that the PR comment embeds for machine consumers. When agent `paths` skip an agent
+for the run or for some chunks, the line records it under `pathsSkipped`. The same
+totals are printed as a one-line summary to the terminal / CI job log at the end of
+each run, so cache reuse is visible even in CI (where the run log is ephemeral).
 
 `ecr review --save-review` additionally writes a versioned artifact under
 `.expo-agents/code-review/.runs/deferred/` with owner-only permissions. It contains the

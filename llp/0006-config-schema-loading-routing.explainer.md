@@ -139,7 +139,36 @@ naive `**/*` catch-all would silently miss root-level files (`README.md`, `packa
 tests each `**/`-prefixed pattern in two variants (with and without the prefix stripped) to give the
 catch-all its conventional "zero or more directories" meaning [observed: `routing.ts:57-73`]. The
 "proper" fix lives in `matchesIgnore` itself, whose blast radius covers noise filtering too, so the
-workaround stays local.
+workaround stays local. `matchesPathGlobs` is that wrapper, exported so agent `paths` (below) match
+in exactly the routing dialect; a change to it changes scope assignment and agent selection together.
+
+## Agent Frontmatter and `paths`
+
+`parseFrontmatter` is a minimal YAML-ish reader, not a YAML library, for the same reason the JSONC
+reader is: agent prompts are trusted config read from the base commit. Every `key: value` line lands
+in `data` as a scalar, exactly as before lists existed, so `description`, `alwaysRun`, `model`, and
+`temperature` parse byte-identically. Keys whose value is a list ALSO land in `lists`: a one-line
+flow list (`paths: ["a/**", 'b/**', c/**]`, trailing comma allowed) or a block list (`paths:`
+followed by `- item` lines; blank and `#` lines inside are skipped, and the next key ends it)
+[observed: `load.ts` `parseFrontmatter`, `parseFlowList`]. Only `paths` reads `lists`.
+
+`parseAgentPaths` validates `paths` at load time, so a bad value is a setup error that fails once,
+before any pass, naming the agent file and the fix (the AGENTS.md "fail fast" rule): a mistyped
+glob would otherwise skip the agent on every PR with nothing reporting it as an error. It rejects a
+value that is not a list, an empty list, an empty entry, and a glob that can never match a
+repo-relative changed-file path: a leading `/` or `./`, a trailing `/` (the CODEOWNERS directory
+form), and a leading `!` (negation is not supported) [observed: `load.ts` `pathGlobIssue`]. The
+matcher itself never rejects a string, because `matchesIgnore` escapes every regex metacharacter,
+so these are the only globs that can be "invalid". Characters such as `[`, `]`, `{`, and `?` stay
+literal and legal: route file names such as `app/[id].tsx` contain them. The loader reports through
+`ecr doctor`; `ecr verify-config` does not read agent files (it is the credential guard,
+[LLP 0007](0007-cli-commands-and-ci.explainer.md)).
+
+An agent without `paths` gets no `paths` key at all, not `paths: undefined`, so its object shape
+and its review-cache key are unchanged [observed: `load.ts` agent construction]. The
+`defaults.enforceAgents` injection copies the root agent with its `paths`, so an enforced agent
+still runs only in scopes with a matching file. How the engine applies the filter is in
+[LLP 0002](0002-review-engine-pipeline.explainer.md#agent-paths-filter).
 
 ## Budgets and Chunking Defaults
 

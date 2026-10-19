@@ -214,6 +214,7 @@ async function loadConfigDir(
   for (const file of agentFiles) {
     const md = parseFrontmatter(await readFile(path.join(agentsDir, file), "utf8"));
     const id = file.replace(/\.md$/, "");
+    const paths = parseAgentPaths(md, path.join(setupDirLabel(dir), "agents", file));
     agents.push({
       id,
       description: md.data.description ?? "",
@@ -222,6 +223,9 @@ async function loadConfigDir(
       temperature: resolveTemp(md.data.temperature, 0.1),
       tools: DEFAULT_AGENT_TOOLS,
       promptText: md.body,
+      // Only when declared: an agent without `paths` keeps the exact shape (and
+      // review-cache key) it had before the key existed.
+      ...(paths ? { paths } : {}),
     });
   }
 
@@ -432,28 +436,179 @@ export async function loadScopeConfig(
 }
 
 /**
- * Parse optional YAML-ish frontmatter (simple `key: value` scalars) from the top
- * of a markdown file. Returns the parsed keys and the body with frontmatter
- * stripped. Supports per-agent overrides like `model:` and `temperature:`.
+ * Parse optional YAML-ish frontmatter from the top of a markdown file. Returns
+ * every `key: value` line as a scalar in `data`, the keys whose value is a list in
+ * `lists`, and the body with frontmatter stripped. A list is either a flow list on
+ * one line (`paths: ["a/**", "b/**"]`) or a block list (`paths:` followed by
+ * `- item` lines). Supports per-agent overrides like `model:` and `paths:`.
  */
-export function parseFrontmatter(md: string): { data: Record<string, string>; body: string } {
+export function parseFrontmatter(md: string): {
+  data: Record<string, string>;
+  lists: Record<string, string[]>;
+  body: string;
+} {
   if (!md.startsWith("---")) {
-    return { data: {}, body: md };
+    return { data: {}, lists: {}, body: md };
   }
   const end = md.indexOf("\n---", 3);
   if (end === -1) {
-    return { data: {}, body: md };
+    return { data: {}, lists: {}, body: md };
   }
   const header = md.slice(3, end).trim();
   const body = md.slice(end + 4).replace(/^\r?\n/, "");
   const data: Record<string, string> = {};
+  const lists: Record<string, string[]> = {};
+  // The key with an empty value, whose following `- item` lines form its block list.
+  // Blank and comment lines inside the list are skipped; the next key ends it.
+  let blockKey: string | null = null;
   for (const line of header.split("\n")) {
+    const item = line.match(/^\s*-(?:\s+(.*))?$/);
+    if (blockKey && item) {
+      (lists[blockKey] ??= []).push(unquote((item[1] ?? "").trim()));
+      continue;
+    }
     const match = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
     if (match) {
-      data[match[1]!] = match[2]!.trim().replace(/^["']|["']$/g, "");
+      const key = match[1]!;
+      const raw = match[2]!.trim();
+      data[key] = raw.replace(/^["']|["']$/g, "");
+      delete lists[key];
+      const flow = parseFlowList(raw);
+      if (flow) {
+        lists[key] = flow;
+      }
+      blockKey = raw === "" ? key : null;
     }
   }
-  return { data, body };
+  return { data, lists, body };
+}
+
+/** Strip one pair of matching surrounding quotes. */
+function unquote(value: string): string {
+  const quote = value[0];
+  return value.length >= 2 && (quote === '"' || quote === "'") && value.endsWith(quote)
+    ? value.slice(1, -1)
+    : value;
+}
+
+/**
+ * The items of a one-line flow list (`[a, "b", 'c']`), or null when `raw` is not
+ * one. Items may be bare, single- or double-quoted; a trailing comma is allowed.
+ */
+function parseFlowList(raw: string): string[] | null {
+  if (!raw.startsWith("[") || !raw.endsWith("]")) {
+    return null;
+  }
+  const items: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  for (const char of raw.slice(1, -1)) {
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === ",") {
+      items.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (quote) {
+    // An unterminated quote: not a list the author can have meant.
+    return null;
+  }
+  if (current.trim() !== "" || items.length > 0) {
+    items.push(current.trim());
+  }
+  // Allow one trailing comma, as JSONC config does.
+  if (items.length > 1 && items[items.length - 1] === "" && /,\s*\]$/.test(raw)) {
+    items.pop();
+  }
+  return items;
+}
+
+/**
+ * The agent's frontmatter `paths`, or undefined when the key is absent. Throws a
+ * setup error naming `file` and the fix when the value is not a non-empty list of
+ * globs that can match a repo-relative changed file.
+ */
+function parseAgentPaths(
+  md: { data: Record<string, string>; lists: Record<string, string[]> },
+  file: string,
+): string[] | undefined {
+  if (!("paths" in md.data)) {
+    return undefined;
+  }
+  // @ref LLP 0006#agent-frontmatter-and-paths [implements] — a bad `paths` hits every run identically, so it is a setup error, never a silent no-match
+  const remove = "or remove `paths` to run the agent on every change";
+  const globs = md.lists.paths;
+  if (!globs) {
+    throw new Error(
+      `${file}: \`paths\` must be a list of globs. Fix: write it as ` +
+        `\`paths: ["packages/app/**", ".changeset/*.md"]\` or as \`- "glob"\` lines, ${remove}.`,
+    );
+  }
+  if (globs.length === 0) {
+    throw new Error(
+      `${file}: \`paths\` is empty, so the agent would never run. Fix: list at least one glob, ${remove}.`,
+    );
+  }
+  globs.forEach((glob, index) => {
+    const issue = pathGlobIssue(glob);
+    if (issue) {
+      throw new Error(
+        `${file}: \`paths\` entry ${index + 1} (${JSON.stringify(glob)}) ${issue.problem}. ` +
+          `Fix: ${issue.fix}, ${remove}.`,
+      );
+    }
+  });
+  return globs;
+}
+
+/** Why a `paths` glob can never match a repo-relative changed file, or null when it can. */
+function pathGlobIssue(glob: string): { problem: string; fix: string } | null {
+  if (glob.trim() === "") {
+    return { problem: "is empty", fix: "delete the entry" };
+  }
+  if (glob.startsWith("/")) {
+    return {
+      problem: "is absolute, but changed files are repo-relative",
+      fix: `write ${JSON.stringify(glob.replace(/^\/+/, ""))}`,
+    };
+  }
+  if (glob.startsWith("./")) {
+    return {
+      problem: 'starts with "./", but changed files are repo-relative without it',
+      fix: `write ${JSON.stringify(glob.replace(/^(\.\/)+/, ""))}`,
+    };
+  }
+  if (glob.endsWith("/")) {
+    return {
+      problem: 'ends with "/", so it matches no file',
+      fix: `write ${JSON.stringify(`${glob}**`)} to match the files under it`,
+    };
+  }
+  if (glob.startsWith("!")) {
+    return {
+      problem: 'uses "!" negation, which agent `paths` do not support',
+      fix: "list only the paths the agent should review",
+    };
+  }
+  return null;
+}
+
+/** The setup dir as error messages name it: its conventional name, else its basename. */
+function setupDirLabel(dir: string): string {
+  const normalized = path.normalize(dir);
+  return (
+    CONFIG_DIRNAMES.find((name) => normalized === name || normalized.endsWith(path.sep + name)) ??
+    path.basename(dir)
+  );
 }
 
 /**

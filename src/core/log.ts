@@ -6,6 +6,7 @@ import type { CoordinatorOutput, Finding, ReviewMetadata, ReviewTrace } from "./
 import type { FilteredFile } from "./noise.js";
 import type { TokenUsage } from "./opencode.js";
 import type { ResearchProvenance } from "./research.js";
+import type { PathsSkips } from "./agent-paths.js";
 
 export interface RunLogRecord {
   timestamp: string;
@@ -19,6 +20,8 @@ export interface RunLogRecord {
   metadata: Pick<ReviewMetadata, "baseRef" | "headRef">;
   reviewedFiles: string[];
   filteredFiles: FilteredFile[];
+  /** Agents and chunks the frontmatter `paths` filter skipped; absent when none were. */
+  pathsSkipped?: PathsSkips;
   /** Bounded queries/results plus grounded research decisions and final usefulness metrics. */
   research?: ResearchProvenance;
   agentCosts: Record<string, number>;

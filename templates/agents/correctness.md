@@ -1,6 +1,9 @@
 <!-- @ref LLP 0009#prompt-rules-for-adopters — restraint is a cross-cutting constraint, echoed from shared.md -->
 ---
 description: Logic, correctness, and code-quality bugs in the changed code (off-by-one, bad error handling, type-safety gaps, unsafe assumptions).
+# Optional: review only changes that touch these repo-relative globs. Without
+# `paths` the agent reviews every change; see the README for the rules.
+# paths: ["src/**", "packages/*/src/**"]
 ---
 
 # Correctness & code quality

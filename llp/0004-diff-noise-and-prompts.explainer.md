@@ -148,7 +148,9 @@ with `patternVariants`, which additionally tests each `**/`-prefixed pattern wit
 the prefix stripped, because `**` translating to `.*` requires at least one
 slash — so a naive catch-all like `**/*` would otherwise miss root-level files
 like `README.md` [observed] (`src/config/routing.ts:57-66`). Routing details are
-in [LLP 0006](0006-config-schema-loading-routing.explainer.md).
+in [LLP 0006](0006-config-schema-loading-routing.explainer.md). Agent frontmatter
+`paths` reuse that wrapper (`matchesPathGlobs`), so the same translation also
+decides which reviewer agents run [observed] (`src/core/agent-paths.ts`).
 
 ## Patch Workspace
 
