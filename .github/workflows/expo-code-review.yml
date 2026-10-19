@@ -90,5 +90,7 @@ jobs:
           CLAUDE_CODE_REVIEW_SHARED_API_TOKEN: ${{ secrets.CLAUDE_CODE_REVIEW_SHARED_API_TOKEN }}
           # Search-only credential used for fixed, site-scoped documentation discovery.
           BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+          # Shadow-only Jev evaluator; unused while config.jev.enabled is false.
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           # Optional: override the model for every agent.
           REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}

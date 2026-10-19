@@ -19,7 +19,8 @@ caller, [LLP 0007](0007-cli-commands-and-ci.explainer.md) and [LLP 0001](0001-tr
 ## Root vs Scope Config
 
 A scope config is the root schema minus the centrally locked keys. `ScopeReviewConfigSchema`
-takes `ReviewConfigSchema`, omits `auth`, `breakGlass`, and `commentTag`, and re-adds each as
+takes `ReviewConfigSchema`, omits centrally owned keys including `auth`, `breakGlass`,
+`commentTag`, `research`, and `jev`, and re-adds each as
 `z.never().optional()` so declaring any of them is a hard parse error, not a later runtime
 check [observed: `schema.ts:232-247`]. The point of failing at the Zod level is that an IDE or
 `doctor` catches it before CI does [observed: `schema.ts:224-225` comment]. The remaining
@@ -83,6 +84,13 @@ well-known credential env to a different provider than expected [observed: `load
 commit `43b31a4` follow-up]. The actual secret values never enter this subsystem: `src/core/auth.ts`
 owns the wiring and the `FORBIDDEN_TOKEN_ENVS` list, and schema/load only ever touch the env-var
 NAME [observed: `AGENTS.md` security invariants; `src/core/auth.ts:28,45,206`].
+
+`jev` is root-only for the same trust reason as research: adding it sends bounded
+repository-derived text to another provider. A scope may neither activate it nor alter
+its model, threshold, or limits. Nested scopes inherit the root's resolved settings, so
+one PR has one centrally owned disclosure policy [observed: `schema.ts`
+`ScopeReviewConfigSchema`; `load.ts` `loadScopeConfig`]. The data boundary and active
+selective cascade live in [LLP 0014](0014-jev-selective-verification.explainer.md).
 
 ## Model Resolution
 

@@ -2,11 +2,15 @@
 // @ref LLP 0005#verifier-confinement-and-fail-open
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import type { TypeSafeClient } from "@typesafe-ai/sdk";
 
 import { pathInside } from "./exec.js";
+import type { LoadedConfig } from "../config/schema.js";
+import { evaluateFindingsWithJev, jevDisposition } from "./jev.js";
+import type { JevVerificationSummary } from "./jev.js";
 import type { ResearchEvidence } from "./research.js";
 import type { Finding } from "./schema.js";
-import { parseVerdict } from "./schema.js";
+import { fingerprintFinding, parseVerdict } from "./schema.js";
 import { addTokenUsage, promptAndParse, VERIFIER_AGENT } from "./opencode.js";
 import type { OpencodeHandle, TokenUsage } from "./opencode.js";
 import { buildVerifierSystem, buildVerifierTask } from "./prompts.js";
@@ -34,6 +38,8 @@ export interface VerificationResult {
   tokens: TokenUsage;
   /** provider/model that actually answered the verify calls (see PromptResult.model). */
   model?: string;
+  /** Active selective-verification usage; absent when Jev is not configured. */
+  jev?: JevVerificationSummary;
 }
 
 /** The audited passages behind a finding's grounded citations, bounded per source. */
@@ -94,10 +100,13 @@ export function matchEvidence(evidence: string, content: string): "present" | "a
 
 // @ref LLP 0005#verifier-confinement-and-fail-open [implements] — pathInside gate: out-of-tree reads (and their present/absent verdict) refused
 /** Read the cited file and grade the evidence against it (see matchEvidence). */
-async function evidencePresence(
+async function inspectEvidence(
   finding: Finding,
   cwd: string,
-): Promise<"present" | "absent" | "unknown"> {
+): Promise<{
+  presence: "present" | "absent" | "unknown";
+  sourceContext: string;
+}> {
   // finding.file is an unconstrained, LLM-authored string produced over untrusted PR
   // content, so a prompt-injected finding could point it at a host secret. path.resolve
   // IGNORES cwd when finding.file is already absolute (e.g. ~/.claude/.credentials.json),
@@ -107,15 +116,15 @@ async function evidencePresence(
   // materialized PR-head tree); anything outside is uncheckable, never read.
   const resolved = path.resolve(cwd, finding.file);
   if (!pathInside(resolved, cwd)) {
-    return "unknown";
+    return { presence: "unknown", sourceContext: "" };
   }
   let content: string;
   try {
     content = await readFile(resolved, "utf8");
   } catch {
-    return "unknown";
+    return { presence: "unknown", sourceContext: "" };
   }
-  return matchEvidence(finding.evidence ?? "", content);
+  return { presence: matchEvidence(finding.evidence ?? "", content), sourceContext: content };
 }
 
 // @ref LLP 0005#verifier-confinement-and-fail-open [constrained-by] — fails open: a verify error/timeout keeps the finding, never drops it
@@ -145,6 +154,12 @@ export async function verifyFindings(
   onProgress?: (message: string) => void,
   /** This run's audited research evidence, for findings that cite documentation. */
   researchEvidence: ResearchEvidence[] = [],
+  jev?: {
+    config: NonNullable<LoadedConfig["jev"]>;
+    apiKey?: string;
+    /** Test seam; production constructs the pinned client inside jev.ts. */
+    client?: TypeSafeClient;
+  },
 ): Promise<VerificationResult> {
   const dropped: Array<{ finding: Finding; reason: string }> = [];
   const citationStripped: Array<{ finding: Finding; reason: string }> = [];
@@ -156,8 +171,28 @@ export async function verifyFindings(
 
   // Phase 1 — deterministic quote-grounding for every finding.
   const checked = await Promise.all(
-    findings.map(async (finding) => ({ finding, presence: await evidencePresence(finding, cwd) })),
+    findings.map(async (finding) => ({ finding, ...(await inspectEvidence(finding, cwd)) })),
   );
+
+  // Phase 2 — active selective classification. A confident local answer can
+  // avoid the slower verifier; uncertainty is explicitly handed to it.
+  const jevResult = jev
+    ? await evaluateFindingsWithJev({
+        config: jev.config,
+        candidates: checked.map(({ finding, sourceContext }) => ({ finding, sourceContext })),
+        ...(jev.apiKey ? { apiKey: jev.apiKey } : {}),
+        ...(jev.client ? { client: jev.client } : {}),
+      })
+    : undefined;
+  if (jevResult?.summary.unavailable) {
+    onProgress?.(
+      `  Jev unavailable (${jevResult.summary.unavailable}); using normal verification.`,
+    );
+  } else if (jevResult) {
+    onProgress?.(
+      `  Jev classified ${jevResult.summary.evaluated} finding(s); ${jevResult.summary.failed} fell back.`,
+    );
+  }
 
   // Decide which findings need an LLM check vs. can be kept directly. A finding
   // that cites documentation always gets an LLM check: the repo alone cannot
@@ -171,14 +206,36 @@ export async function verifyFindings(
   }> = [];
   for (const { finding, presence } of checked) {
     const citedSources = citedSourcesFor(finding, researchEvidence);
-    if (presence === "absent" || finding.severity === "critical" || citedSources) {
+    const evaluation = jevResult?.evaluations.get(fingerprintFinding(finding));
+    const disposition = evaluation
+      ? jevDisposition(finding, evaluation, jev?.config.minConfidence ?? 1)
+      : undefined;
+    if (disposition === "keep") {
+      verdicts.set(finding, "keep");
+      continue;
+    }
+    if (disposition === "drop") {
+      verdicts.set(finding, "drop");
+      dropped.push({
+        finding,
+        reason: `Jev directly contradicted the finding (${Math.round(evaluation!.confidence * 100)}% confidence)`,
+      });
+      onProgress?.(`  Jev: dropped ${finding.severity} "${finding.title}" as contradicted.`);
+      continue;
+    }
+    if (
+      disposition === "defer" ||
+      presence === "absent" ||
+      finding.severity === "critical" ||
+      citedSources
+    ) {
       toVerify.push({ finding, presence, ...(citedSources ? { citedSources } : {}) });
     } else {
       verdicts.set(finding, "keep"); // grounded (or uncheckable) non-critical
     }
   }
 
-  // Phase 2 — LLM verify (parallel). Refuted → drop; verified or errored → keep.
+  // Phase 3 — reasoning verify (parallel). Refuted → drop; verified or errored → keep.
   await Promise.all(
     toVerify.map(async ({ finding, presence, citedSources }, index) => {
       try {
@@ -242,5 +299,13 @@ export async function verifyFindings(
   const kept = findings
     .filter((finding) => verdicts.get(finding) === "keep")
     .map((finding) => replacements.get(finding) ?? finding);
-  return { kept, dropped, citationStripped, cost, tokens, model };
+  return {
+    kept,
+    dropped,
+    citationStripped,
+    cost,
+    tokens,
+    model,
+    ...(jevResult ? { jev: jevResult.summary } : {}),
+  };
 }

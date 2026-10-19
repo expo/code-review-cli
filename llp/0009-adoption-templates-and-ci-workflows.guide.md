@@ -64,6 +64,15 @@ credential actually selected by trusted config. The default remains Anthropic an
 `dismiss.yml` still receives no model credential [observed: `templates/config.jsonc`;
 `templates/workflow.yml`, `command.yml`, and `atlantis.yml`].
 
+**Jev is an independent optional secret.** Each review-running workflow maps
+`TYPESAFE_API_KEY`; adding `jev` to trusted root config activates the selective cascade.
+GitHub supplies an empty value when the repository secret is absent, so the original
+verification path remains available. ECR sends bounded finding/file source directly
+to TypeSafe and logs aggregate usage; the key never enters `auth.tokenEnv` or reviewer
+engines. `dismiss.yml` still receives no model or Jev credential.
+[LLP 0014](0014-jev-selective-verification.explainer.md) owns the disclosure and
+fallback rules.
+
 **Keep the `**/*` catch-all first in `routing.jsonc`.** Scopes match last-match-wins, so a `**/*` catch-all must come first and more specific scopes come after to override it [observed: `templates/routing.jsonc:27-31`; `AGENTS.md:17-18`]. Nothing validates the order — reversing it silently changes which config applies to already-routed files [inferred: no code checks that the `**/*` catch-all comes first, so reversing it silently changes routing].
 
 **`scope-config.jsonc` deliberately omits `auth` and `commentTag`.** It is a *different* template from the root `config.jsonc`, not a copy. A scope config carries no `auth` block — credentials are root-only, and the loader plus the CI guard reject a scope config that declares one [observed: `templates/scope-config.jsonc:1-3`; `AGENTS.md:51`]. It also omits `commentTag`, because a scope's PR-comment marker is always derived as `<rootTag>:<scope-name>` so `ecr ci` and `ecr review --scope --post` target the same comment; declaring one is rejected by the scope schema [observed: `templates/scope-config.jsonc:23-25`]. Reusing the root `config.jsonc` template for a scope — a tempting "simplification" — would break the trust boundary (LLP 0006).
