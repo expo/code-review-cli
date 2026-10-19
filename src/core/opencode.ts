@@ -85,6 +85,21 @@ export const META_MUSE_MODELS: Record<string, Record<string, unknown>> = {
       include: ["reasoning.encrypted_content"],
     },
   },
+  "muse-wonder-1.0": {
+    name: "Muse Wonder 1.0",
+    reasoning: true,
+    limit: { context: 1_048_576, output: 131_072 },
+    modalities: {
+      input: ["text", "image", "pdf", "video", "audio"],
+      output: ["text"],
+    },
+    options: {
+      store: false,
+      reasoningEffort: "high",
+      reasoningSummary: "auto",
+      include: ["reasoning.encrypted_content"],
+    },
+  },
 };
 
 /**
