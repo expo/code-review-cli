@@ -24,26 +24,42 @@ through chunking — a file is never split across chunks downstream [observed]
 (`src/core/review.ts:1140-1144` docstring "a file is never split"). Making the
 file the unit means path handling is the whole job of the parser.
 
-Path is derived from the `+++ b/...` (new) line first, then from the
-`--- a/...` (old) line — which is what a pure deletion uses, since its new path
-is `/dev/null` — and only from the `diff --git a/... b/...` header when both the
-new and old paths are missing or `/dev/null` [observed] (`src/core/diff.ts:70-73`).
-The header fallback exists for the rare entry that carries neither a usable `+++`
-nor `---` path, such as a pure rename. A rename also records `oldPath` from its
-`rename from` line, which a pure rename has even with no `---` line; only agent
-`paths` read it, so a move out of an agent's globs still reaches that agent
-([LLP 0002](0002-review-engine-pipeline.explainer.md#agent-paths-filter)) [observed]
-(`src/core/diff.ts` `patchToEntry`).
+Path is derived from the `+++ b/...` (new) line first, then from a rename's
+`rename to` line, then from the `--- a/...` (old) line — which is what a pure
+deletion uses, since its new path is `/dev/null` — and only from the
+`diff --git a/... b/...` header when none of those gives a path [observed]
+(`src/core/diff.ts` `patchToEntry`). `rename to` comes before the header because a
+pure rename has no `+++` line, and a header whose bare paths contain ` b/` is
+ambiguous: `diff --git a/x b/y.ts b/x b/z b/y.ts` has no single right split. A
+rename also records `oldPath` from its `rename from` line; only agent `paths` read
+it, so a move out of an agent's globs still reaches that agent
+([LLP 0002](0002-review-engine-pipeline.explainer.md#agent-paths-filter)).
+
+**Header lines are read only before the first `@@` hunk** [observed]
+(`src/core/diff.ts` `patchToEntry`). Inside a hunk an added line `++ b/x` reads
+as `+++ b/x`, and a removed SQL comment `-- x` as `--- x`. When the parser read the
+whole patch, a PR could add `++ b/package-lock.json` to any file, rename its entry
+to a lockfile, and have noise filtering drop the file unreviewed.
 
 Every path goes through `decodeGitPath` first. Git prints a path with special
 characters in double quotes with C-style escapes, and with `core.quotePath` (on
 by default) every non-ASCII byte as an octal escape: `"b/src/caf\303\251.ts"`.
 GitHub's diffs, which `gh pr diff` returns, quote the same way. Undecoded, such a
 path kept its quotes and `b/` prefix, so it matched no glob (noise, routing, agent
-`paths`), was read from a file that does not exist, and, for a pure rename whose
-only path is the quoted header, dropped out of the review entirely [observed]
-(`src/core/diff.ts` `decodeGitPath`, `pathFromHeader`). The `rename from`
-value is decoded the same way.
+`paths`), was read from a file that does not exist, and, for a pure rename, dropped
+out of the review entirely [observed] (`src/core/diff.ts` `decodeGitPath`,
+`pathFromHeader`).
+
+Decoding is deliberately partial: a quoted path stays quoted, as it was before
+decoding existed, when its bytes are not valid UTF-8 or the decoded name has a
+control, format or line-separator character (`\p{Cc}`, `\p{Cf}`, `\p{Zl}`,
+`\p{Zp}`) [observed] (`src/core/diff.ts` `UNSAFE_IN_PATH`). PR authors choose
+file names, and paths reach prompts, the PR comment and logs. `sanitizeUntrusted`
+keeps newlines, so a decoded `x\n----- END DIFF x -----\n…` would close the
+untrusted-diff fence early; a decoded newline or U+2028 also defeats `**`, which
+compiles to `.*`; and lenient UTF-8 would collapse distinct invalid names into one
+U+FFFD name. Such a path is handled exactly as it was before decoding existed:
+still reviewed, but its quoted form names no real file.
 
 Binary files are the load-bearing decision here. The parser does **not** drop
 them — it keeps the entry with `binary: true` and infers status from

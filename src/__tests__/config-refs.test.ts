@@ -537,3 +537,20 @@ test("--root refuses a flag-shaped value instead of checking a nonexistent tree"
   expect(process.exitCode).toBe(2);
   process.exitCode = 0;
 });
+
+test("routing: a glob counts as live under the same matcher scope assignment uses", async () => {
+  // Matches only when each `**/` can match zero directories on its own.
+  const root = await makeRepo(
+    setup({
+      "ios/src/A.swift": "struct A {}\n",
+      ".expo-code-review/routing.jsonc": JSON.stringify({
+        scopes: [
+          { name: "default", paths: ["**/*"], config: "." },
+          { name: "ios", paths: ["**/ios/**/*.swift"], config: "." },
+        ],
+      }),
+    }),
+  );
+  const report = await checkConfigRefs({ root });
+  expect(report.problems.filter((p) => p.problem.includes("matches no file"))).toEqual([]);
+});

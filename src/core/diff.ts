@@ -47,10 +47,17 @@ function patchToEntry(patch: string): DiffEntry | null {
   let newPath: string | null = null;
   let oldPath: string | null = null;
   let renameFrom: string | null = null;
+  let renameTo: string | null = null;
   let status: string | undefined;
   let binary = false;
 
   for (const line of lines) {
+    if (line.startsWith("@@")) {
+      // The header ends at the first hunk. Past it, an added line `++ b/x` reads as
+      // `+++ b/x`, so a PR could rename its own entry (to a lockfile noise filtering
+      // drops, say) and keep the file out of review.
+      break;
+    }
     if (line.startsWith("+++ ")) {
       newPath = stripDiffPathPrefix(line.slice(4));
     } else if (line.startsWith("--- ")) {
@@ -58,6 +65,10 @@ function patchToEntry(patch: string): DiffEntry | null {
     } else if (line.startsWith("rename from ")) {
       // Present even for a pure rename, which has no `---` line.
       renameFrom = decodeGitPath(line.slice("rename from ".length).trim());
+      status = "R";
+    } else if (line.startsWith("rename to ")) {
+      // Unambiguous, unlike a header whose bare paths contain " b/".
+      renameTo = decodeGitPath(line.slice("rename to ".length).trim());
       status = "R";
     } else if (line.startsWith("new file mode")) {
       status = "A";
@@ -72,7 +83,7 @@ function patchToEntry(patch: string): DiffEntry | null {
     }
   }
 
-  let path = newPath && newPath !== "/dev/null" ? newPath : oldPath;
+  let path = newPath && newPath !== "/dev/null" ? newPath : (renameTo ?? oldPath);
   if (!path || path === "/dev/null") {
     path = pathFromHeader(header);
   }
@@ -128,6 +139,12 @@ const C_ESCAPES: Record<string, number> = {
  * non-ASCII byte is an octal escape too, so `café.ts` prints as `"caf\303\251.ts"`;
  * GitHub's diffs (what `gh pr diff` returns) quote the same way. A bare path is
  * returned unchanged.
+ *
+ * A quoted path is also returned unchanged, still quoted, when its bytes are not
+ * valid UTF-8 (distinct names would all decode to the same U+FFFD name) or when the
+ * decoded name has a control, format or line-separator character. Paths reach
+ * prompts, comments and logs, so a decoded newline could forge an untrusted-diff
+ * boundary line, and `**` (`.*`) does not match across one.
  */
 // @ref LLP 0004#unified-diff-parsing [implements] — decode git's C-quoted paths, or a non-ASCII path matches no glob and is read from a file that does not exist
 export function decodeGitPath(token: string): string {
@@ -145,5 +162,16 @@ export function decodeGitPath(token: string): string {
       bytes.push(escape === undefined ? Buffer.from(part, "utf8") : Buffer.from([escape]));
     }
   }
-  return Buffer.concat(bytes).toString("utf8");
+  let decoded: string;
+  try {
+    decoded = STRICT_UTF8.decode(Buffer.concat(bytes));
+  } catch {
+    return token;
+  }
+  return UNSAFE_IN_PATH.test(decoded) ? token : decoded;
 }
+
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+/** Control (C0, DEL, C1), format (bidi, zero-width) and line/paragraph separators. */
+const UNSAFE_IN_PATH = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
