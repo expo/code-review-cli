@@ -627,6 +627,61 @@ test("buildClaudeArgs: empty tools (coordinator/no-tools fallback) deny every re
   );
 });
 
+test("buildClaudeArgs: extraReadRoots add a second scope for each granted read tool only", () => {
+  const patchDir = "/work/base/.expo-code-review/.runs/r1/patches";
+  const args = buildClaudeArgs({
+    model: "claude-opus-5",
+    system: "SYS",
+    cwd: "/work/tree",
+    tools: ["read", "grep"],
+    extraReadRoots: [patchDir],
+  });
+  const joined = args.join(" ");
+  // In CI the patch files live under the base checkout, outside the PR-head tree, so
+  // without this scope every "read the patch file" instruction is denied by dontAsk.
+  expect(joined).toContain(
+    `--allowedTools Read(//work/tree/**) Read(/${patchDir}/**) Grep(//work/tree/**) Grep(/${patchDir}/**)`,
+  );
+  // Only the patch directory: the rest of the run directory stays unreadable.
+  expect(joined).not.toContain("/.runs/r1/**");
+  expect(joined).not.toContain("Glob(/");
+
+  // A pass with no read tools gets no rule for the extra root either.
+  const none = buildClaudeArgs({
+    model: "claude-opus-5",
+    system: "SYS",
+    cwd: "/work/tree",
+    tools: [],
+    extraReadRoots: [patchDir],
+  });
+  expect(none.join(" ")).not.toContain("--allowedTools");
+  expect(none.join(" ")).not.toContain(patchDir);
+});
+
+test("runClaudePrompt: the handle's patch directory reaches the CLI's read scope", async () => {
+  const body = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "ok",
+  });
+  const { bin, argsLog, cleanup } = await sequencedFakeClaude([body]);
+  const patchDir = "/work/base/.expo-code-review/.runs/r1/patches";
+  try {
+    await runClaudePrompt(testHandle(bin, { patchDir }), {
+      agent: "reviewer",
+      system: "SYS",
+      text: "hi",
+      title: "t",
+    });
+    const args = (await argsLog(1)).split("\n");
+    expect(args).toContain(`Read(/${patchDir}/**)`);
+    expect(args).toContain(`Grep(/${patchDir}/**)`);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("buildClaudeArgs: maxTurns is forwarded as the CLI --max-turns bound", () => {
   const args = buildClaudeArgs({
     model: "claude-opus-5",

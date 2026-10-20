@@ -53,6 +53,8 @@ export interface ClaudeCodeHandle extends OpencodeHandle {
   researchMcpConfigPath?: string;
   /** Only reviewer and cross-cutting roles may receive the documentation tools. */
   researchAgents?: ReadonlySet<string>;
+  /** The run's patch directory, readable by every pass that has read tools. */
+  patchDir?: string;
 }
 
 /** Prompt args, structurally shared with promptAgent/promptAndParse in opencode.ts. */
@@ -260,7 +262,9 @@ export function claudeModelMatches(requested: string, actualKey: string): boolea
  * (Glob withheld — directory crawling is what made them wander), and the coordinator
  * plus the no-tools fallback get none. Whatever the role, every GRANTED read tool is
  * path-scoped to the review tree (`//<cwd>/**`, Claude Code's absolute-path rule)
- * with `dontAsk` denying any call that matches no allow rule. This narrows the
+ * plus the run's own patch directory (`extraReadRoots` — ecr writes it, and it holds
+ * only patch text the passes are already shown), with `dontAsk` denying any call
+ * that matches no allow rule. This narrows the
  * prompt-injection exfil path for DIRECT out-of-tree reads: untrusted PR content is
  * the review input and findings are posted as PR comments, so any unscoped
  * read-capable tool (a bare `Grep` no less than a bare `Read`) would let an injected
@@ -306,6 +310,12 @@ export function buildClaudeArgs(opts: {
    * by omission.
    */
   tools?: readonly string[];
+  /**
+   * Absolute directories the granted read tools may ALSO read, beyond the tree: the
+   * run's patch directory, which in CI sits under the base checkout and outside the
+   * PR-head tree. Without it every "read the patch file" instruction is denied.
+   */
+  extraReadRoots?: readonly string[];
   researchMcpConfigPath?: string;
   maxTurns?: number;
   jsonSchema?: Record<string, unknown>;
@@ -313,8 +323,10 @@ export function buildClaudeArgs(opts: {
   // Permission rules are gitignore-style with forward slashes; a Windows cwd
   // (`C:\Users\dev\repo`) must be normalized or every rule silently matches
   // nothing and dontAsk denies all reads.
-  const scopeRoot = opts.cwd.replace(/\\/g, "/");
-  const scope = (tool: string): string => `${tool}(/${scopeRoot}/**)`;
+  const scopeRoots = [opts.cwd, ...(opts.extraReadRoots ?? [])].map((root) =>
+    root.replace(/\\/g, "/"),
+  );
+  const scope = (tool: string): string[] => scopeRoots.map((root) => `${tool}(/${root}/**)`);
   const requested = opts.tools ?? ["read", "grep", "glob"];
   const enabled = ALL_READ_TOOLS.filter((claudeName) =>
     requested.some((name) => READ_TOOL_MAP[name] === claudeName),
@@ -323,7 +335,7 @@ export function buildClaudeArgs(opts: {
   // scoped allow rules alone don't deny them when the allow list is empty.
   const deniedReadTools = ALL_READ_TOOLS.filter((tool) => !enabled.includes(tool));
   const researchTools = opts.researchMcpConfigPath ? [...CLAUDE_RESEARCH_TOOLS] : [];
-  const allowedTools = [...enabled.map(scope), ...researchTools];
+  const allowedTools = [...enabled.flatMap(scope), ...researchTools];
   return [
     "-p",
     "--output-format",
@@ -822,6 +834,7 @@ export async function runClaudePrompt(
         system: args.system,
         cwd: process.cwd(),
         tools,
+        ...(handle.patchDir ? { extraReadRoots: [handle.patchDir] } : {}),
         researchMcpConfigPath,
         maxTurns,
         jsonSchema: args.jsonSchema,
@@ -1108,6 +1121,7 @@ export function claudeTokenCredential(
 export async function startClaudeCode(
   config: LoadedConfig,
   research?: ResearchMcpRuntime,
+  patchDir?: string,
 ): Promise<ClaudeCodeHandle> {
   const cliPath = await resolveOnPath("claude");
   if (!cliPath) {
@@ -1222,5 +1236,6 @@ export async function startClaudeCode(
     childEnv,
     ...(research ? { researchMcpConfigPath: research.claudeConfigPath } : {}),
     researchAgents,
+    ...(patchDir ? { patchDir } : {}),
   };
 }

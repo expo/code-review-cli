@@ -186,17 +186,27 @@ decides which reviewer agents run [observed] (`src/core/agent-paths.ts`).
 ## Patch Workspace
 
 `writePatchWorkspace` materializes the kept diffs as one `.patch` file per
-changed file plus a `context.md` manifest, all written **inside** the repo run
-directory so the agent's file-read tool can reach them [observed]
-(`src/core/noise.ts:199-231`). Agents are pointed at these paths instead of
-having the full diff inlined into every prompt [observed]
-(`src/core/noise.ts:200-202` docstring).
+changed file plus a `context.md` manifest under the run directory [observed]
+(`src/core/noise.ts:215-245`). Agents are pointed at these paths for files whose
+diff is not inlined into their prompt: a reviewer's context-only files, and the
+cross-cutting pass's files past its inline budget [observed]
+(`src/core/prompts.ts` `buildReviewerTask`, `buildCrossCuttingTask`).
+
+The run directory is **not** inside the tree the passes read in CI. `.runs/` lives
+under the trusted base checkout, while the passes run in the PR-head tree that
+`ecr ci` materializes in a temp directory. The Claude Code engine scopes every read
+tool to that tree, so it grants the patch directory (`patchDirFor(runDir)`) as a
+second read scope, and only that directory [observed] (`src/core/noise.ts:205`,
+`src/core/claude-code.ts` `buildClaudeArgs` `extraReadRoots`). Before that grant,
+every patch read in CI was denied, verified 2026-10-20 against `claude 2.1.280`.
+The OpenCode engine sets no read permissions of its own, so whether it can read
+outside the tree depends on OpenCode's defaults [assumed].
 
 The token/context saving is the stated motive. There is likely a second motive:
 delivering diffs as files the agent reads on demand also keeps untrusted PR
 content out of the prompt text that must be sanitized inline, shrinking the
 injection surface [inferred] — the diff/noise code states only the
-context-budget reason (`src/core/noise.ts:200-202`), and AGENTS.md states diffs
+context-budget reason (`src/core/noise.ts:211-213`), and AGENTS.md states diffs
 are untrusted and must go through `prompts.ts`, but the code never states
 file-delivery as an isolation choice. Note the cross-cutting pass reverses this
 default and inlines diffs anyway (see [Prompt Layout for Cache and
@@ -204,7 +214,7 @@ Coverage](#prompt-layout-for-cache-and-coverage)), which is why the isolation
 motive is a hypothesis, not a stated rule.
 
 Patch filenames are sanitized to `[a-zA-Z0-9._-]` (everything else → `__`) and
-zero-padded index-prefixed [observed] (`src/core/noise.ts:214-217`). This is a
+zero-padded index-prefixed [observed] (`src/core/noise.ts:226-229`). This is a
 security control, not cosmetics: `entry.path` comes from untrusted PR diff
 content, and an unsanitized path could be used for traversal or collision when
 writing files to disk.

@@ -165,7 +165,10 @@ attempt and accounts for both attempts; it never accepts unvalidated fallback te
 `--allowedTools` list default-**allows** reads; it does not default-deny. So two things
 happen together: every **granted** read tool (`Read`/`Grep`/`Glob`) is path-scoped to
 the review tree with a `//<cwd>/**` allow rule, and every read tool **not** granted is
-denied explicitly **by name** via `--disallowedTools`. Assuming standard allow-list
+denied explicitly **by name** via `--disallowedTools`. The one scope beyond the tree is
+the run's patch directory (`extraReadRoots`): in CI it sits under the base checkout,
+outside the PR-head tree, and holds only patch text ecr wrote itself. The rest of
+`.runs/` stays unreadable (see LLP 0004 "Patch Workspace"). Assuming standard allow-list
 semantics (unlisted = denied) would silently reopen every unscoped read tool — a bare
 `Grep` no less than a bare `Read` would let an injected instruction read
 `~/.claude/.credentials.json`, `.env*`, or SSH keys and emit them into a finding. This
