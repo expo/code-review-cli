@@ -198,3 +198,23 @@ test("reviewCacheAllowed is the one policy both CI paths share", () => {
   // after the legacy path dropped it, which is the drift this function prevents.
   expect(reviewCacheAllowed(base)).toBe(true);
 });
+
+test("agent `paths` are part of the key, and an agent without them hashes as before", async () => {
+  const root = await fixtureRoot();
+  try {
+    const original = await hash(root);
+    const [base] = config().agents;
+    const withPaths = (paths: string[]): LoadedConfig => config({ agents: [{ ...base!, paths }] });
+    // The skip decision is a function of the files and the agents' paths, so the key
+    // must move whenever the paths do.
+    const ios = await hash(root, { config: withPaths(["packages/ios/**"]) });
+    expect(ios).not.toBe(original);
+    expect(await hash(root, { config: withPaths(["packages/ios/**"]) })).toBe(ios);
+    expect(await hash(root, { config: withPaths(["packages/web/**"]) })).not.toBe(ios);
+    expect(await hash(root, { config: config({ agents: [{ ...base!, paths: undefined }] }) })).toBe(
+      original,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

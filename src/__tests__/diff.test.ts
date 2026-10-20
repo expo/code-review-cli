@@ -55,6 +55,37 @@ diff --git a/c.ts b/c.ts
   expect(parseUnifiedDiff(diff).map((e) => e.path)).toEqual(["a.ts", "c.ts"]);
 });
 
+test("a rename records the old path, with or without hunks", () => {
+  const diff = `diff --git a/packages/ios/X.swift b/lib/X.swift
+similarity index 90%
+rename from packages/ios/X.swift
+rename to lib/X.swift
+index 111..222 100644
+--- a/packages/ios/X.swift
++++ b/lib/X.swift
+@@ -1 +1 @@
+-a
++b
+diff --git a/docs/a.md b/guides/a.md
+similarity index 100%
+rename from docs/a.md
+rename to guides/a.md
+diff --git a/src/a.ts b/src/a.ts
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1 +1 @@
+-a
++b`;
+  const [edited, pure, plain] = parseUnifiedDiff(diff);
+  expect(edited).toMatchObject({
+    path: "lib/X.swift",
+    oldPath: "packages/ios/X.swift",
+    status: "R",
+  });
+  expect(pure).toMatchObject({ path: "guides/a.md", oldPath: "docs/a.md", status: "R" });
+  expect("oldPath" in plain!).toBe(false);
+});
+
 test("decodes git's C-quoted paths (non-ASCII and special characters)", () => {
   // What git and GitHub print for `src/café.ts` with core.quotePath on (the default).
   const added = `diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251.ts"
@@ -96,4 +127,12 @@ test("decodeGitPath: bare paths are unchanged; escapes decode to bytes", () => {
   expect(decodeGitPath('"tab\\there"')).toBe("tab\there");
   expect(decodeGitPath('"back\\\\slash"')).toBe("back\\slash");
   expect(decodeGitPath('"\\346\\227\\245\\346\\234\\254.md"')).toBe("日本.md");
+});
+
+test("a quoted rename's old path is decoded too", () => {
+  const diff = `diff --git "a/x/caf\\303\\251.md" "b/y/caf\\303\\251.md"
+similarity index 100%
+rename from "x/caf\\303\\251.md"
+rename to "y/caf\\303\\251.md"`;
+  expect(parseUnifiedDiff(diff)[0]).toMatchObject({ path: "y/café.md", oldPath: "x/café.md" });
 });

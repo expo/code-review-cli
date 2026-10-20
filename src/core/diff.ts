@@ -46,6 +46,7 @@ function patchToEntry(patch: string): DiffEntry | null {
 
   let newPath: string | null = null;
   let oldPath: string | null = null;
+  let renameFrom: string | null = null;
   let status: string | undefined;
   let binary = false;
 
@@ -54,6 +55,10 @@ function patchToEntry(patch: string): DiffEntry | null {
       newPath = stripDiffPathPrefix(line.slice(4));
     } else if (line.startsWith("--- ")) {
       oldPath = stripDiffPathPrefix(line.slice(4));
+    } else if (line.startsWith("rename from ")) {
+      // Present even for a pure rename, which has no `---` line.
+      renameFrom = decodeGitPath(line.slice("rename from ".length).trim());
+      status = "R";
     } else if (line.startsWith("new file mode")) {
       status = "A";
     } else if (line.startsWith("deleted file mode")) {
@@ -74,7 +79,13 @@ function patchToEntry(patch: string): DiffEntry | null {
   if (!path) {
     return null;
   }
-  return { path, patch, status: status ?? "M", binary };
+  return {
+    path,
+    ...(renameFrom && renameFrom !== path ? { oldPath: renameFrom } : {}),
+    patch,
+    status: status ?? "M",
+    binary,
+  };
 }
 
 function stripDiffPathPrefix(raw: string): string {

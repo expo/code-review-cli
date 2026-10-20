@@ -393,13 +393,21 @@ export interface LoadedAgent {
   id: string;
   /** One-line summary from frontmatter, used by the router to pick agents. */
   description: string;
-  /** Frontmatter `alwaysRun: true` — router always includes it (e.g. security). */
+  /**
+   * Frontmatter `alwaysRun: true`: the router always includes it when its `paths`
+   * match (e.g. security).
+   */
   alwaysRun: boolean;
   model: string;
   temperature: number;
   tools: Record<string, boolean>;
   /** Role prompt text (not including the shared prompt). */
   promptText: string;
+  /**
+   * Frontmatter `paths`: repo-relative globs. When set, the agent reviews only a run
+   * or chunk that has at least one matching changed file. Absent means every change.
+   */
+  paths?: string[];
 }
 
 /**
@@ -436,6 +444,12 @@ export interface LoadedConfig {
   configDir: string;
   sharedPromptText: string;
   agents: LoadedAgent[];
+  /**
+   * Prompt-file frontmatter problems found at load time (an invalid `paths`, a
+   * frontmatter block below the first line, a trailing comment in a value). Each
+   * names its file and the fix. Reviews show them as setup notes; absent when none.
+   */
+  setupWarnings?: string[];
   coordinator: {
     model: string;
     temperature: number;

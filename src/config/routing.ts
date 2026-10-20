@@ -79,8 +79,12 @@ function patternVariants(pattern: string): string[] {
 /** Double-star + slash segments a pattern can have and still expand fully (2^6 = 64 variants). */
 const MAX_INDEPENDENT_GLOBSTARS = 6;
 
-/** Does any of the scope's globs match this file? */
-function scopeMatches(paths: string[], file: string): boolean {
+/**
+ * Does any of these globs match this repo-relative file? The dialect of routing
+ * scopes and agent `paths`: `*` within a segment, `**` across directories, and each
+ * double-star + slash also matches zero directories (so root-level files too).
+ */
+export function matchesPathGlobs(paths: readonly string[], file: string): boolean {
   return paths.some((pattern) =>
     patternVariants(pattern).some((variant) => matchesIgnore(file, variant)),
   );
@@ -101,7 +105,7 @@ export function resolveScopes(manifest: RoutingManifest, changedFiles: string[])
   for (const file of changedFiles) {
     const matched: string[] = [];
     for (const scope of manifest.scopes) {
-      if (scopeMatches(scope.paths, file)) {
+      if (matchesPathGlobs(scope.paths, file)) {
         matched.push(scope.name);
       }
     }

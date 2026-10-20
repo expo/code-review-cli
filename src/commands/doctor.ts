@@ -261,6 +261,11 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
         rootConfig.agents.every((a) => Boolean(a.promptText.trim())),
         "all agent prompt files resolved and non-empty",
       );
+      // Reviews degrade past these (see LoadedConfig.setupWarnings); doctor is where
+      // they fail, so a broken setup is fixed before it quietly reviews less.
+      for (const warning of rootConfig.setupWarnings ?? []) {
+        line(false, warning);
+      }
 
       // Set when the Claude Code engine has no usable credential. checkProviderAuth
       // (below) returns ok:true for every anthropic shape (login fallback), so this
@@ -392,6 +397,9 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
         true,
         `scope ${scope.name}: ${scopeConfig.agents.length} agent(s) [${scopeConfig.agents.map((a) => a.id).join(", ")}], config ${scope.config}`,
       );
+      for (const warning of scopeConfig.setupWarnings ?? []) {
+        line(false, `scope ${scope.name}: ${warning}`);
+      }
     }
 
     // Passes-budget headroom: active scopes run sequentially, so the worst case

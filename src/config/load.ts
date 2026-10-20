@@ -188,17 +188,26 @@ async function loadConfigDir(
     return Number.isFinite(n) ? n : fallback;
   };
 
+  // Frontmatter problems that loading reports instead of throwing: in CI a load error
+  // stops every review in the repo, and nothing checks prompt files before they merge.
+  const setupWarnings: string[] = [];
+  const label = setupDirLabel(dir);
+  const readPrompt = async (file: string): Promise<ReturnType<typeof parseFrontmatter>> => {
+    const raw = await readFile(path.join(dir, file), "utf8");
+    const md = parseFrontmatter(raw);
+    setupWarnings.push(...frontmatterWarnings(raw, md, path.join(label, file)));
+    return md;
+  };
+
   // shared.md is optional; the coordinator is required.
-  const sharedPath = path.join(dir, "shared.md");
-  const sharedPromptText = existsSync(sharedPath)
-    ? parseFrontmatter(await readFile(sharedPath, "utf8")).body
+  const sharedPromptText = existsSync(path.join(dir, "shared.md"))
+    ? (await readPrompt("shared.md")).body
     : "";
 
-  const coordinatorPath = path.join(dir, "coordinator.md");
-  if (!existsSync(coordinatorPath)) {
+  if (!existsSync(path.join(dir, "coordinator.md"))) {
     throw new Error(`Missing ${CONFIG_DIRNAME}/coordinator.md`);
   }
-  const coordinatorMd = parseFrontmatter(await readFile(coordinatorPath, "utf8"));
+  const coordinatorMd = await readPrompt("coordinator.md");
 
   // Every markdown file in agents/ is a reviewer agent (id = filename).
   const agentsDir = path.join(dir, "agents");
@@ -212,8 +221,12 @@ async function loadConfigDir(
 
   const agents: LoadedAgent[] = [];
   for (const file of agentFiles) {
-    const md = parseFrontmatter(await readFile(path.join(agentsDir, file), "utf8"));
+    const md = await readPrompt(path.join("agents", file));
     const id = file.replace(/\.md$/, "");
+    const { paths, warning } = parseAgentPaths(md, path.join(label, "agents", file));
+    if (warning) {
+      setupWarnings.push(warning);
+    }
     agents.push({
       id,
       description: md.data.description ?? "",
@@ -222,6 +235,9 @@ async function loadConfigDir(
       temperature: resolveTemp(md.data.temperature, 0.1),
       tools: DEFAULT_AGENT_TOOLS,
       promptText: md.body,
+      // Only when declared: an agent without `paths` keeps the exact shape (and
+      // review-cache key) it had before the key existed.
+      ...(paths ? { paths } : {}),
     });
   }
 
@@ -229,6 +245,8 @@ async function loadConfigDir(
     configDir: dir,
     sharedPromptText,
     agents,
+    // Only when there are any, so a clean setup keeps its review-cache key.
+    ...(setupWarnings.length > 0 ? { setupWarnings } : {}),
     coordinator: {
       model: resolveModel(coordinatorMd.data.model),
       temperature: resolveTemp(coordinatorMd.data.temperature, 0),
@@ -432,28 +450,308 @@ export async function loadScopeConfig(
 }
 
 /**
- * Parse optional YAML-ish frontmatter (simple `key: value` scalars) from the top
- * of a markdown file. Returns the parsed keys and the body with frontmatter
- * stripped. Supports per-agent overrides like `model:` and `temperature:`.
+ * Parse optional YAML-ish frontmatter from the top of a markdown file. Returns
+ * every `key: value` line as a scalar in `data`, the keys whose value is a list in
+ * `lists`, and the body with frontmatter stripped. A list is either a flow list on
+ * one line (`paths: ["a/**", "b/**"]`) or a block list (`paths:` followed by
+ * `- item` lines). Supports per-agent overrides like `model:` and `paths:`.
  */
-export function parseFrontmatter(md: string): { data: Record<string, string>; body: string } {
+export function parseFrontmatter(md: string): {
+  data: Record<string, string>;
+  lists: Record<string, string[]>;
+  body: string;
+} {
   if (!md.startsWith("---")) {
-    return { data: {}, body: md };
+    return { data: {}, lists: {}, body: md };
   }
   const end = md.indexOf("\n---", 3);
   if (end === -1) {
-    return { data: {}, body: md };
+    return { data: {}, lists: {}, body: md };
   }
   const header = md.slice(3, end).trim();
   const body = md.slice(end + 4).replace(/^\r?\n/, "");
   const data: Record<string, string> = {};
-  for (const line of header.split("\n")) {
+  const lists: Record<string, string[]> = {};
+  // The key with an empty value, whose following `- item` lines form its block list.
+  // Blank and comment lines inside the list are skipped; the next key ends it.
+  let blockKey: string | null = null;
+  for (const line of header.split(/\r?\n/)) {
+    const item = line.match(/^\s*-(.*)$/);
+    if (blockKey && item) {
+      const rest = item[1]!;
+      // `-glob` with no space is not a YAML list item; keep the dash so validation
+      // names it instead of the line silently dropping out of the list.
+      (lists[blockKey] ??= []).push(/^\S/.test(rest) ? `-${rest.trim()}` : unquote(rest.trim()));
+      continue;
+    }
     const match = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
     if (match) {
-      data[match[1]!] = match[2]!.trim().replace(/^["']|["']$/g, "");
+      const key = match[1]!;
+      const raw = match[2]!.trim();
+      data[key] = raw.replace(/^["']|["']$/g, "");
+      delete lists[key];
+      const flow = parseFlowList(raw);
+      if (flow) {
+        lists[key] = flow;
+      }
+      blockKey = raw === "" ? key : null;
     }
   }
-  return { data, body };
+  return { data, lists, body };
+}
+
+/**
+ * Strip the quotes around a whole quoted value. A value with text after its closing
+ * quote (`"a/**" x`, `"a/**" "b/**"`) keeps them, so validation can name it.
+ */
+function unquote(value: string): string {
+  const quote = value[0];
+  return (quote === '"' || quote === "'") && value.indexOf(quote, 1) === value.length - 1
+    ? value.slice(1, -1)
+    : value;
+}
+
+/**
+ * The items of a one-line flow list (`[a, "b", 'c']`), or null when `raw` is not
+ * one. Items may be bare, single- or double-quoted; a trailing comma is allowed.
+ */
+function parseFlowList(raw: string): string[] | null {
+  if (!raw.startsWith("[") || !raw.endsWith("]")) {
+    return null;
+  }
+  // Split at the commas outside quotes, keeping each item's quotes for unquote().
+  const items: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  for (const char of raw.slice(1, -1)) {
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      }
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === ",") {
+      items.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (quote) {
+    // An unterminated quote: not a list the author can have meant.
+    return null;
+  }
+  items.push(current.trim());
+  if (items.length === 1 && items[0] === "") {
+    return [];
+  }
+  // Allow one trailing comma, as JSONC config does.
+  if (items.length > 1 && items[items.length - 1] === "") {
+    items.pop();
+  }
+  return items.map(unquote);
+}
+
+/**
+ * The agent's frontmatter `paths`. An absent key gives neither field. An invalid
+ * value gives no `paths` either, so the agent reviews every change, plus a setup
+ * warning that names `file` and the fix.
+ */
+function parseAgentPaths(
+  md: { data: Record<string, string>; lists: Record<string, string[]> },
+  file: string,
+): { paths?: string[]; warning?: string } {
+  if (!("paths" in md.data)) {
+    return {};
+  }
+  // @ref LLP 0006#agent-frontmatter-and-paths [implements] — an invalid `paths` is a setup warning and the agent reviews every change; never a load error, never a silent no-match
+  const issue = agentPathsIssue(md);
+  if (issue) {
+    return {
+      warning:
+        `${file}: \`paths\` ${issue.problem}, so the agent ignores it and reviews every ` +
+        `change. Fix: ${issue.fix}, or remove \`paths\`.`,
+    };
+  }
+  return { paths: md.lists.paths };
+}
+
+/** Why `paths` is not a non-empty list of globs that can match a changed file, or null. */
+function agentPathsIssue(md: {
+  data: Record<string, string>;
+  lists: Record<string, string[]>;
+}): { problem: string; fix: string } | null {
+  const globs = md.lists.paths;
+  if (!globs) {
+    return TRAILING_COMMENT.test(md.data.paths ?? "")
+      ? {
+          problem: "has a `# comment` after it, which frontmatter does not strip",
+          fix: "move the comment to its own line",
+        }
+      : {
+          problem: "is not a list of globs",
+          fix: 'write it as `paths: ["packages/app/**", ".changeset/*.md"]` or as `- "glob"` lines',
+        };
+  }
+  if (globs.length === 0) {
+    return { problem: "is empty", fix: "list at least one glob" };
+  }
+  for (const [index, glob] of globs.entries()) {
+    const issue = pathGlobIssue(glob);
+    if (issue) {
+      return {
+        problem: `entry ${index + 1} (${JSON.stringify(glob)}) ${issue.problem}`,
+        fix: issue.fix,
+      };
+    }
+  }
+  return null;
+}
+
+/** A `#` that starts a YAML comment: at the start of a value or after whitespace. */
+const TRAILING_COMMENT = /(?:^|\s)#/;
+
+/** What a trailing `# comment` does to each scalar key whose value it breaks. */
+const SCALAR_COMMENT_EFFECTS: ReadonlyArray<readonly [string, string]> = [
+  ["alwaysRun", "so `alwaysRun` is off"],
+  ["model", "so it is not a valid model id"],
+  ["temperature", "so the default temperature applies"],
+];
+
+/**
+ * Setup warnings for one prompt file's frontmatter. Each names `file` and the fix.
+ * They are reported (job log, PR comment, `ecr doctor`), never thrown: the file
+ * loads exactly as it did before the check existed.
+ */
+function frontmatterWarnings(
+  raw: string,
+  md: { data: Record<string, string> },
+  file: string,
+): string[] {
+  const hidden = hiddenFrontmatter(raw);
+  if (hidden) {
+    return [
+      `${file}: its frontmatter does not start on the first line (${hidden.cause}), so ` +
+        "every key in it is ignored, including `description`, `alwaysRun`, `model` and " +
+        `\`paths\`. Fix: ${hidden.fix}.`,
+    ];
+  }
+  const warnings: string[] = [];
+  for (const [key, effect] of SCALAR_COMMENT_EFFECTS) {
+    const value = md.data[key];
+    if (value !== undefined && TRAILING_COMMENT.test(value)) {
+      warnings.push(
+        `${file}: \`${key}: ${value}\` keeps its trailing \`# comment\` as part of the ` +
+          `value, ${effect}. Fix: move the comment to its own line.`,
+      );
+    }
+  }
+  return warnings;
+}
+
+/**
+ * Why a file's frontmatter sits below its first byte, where parseFrontmatter does
+ * not look, or null when it does not. The scaffolded templates once opened with an
+ * `@ref` HTML comment above the `---`, and repos scaffolded then still do.
+ */
+function hiddenFrontmatter(raw: string): { cause: string; fix: string } | null {
+  if (raw.startsWith("---")) {
+    return null;
+  }
+  // `\s` also matches a byte-order mark.
+  const lead = raw.match(/^(?:\s+|<!--[\s\S]*?-->)+/)?.[0];
+  if (!lead || Object.keys(parseFrontmatter(raw.slice(lead.length)).data).length === 0) {
+    return null;
+  }
+  if (lead.startsWith("﻿")) {
+    return {
+      cause: "the file starts with a byte-order mark",
+      fix: "save it as UTF-8 without a byte-order mark",
+    };
+  }
+  if (lead.includes("<!--")) {
+    return {
+      cause: "an HTML comment comes first",
+      fix: "move the comment below the closing `---`",
+    };
+  }
+  return { cause: "blank lines come first", fix: "delete the lines above the opening `---`" };
+}
+
+/** Why a `paths` glob can never match a repo-relative changed file, or null when it can. */
+function pathGlobIssue(glob: string): { problem: string; fix: string } | null {
+  if (glob.trim() === "") {
+    return { problem: "is empty", fix: "delete the entry" };
+  }
+  const comment = glob.search(TRAILING_COMMENT);
+  if (comment !== -1) {
+    const value = unquote(glob.slice(0, comment).trim());
+    return {
+      problem: 'contains a "# comment", which frontmatter does not strip',
+      fix: value
+        ? `write ${JSON.stringify(value)} and move the comment to its own line`
+        : "move the comment to its own line",
+    };
+  }
+  if (/^["']/.test(glob)) {
+    // unquote() leaves the quotes when text follows the closing one.
+    return {
+      problem: "has text after its closing quote, or no closing quote",
+      fix: "quote the whole glob, and separate entries with commas",
+    };
+  }
+  if (/^-\S/.test(glob)) {
+    return {
+      problem: 'starts with "-" and no space, so YAML would not read it as a list item',
+      fix: `write "- ${glob.slice(1)}"`,
+    };
+  }
+  if (/\{[^{}]*,[^{}]*\}/.test(glob)) {
+    return {
+      problem: 'uses a "{a,b}" brace set, but agent `paths` match braces literally',
+      fix: "list each alternative as its own entry",
+    };
+  }
+  if (glob.split("{").length !== glob.split("}").length) {
+    return {
+      problem: 'has an unmatched "{" or "}", as an unquoted "{a,b}" splits at its comma',
+      fix: "list each alternative as its own quoted entry",
+    };
+  }
+  if (glob.startsWith("/")) {
+    return {
+      problem: "is absolute, but changed files are repo-relative",
+      fix: `write ${JSON.stringify(glob.replace(/^\/+/, ""))}`,
+    };
+  }
+  if (glob.startsWith("./")) {
+    return {
+      problem: 'starts with "./", but changed files are repo-relative without it',
+      fix: `write ${JSON.stringify(glob.replace(/^(\.\/)+/, ""))}`,
+    };
+  }
+  if (glob.endsWith("/")) {
+    return {
+      problem: 'ends with "/", so it matches no file',
+      fix: `write ${JSON.stringify(`${glob}**`)} to match the files under it`,
+    };
+  }
+  if (glob.startsWith("!")) {
+    return {
+      problem: 'uses "!" negation, which agent `paths` do not support',
+      fix: "list only the paths the agent should review",
+    };
+  }
+  return null;
+}
+
+/** The setup dir as error messages name it: its conventional name, else its basename. */
+function setupDirLabel(dir: string): string {
+  const normalized = path.normalize(dir);
+  return (
+    CONFIG_DIRNAMES.find((name) => normalized === name || normalized.endsWith(path.sep + name)) ??
+    path.basename(dir)
+  );
 }
 
 /**

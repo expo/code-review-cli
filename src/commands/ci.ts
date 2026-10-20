@@ -85,7 +85,8 @@ each active scope over only its files, then renders one aggregated comment (or o
 per scope). With no manifest, behavior is unchanged.
 
 Options:
-  --agents <a,b>       Run only these agents (comma-separated ids); default: all
+  --agents <a,b>       Run only these agents (comma-separated ids), even when
+                       their \`paths\` match no changed file; default: all
   --route              Let the router pick relevant agents from the diff
   --scopes <a,b>       Limit the fan-out to these named scopes (routing only)
   --config-dir <dir>   Load the ROOT config.jsonc + routing.jsonc from <dir>

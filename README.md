@@ -158,7 +158,7 @@ Options (most to least common):
 | `--staged` | Review only staged changes (index vs HEAD; not combinable with `--base`/`--head`). |
 | `--base <ref>` | Base ref to diff against (default: merge-base with the default branch). |
 | `--head <ref>` | Head ref to diff (default: working tree, incl. uncommitted changes). |
-| `--agents <a,b>` | Run only these agents (comma-separated ids); default: all. |
+| `--agents <a,b>` | Run only these agents (comma-separated ids), even when their `paths` match no changed file; default: all. |
 | `--route` | Let an LLM router pick the relevant agents from the diff. |
 | `--repo <owner/repo>` | Repo for `--pr` (default: inferred from the current checkout). |
 | `--json` | Emit machine-readable JSON on stdout. |
@@ -474,13 +474,58 @@ cacheable size (~1–4K tokens) show `cache read 0` — expected, not a bug.
 ```markdown
 ---
 description: One line the router uses to decide relevance.
-alwaysRun: true        # run even when the router would skip this agent
-model: anthropic/claude-haiku-4-5   # override the default model
+# Run even when the router would skip this agent.
+alwaysRun: true
+# Override the default model.
+model: anthropic/claude-haiku-4-5
 temperature: 0.1
+paths: ["packages/ios/**", "**/*.swift"]
 ---
 
 # Agent instructions in Markdown…
 ```
+
+The frontmatter must start on the file's first line, and it is not full YAML: put
+a `# comment` on its own line, because a comment after a value stays part of the
+value. Each review lists problems of this kind under **Review setup** in the PR
+comment (and in the terminal) with the fix, and `ecr doctor` fails on them:
+frontmatter below an HTML comment, a byte-order mark or blank lines (all its keys
+are ignored), and a comment that breaks `alwaysRun`, `model` or `temperature`.
+
+`paths` limits an agent to the changes it covers. It takes a list of repo-relative
+globs in the routing dialect: `*` stays within a directory, `**` crosses
+directories, and a leading `**/` also matches files at the repo root. Write the
+list on one line, as above, or as a block list:
+
+```yaml
+paths:
+  - "packages/ios/**"
+  - "**/*.swift"
+```
+
+- The agent runs only when at least one reviewable changed file (after noise
+  filtering and `noise.additionalIgnores`) matches. Otherwise the run skips it with
+  no model call, and the job log, the Actions step summary, and the run log say so.
+  A renamed file matches on both its old and new path, so moving a file out of an
+  agent's globs still reaches that agent.
+- On a chunked review, the agent skips each chunk that has no matching file. A
+  chunk it reviews keeps its full diff, so related files such as `.changeset/*.md`
+  still reach it.
+- `--agents` (and `/review <agents>` in CI) runs the named agents even when their
+  `paths` match nothing, because you asked for them.
+- `--route` chooses only among agents whose `paths` match, and `alwaysRun` adds an
+  agent only when its `paths` match (or it has no `paths`).
+- With a `routing.jsonc`, each scope matches `paths` against its own changed files.
+- An invalid `paths` is ignored, so the agent reviews every change, and the review
+  names the agent file and the fix under **Review setup**; `ecr doctor` fails on
+  it. Invalid means a value that is not a list, an empty list or entry, a glob
+  that can never match a repo-relative path (`/x/**`, `./x/**`, `x/`, `!x/**`), a
+  `{a,b}` brace set (braces match literally), a block item written `-x` without a
+  space, or an entry with a trailing `# comment` or text after its closing quote
+  (such as a missing comma). It is not a load error because in CI that would stop
+  every review in the repo.
+- Quote each glob. A YAML value that starts with `*` must be quoted to stay valid
+  YAML for other tools.
 
 For a real-world example, see eas-cli's
 [`.expo-agents/code-review/`](https://github.com/expo/eas-cli/tree/main/.expo-code-review)
@@ -727,9 +772,10 @@ Each run appends a JSON line to `.expo-agents/code-review/.runs/reviews.jsonl` w
 inputs, decision, finding count, duration, per-agent cost, and aggregate token
 usage (incl. prompt-cache read/write counts) — for auditing and measuring
 cost/latency/cache reuse over time. It also records the same bounded `reviewTrace`
-that the PR comment embeds for machine consumers. The same totals are printed as a
-one-line summary to the terminal / CI job log at the end of each run, so cache reuse
-is visible even in CI (where the run log is ephemeral).
+that the PR comment embeds for machine consumers. When agent `paths` skip an agent
+for the run or for some chunks, the line records it under `pathsSkipped`. The same
+totals are printed as a one-line summary to the terminal / CI job log at the end of
+each run, so cache reuse is visible even in CI (where the run log is ephemeral).
 
 `ecr review --save-review` additionally writes a versioned artifact under
 `.expo-agents/code-review/.runs/deferred/` with owner-only permissions. It contains the

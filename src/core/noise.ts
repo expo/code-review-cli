@@ -167,6 +167,8 @@ async function readFileHead(absPath: string, bytes = 4096): Promise<string | nul
 
 export interface PatchWorkspaceFile {
   path: string;
+  /** For a rename, the path in the old tree (see DiffEntry.oldPath). */
+  oldPath?: string;
   patchPath: string;
   status?: string;
   /** The file's unified-diff patch text (also written to `patchPath` on disk). */
@@ -220,6 +222,7 @@ export async function writePatchWorkspace(
     await writeFile(patchPath, entry.patch, "utf8");
     files.push({
       path: entry.path,
+      ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
       patchPath,
       status: entry.status,
       patch: entry.patch,
