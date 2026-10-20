@@ -78,17 +78,61 @@ function patchToEntry(patch: string): DiffEntry | null {
 }
 
 function stripDiffPathPrefix(raw: string): string {
-  const value = raw.trim();
+  const value = decodeGitPath(raw.trim());
   if (value === "/dev/null") {
     return value;
   }
   return value.replace(/^[ab]\//, "");
 }
 
+// One side of a `diff --git` header: a C-quoted path, or a bare one.
+const QUOTED_PATH = String.raw`"(?:[^"\\]|\\.)*"`;
+const HEADER = new RegExp(`^diff --git (${QUOTED_PATH}|a/.+?) (${QUOTED_PATH}|b/.+)$`);
+
 function pathFromHeader(header: string): string | null {
-  const match = header.match(/^diff --git a\/(.+?) b\/(.+)$/);
-  if (match) {
-    return match[2] ?? match[1] ?? null;
+  const match = header.match(HEADER);
+  if (!match) {
+    return null;
   }
-  return null;
+  // Each side is quoted on its own, so a rename can mix the two forms.
+  const newPath = decodeGitPath(match[2]!);
+  return newPath.startsWith("b/") ? newPath.slice(2) : null;
+}
+
+const C_ESCAPES: Record<string, number> = {
+  a: 0x07,
+  b: 0x08,
+  t: 0x09,
+  n: 0x0a,
+  v: 0x0b,
+  f: 0x0c,
+  r: 0x0d,
+  '"': 0x22,
+  "\\": 0x5c,
+};
+
+/**
+ * A path as git prints it in a diff: bare, or in double quotes with C-style escapes
+ * when it has special characters. With `core.quotePath` (on by default) every
+ * non-ASCII byte is an octal escape too, so `café.ts` prints as `"caf\303\251.ts"`;
+ * GitHub's diffs (what `gh pr diff` returns) quote the same way. A bare path is
+ * returned unchanged.
+ */
+// @ref LLP 0004#unified-diff-parsing [implements] — decode git's C-quoted paths, or a non-ASCII path matches no glob and is read from a file that does not exist
+export function decodeGitPath(token: string): string {
+  if (token.length < 2 || !token.startsWith('"') || !token.endsWith('"')) {
+    return token;
+  }
+  const bytes: Buffer[] = [];
+  for (const part of token.slice(1, -1).split(/(\\[0-7]{3}|\\.)/)) {
+    if (!part.startsWith("\\")) {
+      bytes.push(Buffer.from(part, "utf8"));
+    } else if (/^\\[0-7]{3}$/.test(part)) {
+      bytes.push(Buffer.from([parseInt(part.slice(1), 8)]));
+    } else {
+      const escape = C_ESCAPES[part[1]!];
+      bytes.push(escape === undefined ? Buffer.from(part, "utf8") : Buffer.from([escape]));
+    }
+  }
+  return Buffer.concat(bytes).toString("utf8");
 }

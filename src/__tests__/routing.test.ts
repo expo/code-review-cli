@@ -381,3 +381,22 @@ test("RoutingManifestSchema: rejects a non-positive budget", () => {
     }),
   ).toThrow();
 });
+
+test("resolveScopes: each `**/` matches zero or more directories on its own", () => {
+  const m = manifest([
+    { name: "default", paths: ["**/*"], config: "." },
+    { name: "ios", paths: ["**/ios/**/*.swift"], config: "packages/ios" },
+  ]);
+  const files = [
+    "ios/A.swift",
+    "packages/ios/A.swift",
+    "ios/src/A.swift",
+    "packages/ios/src/A.swift",
+    "packages/android/A.swift",
+  ];
+  const { active } = resolveScopes(m, files);
+  expect(active.find((scope) => scope.name === "ios")?.files).toEqual(files.slice(0, 4));
+  expect(active.find((scope) => scope.name === "default")?.files).toEqual([
+    "packages/android/A.swift",
+  ]);
+});

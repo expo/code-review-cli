@@ -29,7 +29,16 @@ Path is derived from the `+++ b/...` (new) line first, then from the
 is `/dev/null` — and only from the `diff --git a/... b/...` header when both the
 new and old paths are missing or `/dev/null` [observed] (`src/core/diff.ts:70-73`).
 The header fallback exists for the rare entry that carries neither a usable `+++`
-nor `---` path.
+nor `---` path, such as a pure rename.
+
+Every path goes through `decodeGitPath` first. Git prints a path with special
+characters in double quotes with C-style escapes, and with `core.quotePath` (on
+by default) every non-ASCII byte as an octal escape: `"b/src/caf\303\251.ts"`.
+GitHub's diffs, which `gh pr diff` returns, quote the same way. Undecoded, such a
+path kept its quotes and `b/` prefix, so it matched no glob (noise, routing, agent
+`paths`), was read from a file that does not exist, and, for a pure rename whose
+only path is the quoted header, dropped out of the review entirely [observed]
+(`src/core/diff.ts` `decodeGitPath`, `pathFromHeader`).
 
 Binary files are the load-bearing decision here. The parser does **not** drop
 them — it keeps the entry with `binary: true` and infers status from
@@ -144,10 +153,11 @@ Those semantics leak beyond noise. The exact same dialect is reused for
 change to the glob translation in `noise.ts` changes routing semantics too. The
 schema documents the coupling in prose ("same dialect as
 noise.additionalIgnores: `**` and `*`", `src/config/schema.ts`). Routing wraps it
-with `patternVariants`, which additionally tests each `**/`-prefixed pattern with
-the prefix stripped, because `**` translating to `.*` requires at least one
+with `patternVariants`, which also tests every variant that keeps or removes each
+`**/` independently, because `**` translating to `.*` requires at least one
 slash — so a naive catch-all like `**/*` would otherwise miss root-level files
-like `README.md` [observed] (`src/config/routing.ts:57-66`). Routing details are
+like `README.md`, and `**/ios/**/*.swift` would miss `packages/ios/A.swift`
+[observed] (`src/config/routing.ts` `patternVariants`). Routing details are
 in [LLP 0006](0006-config-schema-loading-routing.explainer.md).
 
 ## Patch Workspace

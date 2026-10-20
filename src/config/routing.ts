@@ -54,16 +54,30 @@ export interface ScopeResolution {
   overlaps: Array<{ file: string; matched: string[]; winner: string }>;
 }
 
-// The repo's minimal glob translates `**` to `.*`, so a leading double-star + slash
-// requires at least one slash in the path — which would make the documented catch-all
-// silently miss root-level files (README.md, package.json). To give the double-star +
-// slash its conventional "zero or more directories" meaning, we also test the variant
-// with each such prefix removed, so the catch-all matches both `a.ts` and `src/b.ts`.
+// The repo's minimal glob translates `**` to `.*`, so a double-star + slash requires
+// at least one directory — which would make the documented catch-all silently miss
+// root-level files (README.md, package.json). To give each double-star + slash its
+// conventional "zero or more directories" meaning, we test every variant that keeps
+// or removes each one independently: `**/ios/**/*.swift` must match `ios/A.swift`,
+// `packages/ios/A.swift`, `ios/src/A.swift` and `packages/ios/src/A.swift`, and
+// removing them only all at once or not at all misses the middle two.
 // @ref LLP 0006#routing-manifest [constrained-by] — workaround for matchesIgnore's **-needs-a-slash limitation (LLP 0004 dialect)
 function patternVariants(pattern: string): string[] {
-  const collapsed = pattern.replace(/\*\*\//g, "");
-  return collapsed !== pattern && collapsed.length > 0 ? [pattern, collapsed] : [pattern];
+  const [first = "", ...rest] = pattern.split("**/");
+  if (rest.length > MAX_INDEPENDENT_GLOBSTARS) {
+    // 2^n variants: past the cap, only all-kept or all-removed, as before.
+    const collapsed = rest.reduce((joined, part) => joined + part, first);
+    return collapsed.length > 0 ? [pattern, collapsed] : [pattern];
+  }
+  let variants = [first];
+  for (const part of rest) {
+    variants = variants.flatMap((variant) => [`${variant}**/${part}`, `${variant}${part}`]);
+  }
+  return [...new Set(variants)].filter((variant) => variant.length > 0);
 }
+
+/** Double-star + slash segments a pattern can have and still expand fully (2^6 = 64 variants). */
+const MAX_INDEPENDENT_GLOBSTARS = 6;
 
 /** Does any of the scope's globs match this file? */
 function scopeMatches(paths: string[], file: string): boolean {
