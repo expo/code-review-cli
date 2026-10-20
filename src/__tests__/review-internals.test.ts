@@ -404,13 +404,22 @@ test("effectiveConcurrency: the claude engine caps on an OAUTH credential, not a
 // toward a model call without starting any engine.
 const ENGINE_START = "engine start reached";
 
-function pathsSource(changed: string[]): { source: ReviewSource; reachedEngines: () => boolean } {
+type ChangedFile = string | { path: string; oldPath: string };
+
+function pathsSource(changed: ChangedFile[]): {
+  source: ReviewSource;
+  reachedEngines: () => boolean;
+} {
   let reached = false;
   return {
     source: {
       getMetadata: async () => ({ title: "t", body: "b", baseRef: "main", headRef: "feature" }),
       getChangedFiles: async () =>
-        changed.map((file) => ({ path: file, patch: "@@ -1 +1 @@\n-a\n+b", status: "M" })),
+        changed.map((file) =>
+          typeof file === "string"
+            ? { path: file, patch: "@@ -1 +1 @@\n-a\n+b", status: "M" }
+            : { ...file, patch: "@@ -1 +1 @@\n-a\n+b", status: "R" },
+        ),
       prepareReadRootAsync: async () => {
         reached = true;
         throw new Error(ENGINE_START);
@@ -432,9 +441,10 @@ const pathsAgent = (id: string, paths?: string[]): LoadedConfig["agents"][number
 });
 
 async function runPathsReview(
-  changed: string[],
+  changed: ChangedFile[],
   agents: LoadedConfig["agents"],
   options: Partial<ReviewRunOptions> = {},
+  setupWarnings?: string[],
 ): Promise<{ result: unknown; reached: boolean; lines: string[]; log: string }> {
   const runsDir = await mkdtemp(path.join(tmpdir(), "ecr-paths-runs-"));
   const { source, reachedEngines } = pathsSource(changed);
@@ -445,6 +455,7 @@ async function runPathsReview(
       config: {
         configDir: runsDir,
         agents,
+        ...(setupWarnings ? { setupWarnings } : {}),
         noise: { additionalIgnores: [], additionalMarkers: [] },
         coordinator: { model: "openai/gpt-5.5", temperature: 0, promptText: "" },
       } as unknown as LoadedConfig,
@@ -506,4 +517,29 @@ test("runReview: in a scope, the paths filter sees only that scope's files", asy
   expect(other.result).toMatchObject({ decision: "approve", incomplete: [] });
   const own = await runPathsReview(changed, roster, { includePaths: ["packages/ios/a.swift"] });
   expect(own.reached).toBe(true);
+});
+
+test("runReview: a rename out of an agent's paths still reaches that agent", async () => {
+  const roster = [pathsAgent("ios", ["packages/ios/**"])];
+  const moved = await runPathsReview(
+    [{ path: "lib/X.swift", oldPath: "packages/ios/X.swift" }],
+    roster,
+  );
+  expect(moved.reached).toBe(true);
+  const unrelated = await runPathsReview([{ path: "lib/Y.ts", oldPath: "src/Y.ts" }], roster);
+  expect(unrelated.reached).toBe(false);
+});
+
+test("runReview: setup warnings ride on the result as setup notes, early returns included", async () => {
+  const warning = ".expo-agents/code-review/agents/ios.md: `paths` is empty, ...";
+  const { result, lines } = await runPathsReview(
+    ["src/a.ts"],
+    [pathsAgent("docs", ["docs/**"])],
+    {},
+    [warning],
+  );
+  expect(result).toMatchObject({ decision: "approve", setupNotes: [warning] });
+  expect(lines).toContain(`  setup: ${warning}`);
+  const clean = await runPathsReview(["src/a.ts"], [pathsAgent("docs", ["docs/**"])]);
+  expect("setupNotes" in (clean.result as object)).toBe(false);
 });

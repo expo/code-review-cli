@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 
 import {
   agentMatchesFiles,
+  changedPaths,
   formatSkippedAgents,
   formatSkippedParts,
   planAgentChunks,
@@ -73,6 +74,22 @@ test("planAgentChunks: skips chunks with no matching file and keeps whole chunks
 
 test("planAgentChunks: an explicit agent list reviews every chunk", () => {
   expect(planAgentChunks(docs, chunks, true)).toEqual({ run: [0, 1, 2], skipped: [] });
+});
+
+test("a rename matches on its old path too, at run and chunk level", () => {
+  // Moving a file out of an agent's globs changes what they cover, like a deletion.
+  const moved = { path: "lib/X.swift.bak", oldPath: "packages/ios/X.swift" };
+  expect(changedPaths([moved, { path: "README.md" }])).toEqual([
+    "lib/X.swift.bak",
+    "packages/ios/X.swift",
+    "README.md",
+  ]);
+  const ios = agent("ios", { paths: ["packages/ios/**"] });
+  expect(selectAgentsByPaths([ios], changedPaths([moved]), null).skipped).toEqual([]);
+  expect(planAgentChunks(ios, [[{ path: "README.md" }], [moved]], false)).toEqual({
+    run: [1],
+    skipped: [0],
+  });
 });
 
 test("skip formatters name run- and chunk-level skips", () => {

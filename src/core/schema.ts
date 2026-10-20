@@ -47,6 +47,8 @@ export type ResearchDecision = z.infer<typeof ResearchDecisionSchema>;
 export interface DiffEntry {
   /** Path relative to the repo root, in the new tree. */
   path: string;
+  /** For a rename, the path in the old tree (`rename from`). Absent otherwise. */
+  oldPath?: string;
   /** Unified-diff patch text for this file. */
   patch: string;
   /** git status letter (A/M/D/R...) when the source can provide it. */

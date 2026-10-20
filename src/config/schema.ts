@@ -444,6 +444,12 @@ export interface LoadedConfig {
   configDir: string;
   sharedPromptText: string;
   agents: LoadedAgent[];
+  /**
+   * Prompt-file frontmatter problems found at load time (an invalid `paths`, a
+   * frontmatter block below the first line, a trailing comment in a value). Each
+   * names its file and the fix. Reviews show them as setup notes; absent when none.
+   */
+  setupWarnings?: string[];
   coordinator: {
     model: string;
     temperature: number;

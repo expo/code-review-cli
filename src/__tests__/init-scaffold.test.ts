@@ -328,4 +328,6 @@ test("the scaffolded prompts' frontmatter takes effect", async () => {
   expect(config.agents.find((agent) => agent.id === "security")?.alwaysRun).toBe(true);
   const coordinator = await readFile(path.join(root, CONFIG_DIRNAME, "coordinator.md"), "utf8");
   expect(parseFrontmatter(coordinator).data.model).toBeTruthy();
+  // A scaffolded setup must review with no setup notes on its first PR.
+  expect(config.setupWarnings).toBeUndefined();
 });

@@ -487,7 +487,10 @@ paths: ["packages/ios/**", "**/*.swift"]
 
 The frontmatter must start on the file's first line, and it is not full YAML: put
 a `# comment` on its own line, because a comment after a value stays part of the
-value.
+value. Each review lists problems of this kind under **Review setup** in the PR
+comment (and in the terminal) with the fix, and `ecr doctor` fails on them:
+frontmatter below an HTML comment, a byte-order mark or blank lines (all its keys
+are ignored), and a comment that breaks `alwaysRun`, `model` or `temperature`.
 
 `paths` limits an agent to the changes it covers. It takes a list of repo-relative
 globs in the routing dialect: `*` stays within a directory, `**` crosses
@@ -503,6 +506,8 @@ paths:
 - The agent runs only when at least one reviewable changed file (after noise
   filtering and `noise.additionalIgnores`) matches. Otherwise the run skips it with
   no model call, and the job log, the Actions step summary, and the run log say so.
+  A renamed file matches on both its old and new path, so moving a file out of an
+  agent's globs still reaches that agent.
 - On a chunked review, the agent skips each chunk that has no matching file. A
   chunk it reviews keeps its full diff, so related files such as `.changeset/*.md`
   still reach it.
@@ -511,11 +516,14 @@ paths:
 - `--route` chooses only among agents whose `paths` match, and `alwaysRun` adds an
   agent only when its `paths` match (or it has no `paths`).
 - With a `routing.jsonc`, each scope matches `paths` against its own changed files.
-- An invalid `paths` stops the run before any pass and names the agent file and
-  the fix: a value that is not a list, an empty list or entry, a glob that can
-  never match a repo-relative path (`/x/**`, `./x/**`, `x/`, `!x/**`), or an entry
-  with a trailing `# comment` or text after its closing quote. `ecr doctor` reports
-  it too.
+- An invalid `paths` is ignored, so the agent reviews every change, and the review
+  names the agent file and the fix under **Review setup**; `ecr doctor` fails on
+  it. Invalid means a value that is not a list, an empty list or entry, a glob
+  that can never match a repo-relative path (`/x/**`, `./x/**`, `x/`, `!x/**`), a
+  `{a,b}` brace set (braces match literally), a block item written `-x` without a
+  space, or an entry with a trailing `# comment` or text after its closing quote
+  (such as a missing comma). It is not a load error because in CI that would stop
+  every review in the repo.
 - Quote each glob. A YAML value that starts with `*` must be quoted to stay valid
   YAML for other tools.
 

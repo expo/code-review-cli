@@ -89,12 +89,29 @@ test("parseFrontmatter: a scalar or an unterminated flow list is not a list", ()
   expect(parseFrontmatter("---\npaths:\n---\n").lists.paths).toBeUndefined();
 });
 
-async function configDirWithAgent(agentMd: string): Promise<string> {
+test("parseFrontmatter: list items keep what validation must name", () => {
+  // Text after a closing quote keeps the quotes, so the entry cannot pass as a glob.
+  expect(parseFrontmatter(`---\npaths: ["a/**" "b/**", 'c/**']\n---\n`).lists.paths).toEqual([
+    `"a/**" "b/**"`,
+    "c/**",
+  ]);
+  expect(parseFrontmatter('---\npaths:\n  - "a/**" x\n---\n').lists.paths).toEqual([`"a/**" x`]);
+  // `-glob` is not a YAML list item; it stays in the list with its dash, not dropped.
+  expect(parseFrontmatter("---\npaths:\n  - a/**\n  -b/**\n---\n").lists.paths).toEqual([
+    "a/**",
+    "-b/**",
+  ]);
+});
+
+async function configDirWithAgent(
+  agentMd: string,
+  coordinatorMd = "Coordinator prompt.",
+): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "ecr-agent-paths-"));
   const dir = path.join(root, CONFIG_DIRNAME);
   await mkdir(path.join(dir, "agents"), { recursive: true });
   await writeFile(path.join(dir, "config.jsonc"), "{}", "utf8");
-  await writeFile(path.join(dir, "coordinator.md"), "Coordinator prompt.", "utf8");
+  await writeFile(path.join(dir, "coordinator.md"), coordinatorMd, "utf8");
   await writeFile(path.join(dir, "agents", "ios.md"), agentMd, "utf8");
   await writeFile(path.join(dir, "agents", "plain.md"), "---\nmodel: x/y\n---\nPLAIN", "utf8");
   return root;
@@ -109,14 +126,18 @@ test("loadReviewConfig: front-matter `paths` loads onto the agent; no `paths` ad
     expect(ios.paths).toEqual(["packages/ios/**", "**/*.swift"]);
     expect(ios.promptText).toBe("IOS");
     expect("paths" in plain).toBe(false);
+    // A clean setup carries no warnings key, so its review-cache key is unchanged.
+    expect("setupWarnings" in config).toBe(false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("loadReviewConfig: invalid `paths` fails once, naming the agent file and the fix", async () => {
+// A load error would be worse than a warning: in CI it stops every review in the
+// repo, and nothing checks agent files before they merge.
+test("loadReviewConfig: an invalid `paths` is a warning, and the agent reviews every change", async () => {
   const cases: Array<[string, string]> = [
-    ["paths: packages/ios/**", "must be a list"],
+    ["paths: packages/ios/**", "is not a list of globs"],
     ["paths: []", "is empty"],
     ['paths: ["packages/ios/**", ""]', 'entry 2 ("") is empty'],
     ['paths: ["/packages/ios/**"]', 'write "packages/ios/**"'],
@@ -127,19 +148,99 @@ test("loadReviewConfig: invalid `paths` fails once, naming the agent file and th
     ["paths:\n  - packages/ios/** # iOS only", 'write "packages/ios/**" and move the comment'],
     ['paths: ["packages/ios/**"]  # iOS only', "move the comment to its own line"],
     ['paths:\n  - "packages/ios/**" extra', "text after its closing quote"],
+    ['paths: ["packages/ios/**" "packages/android/**"]', "separate entries with commas"],
+    ["paths:\n  -packages/ios/**", 'write "- packages/ios/**"'],
+    ['paths: ["packages/{ios,android}/**"]', "brace set"],
+    ["paths: [packages/{ios,android}/**]", 'unmatched "{" or "}"'],
   ];
   for (const [line, expected] of cases) {
     const root = await configDirWithAgent(`---\n${line}\n---\nIOS`);
     try {
-      const error = await loadReviewConfig(root).then(
-        () => null,
-        (thrown: unknown) => thrown as Error,
-      );
-      expect(error?.message).toContain(path.join(CONFIG_DIRNAME, "agents", "ios.md"));
-      expect(error?.message).toContain(expected);
-      expect(error?.message).toContain("remove `paths`");
+      const config = await loadReviewConfig(root);
+      const ios = config.agents.find((agent) => agent.id === "ios")!;
+      expect("paths" in ios, line).toBe(false);
+      expect(config.setupWarnings, line).toHaveLength(1);
+      const [warning] = config.setupWarnings!;
+      expect(warning).toContain(path.join(CONFIG_DIRNAME, "agents", "ios.md"));
+      expect(warning).toContain(expected);
+      expect(warning).toContain("reviews every change");
+      expect(warning).toContain("remove `paths`");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  }
+});
+
+test("loadReviewConfig: braces without a comma stay literal and valid", async () => {
+  const root = await configDirWithAgent('---\npaths: ["{{cookiecutter.slug}}/**"]\n---\nIOS');
+  try {
+    const config = await loadReviewConfig(root);
+    expect(config.agents.find((agent) => agent.id === "ios")!.paths).toEqual([
+      "{{cookiecutter.slug}}/**",
+    ]);
+    expect(config.setupWarnings).toBeUndefined();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("loadReviewConfig: frontmatter below the first line is a warning, and loads as before", async () => {
+  const cases: Array<[string, string]> = [
+    ["<!-- @ref LLP 0009#x -->\n", "move the comment below the closing `---`"],
+    ["﻿", "without a byte-order mark"],
+    ["\n", "delete the lines above the opening `---`"],
+  ];
+  for (const [lead, fix] of cases) {
+    const root = await configDirWithAgent(
+      `${lead}---\ndescription: iOS\nalwaysRun: true\n---\nIOS`,
+      `${lead}---\nmodel: x/coordinator\n---\nCOORD`,
+    );
+    try {
+      const config = await loadReviewConfig(root);
+      const ios = config.agents.find((agent) => agent.id === "ios")!;
+      // Unchanged behavior: the hidden keys still do not apply.
+      expect(ios.alwaysRun).toBe(false);
+      expect(ios.description).toBe("");
+      expect(config.setupWarnings).toHaveLength(2);
+      for (const file of ["coordinator.md", path.join("agents", "ios.md")]) {
+        const warning = config.setupWarnings!.find((entry) =>
+          entry.startsWith(path.join(CONFIG_DIRNAME, file)),
+        );
+        expect(warning, `${JSON.stringify(lead)} ${file}`).toContain(fix);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("loadReviewConfig: an HTML comment with no frontmatter after it is not a warning", async () => {
+  const root = await configDirWithAgent("<!-- note -->\n# iOS\n\n---\n\nMore text.");
+  try {
+    expect((await loadReviewConfig(root)).setupWarnings).toBeUndefined();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("loadReviewConfig: a trailing comment that breaks a scalar value is a warning", async () => {
+  const root = await configDirWithAgent(
+    "---\nalwaysRun: true   # run on every PR\nmodel: x/y # pinned\ntemperature: 0.2 # low\n---\nIOS",
+  );
+  try {
+    const config = await loadReviewConfig(root);
+    const ios = config.agents.find((agent) => agent.id === "ios")!;
+    expect(ios.alwaysRun).toBe(false);
+    const warnings = config.setupWarnings ?? [];
+    expect(warnings).toHaveLength(3);
+    expect(warnings[0]).toContain("`alwaysRun: true   # run on every PR`");
+    expect(warnings[0]).toContain("so `alwaysRun` is off");
+    expect(warnings[1]).toContain("not a valid model id");
+    expect(warnings[2]).toContain("default temperature");
+    for (const warning of warnings) {
+      expect(warning).toContain("move the comment to its own line");
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

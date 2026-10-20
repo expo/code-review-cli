@@ -36,6 +36,7 @@ import {
 import type { ClaudeCodeHandle } from "./claude-code.js";
 import { routeAgents } from "./router.js";
 import {
+  changedPaths,
   formatSkippedAgents,
   formatSkippedParts,
   hasPathsSkips,
@@ -276,6 +277,16 @@ export async function runReview(
     `${scopedFiles.length} changed file(s); ${kept.length} to review, ${filtered.length} filtered.`,
   );
 
+  // Frontmatter problems the loader found. Every result carries them, early returns
+  // included, so the PR comment keeps naming the fix until someone applies it.
+  // @ref LLP 0006#agent-frontmatter-and-paths [implements] — setup warnings surface as setup notes on every review
+  const configNotes = config.setupWarnings ?? [];
+  for (const note of configNotes) {
+    progress(`  setup: ${note}`);
+  }
+  const withConfigNotes = (output: CoordinatorOutput): CoordinatorOutput =>
+    configNotes.length > 0 ? { ...output, setupNotes: configNotes } : output;
+
   const baseRecord = {
     timestamp: new Date().toISOString(),
     mode: options.mode,
@@ -301,17 +312,13 @@ export async function runReview(
       findingCount: 0,
       summary: output.summary,
     });
-    return output;
+    return withConfigNotes(output);
   }
 
   // Run-level `paths` filter, before any engine starts, so an agent whose paths miss
   // every reviewable file costs no model call. An explicit `--agents` list bypasses it.
   // @ref LLP 0002#agent-paths-filter [implements] — run-level filter before engine startup; skips are logged, never coverage notes
-  const pathsSelection = selectAgentsByPaths(
-    config.agents,
-    kept.map((entry) => entry.path),
-    explicitAgents,
-  );
+  const pathsSelection = selectAgentsByPaths(config.agents, changedPaths(kept), explicitAgents);
   const pathsSkipped: PathsSkips = { agents: pathsSelection.skipped, parts: {}, chunks: 0 };
   const pathsLog = (): { pathsSkipped?: PathsSkips } =>
     hasPathsSkips(pathsSkipped) ? { pathsSkipped } : {};
@@ -338,7 +345,7 @@ export async function runReview(
       findingCount: 0,
       summary: output.summary,
     });
-    return output;
+    return withConfigNotes(output);
   }
 
   let researchEvidence: ResearchEvidence[] = [];
@@ -398,14 +405,15 @@ export async function runReview(
   // come from the trusted base ref — so a PR that moves cited code is reported against
   // the prompts that will actually judge it.
   // @ref LLP 0012#run-points-command-and-review [implements] — every review checks its own refs; advice only, never a gate
-  const setupNotes = await reviewSetupRefNotes({
+  const refNotes = await reviewSetupRefNotes({
     root: readRoot?.dir ?? originalCwd,
     setupDirs: [config.configDir],
     changedFiles: kept.map((entry) => entry.path),
   });
-  for (const note of setupNotes) {
+  for (const note of refNotes) {
     progress(`  setup: ${note}`);
   }
+  const setupNotes = [...configNotes, ...refNotes];
 
   let researchRuntime: ResearchMcpRuntime | undefined;
   try {

@@ -14,6 +14,15 @@ export function agentMatchesFiles(
   return files.some((file) => matchesPathGlobs(globs, file));
 }
 
+/**
+ * The paths `paths` globs match against: each file's path, plus a rename's old path.
+ * Moving a file out of an agent's globs changes what those globs cover, so the move
+ * reaches that agent the way a deletion there would.
+ */
+export function changedPaths(files: ReadonlyArray<{ path: string; oldPath?: string }>): string[] {
+  return files.flatMap((file) => (file.oldPath ? [file.path, file.oldPath] : [file.path]));
+}
+
 export interface AgentPathsSelection {
   /** The agents this run reviews with, in roster order. */
   agents: LoadedAgent[];
@@ -52,18 +61,13 @@ export function selectAgentsByPaths(
  */
 export function planAgentChunks(
   agent: Pick<LoadedAgent, "paths">,
-  chunks: ReadonlyArray<ReadonlyArray<{ path: string }>>,
+  chunks: ReadonlyArray<ReadonlyArray<{ path: string; oldPath?: string }>>,
   explicit: boolean,
 ): { run: number[]; skipped: number[] } {
   const run: number[] = [];
   const skipped: number[] = [];
   chunks.forEach((chunk, index) => {
-    const reviews =
-      explicit ||
-      agentMatchesFiles(
-        agent,
-        chunk.map((file) => file.path),
-      );
+    const reviews = explicit || agentMatchesFiles(agent, changedPaths(chunk));
     (reviews ? run : skipped).push(index);
   });
   return { run, skipped };

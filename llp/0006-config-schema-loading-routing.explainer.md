@@ -154,19 +154,40 @@ flow list (`paths: ["a/**", 'b/**', c/**]`, trailing comma allowed) or a block l
 followed by `- item` lines; blank and `#` lines inside are skipped, and the next key ends it)
 [observed: `load.ts` `parseFrontmatter`, `parseFlowList`]. Only `paths` reads `lists`.
 
-`parseAgentPaths` validates `paths` at load time, so a bad value is a setup error that fails once,
-before any pass, naming the agent file and the fix (the AGENTS.md "fail fast" rule): a mistyped
-glob would otherwise skip the agent on every PR with nothing reporting it as an error. It rejects a
-value that is not a list, an empty list, an empty entry, and a glob that can never match a
-repo-relative changed-file path: a leading `/` or `./`, a trailing `/` (the CODEOWNERS directory
-form), and a leading `!` (negation is not supported). It also rejects an entry with a `# comment`
-or with text after its closing quote: the reader keeps both in the glob, which then matches no file
-[observed: `load.ts` `pathGlobIssue`]. The
-matcher itself never rejects a string, because `matchesIgnore` escapes every regex metacharacter,
-so these are the only globs that can be "invalid". Characters such as `[`, `]`, `{`, and `?` stay
-literal and legal: route file names such as `app/[id].tsx` contain them. The loader reports through
-`ecr doctor`; `ecr verify-config` does not read agent files (it is the credential guard,
-[LLP 0007](0007-cli-commands-and-ci.explainer.md)).
+`parseAgentPaths` validates `paths` at load time, because a mistyped glob would otherwise skip
+the agent on every PR with nothing reporting it. An invalid value is a **setup warning, not a load
+error**: the agent keeps no `paths`, so it reviews every change, and the warning names the agent
+file and the fix [observed: `load.ts` `parseAgentPaths`]. A load error would be worse than the
+typo. In CI, `ecr ci` reports a load error to stderr and posts nothing (it must never fail the
+check), so one agent's typo would stop every review in the repo. And nothing catches the typo
+first: CI reviews a PR under its base commit's config, so the PR adding the typo loads fine, and
+`ecr verify-config` does not read agent files (it is the credential guard,
+[LLP 0007](0007-cli-commands-and-ci.explainer.md)). The AGENTS.md "fail fast" rule is for setup
+errors that would fail every pass anyway (a bad model id, a credential); an invalid `paths` can
+degrade instead, to the behavior the agent had before it declared `paths`.
+
+The value is invalid when it is not a list, is an empty list, has an empty entry, or has a glob
+that can never match a repo-relative changed-file path: a leading `/` or `./`, a trailing `/` (the
+CODEOWNERS directory form), and a leading `!` (negation is not supported). Typos the reader would
+otherwise turn into a glob that matches nothing are invalid too: an entry with a `# comment`, text
+after its closing quote (a missing comma between two quoted entries), a block item written `-x`
+with no space, and a `{a,b}` brace set or an unmatched brace (an unquoted `{a,b}` splits at its
+comma) [observed: `load.ts` `pathGlobIssue`]. The matcher itself never rejects a string, because
+`matchesIgnore` escapes every regex metacharacter, so these are the only globs that can be
+"invalid". Characters such as `[`, `]`, `?`, and braces without a comma stay literal and legal:
+route file names such as `app/[id].tsx` contain them, and template directories such as
+`{{cookiecutter.slug}}` contain braces.
+
+The same warnings cover the rest of a prompt file's frontmatter, for `shared.md`, `coordinator.md`
+and every agent [observed: `load.ts` `frontmatterWarnings`]: a frontmatter block below an HTML
+comment, a byte-order mark or blank lines (the reader ignores all of its keys; repos scaffolded
+before the templates moved their `@ref` comment have this), and a trailing `# comment` that breaks
+`alwaysRun`, `model` or `temperature`. These only report: the file loads exactly as before, because
+parsing through the hidden block would suddenly apply model pins the repo's credential may not
+cover. Warnings land in `LoadedConfig.setupWarnings`, absent when there are none so a clean setup
+keeps its review-cache key. `runReview` puts them first in `setupNotes` on every result, early
+returns included, so the PR comment's **Review setup** note keeps naming the fix; `ecr doctor`
+fails on them.
 
 An agent without `paths` gets no `paths` key at all, not `paths: undefined`, so its object shape
 and its review-cache key are unchanged [observed: `load.ts` agent construction]. The
