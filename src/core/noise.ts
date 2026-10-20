@@ -197,18 +197,27 @@ export interface PatchWorkspace {
   files: PatchWorkspaceFile[];
 }
 
+/**
+ * Where a run's patch files live. In CI that is under the trusted base checkout,
+ * OUTSIDE the PR-head tree the review passes read, so the Claude Code engine grants
+ * this one directory as a second read scope (see buildClaudeArgs).
+ */
+export function patchDirFor(rootDir: string): string {
+  return path.join(rootDir, "patches");
+}
+
 // @ref LLP 0004#patch-workspace [implements] — filenames sanitized against traversal/collisions from untrusted diff paths
 /**
- * Write one patch file per changed file plus a shared manifest, all inside the
- * repo (so the OpenCode read tool can reach them). Agents are pointed at these
- * paths instead of having the full diff inlined into every prompt.
+ * Write one patch file per changed file plus a shared manifest under the run
+ * directory. Agents are pointed at these paths instead of having every diff
+ * inlined into every prompt.
  */
 export async function writePatchWorkspace(
   kept: DiffEntry[],
   metadata: ReviewMetadata,
   rootDir: string,
 ): Promise<PatchWorkspace> {
-  const patchDir = path.join(rootDir, "patches");
+  const patchDir = patchDirFor(rootDir);
   await mkdir(patchDir, { recursive: true });
 
   const files: PatchWorkspaceFile[] = [];

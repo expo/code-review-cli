@@ -12,7 +12,7 @@ import { prepareAuth } from "./auth.js";
 import { coordinate } from "./coordinator.js";
 import { writeRunLog } from "./log.js";
 import type { RunLogRecord } from "./log.js";
-import { filterNoise, writePatchWorkspace } from "./noise.js";
+import { filterNoise, patchDirFor, writePatchWorkspace } from "./noise.js";
 import type { PriorReview } from "./prior-review.js";
 import type { PatchWorkspaceFile } from "./noise.js";
 import {
@@ -456,7 +456,7 @@ export async function runReview(
   }
   try {
     if (usesClaude) {
-      claudeHandle = await startClaudeCode(config, researchRuntime);
+      claudeHandle = await startClaudeCode(config, researchRuntime, patchDirFor(runDir));
     }
   } catch (error) {
     opencodeHandle?.close();
