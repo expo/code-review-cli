@@ -47,13 +47,15 @@ The base OID is fetchable by SHA even though the base ref may have moved since t
 
 ## Local Git Source
 
-`LocalGitSource` has no network calls; it reads local git state and computes its own diff base [observed] ([local-git.ts:17-21](../src/sources/local-git.ts)). Three small decisions carry the weight.
+`LocalGitSource` has no network calls; it reads local git state and computes its own diff base [observed] ([local-git.ts:17-21](../src/sources/local-git.ts)). Four small decisions carry the weight.
 
 **Default branch resolution** tries `origin/HEAD` via `symbolic-ref` first, then falls back through a fixed guess list (`origin/main`, `origin/master`, `main`, `master`), then `main`, because not every checkout has `origin/HEAD` set [observed] ([local-git.ts:31-50](../src/sources/local-git.ts)).
 
 **Diff base is `merge-base(defaultBranch, HEAD)`, not the branch tip.** This scopes the review to the current branch's own changes and excludes commits merged into the default branch after the feature branch diverged — you review what you wrote, not what trunk moved on to [observed] ([local-git.ts:53-68](../src/sources/local-git.ts)).
 
 **Untracked files are diffed without mutating the index.** Running a review must have no side effects on the user's working state, so untracked files are synthesized as add-diffs via `git diff --no-index -- /dev/null <file>` rather than being staged [observed] ([local-git.ts:101-103, 114](../src/sources/local-git.ts)). The listing uses `git ls-files -z` (NUL-terminated) so filenames containing newlines parse correctly [observed] ([local-git.ts:106-107](../src/sources/local-git.ts)), and the `--` separator before the filename stops a name beginning with `-` from being read as a git option — argument injection through an untracked filename [observed] ([local-git.ts:112, 114](../src/sources/local-git.ts)).
+
+**Every parsed `git diff` overrides the user's diff config.** `git diff` follows the user's git config, and three settings change what it prints: an external diff tool (`diff.external`) replaces the unified diff entirely, forced color (`color.diff=always`) puts escape codes before `diff --git`, and `diff.noprefix` or `diff.mnemonicPrefix` drop or change the `a/` and `b/` prefixes that `parseUnifiedDiff` matches. Any of them made a local review parse no files and report "No reviewable changes". Each call therefore passes `--no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/` [observed] ([local-git.ts](../src/sources/local-git.ts) `PARSEABLE_DIFF_FLAGS`; tests `src/__tests__/local-git.test.ts`).
 
 ## GitHub Reporter Identity
 

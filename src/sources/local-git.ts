@@ -4,6 +4,12 @@ import { parseUnifiedDiff } from "../core/diff.js";
 import type { DiffEntry, ReviewMetadata } from "../core/schema.js";
 import type { ReviewSource } from "./source.js";
 
+// `git diff` honors the user's config: an external diff tool (`diff.external`), forced
+// color, and other path prefixes (`diff.noprefix`, `diff.mnemonicPrefix`). These flags
+// restore the plain unified diff with `a/` and `b/` prefixes that parseUnifiedDiff reads.
+// @ref LLP 0008#local-git-source [implements] — every parsed `git diff` overrides the user's diff config
+const PARSEABLE_DIFF_FLAGS = ["--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"];
+
 export interface LocalGitOptions {
   /** Base ref to diff against. Defaults to the merge-base with the default branch. */
   base?: string;
@@ -83,13 +89,16 @@ export class LocalGitSource implements ReviewSource {
   async getChangedFiles(): Promise<DiffEntry[]> {
     let raw: string;
     if (this.options.staged) {
-      raw = await git(["diff", "--staged"], this.cwd);
+      raw = await git(["diff", ...PARSEABLE_DIFF_FLAGS, "--staged"], this.cwd);
     } else {
       const base = await this.resolveBase();
       if (this.options.head) {
-        raw = await git(["diff", `${base}...${this.options.head}`], this.cwd);
+        raw = await git(
+          ["diff", ...PARSEABLE_DIFF_FLAGS, `${base}...${this.options.head}`],
+          this.cwd,
+        );
       } else {
-        const tracked = await git(["diff", base], this.cwd);
+        const tracked = await git(["diff", ...PARSEABLE_DIFF_FLAGS, base], this.cwd);
         const untracked = await this.untrackedDiffs();
         raw = [tracked, untracked].filter((chunk) => chunk.trim()).join("\n");
       }
@@ -111,10 +120,11 @@ export class LocalGitSource implements ReviewSource {
     for (const file of files) {
       // `--` so a filename beginning with `-` can't be read as a git option.
       const gitPath = await resolveTrustedTool("git");
-      const { stdout } = await run(gitPath, ["diff", "--no-index", "--", "/dev/null", file], {
-        cwd: this.cwd,
-        check: false,
-      });
+      const { stdout } = await run(
+        gitPath,
+        ["diff", ...PARSEABLE_DIFF_FLAGS, "--no-index", "--", "/dev/null", file],
+        { cwd: this.cwd, check: false },
+      );
       if (stdout.trim()) {
         chunks.push(stdout);
       }
