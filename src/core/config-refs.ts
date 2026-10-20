@@ -11,7 +11,7 @@ import {
   stripJsonComments,
   stripTrailingCommas,
 } from "../config/load.js";
-import { ROUTING_FILENAME } from "../config/routing.js";
+import { matchesPathGlobs, ROUTING_FILENAME } from "../config/routing.js";
 import { git, pathInside } from "./exec.js";
 import { matchesIgnore } from "./noise.js";
 import { isAmbientRuntimeConfig } from "./scrub.js";
@@ -650,10 +650,8 @@ async function checkRoutingManifest(
     }
     if (index.files.length > 0) {
       for (const pattern of stringArray(entry.paths)) {
-        const variants = [pattern, pattern.replace(/\*\*\//g, "")];
-        if (
-          !index.files.some((repoFile) => variants.some((v) => v && matchesIgnore(repoFile, v)))
-        ) {
+        // The same matcher scope assignment uses, so ref-check and runtime agree.
+        if (!index.files.some((repoFile) => matchesPathGlobs([pattern], repoFile))) {
           problems.push({
             file: relative,
             line: 1,

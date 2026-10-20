@@ -136,8 +136,11 @@ The glob dialect is shared with `noise.additionalIgnores` via `matchesIgnore`
 ([LLP 0004](0004-diff-noise-and-prompts.explainer.md)), and `patternVariants()` works around a
 limitation there: `matchesIgnore` translates `**` to `.*`, which needs at least one slash, so a
 naive `**/*` catch-all would silently miss root-level files (`README.md`, `package.json`). Routing
-tests each `**/`-prefixed pattern in two variants (with and without the prefix stripped) to give the
-catch-all its conventional "zero or more directories" meaning [observed: `routing.ts:57-73`]. The
+tests every variant that keeps or removes each `**/` independently, giving each one its conventional
+"zero or more directories" meaning: `**/ios/**/*.swift` matches `ios/A.swift` and
+`packages/ios/src/A.swift` alike. Removing them only all at once or not at all, as it once did, missed
+the mixed depths. A pattern with more than six `**/` falls back to that all-or-nothing pair, which
+bounds the variants at 64 [observed: `routing.ts` `patternVariants`]. The
 "proper" fix lives in `matchesIgnore` itself, whose blast radius covers noise filtering too, so the
 workaround stays local. `matchesPathGlobs` is that wrapper, exported so agent `paths` (below) match
 in exactly the routing dialect; a change to it changes scope assignment and agent selection together.
