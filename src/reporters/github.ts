@@ -197,6 +197,25 @@ export interface ExistingInlineComment {
   hasReplies: boolean;
 }
 
+/** Body of the review that carries one run's new inline comments. GitHub requires one. */
+export const INLINE_REVIEW_BODY =
+  "🤖 AI code review: inline comments for this run's findings. The AI code review comment has the summary.";
+
+/**
+ * fp → permalink for the inline comments of ours among `comments`, read from the
+ * anchored marker in each body (see parseInlineMarkerFp).
+ */
+export function inlineUrlsByFp(comments: ReviewCommentApi[], tag: string): Map<string, string> {
+  const urls = new Map<string, string>();
+  for (const comment of comments) {
+    const fp = parseInlineMarkerFp(comment.body ?? "", tag);
+    if (fp && comment.html_url) {
+      urls.set(fp, comment.html_url);
+    }
+  }
+  return urls;
+}
+
 /** What one inline sync run will do. Bodies are rendered by the executor. */
 export interface InlineSyncPlan {
   /** Findings to POST a new inline comment for (needs a commit id). */
@@ -553,7 +572,8 @@ export function selectOwnComments(
 /**
  * Maintains exactly one PR comment, updating it in place across re-reviews (and
  * cleaning up duplicates) so the review converges instead of churning. Runs the
- * break-glass check first. Comment-only: never calls the review-state APIs.
+ * break-glass check first. Never approves or requests changes: a run's new inline
+ * comments go out in one COMMENT review.
  */
 export class GitHubReporter implements Reporter {
   private readonly marker: string;
@@ -1361,18 +1381,68 @@ export class GitHubReporter implements Reporter {
         counts.patched++;
       });
     }
-    for (const entry of creates) {
-      await attempt(async () => {
-        const created = await this.createReviewComment(
-          renderInlineCommentBody(entry.finding, this.options.commentTag, entry.fp),
-          entry.finding.file,
-          entry.finding.line!,
-        );
-        counts.created++;
-        if (created?.html_url) {
-          urls.set(entry.fp, created.html_url);
+    if (creates.length > 0 && !aborted) {
+      const comments = creates.map((entry) => ({
+        fp: entry.fp,
+        body: renderInlineCommentBody(entry.finding, this.options.commentTag, entry.fp),
+        path: entry.finding.file,
+        line: entry.finding.line!,
+      }));
+      // @ref LLP 0008#inline-threads [implements] — one COMMENT review per run for new threads; per-comment fallback when GitHub rejects the review
+      let posted = false;
+      let reviewId: number | null = null;
+      try {
+        reviewId = await this.createInlineReview(comments);
+        posted = true;
+      } catch (error) {
+        if (GitHubReporter.isRateLimitError(error)) {
+          counts.failed += comments.length;
+          aborted = true;
+          process.stderr.write(
+            `inline sync: rate-limited; aborting remaining inline mutations this run: ${errorMessage(error)}\n`,
+          );
+        } else {
+          // GitHub rejects the whole review when it refuses one comment, so retry one
+          // by one: only the comment it refuses is lost.
+          process.stderr.write(
+            `inline sync: the review with ${comments.length} new comment(s) failed; posting them one by one: ${errorMessage(error)}\n`,
+          );
         }
-      });
+      }
+      if (posted) {
+        counts.created += comments.length;
+        try {
+          if (reviewId == null) {
+            throw new Error("the created review has no id");
+          }
+          for (const [fp, url] of inlineUrlsByFp(
+            await this.listInlineReviewComments(reviewId),
+            this.options.commentTag,
+          )) {
+            urls.set(fp, url);
+          }
+        } catch (error) {
+          // The comments exist; without their links the findings render full-form in
+          // the main comment this run, and the next run finds them as live threads.
+          process.stderr.write(
+            `inline sync: could not list the new review's comments (they render in the main comment): ${errorMessage(error)}\n`,
+          );
+        }
+      } else {
+        for (const comment of comments) {
+          await attempt(async () => {
+            const created = await this.createReviewComment(
+              comment.body,
+              comment.path,
+              comment.line,
+            );
+            counts.created++;
+            if (created?.html_url) {
+              urls.set(comment.fp, created.html_url);
+            }
+          });
+        }
+      }
     }
     for (const comment of plan.stub) {
       const body = inlineStubBody(this.options.commentTag, comment.fp);
@@ -1402,6 +1472,74 @@ export class GitHubReporter implements Reporter {
       await appendStepSummary(`🤖 AI review — ${summary}`);
     }
     return urls;
+  }
+
+  /**
+   * Post `comments` as one COMMENT review anchored to the reviewed head and return
+   * the review id, or null when the review was created but its id can't be read.
+   * Throws only when GitHub rejects the review; it rejects all of the comments
+   * together.
+   */
+  private async createInlineReview(
+    comments: Array<{ body: string; path: string; line: number }>,
+  ): Promise<number | null> {
+    this.invalidateReviewComments();
+    const gh = await resolveTrustedTool("gh");
+    const payload = JSON.stringify({
+      commit_id: this.options.headSha,
+      event: "COMMENT",
+      body: INLINE_REVIEW_BODY,
+      comments: comments.map(({ body, path: path_, line }) => ({
+        body,
+        path: path_,
+        line,
+        side: "RIGHT",
+      })),
+    });
+    const dir = await mkdtemp(path.join(tmpdir(), "ecr-"));
+    const jsonPath = path.join(dir, "review.json");
+    try {
+      await writeFile(jsonPath, payload, "utf8");
+      const { stdout } = await run(
+        gh,
+        [
+          "api",
+          "-X",
+          "POST",
+          `repos/${this.options.repo}/pulls/${this.options.prNumber}/reviews`,
+          "--input",
+          jsonPath,
+        ],
+        { cwd: this.options.cwd },
+      );
+      try {
+        const review = JSON.parse(stdout) as { id?: unknown };
+        return typeof review.id === "number" ? review.id : null;
+      } catch {
+        return null;
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  /** The comments of one review. A review holds at most `inline.maxComments` of ours. */
+  private async listInlineReviewComments(reviewId: number): Promise<ReviewCommentApi[]> {
+    const gh = await resolveTrustedTool("gh");
+    const { stdout } = await run(
+      gh,
+      [
+        "api",
+        "-X",
+        "GET",
+        `repos/${this.options.repo}/pulls/${this.options.prNumber}/reviews/${reviewId}/comments`,
+        "-f",
+        "per_page=100",
+      ],
+      { cwd: this.options.cwd },
+    );
+    const comments = JSON.parse(stdout) as ReviewCommentApi[];
+    return Array.isArray(comments) ? comments : [];
   }
 
   private async createReviewComment(
