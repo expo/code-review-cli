@@ -5,10 +5,19 @@ import type { DiffEntry, ReviewMetadata } from "../core/schema.js";
 import type { ReviewSource } from "./source.js";
 
 // `git diff` honors the user's config: an external diff tool (`diff.external`), forced
-// color, and other path prefixes (`diff.noprefix`, `diff.mnemonicPrefix`). These flags
-// restore the plain unified diff with `a/` and `b/` prefixes that parseUnifiedDiff reads.
+// color, other path prefixes (`diff.noprefix`, `diff.mnemonicPrefix`), textconv
+// drivers, and copy detection (`diff.renames=copies`). These flags restore the plain
+// unified diff of the real file contents, with the `a/` and `b/` prefixes that
+// parseUnifiedDiff reads.
 // @ref LLP 0008#local-git-source [implements] — every parsed `git diff` overrides the user's diff config
-const PARSEABLE_DIFF_FLAGS = ["--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"];
+const PARSEABLE_DIFF_FLAGS = [
+  "--no-ext-diff",
+  "--no-color",
+  "--src-prefix=a/",
+  "--dst-prefix=b/",
+  "--no-textconv",
+  "--find-renames",
+];
 
 export interface LocalGitOptions {
   /** Base ref to diff against. Defaults to the merge-base with the default branch. */
