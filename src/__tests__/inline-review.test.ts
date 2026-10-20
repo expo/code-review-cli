@@ -39,14 +39,23 @@ test("inlineUrlsByFp: maps our marked comments to their permalinks", () => {
 // ---- the sync posts new threads through a fake `gh` on PATH ----
 
 // A fake `gh` that logs each call and answers the endpoints the inline sync uses.
-// FAKE_GH_REVIEW_ERROR makes the review POST fail with that stderr, and
-// FAKE_GH_REVIEW_NO_ID makes it succeed with a response that has no id.
+// FAKE_GH_REVIEW_ERROR makes the review POST fail with that stderr,
+// FAKE_GH_REVIEW_NO_ID makes it succeed with a response that has no id, and
+// FAKE_GH_LIST_ERROR makes reading the review's comments fail. The review's comments
+// are served from review-comments-<page>.json.
 const FAKE_GH = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_GH_DIR/calls.log"
 eval "last=\\\${$#}"
 case "$*" in
   "pr view"*) printf '%s' "$FAKE_GH_HEAD" ;;
-  *"/reviews/99/comments"*) cat "$FAKE_GH_DIR/review-comments.json" ;;
+  *"/reviews/99/comments"*)
+    if [ -n "$FAKE_GH_LIST_ERROR" ]; then echo "$FAKE_GH_LIST_ERROR" >&2; exit 1; fi
+    page=$(printf '%s' "$*" | sed -n 's/.*page=\\([0-9]*\\).*/\\1/p')
+    if [ -f "$FAKE_GH_DIR/review-comments-$page.json" ]; then
+      cat "$FAKE_GH_DIR/review-comments-$page.json"
+    else
+      printf '[]'
+    fi ;;
   *"-X POST "*"/reviews --input "*)
     cp "$last" "$FAKE_GH_DIR/review.json"
     if [ -n "$FAKE_GH_REVIEW_ERROR" ]; then echo "$FAKE_GH_REVIEW_ERROR" >&2; exit 1; fi
@@ -74,6 +83,7 @@ beforeEach(async () => {
     "FAKE_GH_HEAD",
     "FAKE_GH_REVIEW_ERROR",
     "FAKE_GH_REVIEW_NO_ID",
+    "FAKE_GH_LIST_ERROR",
     "GITHUB_STEP_SUMMARY",
   ]) {
     saved[name] = process.env[name];
@@ -83,6 +93,7 @@ beforeEach(async () => {
   process.env.FAKE_GH_HEAD = HEAD;
   delete process.env.FAKE_GH_REVIEW_ERROR;
   delete process.env.FAKE_GH_REVIEW_NO_ID;
+  delete process.env.FAKE_GH_LIST_ERROR;
   delete process.env.GITHUB_STEP_SUMMARY;
   resetTrustedToolCache();
 });
@@ -99,41 +110,48 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-async function syncNewThreads(prNumber: number): Promise<{
+// Two findings by default; `count` findings (one per file) for the pagination test.
+async function syncNewThreads(
+  prNumber: number,
+  count?: number,
+): Promise<{
   urls: Map<string, string>;
   calls: string[];
 }> {
-  const targets = [
-    { fp: "aaaa11", finding: finding() },
-    { fp: "bbbb22", finding: finding({ file: "b.ts", line: 9, severity: "suggestion" }) },
-  ];
-  await writeFile(
-    path.join(dir, "review-comments.json"),
-    JSON.stringify(
-      targets.map((target, index) => ({
-        id: 500 + index,
-        body: renderInlineCommentBody(target.finding, TAG, target.fp),
-        html_url: `https://github.com/o/r/pull/${prNumber}#discussion_r${500 + index}`,
-      })),
-    ),
-    "utf8",
-  );
+  const targets = count
+    ? Array.from({ length: count }, (_, index) => ({
+        fp: (0xa00000 + index).toString(16),
+        finding: finding({ file: `f${index}.ts`, line: 1 }),
+      }))
+    : [
+        { fp: "aaaa11", finding: finding() },
+        { fp: "bbbb22", finding: finding({ file: "b.ts", line: 9, severity: "suggestion" }) },
+      ];
+  const reviewComments = targets.map((target, index) => ({
+    id: 500 + index,
+    body: renderInlineCommentBody(target.finding, TAG, target.fp),
+    html_url: `https://github.com/o/r/pull/${prNumber}#discussion_r${500 + index}`,
+  }));
+  for (let page = 1; (page - 1) * 100 < reviewComments.length; page++) {
+    await writeFile(
+      path.join(dir, `review-comments-${page}.json`),
+      JSON.stringify(reviewComments.slice((page - 1) * 100, page * 100)),
+      "utf8",
+    );
+  }
   const reporter = new GitHubReporter({
     prNumber,
     repo: "o/r",
     commentTag: TAG,
     ownLogin: "ecr-bot",
     headSha: HEAD,
-    inline: { enabled: true, maxComments: 20 },
+    inline: { enabled: true, maxComments: Math.max(20, targets.length) },
   });
-  const link: LinkContext = {
-    repo: "o/r",
-    prNumber,
-    diffLines: new Map([
-      ["a.ts", new Set([5])],
-      ["b.ts", new Set([9])],
-    ]),
-  };
+  const diffLines = new Map<string, Set<number>>();
+  for (const { finding: target } of targets) {
+    diffLines.set(target.file, new Set([...(diffLines.get(target.file) ?? []), target.line!]));
+  }
+  const link: LinkContext = { repo: "o/r", prNumber, diffLines };
   // syncInline is private; the test drives it directly so the payload GitHub would
   // receive is checked without stubbing the rest of report().
   const sync = (
@@ -195,4 +213,25 @@ test("syncInline: a created review without an id is never posted again", async (
   const { urls, calls } = await syncNewThreads(704);
   expect(calls.filter((call) => call.includes("-X POST"))).toHaveLength(1);
   expect(urls.size).toBe(0);
+});
+
+test("syncInline: a review that fails without a 422 is not retried, since it may exist", async () => {
+  process.env.FAKE_GH_REVIEW_ERROR = "gh: Bad Gateway (HTTP 502)";
+  const { urls, calls } = await syncNewThreads(705);
+  expect(calls.filter((call) => call.includes("-X POST"))).toHaveLength(1);
+  expect(urls.size).toBe(0);
+});
+
+test("syncInline: a created review whose comments can't be read is not posted again", async () => {
+  process.env.FAKE_GH_LIST_ERROR = "gh: Internal Server Error (HTTP 500)";
+  const { urls, calls } = await syncNewThreads(706);
+  expect(calls.filter((call) => call.includes("-X POST"))).toHaveLength(1);
+  expect(urls.size).toBe(0);
+});
+
+test("syncInline: links every thread of a review with more than one page of comments", async () => {
+  const { urls, calls } = await syncNewThreads(707, 150);
+  expect(calls.filter((call) => call.includes("-X POST"))).toHaveLength(1);
+  expect(calls.filter((call) => call.includes("/reviews/99/comments"))).toHaveLength(2);
+  expect(urls.size).toBe(150);
 });

@@ -1271,6 +1271,11 @@ export class GitHubReporter implements Reporter {
     return /HTTP 403|HTTP 429|rate limit|secondary rate/i.test(errorMessage(error));
   }
 
+  /** 422: GitHub validated the request and created nothing. */
+  private static isUnprocessableError(error: unknown): boolean {
+    return /HTTP 422/.test(errorMessage(error));
+  }
+
   // @ref LLP 0008#github-reporter-identity [constrained-by] — inline threads are
   // patched/deleted only when author + anchored marker both match; creates also require
   // a resolved own login, or every run would duplicate what it cannot recognize
@@ -1390,6 +1395,7 @@ export class GitHubReporter implements Reporter {
       }));
       // @ref LLP 0008#inline-threads [implements] — one COMMENT review per run for new threads; per-comment fallback when GitHub rejects the review
       let posted = false;
+      let retryOneByOne = false;
       let reviewId: number | null = null;
       try {
         reviewId = await this.createInlineReview(comments);
@@ -1401,11 +1407,20 @@ export class GitHubReporter implements Reporter {
           process.stderr.write(
             `inline sync: rate-limited; aborting remaining inline mutations this run: ${errorMessage(error)}\n`,
           );
-        } else {
+        } else if (GitHubReporter.isUnprocessableError(error)) {
           // GitHub rejects the whole review when it refuses one comment, so retry one
           // by one: only the comment it refuses is lost.
+          retryOneByOne = true;
           process.stderr.write(
-            `inline sync: the review with ${comments.length} new comment(s) failed; posting them one by one: ${errorMessage(error)}\n`,
+            `inline sync: GitHub rejected the review with ${comments.length} new comment(s); posting them one by one: ${errorMessage(error)}\n`,
+          );
+        } else {
+          // A 5xx or a dropped connection can still have created the review, so a retry
+          // could post every comment twice. The findings render in the main comment,
+          // and the next run creates the threads that are still missing.
+          counts.failed += comments.length;
+          process.stderr.write(
+            `inline sync: the review with ${comments.length} new comment(s) failed and may exist; not retrying: ${errorMessage(error)}\n`,
           );
         }
       }
@@ -1428,7 +1443,7 @@ export class GitHubReporter implements Reporter {
             `inline sync: could not list the new review's comments (they render in the main comment): ${errorMessage(error)}\n`,
           );
         }
-      } else {
+      } else if (retryOneByOne) {
         for (const comment of comments) {
           await attempt(async () => {
             const created = await this.createReviewComment(
@@ -1477,8 +1492,9 @@ export class GitHubReporter implements Reporter {
   /**
    * Post `comments` as one COMMENT review anchored to the reviewed head and return
    * the review id, or null when the review was created but its id can't be read.
-   * Throws only when GitHub rejects the review; it rejects all of the comments
-   * together.
+   * Throws when the POST fails. After a 422, GitHub created nothing, because it
+   * rejects all of the comments together; after any other failure, such as a 5xx
+   * or a dropped connection, the review may still exist.
    */
   private async createInlineReview(
     comments: Array<{ body: string; path: string; line: number }>,
@@ -1523,23 +1539,35 @@ export class GitHubReporter implements Reporter {
     }
   }
 
-  /** The comments of one review. A review holds at most `inline.maxComments` of ours. */
+  /** All comments of one review, every page (`inline.maxComments` has no upper bound). */
   private async listInlineReviewComments(reviewId: number): Promise<ReviewCommentApi[]> {
+    const all: ReviewCommentApi[] = [];
     const gh = await resolveTrustedTool("gh");
-    const { stdout } = await run(
-      gh,
-      [
-        "api",
-        "-X",
-        "GET",
-        `repos/${this.options.repo}/pulls/${this.options.prNumber}/reviews/${reviewId}/comments`,
-        "-f",
-        "per_page=100",
-      ],
-      { cwd: this.options.cwd },
-    );
-    const comments = JSON.parse(stdout) as ReviewCommentApi[];
-    return Array.isArray(comments) ? comments : [];
+    for (let page = 1; page <= GitHubReporter.MAX_COMMENT_PAGES; page++) {
+      const { stdout } = await run(
+        gh,
+        [
+          "api",
+          "-X",
+          "GET",
+          `repos/${this.options.repo}/pulls/${this.options.prNumber}/reviews/${reviewId}/comments`,
+          "-f",
+          "per_page=100",
+          "-f",
+          `page=${page}`,
+        ],
+        { cwd: this.options.cwd },
+      );
+      const batch = JSON.parse(stdout) as ReviewCommentApi[];
+      if (!Array.isArray(batch) || batch.length === 0) {
+        break;
+      }
+      all.push(...batch);
+      if (batch.length < 100) {
+        break;
+      }
+    }
+    return all;
   }
 
   private async createReviewComment(
