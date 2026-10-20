@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { initCommand, parseTokenEnvs, substituteTokenEnv } from "../commands/init.js";
 import { checkConfigRefs } from "../core/config-refs.js";
 import { git } from "../core/exec.js";
-import { CONFIG_DIRNAME } from "../config/load.js";
+import { CONFIG_DIRNAME, loadReviewConfig, parseFrontmatter } from "../config/load.js";
 
 const TEMPLATES_DIR = fileURLToPath(new URL("../../templates/", import.meta.url));
 
@@ -313,4 +313,21 @@ test("a freshly scaffolded repo passes ref-check", async () => {
   // LLP annotations the templates carry belong to the engine's own corpus and are
   // skipped here, not reported: ecr only judges citations into the reviewed repo.
   expect((await checkConfigRefs({ root })).problems).toEqual([]);
+});
+
+test("the scaffolded prompts' frontmatter takes effect", async () => {
+  const root = await freshRepo();
+  await initCommand([]);
+
+  // parseFrontmatter reads frontmatter only at the first byte, so anything above the
+  // opening `---` (such as an `@ref` comment) silently drops every key.
+  const config = await loadReviewConfig(root);
+  for (const agent of config.agents) {
+    expect(agent.description, `${agent.id}.md has no description`).not.toBe("");
+  }
+  expect(config.agents.find((agent) => agent.id === "security")?.alwaysRun).toBe(true);
+  const coordinator = await readFile(path.join(root, CONFIG_DIRNAME, "coordinator.md"), "utf8");
+  expect(parseFrontmatter(coordinator).data.model).toBeTruthy();
+  // A scaffolded setup must review with no setup notes on its first PR.
+  expect(config.setupWarnings).toBeUndefined();
 });

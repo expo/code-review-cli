@@ -36,6 +36,16 @@ import {
 import type { ClaudeCodeHandle } from "./claude-code.js";
 import { routeAgents } from "./router.js";
 import {
+  changedPaths,
+  formatSkippedAgents,
+  formatSkippedParts,
+  hasPathsSkips,
+  planAgentChunks,
+  renderPathsSkipsMarkdown,
+  selectAgentsByPaths,
+} from "./agent-paths.js";
+import type { PathsSkips } from "./agent-paths.js";
+import {
   buildCrossCuttingSystem,
   buildCrossCuttingTask,
   buildReviewerSystem,
@@ -267,6 +277,16 @@ export async function runReview(
     `${scopedFiles.length} changed file(s); ${kept.length} to review, ${filtered.length} filtered.`,
   );
 
+  // Frontmatter problems the loader found. Every result carries them, early returns
+  // included, so the PR comment keeps naming the fix until someone applies it.
+  // @ref LLP 0006#agent-frontmatter-and-paths [implements] — setup warnings surface as setup notes on every review
+  const configNotes = config.setupWarnings ?? [];
+  for (const note of configNotes) {
+    progress(`  setup: ${note}`);
+  }
+  const withConfigNotes = (output: CoordinatorOutput): CoordinatorOutput =>
+    configNotes.length > 0 ? { ...output, setupNotes: configNotes } : output;
+
   const baseRecord = {
     timestamp: new Date().toISOString(),
     mode: options.mode,
@@ -292,7 +312,40 @@ export async function runReview(
       findingCount: 0,
       summary: output.summary,
     });
-    return output;
+    return withConfigNotes(output);
+  }
+
+  // Run-level `paths` filter, before any engine starts, so an agent whose paths miss
+  // every reviewable file costs no model call. An explicit `--agents` list bypasses it.
+  // @ref LLP 0002#agent-paths-filter [implements] — run-level filter before engine startup; skips are logged, never coverage notes
+  const pathsSelection = selectAgentsByPaths(config.agents, changedPaths(kept), explicitAgents);
+  const pathsSkipped: PathsSkips = { agents: pathsSelection.skipped, parts: {}, chunks: 0 };
+  const pathsLog = (): { pathsSkipped?: PathsSkips } =>
+    hasPathsSkips(pathsSkipped) ? { pathsSkipped } : {};
+  for (const line of formatSkippedAgents(pathsSkipped)) {
+    progress(line);
+  }
+
+  if (pathsSelection.agents.length === 0) {
+    const output: CoordinatorOutput = {
+      decision: "approve",
+      findings: [],
+      summary:
+        "No reviewer applies to these changes: no reviewable file matches any agent's `paths`.",
+      incomplete: [],
+    };
+    await appendStepSummary(renderPathsSkipsMarkdown(pathsSkipped));
+    await safeLog(logPath, {
+      ...baseRecord,
+      ...pathsLog(),
+      agentCosts: {},
+      totalCost: 0,
+      durationMs: Date.now() - started,
+      decision: output.decision,
+      findingCount: 0,
+      summary: output.summary,
+    });
+    return withConfigNotes(output);
   }
 
   let researchEvidence: ResearchEvidence[] = [];
@@ -314,12 +367,12 @@ export async function runReview(
   //
   // Scope the engine set to the SELECTED agents so a run whose passes never touch
   // Claude doesn't start (and fail on a missing CLI/token for) the Claude Code
-  // engine. An explicit `--agents` subset is known here; routing picks from the full
-  // roster later (its router needs an engine up first), so a routed/all run keeps
-  // the full roster and can drive either engine.
+  // engine. An explicit `--agents` subset and the `paths` filter are known here;
+  // routing picks from the path-matched roster later (its router needs an engine up
+  // first), so a routed/all run keeps that roster and can drive either engine.
   const { engineOf, modelOf, usesOpencode, usesClaude } = buildEngineMap(
     config,
-    explicitAgents ?? config.agents,
+    pathsSelection.agents,
   );
 
   const originalCwd = process.cwd();
@@ -352,14 +405,15 @@ export async function runReview(
   // come from the trusted base ref — so a PR that moves cited code is reported against
   // the prompts that will actually judge it.
   // @ref LLP 0012#run-points-command-and-review [implements] — every review checks its own refs; advice only, never a gate
-  const setupNotes = await reviewSetupRefNotes({
+  const refNotes = await reviewSetupRefNotes({
     root: readRoot?.dir ?? originalCwd,
     setupDirs: [config.configDir],
     changedFiles: kept.map((entry) => entry.path),
   });
-  for (const note of setupNotes) {
+  for (const note of refNotes) {
     progress(`  setup: ${note}`);
   }
+  const setupNotes = [...configNotes, ...refNotes];
 
   let researchRuntime: ResearchMcpRuntime | undefined;
   try {
@@ -535,11 +589,12 @@ export async function runReview(
     const workspace = await writePatchWorkspace(kept, metadata, runDir);
 
     // Resolve which agents run: an explicit list wins; otherwise route (LLM picks
-    // relevant agents + always-run) when asked, else all.
-    let selectedAgents = explicitAgents ?? config.agents;
+    // relevant agents + always-run) when asked, else all. Routing chooses only among
+    // the agents the `paths` filter kept.
+    let selectedAgents = pathsSelection.agents;
     if (!explicitAgents && options.route) {
       progress("Routing: selecting relevant agents…");
-      const routed = await routeAgents(handle, config, workspace.files, (line) =>
+      const routed = await routeAgents(handle, pathsSelection.agents, workspace.files, (line) =>
         progress(formatAgentActivity("router", "router", line)),
       );
       selectedAgents = routed.agents;
@@ -667,9 +722,16 @@ export async function runReview(
     const incomplete: string[] = [];
 
     const tasks: ReviewTask[] = [];
+    pathsSkipped.chunks = chunks.length;
     for (const agent of selectedAgents) {
       const system = buildReviewerSystem(config, agent);
-      chunks.forEach((chunk, index) => {
+      // @ref LLP 0002#agent-paths-filter [implements] — a chunk with a matching file is reviewed whole; one with none is skipped, not a gap
+      const plan = planAgentChunks(agent, chunks, explicitAgents !== null);
+      if (plan.skipped.length > 0) {
+        pathsSkipped.parts[agent.id] = plan.skipped.map((index) => index + 1);
+      }
+      for (const index of plan.run) {
+        const chunk = chunks[index]!;
         tasks.push({
           bucket: agent.id,
           kind: "reviewer",
@@ -683,7 +745,13 @@ export async function runReview(
           depth: 0,
           fallback: false,
         });
-      });
+      }
+    }
+    for (const line of formatSkippedParts(pathsSkipped)) {
+      progress(line);
+    }
+    if (hasPathsSkips(pathsSkipped)) {
+      await appendStepSummary(renderPathsSkipsMarkdown(pathsSkipped));
     }
     // On a large diff, ONE combined pass (not one per agent) looks for issues that
     // span multiple changed files, covering every agent's concern at once.
@@ -707,12 +775,13 @@ export async function runReview(
     // ahead of short ones so they don't dominate the tail of the makespan.
     tasks.sort((a, b) => b.maxWaitMs - a.maxWaitMs);
 
-    // What each task was CONFIGURED to run on — mirrors buildOpencodeConfig, which
-    // gives the cross-file pass the first agent's model. Compared against what actually
-    // answered so a silent substitution can't pass unnoticed.
+    // What each task was CONFIGURED to run on. The cross-file pass mirrors
+    // buildOpencodeConfig, which gives it the first ROSTER agent's model (not the first
+    // selected one, which `--agents`, routing, or `paths` can change). Compared against
+    // what actually answered so a silent substitution can't pass unnoticed.
     const taskModel = (task: ReviewTask): string =>
       task.kind === "cross-cutting"
-        ? (selectedAgents[0]?.model ?? config.coordinator.model)
+        ? (config.agents[0]?.model ?? config.coordinator.model)
         : (selectedAgents.find((agent) => agent.id === task.bucket)?.model ?? "");
 
     // Build the task prompt on demand (so a subdivided task rebuilds over its
@@ -1369,6 +1438,7 @@ export async function runReview(
     const reviewTrace = buildReviewTrace(agentTrace);
     await safeLog(logPath, {
       ...baseRecord,
+      ...pathsLog(),
       ...(researchRecord ? { research: researchRecord } : {}),
       agentCosts,
       totalCost: sum(agentCosts),
@@ -1407,6 +1477,7 @@ export async function runReview(
   } catch (error) {
     await safeLog(logPath, {
       ...baseRecord,
+      ...pathsLog(),
       ...(researchRecord ? { research: researchRecord } : {}),
       agentCosts,
       totalCost: sum(agentCosts),

@@ -1,4 +1,3 @@
-<!-- @ref LLP 0009#config-and-prompt-templates — pro tier pinned on purpose: consolidation quality over serial-tail latency -->
 ---
 # The coordinator makes the final call — de-duping, re-judging severity, and
 # deciding — so it runs on the Opus tier: consolidation quality matters more here
@@ -7,6 +6,7 @@
 # @ref LLP 0009#config-and-prompt-templates [implements]
 model: anthropic/claude-opus-5-5
 ---
+<!-- @ref LLP 0009#config-and-prompt-templates — pro tier pinned on purpose: consolidation quality over serial-tail latency -->
 
 # Coordinator — consolidation & decision
 

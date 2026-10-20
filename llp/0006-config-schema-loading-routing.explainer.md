@@ -139,7 +139,61 @@ naive `**/*` catch-all would silently miss root-level files (`README.md`, `packa
 tests each `**/`-prefixed pattern in two variants (with and without the prefix stripped) to give the
 catch-all its conventional "zero or more directories" meaning [observed: `routing.ts:57-73`]. The
 "proper" fix lives in `matchesIgnore` itself, whose blast radius covers noise filtering too, so the
-workaround stays local.
+workaround stays local. `matchesPathGlobs` is that wrapper, exported so agent `paths` (below) match
+in exactly the routing dialect; a change to it changes scope assignment and agent selection together.
+
+## Agent Frontmatter and `paths`
+
+`parseFrontmatter` is a minimal YAML-ish reader, not a YAML library, for the same reason the JSONC
+reader is: agent prompts are trusted config read from the base commit. The frontmatter must open on
+the first byte of the file, and lines split on LF or CRLF. Every `key: value` line lands in `data`
+as a scalar, exactly as before lists existed, so `description`, `alwaysRun`, `model`, and
+`temperature` parse byte-identically. A `# comment` after a value is NOT stripped; it stays part of
+the value. Keys whose value is a list ALSO land in `lists`: a one-line
+flow list (`paths: ["a/**", 'b/**', c/**]`, trailing comma allowed) or a block list (`paths:`
+followed by `- item` lines; blank and `#` lines inside are skipped, and the next key ends it)
+[observed: `load.ts` `parseFrontmatter`, `parseFlowList`]. Only `paths` reads `lists`.
+
+`parseAgentPaths` validates `paths` at load time, because a mistyped glob would otherwise skip
+the agent on every PR with nothing reporting it. An invalid value is a **setup warning, not a load
+error**: the agent keeps no `paths`, so it reviews every change, and the warning names the agent
+file and the fix [observed: `load.ts` `parseAgentPaths`]. A load error would be worse than the
+typo. In CI, `ecr ci` reports a load error to stderr and posts nothing (it must never fail the
+check), so one agent's typo would stop every review in the repo. And nothing catches the typo
+first: CI reviews a PR under its base commit's config, so the PR adding the typo loads fine, and
+`ecr verify-config` does not read agent files (it is the credential guard,
+[LLP 0007](0007-cli-commands-and-ci.explainer.md)). The AGENTS.md "fail fast" rule is for setup
+errors that would fail every pass anyway (a bad model id, a credential); an invalid `paths` can
+degrade instead, to the behavior the agent had before it declared `paths`.
+
+The value is invalid when it is not a list, is an empty list, has an empty entry, or has a glob
+that can never match a repo-relative changed-file path: a leading `/` or `./`, a trailing `/` (the
+CODEOWNERS directory form), and a leading `!` (negation is not supported). Typos the reader would
+otherwise turn into a glob that matches nothing are invalid too: an entry with a `# comment`, text
+after its closing quote (a missing comma between two quoted entries), a block item written `-x`
+with no space, and a `{a,b}` brace set or an unmatched brace (an unquoted `{a,b}` splits at its
+comma) [observed: `load.ts` `pathGlobIssue`]. The matcher itself never rejects a string, because
+`matchesIgnore` escapes every regex metacharacter, so these are the only globs that can be
+"invalid". Characters such as `[`, `]`, `?`, and braces without a comma stay literal and legal:
+route file names such as `app/[id].tsx` contain them, and template directories such as
+`{{cookiecutter.slug}}` contain braces.
+
+The same warnings cover the rest of a prompt file's frontmatter, for `shared.md`, `coordinator.md`
+and every agent [observed: `load.ts` `frontmatterWarnings`]: a frontmatter block below an HTML
+comment, a byte-order mark or blank lines (the reader ignores all of its keys; repos scaffolded
+before the templates moved their `@ref` comment have this), and a trailing `# comment` that breaks
+`alwaysRun`, `model` or `temperature`. These only report: the file loads exactly as before, because
+parsing through the hidden block would suddenly apply model pins the repo's credential may not
+cover. Warnings land in `LoadedConfig.setupWarnings`, absent when there are none so a clean setup
+keeps its review-cache key. `runReview` puts them first in `setupNotes` on every result, early
+returns included, so the PR comment's **Review setup** note keeps naming the fix; `ecr doctor`
+fails on them.
+
+An agent without `paths` gets no `paths` key at all, not `paths: undefined`, so its object shape
+and its review-cache key are unchanged [observed: `load.ts` agent construction]. The
+`defaults.enforceAgents` injection copies the root agent with its `paths`, so an enforced agent
+still runs only in scopes with a matching file. How the engine applies the filter is in
+[LLP 0002](0002-review-engine-pipeline.explainer.md#agent-paths-filter).
 
 ## Budgets and Chunking Defaults
 

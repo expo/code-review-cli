@@ -37,7 +37,8 @@ Options:
                        to publish.
   --save-review        with explicit --repo + --pr: save this exact preview as a
                        postable artifact for a later \`ecr post-review\` command.
-  --agents <a,b>       run only these agents (comma-separated ids); default: all
+  --agents <a,b>       run only these agents (comma-separated ids), even when
+                       their \`paths\` match no changed file; default: all
   --route              let the router pick relevant agents from the diff
   --scope <name>       review only this routing scope (needs a routing.jsonc);
                        runs its config over just that scope's changed files

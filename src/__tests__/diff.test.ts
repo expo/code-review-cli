@@ -54,3 +54,34 @@ diff --git a/c.ts b/c.ts
 +d`;
   expect(parseUnifiedDiff(diff).map((e) => e.path)).toEqual(["a.ts", "c.ts"]);
 });
+
+test("a rename records the old path, with or without hunks", () => {
+  const diff = `diff --git a/packages/ios/X.swift b/lib/X.swift
+similarity index 90%
+rename from packages/ios/X.swift
+rename to lib/X.swift
+index 111..222 100644
+--- a/packages/ios/X.swift
++++ b/lib/X.swift
+@@ -1 +1 @@
+-a
++b
+diff --git a/docs/a.md b/guides/a.md
+similarity index 100%
+rename from docs/a.md
+rename to guides/a.md
+diff --git a/src/a.ts b/src/a.ts
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1 +1 @@
+-a
++b`;
+  const [edited, pure, plain] = parseUnifiedDiff(diff);
+  expect(edited).toMatchObject({
+    path: "lib/X.swift",
+    oldPath: "packages/ios/X.swift",
+    status: "R",
+  });
+  expect(pure).toMatchObject({ path: "guides/a.md", oldPath: "docs/a.md", status: "R" });
+  expect("oldPath" in plain!).toBe(false);
+});

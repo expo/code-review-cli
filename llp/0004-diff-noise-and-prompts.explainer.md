@@ -29,7 +29,11 @@ Path is derived from the `+++ b/...` (new) line first, then from the
 is `/dev/null` — and only from the `diff --git a/... b/...` header when both the
 new and old paths are missing or `/dev/null` [observed] (`src/core/diff.ts:70-73`).
 The header fallback exists for the rare entry that carries neither a usable `+++`
-nor `---` path.
+nor `---` path. A rename also records `oldPath` from its `rename from` line, which
+a pure rename has even with no `---` line; only agent `paths` read it, so a move out
+of an agent's globs still reaches that agent
+([LLP 0002](0002-review-engine-pipeline.explainer.md#agent-paths-filter)) [observed]
+(`src/core/diff.ts` `patchToEntry`).
 
 Binary files are the load-bearing decision here. The parser does **not** drop
 them — it keeps the entry with `binary: true` and infers status from
@@ -148,7 +152,9 @@ with `patternVariants`, which additionally tests each `**/`-prefixed pattern wit
 the prefix stripped, because `**` translating to `.*` requires at least one
 slash — so a naive catch-all like `**/*` would otherwise miss root-level files
 like `README.md` [observed] (`src/config/routing.ts:57-66`). Routing details are
-in [LLP 0006](0006-config-schema-loading-routing.explainer.md).
+in [LLP 0006](0006-config-schema-loading-routing.explainer.md). Agent frontmatter
+`paths` reuse that wrapper (`matchesPathGlobs`), so the same translation also
+decides which reviewer agents run [observed] (`src/core/agent-paths.ts`).
 
 ## Patch Workspace
 
