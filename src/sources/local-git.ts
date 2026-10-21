@@ -6,9 +6,11 @@ import type { ReviewSource } from "./source.js";
 
 // `git diff` honors the user's config: an external diff tool (`diff.external`), forced
 // color, other path prefixes (`diff.noprefix`, `diff.mnemonicPrefix`), textconv
-// drivers, and copy detection (`diff.renames=copies`). These flags restore the plain
-// unified diff of the real file contents, with the `a/` and `b/` prefixes that
-// parseUnifiedDiff reads.
+// drivers, copy detection (`diff.renames=copies`), submodule logs or inline diffs
+// (`diff.submodule`), and ignored submodules (`diff.ignoreSubmodules`, or `ignore`
+// in `.gitmodules`). These flags restore the plain unified diff of the real file
+// contents, with the `a/` and `b/` prefixes that parseUnifiedDiff reads. A submodule
+// shows only when its pointer moves, never for edits inside it.
 // @ref LLP 0008#local-git-source [implements] — every parsed `git diff` overrides the user's diff config
 const PARSEABLE_DIFF_FLAGS = [
   "--no-ext-diff",
@@ -17,6 +19,8 @@ const PARSEABLE_DIFF_FLAGS = [
   "--dst-prefix=b/",
   "--no-textconv",
   "--find-renames",
+  "--submodule=short",
+  "--ignore-submodules=dirty",
 ];
 
 export interface LocalGitOptions {

@@ -77,8 +77,8 @@ path.
 
 `parseUnifiedDiff` has three independent callers with different trust needs, so
 a parsing bug is not contained to the reviewer feed: the two sources
-(`src/sources/local-git.ts:97`, `src/sources/github-pr.ts:98`) turn raw diff
-into the review input, and the GitHub reporter (`src/reporters/github.ts:214`,
+(`src/sources/local-git.ts:118`, `src/sources/github-pr.ts:233`) turn raw diff
+into the review input, and the GitHub reporter (`src/reporters/github.ts:1094`,
 `buildDiffLineIndex`) re-parses to anchor inline PR comments to line numbers
 [observed] (grep of `parseUnifiedDiff` call sites). A path or hunk-offset bug
 would corrupt comment placement, not just review content.
