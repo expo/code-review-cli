@@ -733,10 +733,12 @@ Behavior notes:
   matches the reply to that finding structurally; clearing still requires the
   `id:…` token in the replier's own words, same as main-comment replies.
 - **One review per run.** A run's new inline comments go out in one `COMMENT`
-  review, so the PR gets one review entry and one notification per run, not one
-  per comment. The reviewer never approves or requests changes. If GitHub
-  rejects the review, for example for a line it won't anchor, the comments are
-  posted one by one instead, each as its own review.
+  review, so each run puts one review entry and one notification on the PR (one
+  per scope in per-scope comment mode), not one per comment. The reviewer never
+  approves or requests changes. If GitHub refuses one of the comments, for
+  example for a line it won't anchor, the comments are posted one by one
+  instead, each as its own review. The review's short body stays on the PR
+  after its threads are deleted, because GitHub can't delete a submitted review.
 - **Disabling later** leaves existing threads up (the sync no longer runs); a
   comment-mode switch — or the reporter's clear path — stubs/removes them.
 

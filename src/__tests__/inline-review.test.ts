@@ -7,7 +7,12 @@ import { resetTrustedToolCache } from "../core/exec.js";
 import { renderInlineCommentBody } from "../core/render.js";
 import type { LinkContext } from "../core/render.js";
 import type { Finding } from "../core/schema.js";
-import { GitHubReporter, INLINE_REVIEW_BODY, inlineUrlsByFp } from "../reporters/github.js";
+import {
+  GitHubReporter,
+  INLINE_REVIEW_BODY,
+  ghApiFailure,
+  inlineUrlsByFp,
+} from "../reporters/github.js";
 
 const TAG = "expo-ai-code-reviewer";
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
@@ -39,18 +44,24 @@ test("inlineUrlsByFp: maps our marked comments to their permalinks", () => {
 // ---- the sync posts new threads through a fake `gh` on PATH ----
 
 // A fake `gh` that logs each call and answers the endpoints the inline sync uses.
-// FAKE_GH_REVIEW_ERROR makes the review POST fail with that stderr,
-// FAKE_GH_REVIEW_NO_ID makes it succeed with a response that has no id, and
-// FAKE_GH_LIST_ERROR makes reading the review's comments fail. The review's comments
-// are served from review-comments-<page>.json.
+// FAKE_GH_REVIEW_ERROR makes the review POST fail with that stderr and
+// FAKE_GH_REVIEW_BODY as the response body on stdout, FAKE_GH_REVIEW_NO_ID makes it
+// succeed with a response that has no id, and FAKE_GH_LIST_ERROR makes reading the
+// review's comments fail (only page FAKE_GH_LIST_ERROR_PAGE, when set), and
+// FAKE_GH_PATCH_ERROR makes editing an existing comment fail. FAKE_GH_COMMENT_ERROR
+// and FAKE_GH_COMMENT_BODY do for a single comment POST what the REVIEW pair does. The review's
+// comments are served from review-comments-<page>.json, and the PR's existing review
+// comments from pr-comments.json.
 const FAKE_GH = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_GH_DIR/calls.log"
 eval "last=\\\${$#}"
 case "$*" in
   "pr view"*) printf '%s' "$FAKE_GH_HEAD" ;;
   *"/reviews/99/comments"*)
-    if [ -n "$FAKE_GH_LIST_ERROR" ]; then echo "$FAKE_GH_LIST_ERROR" >&2; exit 1; fi
     page=$(printf '%s' "$*" | sed -n 's/.*page=\\([0-9]*\\).*/\\1/p')
+    if [ -n "$FAKE_GH_LIST_ERROR" ] && [ "\${FAKE_GH_LIST_ERROR_PAGE:-$page}" = "$page" ]; then
+      echo "$FAKE_GH_LIST_ERROR" >&2; exit 1
+    fi
     if [ -f "$FAKE_GH_DIR/review-comments-$page.json" ]; then
       cat "$FAKE_GH_DIR/review-comments-$page.json"
     else
@@ -58,13 +69,23 @@ case "$*" in
     fi ;;
   *"-X POST "*"/reviews --input "*)
     cp "$last" "$FAKE_GH_DIR/review.json"
-    if [ -n "$FAKE_GH_REVIEW_ERROR" ]; then echo "$FAKE_GH_REVIEW_ERROR" >&2; exit 1; fi
+    if [ -n "$FAKE_GH_REVIEW_ERROR" ]; then
+      printf '%s' "$FAKE_GH_REVIEW_BODY"; echo "$FAKE_GH_REVIEW_ERROR" >&2; exit 1
+    fi
     if [ -n "$FAKE_GH_REVIEW_NO_ID" ]; then printf '{}'; exit 0; fi
     printf '{"id": 99}' ;;
   *"-X POST "*"/comments --input "*)
+    if [ -n "$FAKE_GH_COMMENT_ERROR" ]; then
+      printf '%s' "$FAKE_GH_COMMENT_BODY"; echo "$FAKE_GH_COMMENT_ERROR" >&2; exit 1
+    fi
     n=$(wc -l < "$FAKE_GH_DIR/calls.log" | tr -d ' ')
     printf '{"html_url": "https://github.com/o/r/pull/7#discussion_r%s"}' "$n" ;;
-  *"-X GET "*"/comments"*) printf '[]' ;;
+  *"-X GET "*"/comments"*)
+    if [ -f "$FAKE_GH_DIR/pr-comments.json" ]; then cat "$FAKE_GH_DIR/pr-comments.json"; else printf '[]'; fi ;;
+  *"-X PATCH "*)
+    if [ -n "$FAKE_GH_PATCH_ERROR" ]; then echo "$FAKE_GH_PATCH_ERROR" >&2; exit 1; fi
+    printf '{}' ;;
+  *"-X DELETE "*) ;;
   *) echo "unexpected gh call: $*" >&2; exit 1 ;;
 esac
 `;
@@ -82,8 +103,13 @@ beforeEach(async () => {
     "FAKE_GH_DIR",
     "FAKE_GH_HEAD",
     "FAKE_GH_REVIEW_ERROR",
+    "FAKE_GH_REVIEW_BODY",
     "FAKE_GH_REVIEW_NO_ID",
     "FAKE_GH_LIST_ERROR",
+    "FAKE_GH_LIST_ERROR_PAGE",
+    "FAKE_GH_PATCH_ERROR",
+    "FAKE_GH_COMMENT_ERROR",
+    "FAKE_GH_COMMENT_BODY",
     "GITHUB_STEP_SUMMARY",
   ]) {
     saved[name] = process.env[name];
@@ -92,8 +118,13 @@ beforeEach(async () => {
   process.env.FAKE_GH_DIR = dir;
   process.env.FAKE_GH_HEAD = HEAD;
   delete process.env.FAKE_GH_REVIEW_ERROR;
+  delete process.env.FAKE_GH_REVIEW_BODY;
   delete process.env.FAKE_GH_REVIEW_NO_ID;
   delete process.env.FAKE_GH_LIST_ERROR;
+  delete process.env.FAKE_GH_LIST_ERROR_PAGE;
+  delete process.env.FAKE_GH_PATCH_ERROR;
+  delete process.env.FAKE_GH_COMMENT_ERROR;
+  delete process.env.FAKE_GH_COMMENT_BODY;
   delete process.env.GITHUB_STEP_SUMMARY;
   resetTrustedToolCache();
 });
@@ -185,6 +216,15 @@ test("syncInline: posts all new threads in one COMMENT review and links each one
     ["a.ts", 5, "RIGHT"],
     ["b.ts", 9, "RIGHT"],
   ]);
+  // The read-back fixture is built separately, so only this catches a lost body.
+  expect(review.comments.map((c: { body: string }) => c.body)).toEqual([
+    renderInlineCommentBody(finding(), TAG, "aaaa11"),
+    renderInlineCommentBody(
+      finding({ file: "b.ts", line: 9, severity: "suggestion" }),
+      TAG,
+      "bbbb22",
+    ),
+  ]);
   expect(urls.get("aaaa11")).toBe("https://github.com/o/r/pull/701#discussion_r500");
   expect(urls.get("bbbb22")).toBe("https://github.com/o/r/pull/701#discussion_r501");
 });
@@ -234,4 +274,165 @@ test("syncInline: links every thread of a review with more than one page of comm
   expect(calls.filter((call) => call.includes("-X POST"))).toHaveLength(1);
   expect(calls.filter((call) => call.includes("/reviews/99/comments"))).toHaveLength(2);
   expect(urls.size).toBe(150);
+});
+
+// One thread of ours from an earlier run whose finding is gone, so the sync deletes it
+// after posting the new review.
+async function writeStaleThread(): Promise<void> {
+  await writeFile(
+    path.join(dir, "pr-comments.json"),
+    JSON.stringify([
+      {
+        id: 77,
+        body: renderInlineCommentBody(finding({ file: "c.ts", line: 3 }), TAG, "dddd44"),
+        user: { login: "ecr-bot" },
+        html_url: "https://github.com/o/r/pull/7#discussion_r77",
+      },
+    ]),
+    "utf8",
+  );
+}
+
+test("syncInline: one run posts the review, links it, and deletes a retired thread", async () => {
+  await writeStaleThread();
+  const { urls, calls } = await syncNewThreads(708);
+  expect(calls.filter((call) => call.includes("-X POST"))).toHaveLength(1);
+  expect(calls.filter((call) => call.includes("-X DELETE"))).toEqual([
+    expect.stringContaining("repos/o/r/pulls/comments/77"),
+  ]);
+  expect([...urls.keys()].sort()).toEqual(["aaaa11", "bbbb22"]);
+});
+
+test("syncInline: a rate limit while reading the review's comments stops later mutations", async () => {
+  await writeStaleThread();
+  process.env.FAKE_GH_LIST_ERROR = "gh: API rate limit exceeded (HTTP 429)";
+  const { urls, calls } = await syncNewThreads(709);
+  expect(calls.filter((call) => call.includes("-X DELETE"))).toHaveLength(0);
+  expect(urls.size).toBe(0);
+});
+
+test("syncInline: a review page that fails keeps the links of the pages before it", async () => {
+  process.env.FAKE_GH_LIST_ERROR = "gh: Internal Server Error (HTTP 500)";
+  process.env.FAKE_GH_LIST_ERROR_PAGE = "2";
+  const { urls } = await syncNewThreads(710, 150);
+  expect(urls.size).toBe(100);
+});
+
+test("syncInline: a review refused for a pending review isn't posted one by one", async () => {
+  await writeStaleThread();
+  process.env.FAKE_GH_REVIEW_ERROR = "gh: Unprocessable Entity (HTTP 422)";
+  process.env.FAKE_GH_REVIEW_BODY = JSON.stringify({
+    message: "Unprocessable Entity",
+    errors: ["User can only have one pending review per pull request"],
+  });
+  const { urls, calls } = await syncNewThreads(711);
+  expect(calls.filter((call) => call.includes("-X POST"))).toHaveLength(1);
+  // Only the new threads fail: the rest of the sync still runs.
+  expect(calls.filter((call) => call.includes("-X DELETE"))).toHaveLength(1);
+  expect(urls.size).toBe(0);
+});
+
+test("syncInline: a review refused as spam aborts the rest of the sync", async () => {
+  await writeStaleThread();
+  process.env.FAKE_GH_REVIEW_ERROR = "gh: Validation Failed (HTTP 422)";
+  process.env.FAKE_GH_REVIEW_BODY = JSON.stringify({
+    message: "Validation Failed",
+    errors: [
+      { resource: "PullRequestReview", code: "custom", message: "was submitted too quickly" },
+    ],
+  });
+  const { urls, calls } = await syncNewThreads(712);
+  expect(calls.filter((call) => call.includes("-X POST"))).toHaveLength(1);
+  expect(calls.filter((call) => call.includes("-X DELETE"))).toHaveLength(0);
+  expect(urls.size).toBe(0);
+});
+
+test("syncInline: a rate limit while editing a thread skips the review", async () => {
+  // aaaa11's thread exists with an outdated body, so the sync patches it before it
+  // posts bbbb22 in a review.
+  await writeFile(
+    path.join(dir, "pr-comments.json"),
+    JSON.stringify([
+      {
+        id: 78,
+        body: renderInlineCommentBody(finding({ title: "An older title" }), TAG, "aaaa11"),
+        user: { login: "ecr-bot" },
+        html_url: "https://github.com/o/r/pull/7#discussion_r78",
+      },
+    ]),
+    "utf8",
+  );
+  process.env.FAKE_GH_PATCH_ERROR = "gh: API rate limit exceeded (HTTP 429)";
+  const { calls } = await syncNewThreads(713);
+  expect(calls.filter((call) => call.includes("-X PATCH"))).toHaveLength(1);
+  expect(calls.filter((call) => call.includes("-X POST"))).toHaveLength(0);
+});
+
+test("syncInline: the spam throttle during the one-by-one fallback aborts the rest", async () => {
+  await writeStaleThread();
+  process.env.FAKE_GH_REVIEW_ERROR = "gh: Unprocessable Entity (HTTP 422)";
+  process.env.FAKE_GH_REVIEW_BODY = JSON.stringify({
+    message: "Unprocessable Entity",
+    errors: ["Line could not be resolved"],
+  });
+  process.env.FAKE_GH_COMMENT_ERROR = "gh: Validation Failed (HTTP 422)";
+  process.env.FAKE_GH_COMMENT_BODY = JSON.stringify({
+    message: "Validation Failed",
+    errors: [
+      {
+        resource: "PullRequestReviewComment",
+        code: "custom",
+        message: "was submitted too quickly",
+      },
+    ],
+  });
+  const { calls } = await syncNewThreads(714);
+  expect(calls.filter((call) => call.includes("/comments --input"))).toHaveLength(1);
+  expect(calls.filter((call) => call.includes("-X DELETE"))).toHaveLength(0);
+});
+
+test("ghApiFailure: keeps the response body's messages, not the body", () => {
+  const json = ghApiFailure("creating the review", {
+    code: 1,
+    stderr: "gh: Validation Failed (HTTP 422)\n",
+    stdout: JSON.stringify({
+      message: "Validation Failed",
+      errors: ["one", { message: "two" }, { code: "custom" }, null],
+      documentation_url: "https://docs.github.com",
+    }),
+  });
+  expect(json.message).toBe(
+    "creating the review failed: gh: Validation Failed (HTTP 422): Validation Failed; one; two",
+  );
+  const html = ghApiFailure("creating the review", {
+    code: 1,
+    stderr: "gh: HTTP 502\n",
+    stdout: "<html><body>Bad Gateway</body></html>",
+  });
+  expect(html.message).toBe("creating the review failed: gh: HTTP 502");
+  const silent = ghApiFailure("creating the review", {
+    code: 1,
+    stderr: "",
+    stdout: "",
+    signal: "SIGKILL",
+  });
+  expect(silent.message).toBe("creating the review failed: gh exited 1 (SIGKILL)");
+});
+
+test("ghApiFailure: caps each message, not the whole text, so a late throttle survives", () => {
+  const error = ghApiFailure("creating the review", {
+    code: 1,
+    stderr: "gh: Validation Failed (HTTP 422)",
+    stdout: JSON.stringify({
+      message: "Validation Failed",
+      errors: [
+        ...Array.from({ length: 30 }, () => ({ message: "Line could not be resolved" })),
+        { message: "x".repeat(1000) },
+        { message: "was submitted too quickly" },
+      ],
+    }),
+  });
+  expect(error.message).toBe(
+    `creating the review failed: gh: Validation Failed (HTTP 422): Validation Failed; Line could not be resolved; ${"x".repeat(200)}; was submitted too quickly`,
+  );
 });
