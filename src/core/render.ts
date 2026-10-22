@@ -7,11 +7,13 @@ import {
   FeedbackPinSchema,
   FeedbackRecordSchema,
   fingerprintFinding,
+  MENTION_TARGET_RE,
   scopedFingerprint,
   SEVERITIES,
   SEVERITY_RANK,
 } from "./schema.js";
 import type {
+  AgentMention,
   AgentSummary,
   CoordinatorOutput,
   Decision,
@@ -267,6 +269,7 @@ export function renderMarkdown(
     stripStateMarkers(review.summary),
     "",
   );
+  lines.push(...mentionLines(review.mentions));
   lines.push(...agentSummariesSection(review.agentSummaries));
 
   if (review.incomplete.length > 0) {
@@ -515,6 +518,25 @@ export const AGENT_NOT_RUN_TEXT: Record<NonNullable<AgentSummary["notRun"]>, str
   paths: "not run: no changed file matches its `paths`",
   router: "not run: the router did not select it",
 };
+
+/**
+ * One visible line per human review that an agent asked for, which mentions the people
+ * from the agent's config. Empty when there are none.
+ */
+function mentionLines(mentions: AgentMention[] = []): string[] {
+  return mentions.flatMap(({ agent, logins, reason }) => {
+    // The state is parsed back from the comment body, so check every login again.
+    const handles = logins.filter((login) => MENTION_TARGET_RE.test(login));
+    if (handles.length === 0) {
+      return [];
+    }
+    const people = handles.map((login) => `@${login}`).join(" ");
+    return [
+      `> 📣 ${people}: the \`${stripStateMarkers(agent)}\` reviewer asks for your review. ${plainModelLine(reason)}`,
+      "",
+    ];
+  });
+}
 
 /**
  * Each roster agent's own summary, or why it did not run, in a collapsed section.
@@ -883,6 +905,7 @@ export function renderAggregateMarkdown(
       if (result.review.summary) {
         lines.push(stripStateMarkers(result.review.summary), "");
       }
+      lines.push(...mentionLines(result.review.mentions));
       if (withSummaries) {
         lines.push(...agentSummariesSection(result.review.agentSummaries));
       } else if (result.review.agentSummaries?.length) {

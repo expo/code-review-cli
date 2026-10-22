@@ -15,6 +15,7 @@ import type {
   RoutingManifest,
   RoutingScope,
 } from "./schema.js";
+import { MENTION_TARGET_RE } from "../core/schema.js";
 import { toolMap } from "../core/tools.js";
 
 /**
@@ -227,6 +228,13 @@ async function loadConfigDir(
     if (warning) {
       setupWarnings.push(warning);
     }
+    const { mention, warning: mentionWarning } = parseAgentMention(
+      md,
+      path.join(label, "agents", file),
+    );
+    if (mentionWarning) {
+      setupWarnings.push(mentionWarning);
+    }
     agents.push({
       id,
       description: md.data.description ?? "",
@@ -238,6 +246,7 @@ async function loadConfigDir(
       // Only when declared: an agent without `paths` keeps the exact shape (and
       // review-cache key) it had before the key existed.
       ...(paths ? { paths } : {}),
+      ...(mention ? { mention } : {}),
     });
   }
 
@@ -574,6 +583,45 @@ function parseAgentPaths(
     };
   }
   return { paths: md.lists.paths };
+}
+
+/**
+ * The agent's `mention` list without leading `@`s, or a setup warning that names the
+ * fix. An invalid list mentions no one; it never fails the load.
+ */
+function parseAgentMention(
+  md: { data: Record<string, string>; lists: Record<string, string[]> },
+  file: string,
+): { mention?: string[]; warning?: string } {
+  if (!("mention" in md.data)) {
+    return {};
+  }
+  const entries = md.lists.mention;
+  let issue: { problem: string; fix: string } | null = null;
+  if (!entries) {
+    issue = {
+      problem: "is not a list",
+      fix: "write it as `mention: [octocat]` or as `- octocat` lines",
+    };
+  } else if (entries.length === 0) {
+    issue = { problem: "is empty", fix: "list at least one GitHub login or team" };
+  } else {
+    const invalid = entries.findIndex((entry) => !MENTION_TARGET_RE.test(entry.replace(/^@/, "")));
+    if (invalid !== -1) {
+      issue = {
+        problem: `entry ${invalid + 1} (${JSON.stringify(entries[invalid])}) is not a GitHub login or team`,
+        fix: "write a login such as `octocat` or a team such as `org/team`",
+      };
+    }
+  }
+  if (issue) {
+    return {
+      warning:
+        `${file}: \`mention\` ${issue.problem}, so the agent mentions no one. ` +
+        `Fix: ${issue.fix}, or remove \`mention\`.`,
+    };
+  }
+  return { mention: entries!.map((entry) => entry.replace(/^@/, "")) };
 }
 
 /** Why `paths` is not a non-empty list of globs that can match a changed file, or null. */

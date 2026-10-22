@@ -146,6 +146,18 @@ test("aggregate: each scope lists its own agent summaries inside its fold", () =
   expect(body).toContain("- **security:** Checked the token handling.");
 });
 
+test("aggregate: a scope's mention renders under that scope's summary", () => {
+  const results = [
+    scope("docs", false, {
+      summary: "Docs scope summary.",
+      mentions: [{ agent: "docs", logins: ["amandeepmittal"], reason: "New guide." }],
+    }),
+  ];
+  const body = renderAggregateMarkdown(results, "tag", []);
+  const line = "> 📣 @amandeepmittal: the `docs` reviewer asks for your review. New guide.";
+  expect(body.indexOf(line)).toBeGreaterThan(body.indexOf("Docs scope summary."));
+});
+
 test("aggregate: a default-scope finding dismissed pre-routing (plain fp) lands in Dismissed (risk 9)", () => {
   const dFinding = finding({ title: "Carried", evidence: "const carriedOverDismissal = 1;" });
   const plainFp = fingerprintFinding(dFinding);

@@ -176,6 +176,17 @@ test("a reviewer summary parses to one clipped line and fails soft when malforme
   expect(malformed.findings.map((finding) => finding.title)).toEqual(["Keep the real finding"]);
 });
 
+test("a reviewer's human-review reason parses to one clipped line and fails soft", () => {
+  const output = parseReviewerOutput(
+    JSON.stringify({ findings: [], humanReview: " The new guide\n changes the setup steps. " }),
+  );
+  expect(output.humanReview).toBe("The new guide changes the setup steps.");
+  expect(parseReviewerOutput(JSON.stringify({ findings: [] })).humanReview).toBeUndefined();
+  expect(
+    parseReviewerOutput(JSON.stringify({ findings: [], humanReview: true })).humanReview,
+  ).toBeUndefined();
+});
+
 test("reviewer research decisions parse bounded conclusions and fail soft when malformed", () => {
   const source = {
     title: "NWPathMonitor",

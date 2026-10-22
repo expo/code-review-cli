@@ -158,6 +158,31 @@ test("a backtick before `@` does not keep a mention live in an agent summary", (
   expect(body).toContain("Closed `x`@\u200Boctocat, open `@\u200Bexpo/team.");
 });
 
+test("a mention renders visibly under the summary and names only valid logins", () => {
+  const review: CoordinatorOutput = {
+    ...base,
+    summary: "Overall summary.",
+    mentions: [
+      {
+        agent: "docs",
+        logins: ["amandeepmittal", "expo/docs", "not a login"],
+        reason: "Ask @someone else <br> to look.",
+      },
+    ],
+  };
+  const body = renderMarkdown(review, "tag");
+  const line =
+    "> 📣 @amandeepmittal @expo/docs: the `docs` reviewer asks for your review. Ask @\u200Bsomeone else to look.";
+  expect(body).toContain(line);
+  expect(body.indexOf(line)).toBeGreaterThan(body.indexOf("Overall summary."));
+  expect(body).not.toContain("not a login");
+
+  const state = parseReviewState(body, "tag")!;
+  expect(state.review.mentions).toEqual(review.mentions);
+  expect(renderMarkdown(state.review, "tag", state.dismissed)).toContain(line);
+  expect(renderMarkdown(base, "tag")).not.toContain("📣");
+});
+
 test("links a finding location to the PR diff line when the line is in the diff", () => {
   const out = renderMarkdown(
     { ...base, findings: [finding({ file: "src/a.ts", line: 12 })] },

@@ -534,6 +534,28 @@ paths:
 - Quote each glob. A YAML value that starts with `*` must be quoted to stay valid
   YAML for other tools.
 
+`mention` lets an agent ask specific people for a human review. It takes a list of
+GitHub logins or `org/team` slugs:
+
+```yaml
+mention:
+  - octocat
+```
+
+- The agent decides when a change needs a human review: its role prompt tells it
+  when to set `humanReview`, one sentence on why. The PR comment then shows a
+  visible `📣 @octocat: the docs reviewer asks for your review.` line with that
+  reason under the overall summary. Without a `humanReview`, the agent mentions no
+  one.
+- Only the trusted config names people. The model writes only the reason, and the
+  reporter breaks every `@` mention in it.
+- The bot edits its comment in place on each re-review. GitHub also notifies a
+  person when an edit adds a mention of them, so a mention that first appears on a
+  re-review still notifies.
+- An invalid `mention` (not a list, an empty list, or an entry that is not a login
+  or team) is ignored, and the review names the agent file and the fix under
+  **Review setup**.
+
 For a real-world example, see eas-cli's
 [`.expo-agents/code-review/`](https://github.com/expo/eas-cli/tree/main/.expo-code-review)
 — correctness/security/consistency agents, a stronger model for security, and

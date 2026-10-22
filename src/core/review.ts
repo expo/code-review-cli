@@ -64,6 +64,7 @@ import {
   REVIEW_TRACE_UNCERTAINTY_LIMIT,
 } from "./schema.js";
 import type {
+  AgentMention,
   AgentSummary,
   CoordinatorOutput,
   FeedbackRecord,
@@ -560,6 +561,9 @@ export async function runReview(
   // Each reviewer's own summary for the comment. Like the trace, it never reaches the
   // coordinator, verification, policy, or decision paths.
   const agentSummaryParts: Record<string, string[]> = {};
+  // The first reason each agent gives for a human review. Only agents whose config
+  // names people to mention turn it into a mention.
+  const humanReviewReasons: Record<string, string> = {};
   // First reviewer (by scheduling order) that produced each fingerprint, so a finding's
   // originating agent can be carried through the coordinator's merge/rewrite by matching
   // on fingerprint. Kept separate from agentFindings so the coordinator prompt and the
@@ -880,6 +884,9 @@ export async function runReview(
           mergeTraceNotes(agentTrace, task.bucket, value.trace);
         }
         mergeAgentSummary(agentSummaryParts, task.bucket, value.summary);
+        if (value.humanReview) {
+          humanReviewReasons[task.bucket] ??= value.humanReview;
+        }
         for (const finding of value.findings) {
           const fp = fingerprintFinding(finding);
           if (!agentByFp.has(fp)) {
@@ -1485,16 +1492,16 @@ export async function runReview(
     // `CoordinatorOutputSchema` knows the engine field so cached/embedded reviews can
     // parse it, but the coordinator must never author it. Strip any model-supplied
     // value and attach only the trace assembled from reviewer pass outputs. The agent
-    // summaries follow the same rule.
+    // summaries and mentions follow the same rule.
     const agentSummaries = buildAgentSummaries({
       ran: [...selectedAgents.map((agent) => agent.id), ...(chunked ? [CROSS_CUTTING_AGENT] : [])],
       summaries: agentSummaryParts,
       skippedByPaths: pathsSelection.skipped,
       notRouted,
     });
-    const outputWithTrace = attachAgentSummaries(
-      attachReviewTrace(output, reviewTrace),
-      agentSummaries,
+    const outputWithTrace = attachMentions(
+      attachAgentSummaries(attachReviewTrace(output, reviewTrace), agentSummaries),
+      buildMentions(selectedAgents, humanReviewReasons),
     );
     const reviewed = {
       ...outputWithTrace,
@@ -1647,6 +1654,33 @@ export function attachAgentSummaries(
 ): CoordinatorOutput {
   const { agentSummaries: _coordinatorSummaries, ...withoutSummaries } = output;
   return { ...withoutSummaries, ...(agentSummaries ? { agentSummaries } : {}) };
+}
+
+/**
+ * One mention per agent that asked for a human review and whose config names people
+ * to mention, in run order. Undefined when there are none.
+ */
+export function buildMentions(
+  agents: LoadedAgent[],
+  reasons: Record<string, string>,
+): AgentMention[] | undefined {
+  const mentions = agents.flatMap((agent) => {
+    const reason = reasons[agent.id];
+    return agent.mention && reason ? [{ agent: agent.id, logins: agent.mention, reason }] : [];
+  });
+  return mentions.length > 0 ? mentions : undefined;
+}
+
+/**
+ * Replace any coordinator-authored mentions with the engine-assembled list, so model
+ * text can never choose whom the comment notifies.
+ */
+export function attachMentions(
+  output: CoordinatorOutput,
+  mentions: AgentMention[] | undefined,
+): CoordinatorOutput {
+  const { mentions: _coordinatorMentions, ...withoutMentions } = output;
+  return { ...withoutMentions, ...(mentions ? { mentions } : {}) };
 }
 
 /**

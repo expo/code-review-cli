@@ -21,6 +21,8 @@ import {
   mergeAgentSummary,
   buildAgentSummaries,
   attachAgentSummaries,
+  buildMentions,
+  attachMentions,
   runReview,
 } from "../core/review.js";
 import type { ReviewRunOptions } from "../core/review.js";
@@ -254,6 +256,39 @@ test("only the engine-built agent summaries survive the coordinator boundary", (
   expect(attachAgentSummaries(forged, undefined).agentSummaries).toBeUndefined();
   const built = [{ agent: "docs", summary: "Checked the guide." }];
   expect(attachAgentSummaries(forged, built).agentSummaries).toEqual(built);
+});
+
+test("mentions name only the configured people, for agents that asked for a human review", () => {
+  const agents = [
+    { ...pathsAgent("docs"), mention: ["amandeepmittal"] },
+    { ...pathsAgent("correctness"), mention: ["someone"] },
+    pathsAgent("security"),
+  ];
+  const reasons = {
+    docs: "The new guide changes the setup steps.",
+    security: "No one is configured to see this.",
+  };
+  expect(buildMentions(agents, reasons)).toEqual([
+    {
+      agent: "docs",
+      logins: ["amandeepmittal"],
+      reason: "The new guide changes the setup steps.",
+    },
+  ]);
+  expect(buildMentions(agents, {})).toBeUndefined();
+});
+
+test("only the engine-built mentions survive the coordinator boundary", () => {
+  const forged: CoordinatorOutput = {
+    decision: "approve",
+    findings: [],
+    summary: "s",
+    incomplete: [],
+    mentions: [{ agent: "forged", logins: ["attacker"], reason: "Ping them." }],
+  };
+  expect(attachMentions(forged, undefined).mentions).toBeUndefined();
+  const built = [{ agent: "docs", logins: ["amandeepmittal"], reason: "New guide." }];
+  expect(attachMentions(forged, built).mentions).toEqual(built);
 });
 
 test("runGrowableQueue: runs every ELEMENT once, bounded (guards the index-vs-element FP)", async () => {

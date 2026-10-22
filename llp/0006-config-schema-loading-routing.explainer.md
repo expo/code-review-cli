@@ -155,7 +155,8 @@ as a scalar, exactly as before lists existed, so `description`, `alwaysRun`, `mo
 the value. Keys whose value is a list ALSO land in `lists`: a one-line
 flow list (`paths: ["a/**", 'b/**', c/**]`, trailing comma allowed) or a block list (`paths:`
 followed by `- item` lines; blank and `#` lines inside are skipped, and the next key ends it)
-[observed: `load.ts` `parseFrontmatter`, `parseFlowList`]. Only `paths` reads `lists`.
+[observed: `load.ts` `parseFrontmatter`, `parseFlowList`]. Only `paths` and `mention` read
+`lists`.
 
 `parseAgentPaths` validates `paths` at load time, because a mistyped glob would otherwise skip
 the agent on every PR with nothing reporting it. An invalid value is a **setup warning, not a load
@@ -197,6 +198,16 @@ and its review-cache key are unchanged [observed: `load.ts` agent construction].
 `defaults.enforceAgents` injection copies the root agent with its `paths`, so an enforced agent
 still runs only in scopes with a matching file. How the engine applies the filter is in
 [LLP 0002](0002-review-engine-pipeline.explainer.md#agent-paths-filter).
+
+`mention` names the people an agent may ask for a human review: a list of GitHub logins or
+`org/team` slugs, with an optional leading `@` that the loader drops. It is the only source of
+whom a review notifies. The agent itself only writes the reason, so a PR cannot make the bot
+mention anyone: CI loads agent files from the base commit, and the model never chooses a login.
+`parseAgentMention` treats an invalid value like an invalid `paths`: a setup warning that names
+the file and the fix, and the agent mentions no one. Invalid means not a list, an empty list, or
+an entry that does not match `MENTION_TARGET_RE`. An agent without `mention` gets no `mention`
+key, so its shape and review-cache key are unchanged [observed: `load.ts` `parseAgentMention`;
+`schema.ts` `MENTION_TARGET_RE`].
 
 ## Budgets and Chunking Defaults
 

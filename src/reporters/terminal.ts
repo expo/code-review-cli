@@ -61,6 +61,10 @@ export class TerminalReporter implements Reporter {
     out.push(this.tally(review.findings), "");
     out.push(review.summary, "");
 
+    for (const { agent, logins, reason } of review.mentions ?? []) {
+      out.push(this.paint(BOLD, `📣 ${agent} asks ${logins.join(", ")} for a review:`), reason, "");
+    }
+
     const agentSummaries = review.agentSummaries ?? [];
     if (agentSummaries.length > 0) {
       out.push(this.paint(BOLD, "🔎 Reviewer summaries:"));
