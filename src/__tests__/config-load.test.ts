@@ -244,3 +244,53 @@ test("loadReviewConfig: a trailing comment that breaks a scalar value is a warni
     await rm(root, { recursive: true, force: true });
   }
 });
+
+async function configDirWithPolicy(policy: Record<string, unknown>): Promise<string> {
+  const root = await configDirWithAgent("IOS");
+  await writeFile(
+    path.join(root, CONFIG_DIRNAME, "config.jsonc"),
+    JSON.stringify({ policy }),
+    "utf8",
+  );
+  return root;
+}
+
+test("loadReviewConfig: `minSeverity` sets the severity floor, and defaults to `design`", async () => {
+  const cases: Array<[Record<string, unknown>, string]> = [
+    [{}, "design"],
+    [{ minSeverity: "warning" }, "warning"],
+  ];
+  for (const [policy, expected] of cases) {
+    const root = await configDirWithPolicy(policy);
+    try {
+      const config = await loadReviewConfig(root);
+      expect(config.policy.minSeverity).toBe(expected);
+      expect("setupWarnings" in config).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+// Zod strips unknown keys, so dropping `includeSuggestions` from the schema would silently
+// turn a repo's suggestions off.
+test("loadReviewConfig: `includeSuggestions` loads as a floor, with a warning that names the fix", async () => {
+  const cases: Array<[Record<string, unknown>, string, string]> = [
+    [{ includeSuggestions: true }, "nit", 'Replace it with `"minSeverity": "nit"`'],
+    [{ includeSuggestions: false }, "design", 'Replace it with `"minSeverity": "design"`'],
+    [{ includeSuggestions: true, minSeverity: "warning" }, "warning", "has no effect"],
+  ];
+  for (const [policy, expected, fix] of cases) {
+    const root = await configDirWithPolicy(policy);
+    try {
+      const config = await loadReviewConfig(root);
+      expect(config.policy.minSeverity).toBe(expected);
+      expect(config.setupWarnings).toHaveLength(1);
+      const [warning] = config.setupWarnings!;
+      expect(warning).toContain(path.join(CONFIG_DIRNAME, "config.jsonc"));
+      expect(warning).toContain(fix);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});

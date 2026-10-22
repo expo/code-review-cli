@@ -60,6 +60,7 @@ import {
   REVIEW_TRACE_BYTES_LIMIT,
   REVIEW_TRACE_CHECKED_LIMIT,
   REVIEW_TRACE_UNCERTAINTY_LIMIT,
+  SEVERITY_RANK,
 } from "./schema.js";
 import type {
   CoordinatorOutput,
@@ -1563,8 +1564,8 @@ export function attachReviewTrace(
 }
 
 /**
- * Policy backstop: strip the internal risk handoff, drop suggestions and nits
- * unless opted in, cap by count (most severe first), and downgrade
+ * Policy backstop: strip the internal risk handoff, drop findings below the
+ * severity floor, cap by count (most severe first), and downgrade
  * approve_with_comments to approve when nothing remains.
  */
 export function applyReviewPolicy(
@@ -1572,16 +1573,14 @@ export function applyReviewPolicy(
   policy: LoadedConfig["policy"],
 ): CoordinatorOutput {
   // Unconditional, and before the severity filter: the handoff is `suggestion`-
-  // severity, so `includeSuggestions: true` would otherwise publish it as a
+  // severity, so a floor that keeps suggestions would otherwise publish it as a
   // finding whenever the coordinator forgot to strip it. It is prompt-authored
   // metadata for the coordinator's summary, never something an author should see.
   // @ref LLP 0009#prompt-rules-for-adopters [implements] — code-level strip, not prompt-only
   let findings = output.findings.filter((finding) => !isOverallRiskHandoff(finding));
-  if (!policy.includeSuggestions) {
-    findings = findings.filter(
-      (finding) => finding.severity !== "suggestion" && finding.severity !== "nit",
-    );
-  }
+  findings = findings.filter(
+    (finding) => SEVERITY_RANK[finding.severity] <= SEVERITY_RANK[policy.minSeverity],
+  );
   findings = sortFindings(findings);
   if (policy.maxFindings != null) {
     findings = findings.slice(0, policy.maxFindings);

@@ -145,7 +145,7 @@ export type Finding = z.infer<typeof FindingSchema>;
  * a whole-PR risk assessment — see the "Overall PR risk handoff" section in
  * `templates/shared.md`. It is prompt-level metadata, never a defect.
  */
-// @ref LLP 0009#prompt-rules-for-adopters [implements] — the deterministic strip that makes the handoff independent of policy.includeSuggestions
+// @ref LLP 0009#prompt-rules-for-adopters [implements] — the deterministic strip that makes the handoff independent of policy.minSeverity
 export const OVERALL_PR_RISK_TITLE = "__overall_pr_risk__";
 
 /**

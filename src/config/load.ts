@@ -6,7 +6,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-import { ReviewConfigSchema, ScopeReviewConfigSchema } from "./schema.js";
+import { DEFAULT_MIN_SEVERITY, ReviewConfigSchema, ScopeReviewConfigSchema } from "./schema.js";
 import type { AuthConfigEntry } from "./schema.js";
 import type {
   LoadedAgent,
@@ -192,6 +192,13 @@ async function loadConfigDir(
   // stops every review in the repo, and nothing checks prompt files before they merge.
   const setupWarnings: string[] = [];
   const label = setupDirLabel(dir);
+  const { policy, warning: policyWarning } = resolvePolicy(
+    parsed.policy,
+    path.join(label, path.basename(configPath)),
+  );
+  if (policyWarning) {
+    setupWarnings.push(policyWarning);
+  }
   const readPrompt = async (file: string): Promise<ReturnType<typeof parseFrontmatter>> => {
     const raw = await readFile(path.join(dir, file), "utf8");
     const md = parseFrontmatter(raw);
@@ -252,7 +259,7 @@ async function loadConfigDir(
       temperature: resolveTemp(coordinatorMd.data.temperature, 0),
       promptText: coordinatorMd.body,
     },
-    policy: parsed.policy,
+    policy,
     chunk: parsed.chunk,
     noise: parsed.noise,
     // Root-only: scope schemas reject research configuration, so an untrusted
@@ -617,6 +624,30 @@ const SCALAR_COMMENT_EFFECTS: ReadonlyArray<readonly [string, string]> = [
   ["model", "so it is not a valid model id"],
   ["temperature", "so the default temperature applies"],
 ];
+
+/**
+ * The loaded policy, with the severity floor resolved. A config that still sets
+ * `includeSuggestions` loads as before, plus a warning that names `file` and the fix.
+ */
+function resolvePolicy(
+  parsed: RawReviewConfig["policy"],
+  file: string,
+): { policy: LoadedConfig["policy"]; warning?: string } {
+  const { minSeverity, includeSuggestions, maxFindings } = parsed;
+  const policy: LoadedConfig["policy"] = {
+    minSeverity: minSeverity ?? (includeSuggestions ? "nit" : DEFAULT_MIN_SEVERITY),
+    ...(maxFindings != null ? { maxFindings } : {}),
+  };
+  if (includeSuggestions == null) {
+    return { policy };
+  }
+  const warning = minSeverity
+    ? `${file}: \`policy.includeSuggestions\` has no effect because \`policy.minSeverity\` ` +
+      "is set. Fix: remove `includeSuggestions`."
+    : `${file}: \`policy.includeSuggestions\` is deprecated. Replace it with ` +
+      `\`"minSeverity": "${policy.minSeverity}"\`.`;
+  return { policy, warning };
+}
 
 /**
  * Setup warnings for one prompt file's frontmatter. Each names `file` and the fix.

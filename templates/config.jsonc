@@ -17,8 +17,9 @@
   // @ref LLP 0009#config-and-prompt-templates [implements] — suggestions off by default, not a schema limit
   "policy": {
     // Phase 1: keep signal high by surfacing only critical, warning and design
-    // findings. This setting covers both `suggestion` and `nit` findings.
-    "includeSuggestions": false
+    // findings. Findings below `minSeverity` are dropped. From most to least severe:
+    // critical, warning, design, suggestion, nit.
+    "minSeverity": "design"
     // "maxFindings": 10
   },
 

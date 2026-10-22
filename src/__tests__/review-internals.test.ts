@@ -25,7 +25,7 @@ import type { ReviewSource } from "../sources/source.js";
 import { REVIEW_TRACE_BYTES_LIMIT } from "../core/schema.js";
 import type { LoadedConfig } from "../config/schema.js";
 import type { PatchWorkspaceFile } from "../core/noise.js";
-import type { CoordinatorOutput, Finding } from "../core/schema.js";
+import type { CoordinatorOutput, Finding, Severity } from "../core/schema.js";
 
 const wf = (p: string, changedLines: number): PatchWorkspaceFile => ({
   path: p,
@@ -95,11 +95,11 @@ test("applyReviewPolicy: drops suggestions, sorts by severity", () => {
     summary: "s",
     incomplete: [],
   };
-  const result = applyReviewPolicy(out, { includeSuggestions: false });
+  const result = applyReviewPolicy(out, { minSeverity: "warning" });
   expect(result.findings.map((f) => f.severity)).toEqual(["critical", "warning"]);
 });
 
-test("applyReviewPolicy: drops nits with suggestions, keeps design findings", () => {
+test("applyReviewPolicy: drops every finding below `minSeverity`", () => {
   const out: CoordinatorOutput = {
     decision: "approve_with_comments",
     findings: [
@@ -111,13 +111,14 @@ test("applyReviewPolicy: drops nits with suggestions, keeps design findings", ()
     summary: "s",
     incomplete: [],
   };
-  const strict = applyReviewPolicy(out, { includeSuggestions: false });
-  expect(strict.findings.map((f) => f.severity)).toEqual(["warning", "design"]);
-  const all = applyReviewPolicy(out, { includeSuggestions: true });
-  expect(all.findings.map((f) => f.severity)).toEqual(["warning", "design", "suggestion", "nit"]);
+  const kept = (minSeverity: Severity) =>
+    applyReviewPolicy(out, { minSeverity }).findings.map((f) => f.severity);
+  expect(kept("critical")).toEqual([]);
+  expect(kept("design")).toEqual(["warning", "design"]);
+  expect(kept("nit")).toEqual(["warning", "design", "suggestion", "nit"]);
 });
 
-test("applyReviewPolicy: strips the __overall_pr_risk__ handoff even with includeSuggestions", () => {
+test("applyReviewPolicy: strips the __overall_pr_risk__ handoff even when suggestions are kept", () => {
   const out: CoordinatorOutput = {
     decision: "request_changes",
     findings: [
@@ -128,9 +129,9 @@ test("applyReviewPolicy: strips the __overall_pr_risk__ handoff even with includ
     summary: "s",
     incomplete: [],
   };
-  // includeSuggestions:true removes the severity backstop — the handoff must
+  // A floor below `suggestion` removes the severity backstop — the handoff must
   // still never reach the PR comment, since it is prompt metadata, not a defect.
-  const result = applyReviewPolicy(out, { includeSuggestions: true });
+  const result = applyReviewPolicy(out, { minSeverity: "nit" });
   expect(result.findings.map((f) => f.title)).toEqual(["T", "a real suggestion"]);
 });
 
@@ -142,7 +143,7 @@ test("applyReviewPolicy: a lone risk handoff leaves no findings and approves", (
       summary: "s",
       incomplete: [],
     },
-    { includeSuggestions: true },
+    { minSeverity: "nit" },
   );
   expect(result.findings).toEqual([]);
   expect(result.decision).toBe("approve");
@@ -151,7 +152,7 @@ test("applyReviewPolicy: a lone risk handoff leaves no findings and approves", (
 test("applyReviewPolicy: approve_with_comments + no findings → approve", () => {
   const result = applyReviewPolicy(
     { decision: "approve_with_comments", findings: [], summary: "", incomplete: [] },
-    { includeSuggestions: false },
+    { minSeverity: "warning" },
   );
   expect(result.decision).toBe("approve");
 });

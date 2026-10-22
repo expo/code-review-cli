@@ -6,8 +6,13 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import { CATEGORIES } from "../core/schema.js";
-import type { Category } from "../core/schema.js";
+import { CATEGORIES, SEVERITIES } from "../core/schema.js";
+import type { Category, Severity } from "../core/schema.js";
+
+/**
+ * The severity floor when a config sets none: `critical`, `warning` and `design` are kept.
+ */
+export const DEFAULT_MIN_SEVERITY: Severity = "design";
 
 export const ReviewConfigSchema = z.object({
   /** Default model for every agent + the coordinator. Override per-agent via
@@ -15,10 +20,14 @@ export const ReviewConfigSchema = z.object({
   model: z.string().default("openai/gpt-5.5"),
   policy: z
     .object({
-      includeSuggestions: z.boolean().default(false),
+      minSeverity: z.enum(SEVERITIES).optional(),
+      /**
+       * Deprecated: the loader maps it to `minSeverity` and adds a setup warning.
+       */
+      includeSuggestions: z.boolean().optional(),
       maxFindings: z.number().int().positive().optional(),
     })
-    .default({ includeSuggestions: false }),
+    .default({}),
   chunk: z
     .object({
       // Chunking is bounded by changed lines (added + removed), not file count —
@@ -445,8 +454,8 @@ export interface LoadedConfig {
   sharedPromptText: string;
   agents: LoadedAgent[];
   /**
-   * Prompt-file frontmatter problems found at load time (an invalid `paths`, a
-   * frontmatter block below the first line, a trailing comment in a value). Each
+   * Setup problems found at load time (an invalid `paths`, a frontmatter block below
+   * the first line, a trailing comment in a value, a deprecated config key). Each
    * names its file and the fix. Reviews show them as setup notes; absent when none.
    */
   setupWarnings?: string[];
@@ -456,7 +465,10 @@ export interface LoadedConfig {
     promptText: string;
   };
   policy: {
-    includeSuggestions: boolean;
+    /**
+     * Findings below this severity are dropped.
+     */
+    minSeverity: Severity;
     maxFindings?: number;
   };
   chunk: {

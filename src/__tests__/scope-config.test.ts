@@ -64,11 +64,11 @@ test("ScopeReviewConfigSchema: rejects breakGlass", () => {
 test("ScopeReviewConfigSchema: accepts model/policy/chunk/noise", () => {
   const parsed = ScopeReviewConfigSchema.parse({
     model: "anthropic/claude-sonnet-5",
-    policy: { includeSuggestions: true },
+    policy: { minSeverity: "nit" },
     chunk: { maxChangedLines: 500, maxFiles: 10, concurrency: 3 },
     noise: { additionalIgnores: ["x/**"] },
   });
-  expect(parsed.policy.includeSuggestions).toBe(true);
+  expect(parsed.policy.minSeverity).toBe("nit");
 });
 
 test("ScopeReviewConfigSchema: rejects commentTag (per-scope markers are derived)", () => {
