@@ -19,6 +19,18 @@ export const SEVERITY_RANK: Record<Severity, number> = {
   nit: 4,
 };
 
+// @ref LLP 0005#truncation-and-aggregate-state [implements] — stored state can carry a severity a newer engine added
+/**
+ * The severity to sort and render a finding under. Findings read back from a
+ * comment's embedded state are not schema-validated, and a newer engine can store a
+ * severity this one does not know. Render such a finding as a `warning` (shown, but
+ * not blocking) rather than crash the `/dismiss` or partial-run re-render. The stored
+ * value itself is kept, so the newer engine reads it back unchanged.
+ */
+export function knownSeverity(severity: string): Severity {
+  return Object.hasOwn(SEVERITY_RANK, severity) ? (severity as Severity) : "warning";
+}
+
 export const CATEGORIES = ["correctness", "quality", "security", "secrets"] as const;
 export type Category = (typeof CATEGORIES)[number];
 

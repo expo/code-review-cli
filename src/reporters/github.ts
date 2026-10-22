@@ -25,6 +25,7 @@ import {
   applyPins,
   collectPins,
   fingerprintFinding,
+  knownSeverity,
   scopedFingerprint,
   SEVERITY_RANK,
 } from "../core/schema.js";
@@ -234,8 +235,8 @@ export function planInlineSync(opts: {
 }): InlineSyncPlan {
   const ordered = [...opts.targets].sort(
     (a, b) =>
-      SEVERITY_RANK[a.finding.severity] - SEVERITY_RANK[b.finding.severity] ||
-      a.fp.localeCompare(b.fp),
+      SEVERITY_RANK[knownSeverity(a.finding.severity)] -
+        SEVERITY_RANK[knownSeverity(b.finding.severity)] || a.fp.localeCompare(b.fp),
   );
 
   // Newest comment per fp is the live thread; older ones are duplicates.

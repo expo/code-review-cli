@@ -7,6 +7,7 @@ import {
   FeedbackPinSchema,
   FeedbackRecordSchema,
   fingerprintFinding,
+  knownSeverity,
   scopedFingerprint,
   SEVERITIES,
   SEVERITY_RANK,
@@ -115,7 +116,9 @@ export function decisionExitCode(decision: Decision): number {
 }
 
 export function sortFindings(findings: Finding[]): Finding[] {
-  return [...findings].sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
+  return [...findings].sort(
+    (a, b) => SEVERITY_RANK[knownSeverity(a.severity)] - SEVERITY_RANK[knownSeverity(b.severity)],
+  );
 }
 
 export function groupBySeverity(findings: Finding[]): Record<Severity, Finding[]> {
@@ -127,7 +130,7 @@ export function groupBySeverity(findings: Finding[]): Record<Severity, Finding[]
     nit: [],
   };
   for (const finding of findings) {
-    groups[finding.severity].push(finding);
+    groups[knownSeverity(finding.severity)].push(finding);
   }
   return groups;
 }
@@ -476,7 +479,7 @@ function renderFindingLines(
 export function renderInlineCommentBody(finding: Finding, tag: string, fp: string): string {
   const lines = [
     inlineCommentMarker(tag, fp),
-    `**${severityHeading(finding.severity)}: ${stripStateMarkers(finding.title)}** _(${finding.category})_ · \`id:${fp}\``,
+    `**${severityHeading(knownSeverity(finding.severity))}: ${stripStateMarkers(finding.title)}** _(${finding.category})_ · \`id:${fp}\``,
     "",
     stripStateMarkers(finding.rationale),
   ];

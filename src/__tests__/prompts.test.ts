@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 
 import {
   sanitizeUntrusted,
+  buildVerifierSystem,
   buildVerifierTask,
   buildReviewerTask,
   buildCrossCuttingTask,
@@ -76,6 +77,14 @@ test("agent-visible research instructions teach precise, sanitized MCP use", () 
 });
 
 // ---- verifier task: LLM-authored fields are neutralized (untrusted framing) ----
+
+test("buildVerifierSystem: a below-warning finding is judged by its cost, not a failure path", () => {
+  // Without this, "the failure cannot happen" rejects a real `design` finding that the
+  // coordinator kept, whenever its evidence is ungrounded or it cites documentation.
+  const system = buildVerifierSystem();
+  expect(system).toContain("a `design`, `suggestion`");
+  expect(system).toContain("claims a cost, not a failure");
+});
 
 test("buildVerifierTask sanitizes title + rationale (not just file)", () => {
   // title/rationale are LLM-authored over the untrusted diff and the verifier system
