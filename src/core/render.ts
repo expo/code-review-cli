@@ -613,7 +613,9 @@ function plainModelLine(text: string): string {
   // (`_@x_` renders as `<em>@x</em>`), so only an ASCII letter or digit before the `@`
   // is safe to trust, which keeps an email address whole. Everywhere else a zero-width
   // space after the `@` keeps the text readable and stops the notification.
-  return flat.replace(/(^|[^A-Za-z0-9])@/g, "$1@\u200B");
+  // A lookbehind, not a captured preceding character: a capture would consume the
+  // first `@` of `@@login`, leave the second unmatched, and `@\u200B@login` notifies.
+  return flat.replace(/(?<![A-Za-z0-9])@/g, "@\u200B");
 }
 
 // @ref LLP 0012#run-points-command-and-review [implements] — setup advice renders outside the findings list, so it never blocks
