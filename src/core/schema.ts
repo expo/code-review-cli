@@ -213,9 +213,10 @@ function clipAgentSummary(text: string): string {
   if (flat.length <= AGENT_SUMMARY_CHARS) {
     return flat;
   }
-  const cut = flat.slice(0, AGENT_SUMMARY_CHARS);
-  const atWord = cut.slice(0, cut.lastIndexOf(" "));
-  return `${atWord.length > 0 ? atWord : cut}…`;
+  // A cut between the two halves of an emoji would leave half a character.
+  const cut = flat.slice(0, AGENT_SUMMARY_CHARS).replace(/[\uD800-\uDBFF]$/, "");
+  const space = cut.lastIndexOf(" ");
+  return `${space > 0 ? cut.slice(0, space) : cut}…`;
 }
 
 /** Provider-facing shape each sub-reviewer is asked to emit. */

@@ -158,6 +158,77 @@ test("a backtick before `@` does not keep a mention live in an agent summary", (
   expect(body).toContain("Closed `x`@\u200Boctocat, open `@\u200Bexpo/team.");
 });
 
+const summaryRow = (summary: string): string => {
+  const body = renderMarkdown({ ...base, agentSummaries: [{ agent: "docs", summary }] }, "tag");
+  return body
+    .split("\n")
+    .find((line) => line.startsWith("- **docs:** "))!
+    .slice(12);
+};
+
+test("an agent summary breaks every `@` that markdown can put at the start of a mention", () => {
+  // GitHub renders `_@x_` as `<em>@x</em>`, where the `@` starts its text node.
+  expect(summaryRow("_@octocat_ and *@octocat* and ~~@octocat~~")).toBe(
+    "_@\u200Boctocat_ and *@\u200Boctocat* and ~~@\u200Boctocat~~",
+  );
+  expect(summaryRow("[@octocat](https://x.dev) and \\@octocat")).toBe(
+    "[@\u200Boctocat](https://x.dev) and \\@\u200Boctocat",
+  );
+  // A letter or digit before the `@` is never a mention, so an address stays whole.
+  expect(summaryRow("Mail foo@example.com or a1@b.dev.")).toBe("Mail foo@example.com or a1@b.dev.");
+});
+
+test("an agent summary cannot spell a mention with an HTML character reference", () => {
+  // GitHub decodes a reference before it looks for mentions; escaped, it shows as typed.
+  expect(summaryRow("&#64;octocat &#x40;octocat &#X40;octocat &commat;octocat @&#111;ctocat")).toBe(
+    "&amp;#64;octocat &amp;#x40;octocat &amp;#X40;octocat &amp;commat;octocat @\u200B&amp;#111;ctocat",
+  );
+  // A bare `&` is not a reference and reads as it did.
+  expect(summaryRow("Checks a && b; R&D.")).toBe("Checks a && b; R&D.");
+});
+
+test("an oversized single comment leaves the agent summaries out instead of failing to post", () => {
+  const findings = Array.from({ length: 12 }, (_, i) =>
+    finding({ file: `src/f${i}.ts`, title: `Finding ${i}`, rationale: "r".repeat(1500) }),
+  );
+  // Escaping makes `<` four characters, so summaries inside their byte budget can still
+  // push the body past GitHub's limit.
+  const agentSummaries = Array.from({ length: 13 }, (_, i) => ({
+    agent: `agent-${i}`,
+    summary: "<".repeat(560),
+  }));
+  const review: CoordinatorOutput = { ...base, findings, agentSummaries };
+  const body = renderMarkdown(review, "tag");
+  expect(body.length).toBeLessThan(65_000);
+  expect(body).not.toContain("<summary>🔎 Reviewer summaries (");
+  expect(body).toContain("🔎 Reviewer summaries were left out to fit the comment size limit.");
+  for (let i = 0; i < 12; i++) {
+    expect(body).toContain(`Finding ${i}`);
+  }
+  const state = parseReviewState(body, "tag")!;
+  expect(state.review.agentSummaries).toBeUndefined();
+  expect(state.review.findings).toHaveLength(12);
+  // A body that fits keeps them.
+  expect(renderMarkdown({ ...review, findings: [] }, "tag")).toContain(
+    "<summary>🔎 Reviewer summaries (13)</summary>",
+  );
+});
+
+test("an agent summary row from a newer version's state still reads as not run", () => {
+  const body = renderMarkdown(
+    {
+      ...base,
+      agentSummaries: [
+        { agent: "docs", notRun: "budget" as "paths" },
+        { agent: "ios", notRun: "constructor" as "paths" },
+      ],
+    },
+    "tag",
+  );
+  expect(body).toContain("- **docs:** _not run_");
+  expect(body).toContain("- **ios:** _not run_");
+});
+
 test("links a finding location to the PR diff line when the line is in the diff", () => {
   const out = renderMarkdown(
     { ...base, findings: [finding({ file: "src/a.ts", line: 12 })] },
