@@ -737,8 +737,8 @@ Behavior notes:
   per scope in per-scope comment mode), not one per comment. The reviewer never
   approves or requests changes. If GitHub refuses one of the comments, for
   example for a line it won't anchor, the comments are posted one by one
-  instead, each as its own review. The review's short body stays on the PR
-  after its threads are deleted, because GitHub can't delete a submitted review.
+  instead, each as its own review. The review has no body of its own, so
+  nothing is left on the PR once its threads are deleted.
 - **Disabling later** leaves existing threads up (the sync no longer runs); a
   comment-mode switch — or the reporter's clear path — stubs/removes them.
 

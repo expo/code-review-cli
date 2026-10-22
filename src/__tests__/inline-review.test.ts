@@ -7,12 +7,7 @@ import { resetTrustedToolCache } from "../core/exec.js";
 import { renderInlineCommentBody } from "../core/render.js";
 import type { LinkContext } from "../core/render.js";
 import type { Finding } from "../core/schema.js";
-import {
-  GitHubReporter,
-  INLINE_REVIEW_BODY,
-  ghApiFailure,
-  inlineUrlsByFp,
-} from "../reporters/github.js";
+import { GitHubReporter, ghApiFailure, inlineUrlsByFp } from "../reporters/github.js";
 
 const TAG = "expo-ai-code-reviewer";
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
@@ -205,7 +200,7 @@ test("syncInline: posts all new threads in one COMMENT review and links each one
     expect.stringContaining("repos/o/r/pulls/701/reviews --input"),
   ]);
   const review = JSON.parse(await readFile(path.join(dir, "review.json"), "utf8"));
-  expect(review).toMatchObject({ commit_id: HEAD, event: "COMMENT", body: INLINE_REVIEW_BODY });
+  expect(review).toMatchObject({ commit_id: HEAD, event: "COMMENT", body: "" });
   expect(
     review.comments.map((c: { path: string; line: number; side: string }) => [
       c.path,

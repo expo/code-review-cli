@@ -231,10 +231,6 @@ export function ghApiFailure(action: string, result: RunResult): Error {
   return new Error(`${action} failed: ${reason}`);
 }
 
-/** Body of the review that carries one run's new inline comments. GitHub requires one. */
-export const INLINE_REVIEW_BODY =
-  "🤖 AI code review: inline comments for this run's findings. The AI code review comment has the summary.";
-
 /**
  * fp → permalink for the inline comments of ours among `comments`, read from the
  * anchored marker in each body (see parseInlineMarkerFp).
@@ -1561,7 +1557,10 @@ export class GitHubReporter implements Reporter {
     const payload = JSON.stringify({
       commit_id: this.options.headSha,
       event: "COMMENT",
-      body: INLINE_REVIEW_BODY,
+      // Empty on purpose. GitHub accepts it next to comments, despite its docs, and a
+      // submitted review can't be deleted: a body would stay on the PR after its
+      // threads are torn down.
+      body: "",
       comments: comments.map(({ body, path: path_, line }) => ({
         body,
         path: path_,
