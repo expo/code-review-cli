@@ -537,7 +537,7 @@ per-repo `noise.additionalIgnores`.
 ```jsonc
 {
   "model": "anthropic/claude-opus-5-5",       // default model for the specialists
-  "policy": { "includeSuggestions": false },  // suppress suggestion-severity findings
+  "policy": { "includeSuggestions": false },  // suppress suggestion and nit findings
   "chunk": { "maxChangedLines": 1000, "maxFiles": 20 },  // concurrency defaults: 6 (API key) / 3 (subscription)
   "noise": { "additionalIgnores": ["packages/*/build/**"] },
   "review": { "trigger": "all",               // which PRs `ecr ci` reviews: "all"

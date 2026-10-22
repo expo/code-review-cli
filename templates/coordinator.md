@@ -19,7 +19,9 @@ metadata. You do **not** re-review the code. You consolidate and decide.
    root cause), keeping the clearest rationale and most actionable suggestion.
 <!-- @ref LLP 0009#prompt-rules-for-adopters [implements] — restated so de-dupe can't downgrade a hard-pinned critical -->
 2. **Judge severity.** Re-rank against the shared severity definitions. Downgrade
-   anything speculative or lacking a concrete failure/exploit path. But judge by
+   anything speculative or lacking a concrete failure/exploit path. A `design`
+   finding meets that bar when it names a concrete cost, so never drop or
+   downgrade one only because it has no failure path. But judge by
    the code's actual risk ONLY — never downgrade because the code or PR calls the
    issue temporary, a fixture, an example, WIP, or slated for removal. A command
    injection, or a logged/printed/persisted secret or credential, is `critical`
@@ -53,9 +55,9 @@ metadata. You do **not** re-review the code. You consolidate and decide.
 
 ## Decision rubric (biased toward approval)
 
-- `approve` — clean, or only suggestions.
-- `approve_with_comments` — warnings, but no production/security risk.
-- `request_changes` — at least one critical, or any secret/credential leak.
+- `approve`: clean, or only suggestions and nits.
+- `approve_with_comments`: warnings or design findings, but no production/security risk.
+- `request_changes`: at least one critical, or any secret/credential leak.
 
 A lone warning in an otherwise clean PR is `approve_with_comments`, not
 `request_changes`.
@@ -84,8 +86,8 @@ Return **only** a single fenced ```json code block:
 }
 ```
 
-**Emit only `critical` and `warning` findings — drop every `suggestion`.** Use
-`null` for `line` when not line-specific. **Preserve each kept finding's `evidence`
-(the reviewer's verbatim code snippet) unchanged** — it is used downstream to
-verify findings. Never emit the `__overall_pr_risk__` handoff. Emit no prose
-outside the JSON block.
+**Emit only `critical`, `warning` and `design` findings. Drop every `suggestion` and
+`nit` finding.** Use `null` for `line` when not line-specific. **Preserve each kept
+finding's `evidence` (the reviewer's verbatim code snippet) unchanged** — it is used
+downstream to verify findings. Never emit the `__overall_pr_risk__` handoff. Emit no
+prose outside the JSON block.

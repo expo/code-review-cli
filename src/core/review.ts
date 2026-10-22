@@ -1563,8 +1563,8 @@ export function attachReviewTrace(
 }
 
 /**
- * Policy backstop: strip the internal risk handoff, drop suggestions unless
- * opted in, cap by count (most severe first), and downgrade
+ * Policy backstop: strip the internal risk handoff, drop suggestions and nits
+ * unless opted in, cap by count (most severe first), and downgrade
  * approve_with_comments to approve when nothing remains.
  */
 export function applyReviewPolicy(
@@ -1578,7 +1578,9 @@ export function applyReviewPolicy(
   // @ref LLP 0009#prompt-rules-for-adopters [implements] — code-level strip, not prompt-only
   let findings = output.findings.filter((finding) => !isOverallRiskHandoff(finding));
   if (!policy.includeSuggestions) {
-    findings = findings.filter((finding) => finding.severity !== "suggestion");
+    findings = findings.filter(
+      (finding) => finding.severity !== "suggestion" && finding.severity !== "nit",
+    );
   }
   findings = sortFindings(findings);
   if (policy.maxFindings != null) {

@@ -7,11 +7,17 @@ import { z } from "zod";
 import { normalizeCode } from "./util.js";
 
 /** Severity levels, ordered most→least severe for sorting/rendering. */
-export const SEVERITIES = ["critical", "warning", "suggestion"] as const;
+export const SEVERITIES = ["critical", "warning", "design", "suggestion", "nit"] as const;
 export type Severity = (typeof SEVERITIES)[number];
 
 /** Sort rank for severities (0 = most severe). Single source of truth. */
-export const SEVERITY_RANK: Record<Severity, number> = { critical: 0, warning: 1, suggestion: 2 };
+export const SEVERITY_RANK: Record<Severity, number> = {
+  critical: 0,
+  warning: 1,
+  design: 2,
+  suggestion: 3,
+  nit: 4,
+};
 
 export const CATEGORIES = ["correctness", "quality", "security", "secrets"] as const;
 export type Category = (typeof CATEGORIES)[number];

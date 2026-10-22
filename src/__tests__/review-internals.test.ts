@@ -99,6 +99,24 @@ test("applyReviewPolicy: drops suggestions, sorts by severity", () => {
   expect(result.findings.map((f) => f.severity)).toEqual(["critical", "warning"]);
 });
 
+test("applyReviewPolicy: drops nits with suggestions, keeps design findings", () => {
+  const out: CoordinatorOutput = {
+    decision: "approve_with_comments",
+    findings: [
+      finding({ severity: "nit" }),
+      finding({ severity: "suggestion" }),
+      finding({ severity: "design" }),
+      finding({ severity: "warning" }),
+    ],
+    summary: "s",
+    incomplete: [],
+  };
+  const strict = applyReviewPolicy(out, { includeSuggestions: false });
+  expect(strict.findings.map((f) => f.severity)).toEqual(["warning", "design"]);
+  const all = applyReviewPolicy(out, { includeSuggestions: true });
+  expect(all.findings.map((f) => f.severity)).toEqual(["warning", "design", "suggestion", "nit"]);
+});
+
 test("applyReviewPolicy: strips the __overall_pr_risk__ handoff even with includeSuggestions", () => {
   const out: CoordinatorOutput = {
     decision: "request_changes",

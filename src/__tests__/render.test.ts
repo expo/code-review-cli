@@ -226,6 +226,29 @@ test("renders per-severity headers with counts", () => {
   expect(out).toMatch(/Warning \(1\)/i);
 });
 
+test("renders the severity groups in rank order", () => {
+  const out = renderMarkdown(
+    {
+      ...base,
+      decision: "approve_with_comments",
+      findings: [
+        finding({ severity: "nit", title: "N" }),
+        finding({ severity: "suggestion", title: "S" }),
+        finding({ severity: "design", title: "D" }),
+        finding({ severity: "warning", title: "W" }),
+      ],
+    },
+    "tag",
+  );
+  const headings = out.split("\n").filter((line) => line.startsWith("### "));
+  expect(headings).toEqual([
+    "### ⚠️ Warning (1)",
+    "### 🏗️ Design (1)",
+    "### 💡 Suggestion (1)",
+    "### 🐧 Nit (1)",
+  ]);
+});
+
 test("a rationale ending in </details> does not swallow the next finding's bullet", () => {
   // Regression: findings were pushed back-to-back and only the rationale's FIRST
   // line was indented, so the embedded <details> escaped the list item. GitHub

@@ -119,7 +119,13 @@ export function sortFindings(findings: Finding[]): Finding[] {
 }
 
 export function groupBySeverity(findings: Finding[]): Record<Severity, Finding[]> {
-  const groups: Record<Severity, Finding[]> = { critical: [], warning: [], suggestion: [] };
+  const groups: Record<Severity, Finding[]> = {
+    critical: [],
+    warning: [],
+    design: [],
+    suggestion: [],
+    nit: [],
+  };
   for (const finding of findings) {
     groups[finding.severity].push(finding);
   }
@@ -1003,10 +1009,14 @@ export function parseReviewState(body: string, tag: string): ReviewState | null 
 function severityHeading(severity: Severity): string {
   switch (severity) {
     case "critical":
-      return "🔴 Critical";
+      return "🚨 Critical";
     case "warning":
-      return "🟡 Warning";
+      return "⚠️ Warning";
+    case "design":
+      return "🏗️ Design";
     case "suggestion":
-      return "🔵 Suggestion";
+      return "💡 Suggestion";
+    case "nit":
+      return "🐧 Nit";
   }
 }
