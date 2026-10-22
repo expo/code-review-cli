@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { resolveTrustedTool, run } from "../core/exec.js";
+import type { RunResult } from "../core/exec.js";
 import { errorMessage } from "../core/util.js";
 import { parseUnifiedDiff } from "../core/diff.js";
 import {
@@ -195,6 +196,54 @@ export interface ExistingInlineComment {
   url?: string;
   /** Any listed comment replies to it (`in_reply_to_id` === its id). */
   hasReplies: boolean;
+}
+
+/**
+ * The error for a failed `gh api` call run with `check: false`. gh prints only the
+ * top-level message ("Validation Failed (HTTP 422)") to stderr; why GitHub refused,
+ * such as its spam throttle or a pending review, is in the response body on stdout.
+ * The body's distinct messages are kept, each capped, not the body: an HTML error page
+ * or one error per refused comment can't flood the log, and a cap on the whole text
+ * could cut off the message syncInline classifies by. Credentials never appear in
+ * either stream.
+ */
+export function ghApiFailure(action: string, result: RunResult): Error {
+  const details = new Set<string>();
+  try {
+    const body = JSON.parse(result.stdout) as { message?: unknown; errors?: unknown };
+    if (typeof body.message === "string") {
+      details.add(body.message.slice(0, 200));
+    }
+    for (const item of Array.isArray(body.errors) ? body.errors : []) {
+      const message =
+        typeof item === "string" ? item : (item as { message?: unknown } | null)?.message;
+      if (typeof message === "string") {
+        details.add(message.slice(0, 200));
+      }
+    }
+  } catch {
+    // Not JSON (an HTML error page, or nothing): stderr alone says what happened.
+  }
+  const stderr = result.stderr.trim();
+  const reason =
+    [stderr, [...details].join("; ")].filter(Boolean).join(": ") ||
+    `gh exited ${result.code}${result.signal ? ` (${result.signal})` : ""}`;
+  return new Error(`${action} failed: ${reason}`);
+}
+
+/**
+ * fp → permalink for the inline comments of ours among `comments`, read from the
+ * anchored marker in each body (see parseInlineMarkerFp).
+ */
+export function inlineUrlsByFp(comments: ReviewCommentApi[], tag: string): Map<string, string> {
+  const urls = new Map<string, string>();
+  for (const comment of comments) {
+    const fp = parseInlineMarkerFp(comment.body ?? "", tag);
+    if (fp && comment.html_url) {
+      urls.set(fp, comment.html_url);
+    }
+  }
+  return urls;
 }
 
 /** What one inline sync run will do. Bodies are rendered by the executor. */
@@ -553,7 +602,8 @@ export function selectOwnComments(
 /**
  * Maintains exactly one PR comment, updating it in place across re-reviews (and
  * cleaning up duplicates) so the review converges instead of churning. Runs the
- * break-glass check first. Comment-only: never calls the review-state APIs.
+ * break-glass check first. Never approves or requests changes: a run's new inline
+ * comments go out in one COMMENT review.
  */
 export class GitHubReporter implements Reporter {
   private readonly marker: string;
@@ -1245,10 +1295,28 @@ export class GitHubReporter implements Reporter {
     }
   }
 
-  /** Secondary-rate-limit shapes (403/429): abort the rest of the sync, not just
-   * this mutation — hammering on would dig the hole deeper. */
+  /** Secondary-rate-limit shapes (403/429), and the spam throttle's 422 ("submitted
+   * too quickly", only in errors from ghApiFailure): abort the rest of the sync, not
+   * just this mutation — hammering on would dig the hole deeper. */
   private static isRateLimitError(error: unknown): boolean {
-    return /HTTP 403|HTTP 429|rate limit|secondary rate/i.test(errorMessage(error));
+    return /HTTP 403|HTTP 429|rate limit|secondary rate|submitted too quickly/i.test(
+      errorMessage(error),
+    );
+  }
+
+  /** 422: GitHub validated the request and created nothing. */
+  private static isUnprocessableError(error: unknown): boolean {
+    return /HTTP 422/.test(errorMessage(error));
+  }
+
+  /**
+   * A 422 because the posting account already has a pending review on this PR, which
+   * GitHub allows only one of. Posting the comments one by one would hit it too.
+   */
+  private static isPendingReviewError(error: unknown): boolean {
+    return (
+      GitHubReporter.isUnprocessableError(error) && /one pending review/i.test(errorMessage(error))
+    );
   }
 
   // @ref LLP 0008#github-reporter-identity [constrained-by] — inline threads are
@@ -1361,18 +1429,88 @@ export class GitHubReporter implements Reporter {
         counts.patched++;
       });
     }
-    for (const entry of creates) {
-      await attempt(async () => {
-        const created = await this.createReviewComment(
-          renderInlineCommentBody(entry.finding, this.options.commentTag, entry.fp),
-          entry.finding.file,
-          entry.finding.line!,
-        );
-        counts.created++;
-        if (created?.html_url) {
-          urls.set(entry.fp, created.html_url);
+    if (creates.length > 0 && !aborted) {
+      const comments = creates.map((entry) => ({
+        fp: entry.fp,
+        body: renderInlineCommentBody(entry.finding, this.options.commentTag, entry.fp),
+        path: entry.finding.file,
+        line: entry.finding.line!,
+      }));
+      // @ref LLP 0008#inline-threads [implements] — one COMMENT review per run for new threads; per-comment fallback when GitHub rejects the review
+      let posted = false;
+      let retryOneByOne = false;
+      let reviewId: number | null = null;
+      try {
+        reviewId = await this.createInlineReview(comments);
+        posted = true;
+      } catch (error) {
+        if (GitHubReporter.isRateLimitError(error)) {
+          counts.failed += comments.length;
+          aborted = true;
+          process.stderr.write(
+            `inline sync: rate-limited; aborting remaining inline mutations this run: ${errorMessage(error)}\n`,
+          );
+        } else if (GitHubReporter.isPendingReviewError(error)) {
+          counts.failed += comments.length;
+          process.stderr.write(
+            `inline sync: the posting account has a pending review on this PR, and GitHub allows only one; submit or delete it so new inline comments can post: ${errorMessage(error)}\n`,
+          );
+        } else if (GitHubReporter.isUnprocessableError(error)) {
+          // GitHub rejects the whole review when it refuses one comment, so retry one
+          // by one: only the comment it refuses is lost.
+          retryOneByOne = true;
+          process.stderr.write(
+            `inline sync: GitHub rejected the review with ${comments.length} new comment(s); posting them one by one: ${errorMessage(error)}\n`,
+          );
+        } else {
+          // A 5xx or a dropped connection can still have created the review, so a retry
+          // could post every comment twice. The findings render in the main comment,
+          // and the next run creates the threads that are still missing.
+          counts.failed += comments.length;
+          process.stderr.write(
+            `inline sync: the review with ${comments.length} new comment(s) failed and may exist; not retrying: ${errorMessage(error)}\n`,
+          );
         }
-      });
+      }
+      if (posted) {
+        counts.created += comments.length;
+        try {
+          if (reviewId == null) {
+            throw new Error("the created review has no id");
+          }
+          for await (const page of this.inlineReviewCommentPages(reviewId)) {
+            for (const [fp, url] of inlineUrlsByFp(page, this.options.commentTag)) {
+              urls.set(fp, url);
+            }
+          }
+        } catch (error) {
+          // The comments exist; without their links the findings render full-form in
+          // the main comment this run, and the next run finds them as live threads.
+          process.stderr.write(
+            `inline sync: could not list the new review's comments (the unlinked ones render in the main comment): ${errorMessage(error)}\n`,
+          );
+          if (GitHubReporter.isRateLimitError(error)) {
+            aborted = true;
+            process.stderr.write(
+              "inline sync: rate-limited; aborting remaining inline mutations this run.\n",
+            );
+          }
+        }
+      } else if (retryOneByOne) {
+        for (const comment of comments) {
+          await attempt(async () => {
+            const created = await this.createReviewComment(
+              comment.body,
+              comment.path,
+              comment.line,
+            );
+            counts.created++;
+            if (created?.html_url) {
+              urls.set(comment.fp, created.html_url);
+            }
+          });
+        }
+      }
     }
     for (const comment of plan.stub) {
       const body = inlineStubBody(this.options.commentTag, comment.fp);
@@ -1404,6 +1542,95 @@ export class GitHubReporter implements Reporter {
     return urls;
   }
 
+  /**
+   * Post `comments` as one COMMENT review anchored to the reviewed head and return
+   * the review id, or null when the review was created but its id can't be read.
+   * Throws when the POST fails. After a 422, GitHub created nothing, because it
+   * rejects all of the comments together; after any other failure, such as a 5xx
+   * or a dropped connection, the review may still exist.
+   */
+  private async createInlineReview(
+    comments: Array<{ body: string; path: string; line: number }>,
+  ): Promise<number | null> {
+    this.invalidateReviewComments();
+    const gh = await resolveTrustedTool("gh");
+    const payload = JSON.stringify({
+      commit_id: this.options.headSha,
+      event: "COMMENT",
+      // Empty on purpose. GitHub accepts it next to comments, despite its docs, and a
+      // submitted review can't be deleted: a body would stay on the PR after its
+      // threads are torn down.
+      body: "",
+      comments: comments.map(({ body, path: path_, line }) => ({
+        body,
+        path: path_,
+        line,
+        side: "RIGHT",
+      })),
+    });
+    const dir = await mkdtemp(path.join(tmpdir(), "ecr-"));
+    const jsonPath = path.join(dir, "review.json");
+    try {
+      await writeFile(jsonPath, payload, "utf8");
+      const result = await run(
+        gh,
+        [
+          "api",
+          "-X",
+          "POST",
+          `repos/${this.options.repo}/pulls/${this.options.prNumber}/reviews`,
+          "--input",
+          jsonPath,
+        ],
+        { cwd: this.options.cwd, check: false },
+      );
+      if (result.code !== 0) {
+        throw ghApiFailure("creating the review", result);
+      }
+      const { stdout } = result;
+      try {
+        const review = JSON.parse(stdout) as { id?: unknown };
+        return typeof review.id === "number" ? review.id : null;
+      } catch {
+        return null;
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * The comments of one review, a page at a time (`inline.maxComments` has no upper
+   * bound), so a page that fails doesn't cost the links of the pages before it.
+   */
+  private async *inlineReviewCommentPages(reviewId: number): AsyncGenerator<ReviewCommentApi[]> {
+    const gh = await resolveTrustedTool("gh");
+    for (let page = 1; page <= GitHubReporter.MAX_COMMENT_PAGES; page++) {
+      const { stdout } = await run(
+        gh,
+        [
+          "api",
+          "-X",
+          "GET",
+          `repos/${this.options.repo}/pulls/${this.options.prNumber}/reviews/${reviewId}/comments`,
+          "-f",
+          "per_page=100",
+          "-f",
+          `page=${page}`,
+        ],
+        { cwd: this.options.cwd },
+      );
+      const batch = JSON.parse(stdout) as ReviewCommentApi[];
+      if (!Array.isArray(batch) || batch.length === 0) {
+        break;
+      }
+      yield batch;
+      if (batch.length < 100) {
+        break;
+      }
+    }
+  }
+
   private async createReviewComment(
     body: string,
     path_: string,
@@ -1422,7 +1649,7 @@ export class GitHubReporter implements Reporter {
     const jsonPath = path.join(dir, "review-comment.json");
     try {
       await writeFile(jsonPath, payload, "utf8");
-      const { stdout } = await run(
+      const result = await run(
         gh,
         [
           "api",
@@ -1432,10 +1659,13 @@ export class GitHubReporter implements Reporter {
           "--input",
           jsonPath,
         ],
-        { cwd: this.options.cwd },
+        { cwd: this.options.cwd, check: false },
       );
+      if (result.code !== 0) {
+        throw ghApiFailure("creating the comment", result);
+      }
       try {
-        return JSON.parse(stdout) as { html_url?: string };
+        return JSON.parse(result.stdout) as { html_url?: string };
       } catch {
         return null;
       }
