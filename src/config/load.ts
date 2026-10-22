@@ -192,13 +192,10 @@ async function loadConfigDir(
   // stops every review in the repo, and nothing checks prompt files before they merge.
   const setupWarnings: string[] = [];
   const label = setupDirLabel(dir);
-  const { policy, warning: policyWarning } = resolvePolicy(
+  const { policy, deprecation } = resolvePolicy(
     parsed.policy,
     path.join(label, path.basename(configPath)),
   );
-  if (policyWarning) {
-    setupWarnings.push(policyWarning);
-  }
   const readPrompt = async (file: string): Promise<ReturnType<typeof parseFrontmatter>> => {
     const raw = await readFile(path.join(dir, file), "utf8");
     const md = parseFrontmatter(raw);
@@ -254,6 +251,7 @@ async function loadConfigDir(
     agents,
     // Only when there are any, so a clean setup keeps its review-cache key.
     ...(setupWarnings.length > 0 ? { setupWarnings } : {}),
+    ...(deprecation ? { deprecations: [deprecation] } : {}),
     coordinator: {
       model: resolveModel(coordinatorMd.data.model),
       temperature: resolveTemp(coordinatorMd.data.temperature, 0),
@@ -627,12 +625,12 @@ const SCALAR_COMMENT_EFFECTS: ReadonlyArray<readonly [string, string]> = [
 
 /**
  * The loaded policy, with the severity floor resolved. A config that still sets
- * `includeSuggestions` loads as before, plus a warning that names `file` and the fix.
+ * `includeSuggestions` loads as before, plus a deprecation that names `file` and the fix.
  */
 function resolvePolicy(
   parsed: RawReviewConfig["policy"],
   file: string,
-): { policy: LoadedConfig["policy"]; warning?: string } {
+): { policy: LoadedConfig["policy"]; deprecation?: string } {
   const { minSeverity, includeSuggestions, maxFindings } = parsed;
   const policy: LoadedConfig["policy"] = {
     minSeverity: minSeverity ?? (includeSuggestions ? "nit" : DEFAULT_MIN_SEVERITY),
@@ -641,12 +639,12 @@ function resolvePolicy(
   if (includeSuggestions == null) {
     return { policy };
   }
-  const warning = minSeverity
+  const deprecation = minSeverity
     ? `${file}: \`policy.includeSuggestions\` has no effect because \`policy.minSeverity\` ` +
       "is set. Fix: remove `includeSuggestions`."
     : `${file}: \`policy.includeSuggestions\` is deprecated. Replace it with ` +
       `\`"minSeverity": "${policy.minSeverity}"\`.`;
-  return { policy, warning };
+  return { policy, deprecation };
 }
 
 /**

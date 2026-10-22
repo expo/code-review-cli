@@ -114,6 +114,30 @@ test("loadScopeConfig: nested scope reads its own roster/prompts; auth forced fr
   expect(scoped.auth[0]?.tokenEnv).toBe("ROOT_TOKEN");
 });
 
+test("loadScopeConfig: a nested scope's `includeSuggestions` sets its own floor, with a deprecation", async () => {
+  const root = await makeRoot();
+  await writeConfigDir(path.join(root, "apps", "api", CONFIG_DIRNAME), {
+    config: '{ "policy": { "includeSuggestions": true } }',
+    agents: { style: agent("style") },
+  });
+  const manifest = manifestOf({
+    scopes: [
+      { name: "default", paths: ["**/*"], config: "." },
+      { name: "api", paths: ["apps/api/**"], config: "apps/api" },
+    ],
+  });
+  const rootConfig = await loadReviewConfig(root);
+  const scoped = await loadScopeConfig(root, manifest.scopes[1]!, manifest, rootConfig);
+  expect(scoped.policy.minSeverity).toBe("nit");
+  expect(scoped.deprecations).toEqual([
+    `${path.join(CONFIG_DIRNAME, "config.jsonc")}: \`policy.includeSuggestions\` is deprecated. ` +
+      'Replace it with `"minSeverity": "nit"`.',
+  ]);
+  // The root is untouched by the scope's key.
+  expect(rootConfig.policy.minSeverity).toBe("design");
+  expect("deprecations" in rootConfig).toBe(false);
+});
+
 test("loadScopeConfig: a scope declaring auth fails to load (Zod-level rejection)", async () => {
   const root = await makeRoot();
   await writeConfigDir(path.join(root, "bad", CONFIG_DIRNAME), {

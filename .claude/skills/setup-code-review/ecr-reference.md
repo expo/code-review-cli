@@ -88,7 +88,7 @@ defaults). JSONC: `//` and `/* */` comments and trailing commas allowed.
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `model` | string | `"openai/gpt-5.5"` | `provider/model`. Default for all agents + coordinator. Override per-agent in frontmatter; global override via `REVIEWER_MODEL` env (empty/whitespace = unset). |
-| `policy.minSeverity` | severity | `"design"` | Findings below it are dropped (order: `critical`, `warning`, `design`, `suggestion`, `nit`). This is the "severity floor". The deprecated `policy.includeSuggestions` still loads (`true` → `"nit"`, `false` → `"design"`) with a setup warning. |
+| `policy.minSeverity` | severity | `"design"` | Findings below it are dropped (order: `critical`, `warning`, `design`, `suggestion`, `nit`). This is the "severity floor". The deprecated `policy.includeSuggestions` still loads (`true` → `"nit"`, `false` → `"design"`) with a deprecation note; `ecr doctor` warns on it but does not fail. |
 | `policy.maxFindings` | int>0 | unset | Cap total findings (most-severe-first). |
 | `chunk.maxChangedLines` | int>0 | `1000` | Split threshold on added+removed lines. Under it = one full-context pass. |
 | `chunk.maxFiles` | int>0 | `20` | Secondary per-chunk file guard. |

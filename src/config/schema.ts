@@ -454,11 +454,17 @@ export interface LoadedConfig {
   sharedPromptText: string;
   agents: LoadedAgent[];
   /**
-   * Setup problems found at load time (an invalid `paths`, a frontmatter block below
-   * the first line, a trailing comment in a value, a deprecated config key). Each
+   * Prompt-file frontmatter problems found at load time (an invalid `paths`, a
+   * frontmatter block below the first line, a trailing comment in a value). Each
    * names its file and the fix. Reviews show them as setup notes; absent when none.
    */
   setupWarnings?: string[];
+  /**
+   * Deprecated config keys that still load as before (`policy.includeSuggestions`).
+   * Each names its file and the fix. Reviews show them as setup notes, but `ecr doctor`
+   * only warns: nothing about the review changes. Absent when none.
+   */
+  deprecations?: string[];
   coordinator: {
     model: string;
     temperature: number;

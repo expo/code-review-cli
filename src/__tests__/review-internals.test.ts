@@ -157,6 +157,23 @@ test("applyReviewPolicy: approve_with_comments + no findings → approve", () =>
   expect(result.decision).toBe("approve");
 });
 
+test("applyReviewPolicy: a floor that drops every finding approves, even over request_changes", () => {
+  const out = (severities: Severity[]): CoordinatorOutput => ({
+    decision: "request_changes",
+    findings: severities.map((severity) => finding({ severity })),
+    summary: "s",
+    incomplete: [],
+  });
+  // "Request changes" over "No findings." would block on nothing the author can see.
+  expect(applyReviewPolicy(out(["warning"]), { minSeverity: "critical" }).decision).toBe("approve");
+  expect(applyReviewPolicy(out(["design"]), { minSeverity: "warning" }).decision).toBe("approve");
+  // A visible finding keeps the coordinator's decision, even a non-critical one (a
+  // credential leak blocks at any severity), however much the floor dropped.
+  const kept = applyReviewPolicy(out(["warning", "nit"]), { minSeverity: "warning" });
+  expect(kept.findings.map((f) => f.severity)).toEqual(["warning"]);
+  expect(kept.decision).toBe("request_changes");
+});
+
 test("review trace merges, de-duplicates, and caps notes per agent", () => {
   const agents = {};
   mergeTraceNotes(agents, "correctness", {
@@ -463,7 +480,7 @@ async function runPathsReview(
   changed: ChangedFile[],
   agents: LoadedConfig["agents"],
   options: Partial<ReviewRunOptions> = {},
-  setupWarnings?: string[],
+  notes: Pick<LoadedConfig, "setupWarnings" | "deprecations"> = {},
 ): Promise<{ result: unknown; reached: boolean; lines: string[]; log: string }> {
   const runsDir = await mkdtemp(path.join(tmpdir(), "ecr-paths-runs-"));
   const { source, reachedEngines } = pathsSource(changed);
@@ -474,7 +491,7 @@ async function runPathsReview(
       config: {
         configDir: runsDir,
         agents,
-        ...(setupWarnings ? { setupWarnings } : {}),
+        ...notes,
         noise: { additionalIgnores: [], additionalMarkers: [] },
         coordinator: { model: "openai/gpt-5.5", temperature: 0, promptText: "" },
       } as unknown as LoadedConfig,
@@ -555,10 +572,21 @@ test("runReview: setup warnings ride on the result as setup notes, early returns
     ["src/a.ts"],
     [pathsAgent("docs", ["docs/**"])],
     {},
-    [warning],
+    { setupWarnings: [warning] },
   );
   expect(result).toMatchObject({ decision: "approve", setupNotes: [warning] });
   expect(lines).toContain(`  setup: ${warning}`);
+  // A deprecated key is a setup note too: doctor only warns on it, but the PR comment
+  // keeps naming the fix.
+  const deprecation = ".expo-agents/code-review/config.jsonc: `policy.includeSuggestions` is ...";
+  const deprecated = await runPathsReview(
+    ["src/a.ts"],
+    [pathsAgent("docs", ["docs/**"])],
+    {},
+    { setupWarnings: [warning], deprecations: [deprecation] },
+  );
+  expect(deprecated.result).toMatchObject({ setupNotes: [deprecation, warning] });
+  expect(deprecated.lines).toContain(`  setup: ${deprecation}`);
   const clean = await runPathsReview(["src/a.ts"], [pathsAgent("docs", ["docs/**"])]);
   expect("setupNotes" in (clean.result as object)).toBe(false);
 });

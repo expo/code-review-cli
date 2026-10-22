@@ -278,10 +278,11 @@ export async function runReview(
     `${scopedFiles.length} changed file(s); ${kept.length} to review, ${filtered.length} filtered.`,
   );
 
-  // Frontmatter problems the loader found. Every result carries them, early returns
-  // included, so the PR comment keeps naming the fix until someone applies it.
+  // Frontmatter problems and deprecated keys the loader found. Every result carries
+  // them, early returns included, so the PR comment keeps naming the fix until someone
+  // applies it.
   // @ref LLP 0006#agent-frontmatter-and-paths [implements] — setup warnings surface as setup notes on every review
-  const configNotes = config.setupWarnings ?? [];
+  const configNotes = [...(config.deprecations ?? []), ...(config.setupWarnings ?? [])];
   for (const note of configNotes) {
     progress(`  setup: ${note}`);
   }
@@ -1565,8 +1566,8 @@ export function attachReviewTrace(
 
 /**
  * Policy backstop: strip the internal risk handoff, drop findings below the
- * severity floor, cap by count (most severe first), and downgrade
- * approve_with_comments to approve when nothing remains.
+ * severity floor, cap by count (most severe first), and approve when nothing
+ * remains.
  */
 export function applyReviewPolicy(
   output: CoordinatorOutput,
@@ -1585,10 +1586,11 @@ export function applyReviewPolicy(
   if (policy.maxFindings != null) {
     findings = findings.slice(0, policy.maxFindings);
   }
-  const decision =
-    output.decision === "approve_with_comments" && findings.length === 0
-      ? "approve"
-      : output.decision;
+  // Nothing left to show, so nothing to act on: the same "nothing left → approve" as
+  // decisionAfterVerification. A raised floor (`critical`, say) can drop every finding
+  // a request_changes rested on, which would otherwise read "Request changes" over
+  // "No findings." (and exit 1 locally).
+  const decision = findings.length === 0 ? "approve" : output.decision;
   return { ...output, findings, decision };
 }
 

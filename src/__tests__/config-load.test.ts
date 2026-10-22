@@ -266,6 +266,7 @@ test("loadReviewConfig: `minSeverity` sets the severity floor, and defaults to `
       const config = await loadReviewConfig(root);
       expect(config.policy.minSeverity).toBe(expected);
       expect("setupWarnings" in config).toBe(false);
+      expect("deprecations" in config).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -274,7 +275,7 @@ test("loadReviewConfig: `minSeverity` sets the severity floor, and defaults to `
 
 // Zod strips unknown keys, so dropping `includeSuggestions` from the schema would silently
 // turn a repo's suggestions off.
-test("loadReviewConfig: `includeSuggestions` loads as a floor, with a warning that names the fix", async () => {
+test("loadReviewConfig: `includeSuggestions` loads as a floor, with a deprecation that names the fix", async () => {
   const cases: Array<[Record<string, unknown>, string, string]> = [
     [{ includeSuggestions: true }, "nit", 'Replace it with `"minSeverity": "nit"`'],
     [{ includeSuggestions: false }, "design", 'Replace it with `"minSeverity": "design"`'],
@@ -285,10 +286,13 @@ test("loadReviewConfig: `includeSuggestions` loads as a floor, with a warning th
     try {
       const config = await loadReviewConfig(root);
       expect(config.policy.minSeverity).toBe(expected);
-      expect(config.setupWarnings).toHaveLength(1);
-      const [warning] = config.setupWarnings!;
-      expect(warning).toContain(path.join(CONFIG_DIRNAME, "config.jsonc"));
-      expect(warning).toContain(fix);
+      // A deprecation, not a setup warning: `ecr doctor` fails on setup warnings, and
+      // the old key still reviews exactly as before.
+      expect("setupWarnings" in config).toBe(false);
+      expect(config.deprecations).toHaveLength(1);
+      const [deprecation] = config.deprecations!;
+      expect(deprecation).toContain(path.join(CONFIG_DIRNAME, "config.jsonc"));
+      expect(deprecation).toContain(fix);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

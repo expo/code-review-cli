@@ -266,6 +266,11 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
       for (const warning of rootConfig.setupWarnings ?? []) {
         line(false, warning);
       }
+      // A deprecated key still loads as before, so the review is unchanged: a ⚠, not a
+      // failure, or every repo scaffolded before the rename would fail doctor.
+      for (const deprecation of rootConfig.deprecations ?? []) {
+        warn(deprecation);
+      }
 
       // Set when the Claude Code engine has no usable credential. checkProviderAuth
       // (below) returns ok:true for every anthropic shape (login fallback), so this
@@ -399,6 +404,9 @@ export async function doctorCommand(argv: string[] = []): Promise<void> {
       );
       for (const warning of scopeConfig.setupWarnings ?? []) {
         line(false, `scope ${scope.name}: ${warning}`);
+      }
+      for (const deprecation of scopeConfig.deprecations ?? []) {
+        warn(`scope ${scope.name}: ${deprecation}`);
       }
     }
 
