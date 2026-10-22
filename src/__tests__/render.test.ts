@@ -220,13 +220,15 @@ test("multi-line model text gets the same mention rules as a summary row", () =>
   const sneaky = finding({
     title: "Ask _@title-user_",
     rationale: "Line one.\n&#64;rationale-user and &commat;other should look.",
-    suggestion: "Mail ops@example.com, not *@suggest-user*.",
+    suggestion: "Mail ops@example.com, not *@suggest-user* or @@run-user.",
   });
   const body = renderMarkdown({ ...base, findings: [sneaky] }, "tag");
   expect(liveMentions(body)).toEqual([]);
   expect(body).toContain("Ask _@\u200Btitle-user_");
   expect(body).toContain("&amp;#64;rationale-user and &amp;commat;other should look.");
-  expect(body).toContain("Mail ops@example.com, not *@\u200Bsuggest-user*.");
+  expect(body).toContain(
+    "Mail ops@example.com, not *@\u200Bsuggest-user* or @\u200B@\u200Brun-user.",
+  );
   const inline = renderInlineCommentBody(sneaky, "tag", "abc");
   expect(inline).toContain("&amp;#64;rationale-user");
   expect(inline).toContain("_@\u200Btitle-user_");
@@ -278,6 +280,10 @@ test("an agent summary breaks every `@` that markdown can put at the start of a 
   );
   expect(summaryRow("[@octocat](https://x.dev) and \\@octocat")).toBe(
     "[@\u200Boctocat](https://x.dev) and \\@\u200Boctocat",
+  );
+  // Each `@` of a run is broken, or the zero-width space would sit in front of a live one.
+  expect(summaryRow("@@octocat and x @@@y")).toBe(
+    "@\u200B@\u200Boctocat and x @\u200B@\u200B@\u200By",
   );
   // A letter or digit before the `@` is never a mention, so an address stays whole.
   expect(summaryRow("Mail foo@example.com or a1@b.dev.")).toBe("Mail foo@example.com or a1@b.dev.");

@@ -700,7 +700,9 @@ function breakMentions(text: string): string {
     text
       // Shown as typed: `&amp;#64;` renders as the text `&#64;`, never as `@`.
       .replace(AT_REFERENCE_RE, "&amp;")
-      .replace(/(^|[^A-Za-z0-9])@/g, "$1@\u200B")
+      // A lookbehind, not a captured preceding character: a capture would consume the
+      // first `@` of `@@login`, leave the second unmatched, and `@\u200B@login` notifies.
+      .replace(/(?<![A-Za-z0-9])@/g, "@\u200B")
   );
 }
 
