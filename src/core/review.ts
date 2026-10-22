@@ -333,7 +333,7 @@ export async function runReview(
   if (pathsSelection.agents.length === 0) {
     const agentSummaries = buildAgentSummaries({
       ran: [],
-      summaries: {},
+      summaries: new Map(),
       skippedByPaths: pathsSelection.skipped,
       notRouted: [],
     });
@@ -559,11 +559,12 @@ export async function runReview(
   // the coordinator, verification, policy, or decision paths.
   const agentTrace: Record<string, ReviewerTraceNotes> = {};
   // Each reviewer's own summary for the comment. Like the trace, it never reaches the
-  // coordinator, verification, policy, or decision paths.
-  const agentSummaryParts: Record<string, string[]> = {};
+  // coordinator, verification, policy, or decision paths. A Map, so an agent id such as
+  // `constructor` cannot read an inherited property.
+  const agentSummaryParts: AgentSummaryParts = new Map();
   // The first reason each agent gives for a human review. Only agents whose config
   // names people to mention turn it into a mention.
-  const humanReviewReasons: Record<string, string> = {};
+  const humanReviewReasons = new Map<string, string>();
   // First reviewer (by scheduling order) that produced each fingerprint, so a finding's
   // originating agent can be carried through the coordinator's merge/rewrite by matching
   // on fingerprint. Kept separate from agentFindings so the coordinator prompt and the
@@ -847,6 +848,12 @@ export async function runReview(
       ...overrides,
     });
 
+    // Passes finish in any order, so each summary part is ordered by where its files
+    // sit in the diff: the same run always keeps the same parts.
+    const filePosition = new Map(workspace.files.map((file, index) => [file.path, index]));
+    const fileOrder = (files: PatchWorkspaceFile[]): number =>
+      filePosition.get(files[0]?.path ?? "") ?? 0;
+
     let completedPasses = 0;
     let failedPasses = 0;
     const taskProgress = (task: ReviewTask, line: string): void =>
@@ -883,9 +890,9 @@ export async function runReview(
         if (value.trace) {
           mergeTraceNotes(agentTrace, task.bucket, value.trace);
         }
-        mergeAgentSummary(agentSummaryParts, task.bucket, value.summary);
-        if (value.humanReview) {
-          humanReviewReasons[task.bucket] ??= value.humanReview;
+        mergeAgentSummary(agentSummaryParts, task.bucket, value.summary, fileOrder(task.files));
+        if (value.humanReview && !humanReviewReasons.has(task.bucket)) {
+          humanReviewReasons.set(task.bucket, value.humanReview);
         }
         for (const finding of value.findings) {
           const fp = fingerprintFinding(finding);
@@ -1596,34 +1603,42 @@ export function attachReviewTrace(
   return { ...withoutTrace, ...(reviewTrace ? { reviewTrace } : {}) };
 }
 
-/**
- * Record one pass's summary for its agent. A chunked agent keeps its distinct pass
- * summaries, up to `AGENT_SUMMARY_PARTS_LIMIT`.
- */
+/** Each agent's pass summaries, with the diff position each pass started at. */
+export type AgentSummaryParts = Map<string, { order: number; summary: string }[]>;
+
+/** Record one pass's summary for its agent, at `order` (the pass's place in the diff). */
 export function mergeAgentSummary(
-  target: Record<string, string[]>,
+  target: AgentSummaryParts,
   agent: string,
   summary: string | undefined,
+  order: number,
 ): void {
-  const parts = target[agent] ?? [];
-  if (summary && !parts.includes(summary) && parts.length < AGENT_SUMMARY_PARTS_LIMIT) {
-    target[agent] = [...parts, summary];
+  if (summary) {
+    target.set(agent, [...(target.get(agent) ?? []), { order, summary }]);
   }
 }
 
 /**
  * One row per roster agent: the agents that ran, in run order, with their summaries,
- * then the agents that did not run, with the reason. Undefined when the list is empty.
+ * then the agents that did not run, with the reason. A chunked agent keeps its first
+ * `AGENT_SUMMARY_PARTS_LIMIT` distinct parts in diff order. Undefined when the list is
+ * empty.
  */
 export function buildAgentSummaries(input: {
   ran: string[];
-  summaries: Record<string, string[]>;
+  summaries: AgentSummaryParts;
   skippedByPaths: string[];
   notRouted: string[];
 }): AgentSummary[] | undefined {
   const rows: AgentSummary[] = [
-    ...input.ran.map((agent) => {
-      const summary = (input.summaries[agent] ?? []).join(" ");
+    // An agent that shares the cross-file pass's id would otherwise get two rows.
+    ...[...new Set(input.ran)].map((agent) => {
+      const parts = [...(input.summaries.get(agent) ?? [])]
+        .sort(
+          (left, right) => left.order - right.order || left.summary.localeCompare(right.summary),
+        )
+        .map((part) => part.summary);
+      const summary = [...new Set(parts)].slice(0, AGENT_SUMMARY_PARTS_LIMIT).join(" ");
       return summary ? { agent, summary } : { agent };
     }),
     ...input.skippedByPaths.map((agent) => ({ agent, notRun: "paths" as const })),
@@ -1662,10 +1677,10 @@ export function attachAgentSummaries(
  */
 export function buildMentions(
   agents: LoadedAgent[],
-  reasons: Record<string, string>,
+  reasons: ReadonlyMap<string, string>,
 ): AgentMention[] | undefined {
   const mentions = agents.flatMap((agent) => {
-    const reason = reasons[agent.id];
+    const reason = reasons.get(agent.id);
     return agent.mention && reason ? [{ agent: agent.id, logins: agent.mention, reason }] : [];
   });
   return mentions.length > 0 ? mentions : undefined;

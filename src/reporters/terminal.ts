@@ -1,6 +1,6 @@
 // @ref LLP 0008#terminal-reporter — stdout carries the report (progress/logging goes to stderr) and the decision maps to a process exit code for pre-push/pre-commit gating
 import {
-  AGENT_NOT_RUN_TEXT,
+  agentNotRunText,
   decisionExitCode,
   decisionLabel,
   groupBySeverity,
@@ -69,7 +69,7 @@ export class TerminalReporter implements Reporter {
     if (agentSummaries.length > 0) {
       out.push(this.paint(BOLD, "🔎 Reviewer summaries:"));
       for (const { agent, summary, notRun } of agentSummaries) {
-        const text = notRun ? AGENT_NOT_RUN_TEXT[notRun] : (summary ?? "no summary");
+        const text = notRun ? agentNotRunText(notRun) : (summary ?? "no summary");
         out.push(this.paint(DIM, `  - ${agent}: ${text}`));
       }
       out.push("");

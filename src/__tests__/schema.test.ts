@@ -221,6 +221,18 @@ test("a mention target follows GitHub's login and team slug rules", () => {
   }
 });
 
+test("a clipped reviewer summary never ends in half of an emoji", () => {
+  const clip = (summary: string) =>
+    parseReviewerOutput(JSON.stringify({ findings: [], summary })).summary!;
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/;
+  // The cut lands between the two halves of the second emoji.
+  expect(clip(`${"x".repeat(AGENT_SUMMARY_CHARS - 1)}😀😀`)).toBe(
+    `${"x".repeat(AGENT_SUMMARY_CHARS - 1)}…`,
+  );
+  expect(lone.test(clip(`${"x".repeat(AGENT_SUMMARY_CHARS - 2)}😀😀`))).toBe(false);
+  expect(lone.test(clip(` ${"x".repeat(AGENT_SUMMARY_CHARS - 3)}😀😀`))).toBe(false);
+});
+
 test("reviewer research decisions parse bounded conclusions and fail soft when malformed", () => {
   const source = {
     title: "NWPathMonitor",
