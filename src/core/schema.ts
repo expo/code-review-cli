@@ -199,23 +199,49 @@ export const ReviewerTraceNotesSchema = z.object({
 });
 export type ReviewerTraceNotes = z.infer<typeof ReviewerTraceNotesSchema>;
 
+/**
+ * A reviewer's own short account of what it reviewed and concluded, shown to the
+ * readers of the review. A chunked agent keeps up to `AGENT_SUMMARY_PARTS_LIMIT`
+ * pass summaries, and the whole list stays under `AGENT_SUMMARIES_BYTES_LIMIT`.
+ */
+export const AGENT_SUMMARY_CHARS = 280;
+export const AGENT_SUMMARY_PARTS_LIMIT = 2;
+export const AGENT_SUMMARIES_BYTES_LIMIT = 8_000;
+
+function clipAgentSummary(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= AGENT_SUMMARY_CHARS) {
+    return flat;
+  }
+  const cut = flat.slice(0, AGENT_SUMMARY_CHARS);
+  const atWord = cut.slice(0, cut.lastIndexOf(" "));
+  return `${atWord.length > 0 ? atWord : cut}…`;
+}
+
 /** Provider-facing shape each sub-reviewer is asked to emit. */
 const ReviewerModelOutputSchema = z.object({
   findings: z.array(ModelFindingSchema).default([]),
   trace: ReviewerTraceNotesSchema.optional(),
   researchDecisions: z.array(ResearchDecisionSchema).max(8).optional(),
+  summary: z
+    .string()
+    .optional()
+    .describe(
+      `One or two sentences, at most ${AGENT_SUMMARY_CHARS} characters, on what this pass reviewed and concluded`,
+    ),
 });
 
 /**
  * Local trust boundary for reviewer output. Findings stay strict, while diagnostics
- * fail soft: a malformed optional trace must never discard otherwise valid findings
- * or turn a clean pass into a coverage gap.
+ * and the summary fail soft: a malformed optional field must never discard otherwise
+ * valid findings or turn a clean pass into a coverage gap.
  */
 export const ReviewerOutputSchema = z
   .object({
     findings: z.array(ModelFindingSchema).default([]),
     trace: z.unknown().optional(),
     researchDecisions: z.unknown().optional(),
+    summary: z.unknown().optional(),
   })
   .transform((output) => {
     const trace = ReviewerTraceNotesSchema.safeParse(output.trace);
@@ -223,10 +249,12 @@ export const ReviewerOutputSchema = z
       .array(ResearchDecisionSchema)
       .max(8)
       .safeParse(output.researchDecisions);
+    const summary = typeof output.summary === "string" ? clipAgentSummary(output.summary) : "";
     return {
       findings: output.findings,
       ...(trace.success ? { trace: trace.data } : {}),
       ...(researchDecisions.success ? { researchDecisions: researchDecisions.data } : {}),
+      ...(summary ? { summary } : {}),
     };
   });
 export type ReviewerOutput = z.infer<typeof ReviewerOutputSchema>;
@@ -238,6 +266,22 @@ export const ReviewTraceSchema = z.object({
   truncatedAgents: z.number().int().nonnegative().optional(),
 });
 export type ReviewTrace = z.infer<typeof ReviewTraceSchema>;
+
+/**
+ * Why a roster agent did not review the change: no changed file matches its `paths`,
+ * or the router did not select it.
+ */
+export const AGENT_NOT_RUN_REASONS = ["paths", "router"] as const;
+
+/**
+ * One roster agent in the review: its own summary when it ran, or why it did not run.
+ */
+export const AgentSummarySchema = z.object({
+  agent: z.string(),
+  summary: z.string().optional(),
+  notRun: z.enum(AGENT_NOT_RUN_REASONS).optional(),
+});
+export type AgentSummary = z.infer<typeof AgentSummarySchema>;
 
 /** Mode-agnostic coordinator result; each Reporter decides how to render it. */
 const CoordinatorModelOutputSchema = z.object({
@@ -280,6 +324,12 @@ export const CoordinatorOutputSchema = CoordinatorModelOutputSchema.extend({
   // Fail soft here too: the coordinator cannot author this engine field, and a
   // malformed injected value must not fail consolidation before the engine strips it.
   reviewTrace: ReviewTraceSchema.optional().catch(undefined),
+  /**
+   * Each reviewer's own summary, and the roster agents that did not run with the
+   * reason. Engine-owned like `reviewTrace`, but rendered; it never affects the
+   * decision or the finding set.
+   */
+  agentSummaries: z.array(AgentSummarySchema).optional().catch(undefined),
 });
 export type CoordinatorOutput = z.infer<typeof CoordinatorOutputSchema>;
 

@@ -438,6 +438,13 @@ unresolved questions). It is stored only inside the hidden base64 comment marker
 `trust: "unverified-model-diagnostics"`, and capped at 6 KB so it can't crowd
 visible findings out of GitHub's comment-size limit.
 
+Each reviewer also returns a one- or two-sentence `summary` of what it reviewed and
+concluded. Unlike the trace, the summaries are rendered: the comment lists them in a
+collapsed "Reviewer summaries" section under the overall summary, one line per agent,
+together with the agents that did not run because their `paths` matched no changed
+file or the router did not select them. A summary is model text, so the reporter
+flattens it to one line, escapes HTML, and breaks every `@` mention.
+
 **How the caching works.** Provider prompt caching is a *prefix match*: any byte
 change in the prefix invalidates everything after it. The reviewer keeps the prefix
 stable — the system prompt (`shared.md` + the agent's own `.md`) is byte-identical

@@ -12,6 +12,7 @@ import {
   SEVERITY_RANK,
 } from "./schema.js";
 import type {
+  AgentSummary,
   CoordinatorOutput,
   Decision,
   DismissalRecord,
@@ -266,6 +267,7 @@ export function renderMarkdown(
     stripStateMarkers(review.summary),
     "",
   );
+  lines.push(...agentSummariesSection(review.agentSummaries));
 
   if (review.incomplete.length > 0) {
     lines.push(
@@ -506,6 +508,57 @@ export function inlineStubBody(tag: string, fp: string): string {
   ].join("\n");
 }
 
+/**
+ * What the review says about a roster agent that did not run.
+ */
+export const AGENT_NOT_RUN_TEXT: Record<NonNullable<AgentSummary["notRun"]>, string> = {
+  paths: "not run: no changed file matches its `paths`",
+  router: "not run: the router did not select it",
+};
+
+/**
+ * Each roster agent's own summary, or why it did not run, in a collapsed section.
+ * Empty when the review has none.
+ */
+function agentSummariesSection(summaries: AgentSummary[] = []): string[] {
+  if (summaries.length === 0) {
+    return [];
+  }
+  const rows = summaries.map(({ agent, summary, notRun }) => {
+    const text = notRun
+      ? `_${AGENT_NOT_RUN_TEXT[notRun]}_`
+      : summary
+        ? plainModelLine(summary)
+        : "_no summary_";
+    return `- **${stripStateMarkers(agent)}:** ${text}`;
+  });
+  return [
+    "<details>",
+    `<summary>🔎 Reviewer summaries (${summaries.length})</summary>`,
+    "",
+    ...rows,
+    "",
+    "</details>",
+    "",
+  ];
+}
+
+/**
+ * Model prose as one plain line that cannot notify anyone: formatting tags removed,
+ * every `<` escaped, whitespace collapsed, and each `@mention` broken.
+ */
+function plainModelLine(text: string): string {
+  const flat = text
+    .replace(FORMATTING_TAG_RE, " ")
+    .replace(/</g, "&lt;")
+    .replace(/\s+/g, " ")
+    .trim();
+  // GitHub notifies `@login` and `@org/team`. A zero-width space after the `@` keeps
+  // the text readable and stops the notification. A backtick before the `@` does not
+  // prove a code span (it can close one, or have no partner), so it gets one too.
+  return flat.replace(/(^|[^A-Za-z0-9_])@(?=[A-Za-z0-9])/g, "$1@\u200B");
+}
+
 // @ref LLP 0012#run-points-command-and-review [implements] — setup advice renders outside the findings list, so it never blocks
 /** Advice about the reviewer's own setup (stale refs, cited code this PR moves). */
 function setupNote(notes: string[] = []): string[] {
@@ -691,8 +744,9 @@ const MAX_COMMENT_CHARS = 60_000;
  * an optional coverage block, one <details> per scope (findings rendered with
  * scope-namespaced ids), and the dismissed section. The embedded v1 `review` field
  * is a synthesized merge so v1 state consumers still see a valid shape; `scopes`
- * carries the real per-scope data. Oversized bodies trim each scope's findings to
- * the most severe N (halving until it fits, floor 3) with a per-scope note.
+ * carries the real per-scope data. An oversized body first leaves out every scope's
+ * agent summaries, then trims each scope's findings to the most severe N (halving
+ * until it fits, floor 3), each with a per-scope note.
  */
 export function renderAggregateMarkdown(
   results: ScopeReviewResult[],
@@ -741,7 +795,7 @@ export function renderAggregateMarkdown(
   const worst = worstDecision(results.map((result) => result.review.decision));
   const unmatched = opts?.unmatchedFiles ?? [];
 
-  const buildBody = (limitPerScope: number): string => {
+  const buildBody = (limitPerScope: number, withSummaries: boolean): string => {
     const lines: string[] = [
       commentMarker(tag),
       "## 🤖 AI code review",
@@ -829,6 +883,11 @@ export function renderAggregateMarkdown(
       if (result.review.summary) {
         lines.push(stripStateMarkers(result.review.summary), "");
       }
+      if (withSummaries) {
+        lines.push(...agentSummariesSection(result.review.agentSummaries));
+      } else if (result.review.agentSummaries?.length) {
+        lines.push("🔎 Reviewer summaries were left out to fit the comment size limit.", "");
+      }
       lines.push(...requalificationAuditNote(requalifiedAll.map((entry) => entry.finding)));
       lines.push(...feedbackAuditNote(replies));
       if (shown.length === 0) {
@@ -893,9 +952,16 @@ export function renderAggregateMarkdown(
         // array (reviewState below) is the single source of truth. A stale per-scope
         // copy that survived here would be read back on a later carried-over run and
         // could re-apply a record a human /undismiss already overrode at the top level.
-        const { feedback: _feedback, ...review } = result.review as CoordinatorOutput & {
+        const {
+          feedback: _feedback,
+          agentSummaries,
+          ...rest
+        } = result.review as CoordinatorOutput & {
           feedback?: unknown;
         };
+        // State bytes count toward the comment size, so left-out summaries leave the
+        // state too.
+        const review = withSummaries && agentSummaries ? { ...rest, agentSummaries } : rest;
         return {
           scope: result.scope,
           isDefault: result.isDefault,
@@ -947,7 +1013,14 @@ export function renderAggregateMarkdown(
   };
 
   let limit = Number.POSITIVE_INFINITY;
-  let body = buildBody(limit);
+  let withSummaries = true;
+  let body = buildBody(limit, withSummaries);
+  // Agent summaries go before any finding: they never affect the decision, and each
+  // scope's summary budget does not bound the sum across scopes.
+  if (body.length > MAX_COMMENT_CHARS) {
+    withSummaries = false;
+    body = buildBody(limit, withSummaries);
+  }
   // Seed from the largest per-scope section the limit applies to — kept OR
   // requalified — so the halving loop shrinks whichever one is oversized.
   const largestScope = Math.max(
@@ -959,7 +1032,7 @@ export function renderAggregateMarkdown(
       limit === Number.POSITIVE_INFINITY
         ? Math.max(3, Math.floor(largestScope / 2))
         : Math.max(3, Math.floor(limit / 2));
-    body = buildBody(limit);
+    body = buildBody(limit, withSummaries);
   }
   return body;
 }

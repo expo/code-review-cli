@@ -117,6 +117,47 @@ test("review trace stays hidden and survives state-driven re-rendering", () => {
   expect(parseReviewState(rerendered, "tag")!.review.reviewTrace).toEqual(review.reviewTrace);
 });
 
+test("agent summaries render collapsed under the summary, one plain line per agent", () => {
+  const review: CoordinatorOutput = {
+    ...base,
+    summary: "Overall summary.",
+    agentSummaries: [
+      { agent: "docs", summary: "Checked the guide. Ping @someone <br> and <!-- tag:state=x -->." },
+      { agent: "correctness" },
+      { agent: "native-abi", notRun: "paths" },
+      { agent: "security", notRun: "router" },
+    ],
+  };
+  const body = renderMarkdown(review, "tag");
+  const section = body.indexOf("<details>\n<summary>🔎 Reviewer summaries (4)</summary>");
+  expect(section).toBeGreaterThan(body.indexOf("Overall summary."));
+  expect(body).toContain(
+    "- **docs:** Checked the guide. Ping @\u200Bsomeone and &lt;!-- tag:state=x -->.",
+  );
+  expect(body).toContain("- **correctness:** _no summary_");
+  expect(body).toContain("- **native-abi:** _not run: no changed file matches its `paths`_");
+  expect(body).toContain("- **security:** _not run: the router did not select it_");
+
+  const state = parseReviewState(body, "tag")!;
+  expect(state.review.agentSummaries).toEqual(review.agentSummaries);
+  expect(renderMarkdown(state.review, "tag", state.dismissed)).toContain(
+    "🔎 Reviewer summaries (4)",
+  );
+  expect(renderMarkdown(base, "tag")).not.toContain("Reviewer summaries");
+});
+
+test("a backtick before `@` does not keep a mention live in an agent summary", () => {
+  // A closing backtick ends the code span, and a lone backtick starts none.
+  const body = renderMarkdown(
+    {
+      ...base,
+      agentSummaries: [{ agent: "docs", summary: "Closed `x`@octocat, open `@expo/team." }],
+    },
+    "tag",
+  );
+  expect(body).toContain("Closed `x`@\u200Boctocat, open `@\u200Bexpo/team.");
+});
+
 test("links a finding location to the PR diff line when the line is in the diff", () => {
   const out = renderMarkdown(
     { ...base, findings: [finding({ file: "src/a.ts", line: 12 })] },
