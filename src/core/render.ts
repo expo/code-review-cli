@@ -589,22 +589,22 @@ function agentSummariesSection(summaries: AgentSummary[] = []): string[] {
 }
 
 /**
- * An HTML character reference: `&#64;`, `&#x40;`, `&commat;`. GitHub decodes one
- * before it looks for mentions, so a reference can spell the `@` itself or a login
- * character after it.
+ * An HTML character reference that spells `@`: `&#64;`, `&#x40;`, `&commat;`. GitHub
+ * decodes it before it looks for mentions. A reference after the `@` needs nothing:
+ * that `@` is broken like any other. Others (`&lt;`, `&amp;`) still render as written.
  */
-const CHARACTER_REFERENCE_RE = /&(?=#[0-9]+;|#[xX][0-9a-fA-F]+;|[A-Za-z][A-Za-z0-9]*;)/g;
+const AT_REFERENCE_RE = /&(?=#0*64;|#[xX]0*40;|commat;)/g;
 
 /**
  * Model prose as one plain line that cannot notify anyone: formatting tags removed,
- * character references and every `<` escaped, whitespace collapsed, and each `@` that
+ * `@` character references and every `<` escaped, whitespace collapsed, and each `@` that
  * could start a mention broken.
  */
 function plainModelLine(text: string): string {
   const flat = text
     .replace(FORMATTING_TAG_RE, " ")
     // Shown as typed: `&amp;#64;` renders as the text `&#64;`, never as `@`.
-    .replace(CHARACTER_REFERENCE_RE, "&amp;")
+    .replace(AT_REFERENCE_RE, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/\s+/g, " ")
     .trim();

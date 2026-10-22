@@ -180,11 +180,15 @@ test("an agent summary breaks every `@` that markdown can put at the start of a 
 
 test("an agent summary cannot spell a mention with an HTML character reference", () => {
   // GitHub decodes a reference before it looks for mentions; escaped, it shows as typed.
-  expect(summaryRow("&#64;octocat &#x40;octocat &#X40;octocat &commat;octocat @&#111;ctocat")).toBe(
-    "&amp;#64;octocat &amp;#x40;octocat &amp;#X40;octocat &amp;commat;octocat @\u200B&amp;#111;ctocat",
+  expect(summaryRow("&#64;octocat &#x40;octocat &#X40;octocat &#064;octocat &commat;octocat")).toBe(
+    "&amp;#64;octocat &amp;#x40;octocat &amp;#X40;octocat &amp;#064;octocat &amp;commat;octocat",
   );
-  // A bare `&` is not a reference and reads as it did.
-  expect(summaryRow("Checks a && b; R&D.")).toBe("Checks a && b; R&D.");
+  // A reference after the `@` spells a login character, but that `@` is broken anyway.
+  expect(summaryRow("@&#111;ctocat")).toBe("@\u200B&#111;ctocat");
+  // Other references, and a bare `&`, read as they did.
+  expect(summaryRow("Checks a && b; R&D; &lt;T&gt; &amp;")).toBe(
+    "Checks a && b; R&D; &lt;T&gt; &amp;",
+  );
 });
 
 test("an oversized single comment leaves the agent summaries out instead of failing to post", () => {
