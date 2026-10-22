@@ -158,6 +158,37 @@ test("aggregate: a scope's mention renders under that scope's summary", () => {
   expect(body.indexOf(line)).toBeGreaterThan(body.indexOf("Docs scope summary."));
 });
 
+test("aggregate: a scope with a human-review request and no findings opens its fold", () => {
+  const results = [
+    scope("docs", false, {
+      summary: "Docs summary for @summary-user.",
+      mentions: [{ agent: "docs", logins: ["amandeepmittal"], reason: "New guide." }],
+    }),
+    scope("api", false, {}),
+  ];
+  const body = renderAggregateMarkdown(results, "tag", []);
+  expect(body).toContain("<details open>\n<summary>docs — ");
+  expect(body).toContain("<details>\n<summary>api — ");
+  expect(body).toContain("Docs summary for @\u200Bsummary-user.");
+});
+
+test("aggregate: the mention state rides the comment, so a returning request does not notify", () => {
+  const asking = [
+    scope("docs", false, {
+      mentions: [{ agent: "docs", logins: ["amandeepmittal"], reason: "New guide." }],
+    }),
+  ];
+  const first = renderAggregateMarkdown(asking, "tag", []);
+  expect(first).toContain("> 📣 @amandeepmittal:");
+  const dropped = renderAggregateMarkdown([scope("docs", false, {})], "tag", [], undefined, {
+    mentioned: parseReviewState(first, "tag")!.mentioned!,
+  });
+  const back = renderAggregateMarkdown(asking, "tag", [], undefined, {
+    mentioned: parseReviewState(dropped, "tag")!.mentioned!,
+  });
+  expect(back).toContain("> 📣 @\u200Bamandeepmittal:");
+});
+
 test("aggregate: a default-scope finding dismissed pre-routing (plain fp) lands in Dismissed (risk 9)", () => {
   const dFinding = finding({ title: "Carried", evidence: "const carriedOverDismissal = 1;" });
   const plainFp = fingerprintFinding(dFinding);

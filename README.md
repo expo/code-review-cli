@@ -548,13 +548,20 @@ mention:
   reason under the overall summary. Without a `humanReview`, the agent mentions no
   one.
 - Only the trusted config names people. The model writes only the reason, and the
-  reporter breaks every `@` mention in it.
+  reporter breaks every `@` mention in model-written text: the reason, the summaries,
+  and each finding's title, rationale and suggestion.
 - The bot edits its comment in place on each re-review. GitHub also notifies a
   person when an edit adds a mention of them, so a mention that first appears on a
-  re-review still notifies.
-- An invalid `mention` (not a list, an empty list, or an entry that is not a login
-  or team) is ignored, and the review names the agent file and the fix under
-  **Review setup**.
+  re-review still notifies. Each person is notified once per comment: if a request
+  goes away on a later run and comes back, the line names them without a live
+  mention. A comment the bot deletes and posts again starts over.
+- A team mention may not notify anyone. GitHub notifies only people with read access
+  to the repository, and a team only when the comment's author can see it. The
+  default `GITHUB_TOKEN` posts as `github-actions[bot]`, which is not an organization
+  member. This is untested: if a team must hear about it, list its people's logins.
+- An invalid `mention` (not a list or an empty list) is ignored. An entry that is
+  not a login or team is left out, and the agent still mentions the others. Either
+  way the review names the agent file and the fix under **Review setup**.
 
 For a real-world example, see eas-cli's
 [`.expo-agents/code-review/`](https://github.com/expo/eas-cli/tree/main/.expo-code-review)

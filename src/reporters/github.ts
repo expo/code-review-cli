@@ -704,6 +704,7 @@ export class GitHubReporter implements Reporter {
         records,
         pins,
         inputHash,
+        state?.mentioned,
       ),
     );
   }
@@ -751,7 +752,7 @@ export class GitHubReporter implements Reporter {
         this.options.commentTag,
         dismissed,
         withInlineUrls(link, inlineUrls),
-        { unmatchedFiles },
+        { unmatchedFiles, ...(state?.mentioned ? { mentioned: state.mentioned } : {}) },
         records,
         pins,
       ),
@@ -1507,7 +1508,7 @@ export class GitHubReporter implements Reporter {
           this.options.commentTag,
           next.dismissed,
           link,
-          undefined,
+          state.mentioned ? { mentioned: state.mentioned } : undefined,
           next.feedback,
           next.pins,
         )
@@ -1519,6 +1520,7 @@ export class GitHubReporter implements Reporter {
           next.feedback,
           next.pins,
           state.inputHash,
+          state.mentioned,
         );
     await this.patchComment(existing.id, body);
     // Additive-only inline updates for exactly the fps this action named — never a

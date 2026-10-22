@@ -4,6 +4,7 @@ import {
   AGENT_SUMMARY_CHARS,
   extractJsonObject,
   fingerprintFinding,
+  MENTION_TARGET_RE,
   parseCoordinatorOutput,
   parseReviewerOutput,
   parseVerdict,
@@ -185,6 +186,39 @@ test("a reviewer's human-review reason parses to one clipped line and fails soft
   expect(
     parseReviewerOutput(JSON.stringify({ findings: [], humanReview: true })).humanReview,
   ).toBeUndefined();
+});
+
+test("a mention target follows GitHub's login and team slug rules", () => {
+  const valid = [
+    "octocat",
+    "a",
+    "a-b-c",
+    "x".repeat(39),
+    "name_shortcode",
+    "expo/docs",
+    "org/my_team-1",
+  ];
+  for (const target of valid) {
+    expect(MENTION_TARGET_RE.test(target), target).toBe(true);
+  }
+  const invalid = [
+    "-octocat",
+    "octocat-",
+    "octo--cat",
+    "x".repeat(40),
+    "_shortcode",
+    "name_",
+    `${"x".repeat(35)}_abcd`,
+    "org/",
+    "org/-team",
+    "org/team-",
+    "org/team.x",
+    "org/team/x",
+    "aman deep",
+  ];
+  for (const target of invalid) {
+    expect(MENTION_TARGET_RE.test(target), target).toBe(false);
+  }
 });
 
 test("reviewer research decisions parse bounded conclusions and fail soft when malformed", () => {

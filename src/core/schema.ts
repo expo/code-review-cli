@@ -297,9 +297,12 @@ export type AgentSummary = z.infer<typeof AgentSummarySchema>;
 
 /**
  * A GitHub login or an `org/team` slug, without the `@`: the only text a review
- * mentions.
+ * mentions. A login is at most 39 characters of letters, digits and single inner
+ * hyphens, with an optional Enterprise Managed User `_shortcode` suffix. A team slug
+ * is letters, digits and underscores joined by single hyphens.
  */
-export const MENTION_TARGET_RE = /^[A-Za-z0-9-]{1,39}(?:\/[A-Za-z0-9_.-]{1,100})?$/;
+export const MENTION_TARGET_RE =
+  /^(?=[A-Za-z0-9_-]{1,39}(?:\/|$))[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:_[A-Za-z0-9]+)?(?:\/(?=[A-Za-z0-9_-]{1,100}$)[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*)?$/;
 
 /**
  * An agent's request for a human review: the people its config names, and the
@@ -311,6 +314,17 @@ export const AgentMentionSchema = z.object({
   reason: z.string(),
 });
 export type AgentMention = z.infer<typeof AgentMentionSchema>;
+
+/**
+ * Who a review comment's mention lines notify, carried in its state. `live` are the
+ * handles the body mentions for real, and `notified` every handle the comment has
+ * ever mentioned. Handles are lowercase, as GitHub compares logins.
+ */
+export const MentionStateSchema = z.object({
+  live: z.array(z.string()),
+  notified: z.array(z.string()),
+});
+export type MentionState = z.infer<typeof MentionStateSchema>;
 
 /** Mode-agnostic coordinator result; each Reporter decides how to render it. */
 const CoordinatorModelOutputSchema = z.object({

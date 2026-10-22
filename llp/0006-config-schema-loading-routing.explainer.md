@@ -203,11 +203,15 @@ still runs only in scopes with a matching file. How the engine applies the filte
 `org/team` slugs, with an optional leading `@` that the loader drops. It is the only source of
 whom a review notifies. The agent itself only writes the reason, so a PR cannot make the bot
 mention anyone: CI loads agent files from the base commit, and the model never chooses a login.
-`parseAgentMention` treats an invalid value like an invalid `paths`: a setup warning that names
-the file and the fix, and the agent mentions no one. Invalid means not a list, an empty list, or
-an entry that does not match `MENTION_TARGET_RE`. An agent without `mention` gets no `mention`
-key, so its shape and review-cache key are unchanged [observed: `load.ts` `parseAgentMention`;
-`schema.ts` `MENTION_TARGET_RE`].
+`parseAgentMention` treats a value that is not a list, or an empty list, like an invalid `paths`:
+a setup warning that names the file and the fix, and the agent mentions no one. An entry that does
+not match `MENTION_TARGET_RE` is different: it is left out with a warning that names it, and the
+agent still mentions the valid entries, because one typo should not silence the people listed
+beside it. `MENTION_TARGET_RE` follows GitHub's rules: a login is at most 39 letters, digits and
+single inner hyphens, with an optional Enterprise Managed User `_shortcode` suffix, and a team slug
+is letters, digits and underscores joined by single hyphens. An agent without `mention` gets no
+`mention` key, so its shape and review-cache key are unchanged [observed: `load.ts`
+`parseAgentMention`; `schema.ts` `MENTION_TARGET_RE`].
 
 ## Budgets and Chunking Defaults
 

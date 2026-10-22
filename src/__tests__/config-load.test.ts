@@ -283,3 +283,21 @@ test("loadReviewConfig: an invalid `mention` is a warning, and the agent mention
     }
   }
 });
+
+test("loadReviewConfig: an invalid `mention` entry is left out, and the valid ones still load", async () => {
+  const root = await configDirWithAgent(
+    '---\nmention: ["amandeepmittal", "aman deep", "expo/docs", "-x"]\n---\nIOS',
+  );
+  try {
+    const config = await loadReviewConfig(root);
+    const ios = config.agents.find((agent) => agent.id === "ios")!;
+    expect(ios.mention).toEqual(["amandeepmittal", "expo/docs"]);
+    expect(config.setupWarnings).toHaveLength(1);
+    const [warning] = config.setupWarnings!;
+    expect(warning).toContain(path.join(CONFIG_DIRNAME, "agents", "ios.md"));
+    expect(warning).toContain('entries 2 ("aman deep"), 4 ("-x") are not a GitHub login or team');
+    expect(warning).toContain("leaves them out");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

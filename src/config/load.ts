@@ -587,7 +587,9 @@ function parseAgentPaths(
 
 /**
  * The agent's `mention` list without leading `@`s, or a setup warning that names the
- * fix. An invalid list mentions no one; it never fails the load.
+ * fix. An entry that is not a login or team is left out with a warning, and the
+ * agent still mentions the valid ones. An invalid list mentions no one; it never
+ * fails the load.
  */
 function parseAgentMention(
   md: { data: Record<string, string>; lists: Record<string, string[]> },
@@ -597,31 +599,38 @@ function parseAgentMention(
     return {};
   }
   const entries = md.lists.mention;
-  let issue: { problem: string; fix: string } | null = null;
-  if (!entries) {
-    issue = {
-      problem: "is not a list",
-      fix: "write it as `mention: [octocat]` or as `- octocat` lines",
-    };
-  } else if (entries.length === 0) {
-    issue = { problem: "is empty", fix: "list at least one GitHub login or team" };
-  } else {
-    const invalid = entries.findIndex((entry) => !MENTION_TARGET_RE.test(entry.replace(/^@/, "")));
-    if (invalid !== -1) {
-      issue = {
-        problem: `entry ${invalid + 1} (${JSON.stringify(entries[invalid])}) is not a GitHub login or team`,
-        fix: "write a login such as `octocat` or a team such as `org/team`",
-      };
-    }
-  }
-  if (issue) {
+  if (!entries || entries.length === 0) {
+    const issue = !entries
+      ? {
+          problem: "is not a list",
+          fix: "write it as `mention: [octocat]` or as `- octocat` lines",
+        }
+      : { problem: "is empty", fix: "list at least one GitHub login or team" };
     return {
       warning:
         `${file}: \`mention\` ${issue.problem}, so the agent mentions no one. ` +
         `Fix: ${issue.fix}, or remove \`mention\`.`,
     };
   }
-  return { mention: entries!.map((entry) => entry.replace(/^@/, "")) };
+  const targets = entries.map((entry) => entry.replace(/^@/, ""));
+  const invalid = entries.flatMap((entry, index) =>
+    MENTION_TARGET_RE.test(targets[index]!) ? [] : [`${index + 1} (${JSON.stringify(entry)})`],
+  );
+  const mention = targets.filter((target) => MENTION_TARGET_RE.test(target));
+  if (invalid.length === 0) {
+    return { mention };
+  }
+  // One typo must not silence the people listed beside it.
+  const one = invalid.length === 1;
+  const outcome =
+    mention.length === 0 ? "mentions no one" : one ? "leaves it out" : "leaves them out";
+  return {
+    ...(mention.length > 0 ? { mention } : {}),
+    warning:
+      `${file}: \`mention\` ${one ? "entry" : "entries"} ${invalid.join(", ")} ` +
+      `${one ? "is" : "are"} not a GitHub login or team, so the agent ${outcome}. ` +
+      "Fix: write a login such as `octocat` or a team such as `org/team`, or remove the entry.",
+  };
 }
 
 /** Why `paths` is not a non-empty list of globs that can match a changed file, or null. */
