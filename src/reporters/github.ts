@@ -1140,7 +1140,10 @@ export class GitHubReporter implements Reporter {
       (async () => {
         try {
           const gh = await resolveTrustedTool("gh");
-          const { stdout } = await run(gh, ["pr", "diff", ...prArgs], { cwd });
+          // Never colored, even when the environment forces color (see GitHubPRSource).
+          const { stdout } = await run(gh, ["pr", "diff", ...prArgs, "--color", "never"], {
+            cwd,
+          });
           link.diffLines = buildDiffLineIndex(parseUnifiedDiff(stdout));
         } catch {
           // leave diffLines unset → in-diff findings degrade to plain text

@@ -225,9 +225,12 @@ export class GitHubPRSource implements ReviewSource {
 
   async getChangedFiles(): Promise<DiffEntry[]> {
     const gh = await resolveTrustedTool("gh");
+    // gh colors the diff even into a pipe when the environment forces it
+    // (CLICOLOR_FORCE, GH_FORCE_TTY), and the escape codes before `diff --git` would
+    // make the whole PR parse as no files.
     const { stdout } = await run(
       gh,
-      ["pr", "diff", String(this.options.prNumber), ...this.repoArgs()],
+      ["pr", "diff", String(this.options.prNumber), ...this.repoArgs(), "--color", "never"],
       { cwd: this.options.cwd },
     );
     return parseUnifiedDiff(stdout);
