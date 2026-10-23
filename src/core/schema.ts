@@ -7,11 +7,29 @@ import { z } from "zod";
 import { normalizeCode } from "./util.js";
 
 /** Severity levels, ordered most→least severe for sorting/rendering. */
-export const SEVERITIES = ["critical", "warning", "suggestion"] as const;
+export const SEVERITIES = ["critical", "warning", "design", "suggestion", "nit"] as const;
 export type Severity = (typeof SEVERITIES)[number];
 
 /** Sort rank for severities (0 = most severe). Single source of truth. */
-export const SEVERITY_RANK: Record<Severity, number> = { critical: 0, warning: 1, suggestion: 2 };
+export const SEVERITY_RANK: Record<Severity, number> = {
+  critical: 0,
+  warning: 1,
+  design: 2,
+  suggestion: 3,
+  nit: 4,
+};
+
+// @ref LLP 0005#truncation-and-aggregate-state [implements] — stored state can carry a severity a newer engine added
+/**
+ * The severity to sort and render a finding under. Findings read back from a
+ * comment's embedded state are not schema-validated, and a newer engine can store a
+ * severity this one does not know. Render such a finding as a `warning` (shown, but
+ * not blocking) rather than crash the `/dismiss` or partial-run re-render. The stored
+ * value itself is kept, so the newer engine reads it back unchanged.
+ */
+export function knownSeverity(severity: string): Severity {
+  return Object.hasOwn(SEVERITY_RANK, severity) ? (severity as Severity) : "warning";
+}
 
 export const CATEGORIES = ["correctness", "quality", "security", "secrets"] as const;
 export type Category = (typeof CATEGORIES)[number];

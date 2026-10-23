@@ -54,6 +54,14 @@ test("fingerprint v2: keys on evidence, not the (nondeterministic) title", () =>
   expect(fingerprintFinding(a)).not.toBe(fingerprintFinding(c));
 });
 
+test("a reviewer may emit `design` and `nit` findings", () => {
+  const raw =
+    '{"findings":[' +
+    '{"severity":"design","category":"quality","file":"a.ts","title":"D","rationale":"r"},' +
+    '{"severity":"nit","category":"quality","file":"a.ts","title":"N","rationale":"r"}]}';
+  expect(parseReviewerOutput(raw).findings.map((f) => f.severity)).toEqual(["design", "nit"]);
+});
+
 // Finding 84c48af4a538: `agent` is engine attribution, but it is a RECOGNIZED key of
 // FindingSchema, so zod's strip could not drop it and a reviewer pass or the coordinator
 // (both of which read the untrusted PR diff) could dictate what the comment shows. The

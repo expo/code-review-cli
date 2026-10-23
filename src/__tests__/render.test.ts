@@ -1,6 +1,8 @@
 import { test, expect } from "bun:test";
 
 import {
+  renderAggregateMarkdown,
+  renderInlineCommentBody,
   renderMarkdown,
   parseEmbeddedFingerprints,
   parseReviewState,
@@ -224,6 +226,55 @@ test("renders per-severity headers with counts", () => {
   );
   expect(out).toMatch(/Critical \(1\)/i);
   expect(out).toMatch(/Warning \(1\)/i);
+});
+
+test("renders the severity groups in rank order", () => {
+  const out = renderMarkdown(
+    {
+      ...base,
+      decision: "approve_with_comments",
+      findings: [
+        finding({ severity: "nit", title: "N" }),
+        finding({ severity: "suggestion", title: "S" }),
+        finding({ severity: "design", title: "D" }),
+        finding({ severity: "warning", title: "W" }),
+      ],
+    },
+    "tag",
+  );
+  const headings = out.split("\n").filter((line) => line.startsWith("### "));
+  expect(headings).toEqual([
+    "### ⚠️ Warning (1)",
+    "### 🏗️ Design (1)",
+    "### 💡 Suggestion (1)",
+    "### 🐧 Nit (1)",
+  ]);
+});
+
+test("a stored severity this engine does not know re-renders as a warning", () => {
+  // A newer engine can store a severity this one does not know, and `/dismiss` or a
+  // partial `--scopes` run re-renders that state. Grouping keyed on the raw value
+  // threw on it.
+  const stored = {
+    review: {
+      ...base,
+      decision: "approve_with_comments",
+      findings: [finding({ title: "W" }), { ...finding({ title: "B" }), severity: "blocker" }],
+    },
+    dismissed: [],
+  };
+  const body = `<!-- tag:state=${Buffer.from(JSON.stringify(stored)).toString("base64")} -->`;
+  const state = parseReviewState(body, "tag")!;
+  const single = renderMarkdown(state.review, "tag", state.dismissed);
+  expect(single).toContain("### ⚠️ Warning (2)");
+  // The stored value is kept, so the newer engine reads its own severity back.
+  expect(String(parseReviewState(single, "tag")!.review.findings[1]!.severity)).toBe("blocker");
+  expect(
+    renderAggregateMarkdown([{ scope: "root", isDefault: true, review: state.review }], "tag", []),
+  ).toContain("### ⚠️ Warning (2)");
+  expect(renderInlineCommentBody(state.review.findings[1]!, "tag", "fp")).toContain(
+    "**⚠️ Warning: B**",
+  );
 });
 
 test("a rationale ending in </details> does not swallow the next finding's bullet", () => {
