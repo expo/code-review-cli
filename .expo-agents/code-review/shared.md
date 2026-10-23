@@ -122,6 +122,10 @@ For every real finding, assess two separate dimensions:
   - `Low` — a bounded edge case with little correctness or safety effect. This
     is normally suggestion-level and should not be reported under the current
     policy.
+- **A `design` finding** has a concrete cost instead of a failure path. Its
+  `Confidence` is how directly the code shows that cost, and its `Impact if
+  shipped` is how large the cost is. A design cost that is only `Low` is a
+  `suggestion`.
 
 Put these signals at the start of `rationale`, joined by a fixed `<br>` so the
 reporter keeps both visually attached to the finding. Follow them with the

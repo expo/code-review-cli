@@ -42,7 +42,8 @@ issues in the changed code.
 - Style or formatting concerns handled by a linter/formatter.
 - Issues in unchanged code the PR does not touch.
 - "Consider using library X instead" suggestions.
-- Theoretical concerns with no concrete failure path.
+- Theoretical concerns with no concrete failure path (or, for a `design`
+  finding, no concrete cost).
 - Nitpicks about naming or idiom when the existing convention is being followed.
 - Anything a type-checker or linter would already catch.
 
