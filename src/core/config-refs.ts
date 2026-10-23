@@ -42,16 +42,22 @@ const LINE_CITATION_RE = /^(.+?):(\d+)(?:-\d+)?$/;
 /**
  * Extensions that make a backticked token a *code citation* rather than prose.
  * Deliberately an allowlist: `openai/gpt-5.5` and `label:<agent>` must not read as
- * paths, while `session.ts` and `.github/workflows/**` must.
+ * paths, while `session.ts` and `.github/workflows/**` must. Native build files are on
+ * it (`RCTFontUtils.mm`, `build.gradle`, `AndroidManifest.xml`, `Info.plist`,
+ * `proguard-rules.pro`) because mobile prompts cite them constantly; `.env` is not,
+ * since `process.env` is the far more common backticked token.
  */
 const CITATION_EXTENSIONS = new Set([
   ".c",
   ".cc",
   ".cjs",
+  ".cmake",
   ".cpp",
   ".cs",
   ".css",
+  ".entitlements",
   ".go",
+  ".gradle",
   ".graphql",
   ".hcl",
   ".h",
@@ -63,12 +69,21 @@ const CITATION_EXTENSIONS = new Set([
   ".jsonc",
   ".jsx",
   ".kt",
+  ".kts",
   ".lock",
+  ".m",
   ".md",
+  ".mdx",
   ".mjs",
+  ".mm",
   ".mts",
+  ".pbxproj",
   ".php",
+  ".plist",
+  ".podspec",
   ".prisma",
+  ".pro",
+  ".properties",
   ".proto",
   ".py",
   ".rb",
@@ -84,6 +99,8 @@ const CITATION_EXTENSIONS = new Set([
   ".tsx",
   ".txt",
   ".vue",
+  ".xcconfig",
+  ".xml",
   ".yaml",
   ".yml",
   ".zsh",
@@ -454,6 +471,14 @@ function fileLabel(root: string, setupDir: string, file: string): string {
   return path.join(CONFIG_DIRNAME, path.relative(setupDir, file));
 }
 
+/** What prose adds to a path that a repo path never has: `.../`, `./`, a leading `/`. */
+function barePath(token: string): string {
+  return token
+    .replace(/^\.\.\.\/?/, "")
+    .replace(/^(?:\.\/)+/, "")
+    .replace(/^\/+/, "");
+}
+
 function splitAnchor(target: string): [string, string | undefined] {
   const hash = target.indexOf("#");
   return hash === -1 ? [target, undefined] : [target.slice(0, hash), target.slice(hash + 1)];
@@ -748,6 +773,65 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
     return null;
   };
 
+  // @ref LLP 0012#unannotated-citations-are-broken-refs — the ref a message suggests must itself resolve
+  /**
+   * The ref an unannotated citation should become, chosen so that writing it down
+   * resolves: the path or glob it names, else the one repo file it is a suffix of, else
+   * a suffix glob when several are. Null when nothing in the repo matches: the citation
+   * itself is stale, and any ref to it would be broken too.
+   */
+  const resolvingRef = (
+    citation: string,
+    scopeRoot: string,
+    named: string | null,
+  ): string | null => {
+    const isWild = citation.includes("*");
+    if (named) {
+      return isWild ? `${GLOB_PREFIX}${named}` : named;
+    }
+    if (index.files.length === 0) {
+      return suggestedRef(citation); // no file list (not a git checkout) — uncheckable
+    }
+    const bare = barePath(citation);
+    if (!bare) {
+      return null;
+    }
+    if (isWild) {
+      // A glob matches files only, so a directory pattern (`packages/*/apple/`) needs a
+      // `**` tail to match anything; a leading `./` never matches (paths have none).
+      const pattern = bare.endsWith("/") ? `${bare}**` : bare;
+      const glob =
+        namedGlob(pattern, scopeRoot) ??
+        (pattern.startsWith("**/") ? null : namedGlob(`**/${pattern}`, scopeRoot));
+      return glob ? `${GLOB_PREFIX}${glob}` : null;
+    }
+    if (bare.endsWith("/")) {
+      return null; // a directory that exists nowhere (one that exists somewhere is prose)
+    }
+    const matches = index.files.filter((file) => file === bare || file.endsWith(`/${bare}`));
+    if (matches.length === 0) {
+      return null;
+    }
+    if (matches.includes(bare)) {
+      return bare;
+    }
+    // A partial path that names exactly one file gets that file. A bare or `...`-
+    // abbreviated filename keeps its short suffix glob, which is why that form exists.
+    if (matches.length === 1 && bare.includes("/") && !citation.startsWith("...")) {
+      return matches[0]!;
+    }
+    return `${GLOB_PREFIX}**/${bare}`;
+  };
+
+  /** Does a directory with this (partial) path exist anywhere — `**\/<dir>/**`? */
+  const dirExistsAnywhere = (token: string): boolean => {
+    const bare = barePath(token);
+    return (
+      bare.length > 1 &&
+      index.files.some((file) => file.startsWith(bare) || file.includes(`/${bare}`))
+    );
+  };
+
   for (const dir of dirs) {
     const scopeRoot = path.dirname(dir);
     for (const file of await setupFiles(dir)) {
@@ -788,10 +872,15 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
           continue;
         }
         refs.push(ref);
-        const cited = splitAnchor(ref.target)[0];
-        if (cited && !cited.startsWith(GLOB_PREFIX) && !URL_RE.test(cited)) {
-          citedPaths.add(cited.replace(/\/$/, ""));
+        const cited = splitAnchor(ref.target)[0].replace(/\/$/, "");
+        if (!cited || cited.startsWith(GLOB_PREFIX) || URL_RE.test(cited)) {
+          continue;
         }
+        // @ref LLP 0012#run-points-command-and-review — a top-level dir is checked, but too broad to signal drift
+        if (!cited.includes("/") && (await pathKind(path.resolve(root, cited))) === "dir") {
+          continue;
+        }
+        citedPaths.add(cited);
       }
 
       for (const { line, token } of findProseCitations(text)) {
@@ -802,32 +891,51 @@ export async function checkConfigRefs(options: CheckConfigRefsOptions): Promise<
         if (!isCodeCitation(token) && !named) {
           continue;
         }
-        // Coverage accepts the resolved path too, else the only ref that silences a
-        // scope-relative citation is an over-broad `glob:**/<basename>`.
-        const forms = [...citationForms(token), ...(named ? coveringForms(named) : [])];
+        const lineCitation = LINE_CITATION_RE.exec(token);
+        // @ref LLP 0012#unannotated-citations-are-broken-refs — a dir that exists somewhere is a package-relative name, not a citation
+        if (!named && !isWild && !lineCitation && token.endsWith("/") && dirExistsAnywhere(token)) {
+          continue;
+        }
+        const cited = lineCitation ? lineCitation[1]! : token;
+        const suggestion = resolvingRef(
+          cited,
+          scopeRoot,
+          lineCitation ? await namedPath(cited, scopeRoot) : named,
+        );
+        // Coverage accepts the resolved path and the suggested ref too, so writing the
+        // suggestion down silences the citation, and a scope-relative citation is not
+        // left needing an over-broad `glob:**/<basename>`.
+        const forms = [
+          ...citationForms(token),
+          ...(named ? coveringForms(named) : []),
+          ...(suggestion ? coveringForms(suggestion) : []),
+        ];
         if (
           ignored.has(token) ||
           forms.some((form) => covered.has(form)) ||
           coveringGlobs.some((pattern) =>
-            forms.some((form) => matchesIgnore(form.replace(/^\.\.\.\//, ""), pattern)),
+            // @ref LLP 0004#the-mini-glob-dialect — coverage reads `**/` as zero or more dirs (the routing variant), so `glob:**/a/B.kt` covers `a/B.kt`
+            forms.some((form) => matchesPathGlobs([pattern], form.replace(/^\.\.\.\//, ""))),
           )
         ) {
           continue;
         }
-        const lineCitation = LINE_CITATION_RE.exec(token);
-        // A wildcard token means the family; anything else gets the precise resolved path.
-        const suggestion = isWild
-          ? named
-            ? `${GLOB_PREFIX}${named}`
-            : suggestedRef(token)
-          : (named ?? suggestedRef(token));
+        const ignoreHint = `(or \`${IGNORE_MARK} ${token}\` if it is not a path)`;
+        let problem: string;
+        if (lineCitation) {
+          problem = suggestion
+            ? `\`${token}\` pins a line number; cite the file or a \`#symbol\` instead, as \`${REF_MARK} ${suggestion}\``
+            : `\`${token}\` pins a line number, and \`${cited}\` matches nothing in the repo; update the prompt to cite where that code lives now, by file or \`#symbol\``;
+        } else {
+          problem = suggestion
+            ? `\`${token}\` cites code without a ref; add \`${REF_MARK} ${suggestion} — why it matters\` ${ignoreHint}`
+            : `\`${token}\` matches nothing in the repo, so no ref to it can resolve; the citation may be stale — update the prompt if that code moved or was deleted ${ignoreHint}`;
+        }
         problems.push({
           file: relative,
           line,
           kind: lineCitation ? "line-number-ref" : "unannotated-citation",
-          problem: lineCitation
-            ? `\`${token}\` pins a line number; cite the file or a \`#symbol\` instead, as \`${REF_MARK} ${suggestedRef(lineCitation[1]!)}\``
-            : `\`${token}\` cites code without a ref; add \`${REF_MARK} ${suggestion} — why it matters\` (or \`${IGNORE_MARK} ${token}\` if it is not a path)`,
+          problem,
           target: token,
         });
       }
@@ -892,9 +1000,11 @@ export async function reviewSetupRefNotes(options: {
   // The read root is scrubbed of ambient runtime config (AGENTS.md, CLAUDE.md, .env…),
   // so a ref to one is missing by design here, not stale. The template itself cites
   // AGENTS.md, which would make this note cry wolf on every PR.
+  // Only refs that fail to resolve: a line-number citation (annotated or prose) points at
+  // a file that may well exist, and an unannotated citation is a gate failure, not advice.
   const broken = report.problems.filter(
     (problem) =>
-      problem.kind !== "unannotated-citation" &&
+      (problem.kind === "broken-ref" || problem.kind === "structural") &&
       !(problem.target && isAmbientRuntimeConfig(citedBasename(problem.target))),
   );
   if (broken.length > 0) {

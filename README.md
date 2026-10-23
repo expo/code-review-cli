@@ -220,7 +220,8 @@ A target is a file, a `dir/`, `glob:<pattern>`, `file#symbol`, or `doc.md#headin
 never a line number (line numbers rot without any signal). The check is strict on
 purpose: any backticked token in `.expo-agents/code-review/` that names something that
 exists in the repo **must** be a ref, because stale citations are exactly the ones
-nobody annotated. Mark the rare false positive once with
+nobody annotated. A trailing-slash name like `ios/` that exists only inside packages
+reads as "each package's `ios/`" and is left alone. Mark the rare false positive once with
 `<!-- @ref-ignore knex.raw() -->`. Refs are always repo-root-relative, including in
 a scope's own setup dir, and config declarations (`enforceAgents` ids, scope
 directories and globs) are checked too.
@@ -230,7 +231,8 @@ Two run points:
 - `ecr ref-check` exits 1 on any problem. Run it in CI or a pre-commit hook.
 - `ecr review` / `ecr ci` run it too but never fail a PR's checks with it — broken
   refs (and cited code *this PR* changes) surface as a **Review setup** note in the
-  comment.
+  comment. A ref to a top-level directory (`packages/`) is checked but too broad to
+  drive the "this PR changes cited code" note.
 
 Full detail: [LLP 0012](./llp/0012-config-ref-integrity.explainer.md).
 

@@ -554,3 +554,177 @@ test("routing: a glob counts as live under the same matcher scope assignment use
   const report = await checkConfigRefs({ root });
   expect(report.problems.filter((p) => p.problem.includes("matches no file"))).toEqual([]);
 });
+
+// ---------------------------------------------------------------------------
+// precision: native files, suggestions that resolve, package-relative dirs
+// ---------------------------------------------------------------------------
+
+test("native build files are citations by shape; process.env is not", () => {
+  for (const token of [
+    "RCTFontUtils.mm",
+    "ios/EXFoo.m",
+    "android/build.gradle",
+    "build.gradle.kts",
+    "android/src/main/AndroidManifest.xml",
+    "Info.plist",
+    "ExpoModulesCore.podspec",
+    "ios/App.xcodeproj/project.pbxproj",
+    "Debug.xcconfig",
+    "App.entitlements",
+    "gradle.properties",
+    "toolchain.cmake",
+    "proguard-rules.pro",
+    "docs/pages/index.mdx",
+  ]) {
+    expect(isCodeCitation(token)).toBe(true);
+  }
+  expect(isCodeCitation("process.env")).toBe(false);
+});
+
+test("a suffix glob ref covers the partial path it was written for", async () => {
+  const root = await makeRepo(
+    setup({
+      "packages/cli/src/start/doctor/XcodePrerequisite.ts": "export {}\n",
+      ".expo-code-review/agents/security.md":
+        `<!-- ${REF} glob:**/start/doctor/XcodePrerequisite.ts — the doctor check -->\n` +
+        "See `start/doctor/XcodePrerequisite.ts`.\n",
+    }),
+  );
+  expect((await checkConfigRefs({ root })).problems).toEqual([]);
+
+  // Once the file is gone, the glob ref is the one problem: the prose it covers is not
+  // reported a second time (no resolved file stands in for the token here).
+  const gone = await makeRepo(
+    setup({
+      "packages/cli/src/index.ts": "export {}\n",
+      ".expo-code-review/agents/security.md":
+        `<!-- ${REF} glob:**/start/doctor/XcodePrerequisite.ts — the doctor check -->\n` +
+        "See `start/doctor/XcodePrerequisite.ts`.\n",
+    }),
+  );
+  expect((await checkConfigRefs({ root: gone })).problems.map((problem) => problem.kind)).toEqual([
+    "broken-ref",
+  ]);
+});
+
+test("a partial path is taught the one file it names, or a suffix glob when several", async () => {
+  const files = (pin: string, extra: Record<string, string> = {}): Record<string, string> =>
+    setup({
+      "packages/cli/src/export/embed/exportServer.ts": "export {}\n",
+      ...extra,
+      ".expo-code-review/agents/security.md": `${pin}\nSee \`export/embed/exportServer.ts\`.\n`,
+    });
+
+  const unique = await checkConfigRefs({ root: await makeRepo(files("")) });
+  expect(unique.problems).toHaveLength(1);
+  expect(unique.problems[0]!.problem).toContain(
+    `add \`${REF} packages/cli/src/export/embed/exportServer.ts —`,
+  );
+  const uniquePinned = await checkConfigRefs({
+    root: await makeRepo(
+      files(`<!-- ${REF} packages/cli/src/export/embed/exportServer.ts — the server -->`),
+    ),
+  });
+  expect(uniquePinned.problems).toEqual([]);
+
+  const twin = { "packages/other/export/embed/exportServer.ts": "export {}\n" };
+  const several = await checkConfigRefs({ root: await makeRepo(files("", twin)) });
+  expect(several.problems[0]!.problem).toContain(
+    `add \`${REF} glob:**/export/embed/exportServer.ts —`,
+  );
+  const severalPinned = await checkConfigRefs({
+    root: await makeRepo(
+      files(`<!-- ${REF} glob:**/export/embed/exportServer.ts — both servers -->`, twin),
+    ),
+  });
+  expect(severalPinned.problems).toEqual([]);
+});
+
+test("a wildcard directory or ./ glob is taught a glob that matches files", async () => {
+  const files = (pin: string): Record<string, string> =>
+    setup({
+      "packages/a/apple/A.swift": "struct A {}\n",
+      "internal/x.ts": "export {}\n",
+      ".expo-code-review/agents/ios.md": `${pin}\nSee \`packages/*/apple/\` and \`./internal/*\`.\n`,
+    });
+  const report = await checkConfigRefs({ root: await makeRepo(files("")) });
+  expect(report.problems.map((problem) => problem.problem)).toEqual([
+    expect.stringContaining(`add \`${REF} glob:internal/* —`),
+    expect.stringContaining(`add \`${REF} glob:packages/*/apple/** —`),
+  ]);
+  const pinned = await checkConfigRefs({
+    root: await makeRepo(
+      files(
+        `<!-- ${REF} glob:packages/*/apple/** — the apple dirs -->\n` +
+          `<!-- ${REF} glob:internal/* — the internals -->`,
+      ),
+    ),
+  });
+  expect(pinned.problems).toEqual([]);
+});
+
+test("a citation that matches nothing says so instead of suggesting a broken ref", async () => {
+  const root = await makeRepo(
+    setup({
+      "src/a.ts": "export {}\n",
+      ".expo-code-review/agents/api.md":
+        "See `tools/src/publish-packages/helpers.ts`, `gone.ts` and `tools/gone.ts:12`.\n",
+    }),
+  );
+  const problems = (await checkConfigRefs({ root })).problems.map((problem) => problem.problem);
+  expect(problems).toHaveLength(3);
+  for (const problem of problems) {
+    expect(problem).toContain("matches nothing in the repo");
+    expect(problem).not.toContain(`add \`${REF}`);
+    expect(problem).not.toContain(`as \`${REF}`);
+  }
+});
+
+test("a trailing-slash name that exists somewhere is package-relative prose; one that exists nowhere fails", async () => {
+  const root = await makeRepo(
+    setup({
+      "packages/a/ios/A.swift": "struct A {}\n",
+      "packages/b/android/src/B.kt": "class B\n",
+      ".expo-code-review/agents/native.md":
+        "Each package's `ios/` and `android/src/` dirs; never `iso/`.\n",
+    }),
+  );
+  const problems = (await checkConfigRefs({ root })).problems;
+  expect(problems.map((problem) => problem.target)).toEqual(["iso/"]);
+  expect(problems[0]!.problem).toContain("matches nothing in the repo");
+  expect(problems[0]!.problem).not.toContain("glob:");
+});
+
+test("a top-level directory ref must resolve but does not feed the drift note", async () => {
+  const root = await makeRepo(
+    setup({
+      "package.json": "{}\n",
+      "packages/a/index.ts": "export {}\n",
+      ".expo-code-review/agents/security.md":
+        `<!-- ${REF} packages/ — every package -->\n` +
+        `<!-- ${REF} packages/a/ — one package -->\n` +
+        `<!-- ${REF} package.json — the root manifest -->\n` +
+        `<!-- ${REF} gone/ — not there -->\n`,
+    }),
+  );
+  const report = await checkConfigRefs({ root });
+  expect(report.problems.map((problem) => problem.target)).toEqual(["gone/"]);
+  expect(report.citedPaths).toEqual(["package.json", "packages/a"]);
+  expect(citedPathsTouchedBy(report, ["packages/b/index.ts"])).toEqual([]);
+});
+
+test("a line-number citation of a file that exists is not called unresolvable in the review", async () => {
+  const root = await makeRepo(
+    setup({
+      "src/a.ts": "export {}\n",
+      ".expo-code-review/agents/security.md": `<!-- ${REF} src/a.ts:3 — pinned -->\nSee \`src/a.ts:42\`.\n`,
+    }),
+  );
+  const setupDirs = [path.join(root, ".expo-code-review")];
+  expect(await reviewSetupRefNotes({ root, setupDirs, changedFiles: [] })).toEqual([]);
+  // The command still refuses both.
+  expect((await checkConfigRefs({ root })).problems.map((problem) => problem.kind)).toEqual([
+    "line-number-ref",
+    "line-number-ref",
+  ]);
+});
