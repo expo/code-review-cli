@@ -73,7 +73,7 @@ test("renderInlineCommentBody: id token, severity, rationale, suggestion, and no
     "deadbeef11",
   );
   expect(body).toContain("`id:deadbeef11`");
-  expect(body).toContain("🟡 Warning");
+  expect(body).toContain("⚠️ Warning");
   expect(body).toContain("**Suggestion:** cache it");
   // Untrusted text can never smuggle a raw HTML comment opener into our body.
   expect(body).toContain("&lt;!-- evil -->");

@@ -18,9 +18,10 @@ permissions:
   issues: write
 
 env:
-  # Published reviewer run via npx (override with repo variable ECR_VERSION).
-  # Floor at 0.2.3 — the first version that ships `ecr dismiss`/`undismiss`.
-  ECR_VERSION: ${{ vars.ECR_VERSION || '^0.2.3' }}
+  # Published reviewer run via npx (override with repo variable ECR_VERSION; pin to
+  # a specific version to freeze it). Defaults to `latest` like the review workflows:
+  # /dismiss rewrites the comment state they write, so it must understand all of it.
+  ECR_VERSION: ${{ vars.ECR_VERSION || 'latest' }}
 
 concurrency:
   group: ai-code-review-dismiss-${{ github.event.issue.number }}

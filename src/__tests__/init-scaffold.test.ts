@@ -305,6 +305,22 @@ test("every `uses:` in templates/*.yml is pinned by 40-hex commit SHA with a ver
   expect(usesLines).toBeGreaterThanOrEqual(7);
 });
 
+test("every templates/*.yml defaults ECR_VERSION to latest", async () => {
+  // A range like `^0.2.3` resolves to 0.2.3 itself on 0.x, so a workflow that
+  // defaulted to one would run an engine too old to read the comment state the
+  // review workflows write.
+  const files = (await readdir(TEMPLATES_DIR)).filter((f) => f.endsWith(".yml"));
+  expect(files).toContain("dismiss.yml");
+  for (const file of files) {
+    const yml = await readFile(path.join(TEMPLATES_DIR, file), "utf8");
+    const defaults = [...yml.matchAll(/^\s*ECR_VERSION: (.*)$/gm)].map((m) => m[1]);
+    expect({ file, defaults }).toEqual({
+      file,
+      defaults: ["${{ vars.ECR_VERSION || 'latest' }}"],
+    });
+  }
+});
+
 // @ref LLP 0012#what-gets-scanned [constrained-by] — a scaffold must pass `ecr ref-check` on day one
 test("a freshly scaffolded repo passes ref-check", async () => {
   const root = await freshRepo();

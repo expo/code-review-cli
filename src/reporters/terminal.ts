@@ -23,12 +23,16 @@ const DIM = `${ESC}[2m`;
 const COLORS: Record<Severity, string> = {
   critical: `${ESC}[31m`,
   warning: `${ESC}[33m`,
+  design: `${ESC}[35m`,
   suggestion: `${ESC}[36m`,
+  nit: `${ESC}[90m`,
 };
 const SEVERITY_LABEL: Record<Severity, string> = {
   critical: "CRITICAL",
   warning: "WARNING",
+  design: "DESIGN",
   suggestion: "SUGGESTION",
+  nit: "NIT",
 };
 
 /**

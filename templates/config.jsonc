@@ -17,8 +17,10 @@
 
   // @ref LLP 0009#config-and-prompt-templates [implements] — suggestions off by default, not a schema limit
   "policy": {
-    // Phase 1: keep signal high by surfacing only critical/warning.
-    "includeSuggestions": false
+    // Phase 1: keep signal high by surfacing only critical, warning and design
+    // findings. Findings below `minSeverity` are dropped. From most to least severe:
+    // critical, warning, design, suggestion, nit.
+    "minSeverity": "design"
     // "maxFindings": 10
   },
 
@@ -171,9 +173,10 @@
   // Threads update in place across re-reviews; a retired thread with human
   // replies is stubbed, never deleted. Replies on inline threads are matched to
   // their finding like main-comment replies (same clearing rules).
-  // NOTE: the first enabled run on a PR sends one notification per created
-  // inline comment — `maxComments` bounds that. Disabling later leaves existing
-  // threads up until a comment-mode switch (or manual cleanup) clears them.
+  // A run's new inline comments go out in one COMMENT review, so each run puts
+  // one review entry and one notification on the PR (one per scope in per-scope
+  // mode). Disabling later leaves existing threads up until a comment-mode switch
+  // (or manual cleanup) clears them.
   // "inline": {
   //   "enabled": false,
   //   "maxComments": 20   // per PR (single comment mode) / per scope (per-scope mode)

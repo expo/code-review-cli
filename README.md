@@ -329,7 +329,7 @@ your-monorepo/
 {
   // NO "auth" block — locked centrally; a tokenEnv here is rejected by loader + CI guard.
   "model": "anthropic/claude-opus-5-5",
-  "policy": { "includeSuggestions": false },
+  "policy": { "minSeverity": "design" },
   "noise":  { "additionalIgnores": ["apps/api/**/__generated__/**"] }
   // shared.md, coordinator.md, agents/*.md live beside this file — the api team's roster.
 }
@@ -573,7 +573,7 @@ per-repo `noise.additionalIgnores`.
 ```jsonc
 {
   "model": "anthropic/claude-opus-5-5",       // default model for the specialists
-  "policy": { "includeSuggestions": false },  // suppress suggestion-severity findings
+  "policy": { "minSeverity": "design" },      // drop findings below this severity
   "chunk": { "maxChangedLines": 1000, "maxFiles": 20 },  // concurrency defaults: 6 (API key) / 3 (subscription)
   "noise": { "additionalIgnores": ["packages/*/build/**"] },
   "review": { "trigger": "all",               // which PRs `ecr ci` reviews: "all"
@@ -768,8 +768,13 @@ Behavior notes:
 - **Replies on inline threads count as author feedback.** Replying in a thread
   matches the reply to that finding structurally; clearing still requires the
   `id:…` token in the replier's own words, same as main-comment replies.
-- **Notification fan-out.** The first enabled run on a PR sends one notification
-  per created inline comment; `maxComments` bounds it.
+- **One review per run.** A run's new inline comments go out in one `COMMENT`
+  review, so each run puts one review entry and one notification on the PR (one
+  per scope in per-scope comment mode), not one per comment. The reviewer never
+  approves or requests changes. If GitHub refuses one of the comments, for
+  example for a line it won't anchor, the comments are posted one by one
+  instead, each as its own review. The review has no body of its own, so
+  nothing is left on the PR once its threads are deleted.
 - **Disabling later** leaves existing threads up (the sync no longer runs); a
   comment-mode switch — or the reporter's clear path — stubs/removes them.
 

@@ -64,11 +64,11 @@ test("ScopeReviewConfigSchema: rejects breakGlass", () => {
 test("ScopeReviewConfigSchema: accepts model/policy/chunk/noise", () => {
   const parsed = ScopeReviewConfigSchema.parse({
     model: "anthropic/claude-sonnet-5",
-    policy: { includeSuggestions: true },
+    policy: { minSeverity: "nit" },
     chunk: { maxChangedLines: 500, maxFiles: 10, concurrency: 3 },
     noise: { additionalIgnores: ["x/**"] },
   });
-  expect(parsed.policy.includeSuggestions).toBe(true);
+  expect(parsed.policy.minSeverity).toBe("nit");
 });
 
 test("ScopeReviewConfigSchema: rejects commentTag (per-scope markers are derived)", () => {
@@ -112,6 +112,30 @@ test("loadScopeConfig: nested scope reads its own roster/prompts; auth forced fr
   expect(scoped.agents.find((a) => a.id === "style")!.model).toBe("anthropic/claude-opus-5");
   // auth is forced from the root even though the scope config declares none.
   expect(scoped.auth[0]?.tokenEnv).toBe("ROOT_TOKEN");
+});
+
+test("loadScopeConfig: a nested scope's `includeSuggestions` sets its own floor, with a deprecation", async () => {
+  const root = await makeRoot();
+  await writeConfigDir(path.join(root, "apps", "api", CONFIG_DIRNAME), {
+    config: '{ "policy": { "includeSuggestions": true } }',
+    agents: { style: agent("style") },
+  });
+  const manifest = manifestOf({
+    scopes: [
+      { name: "default", paths: ["**/*"], config: "." },
+      { name: "api", paths: ["apps/api/**"], config: "apps/api" },
+    ],
+  });
+  const rootConfig = await loadReviewConfig(root);
+  const scoped = await loadScopeConfig(root, manifest.scopes[1]!, manifest, rootConfig);
+  expect(scoped.policy.minSeverity).toBe("nit");
+  expect(scoped.deprecations).toEqual([
+    `${path.join(CONFIG_DIRNAME, "config.jsonc")}: \`policy.includeSuggestions\` is deprecated. ` +
+      'Replace it with `"minSeverity": "nit"`.',
+  ]);
+  // The root is untouched by the scope's key.
+  expect(rootConfig.policy.minSeverity).toBe("design");
+  expect("deprecations" in rootConfig).toBe(false);
 });
 
 test("loadScopeConfig: a scope declaring auth fails to load (Zod-level rejection)", async () => {
