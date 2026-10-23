@@ -82,8 +82,11 @@ config keys, severities, commands and model ids. It comes in two tiers.
 **Shape alone** (`isCodeCitation`): an allowlisted source extension, a trailing slash, or
 a wildcard tail inside a path — and never whitespace, `:`, `<`, `(` or quotes. So
 `session.ts`, `src/entities/oauth/` and `.github/workflows/**` are citations, while
-`ecr ci`, `label:<agent>`, `knex.raw()`, `critical` and a bare `.ts` are prose. Fenced
-code blocks are skipped whole: they are examples, not claims about the tree.
+`ecr ci`, `label:<agent>`, `knex.raw()`, `critical` and a bare `.ts` are prose. The
+allowlist carries native build files (`.mm`, `.gradle`, `.xml`, `.plist`, `.podspec`, …),
+which mobile prompts cite constantly; `.env` stays off it, because `process.env` is the
+commoner token. Fenced code blocks are skipped whole: they are examples, not claims about
+the tree.
 
 **Shape plus the filesystem** (`pathishCandidates`), for the citations shape cannot
 settle. A reviewer of this feature named the case: a Terraform prompt citing
@@ -96,6 +99,29 @@ scoped prompt citing `alerts/` means its own tree even when the root has one too
 lists cut back to their fixed prefix. A token carrying `*` resolves as a glob instead,
 scope-rebased when that is what matches, so the suggested `glob:` ref itself resolves.
 Model ids resolve to nothing and stay prose.
+
+A trailing slash is shape, but not enough on its own. Prompts for a repo of many
+packages say `ios/`, `src/` or `android/src/` meaning *each package's* directory of that
+name, and no single ref can pin that: `ios/` does not exist at the root, and
+`glob:**/ios/**` matches the whole tree, so it would verify nothing. So a trailing-slash
+token that resolves at neither the scope root nor the repo root is a citation only when
+no directory of that name exists anywhere in the repo; if one does, it is
+package-relative prose. Swept against expo/expo this removed 28 of 149 problems, every
+one of them a package-relative name whose suggested fix could never resolve [observed].
+The tradeoff is the extensionless one again: a misspelled `iso/` or a deleted `oldpkg/`
+still fails, but a stale `foo/bar/` whose name survives somewhere else
+in the tree goes quiet.
+
+Every suggested fix must itself resolve, or following the message trades one failure
+for another. A partial path (`start/doctor/apple/XcodePrerequisite.ts`) is taught the
+one repo file it is a suffix of, or `glob:**/<token>` when several are, and a suffix glob
+covers the partial path it was written for: coverage reads each `**/` as zero or more
+directories, as routing does ([LLP 0004][dialect]), while resolution keeps the shared
+dialect unchanged, so `./ref-check` needs no change. A wildcard directory
+(`packages/*/apple/`) is taught `glob:packages/*/apple/**`, since a glob matches files
+only, and a leading `./` is dropped, since repo paths never carry one. A citation that matches nothing at
+all gets no suggestion: the message says it does not resolve and may be stale, which is
+usually the real finding.
 
 The consequence is deliberate: an extensionless path that had already drifted before
 adoption is invisible (nothing distinguishes it from prose), while every one that is true
@@ -136,8 +162,19 @@ The review path also runs it, and never fails a PR's checks with it — that inv
 holds ([LLP 0002][pipeline]). Instead the review *advises*: broken refs in the setup
 become a note the reviewer comment carries, and `citedPathsTouchedBy` adds the drift
 signal a static check cannot give — "this PR changes code your reviewer prompts cite, so
-the guidance may need updating" — even when the ref still resolves. In CI the config
-comes from the trusted base ref while refs resolve against the PR head tree, so a PR that
+the guidance may need updating" — even when the ref still resolves. Only refs that fail
+to resolve count toward the first note; a line-number citation is refused by the command
+but usually names a file that exists, so it is not reported as unresolved. The drift
+signal matches by prefix, so a ref to a top-level directory (`packages/`, `docs/`) is
+still checked but does not feed it. With every suggested ref followed, plus `packages/`,
+`docs/` and `apps/`, the note fired on 282 of expo/expo's last 300 commits; without the
+top-level directories, 196 [observed]. A note that fires on nearly every PR is noise.
+The cut stops at one segment because two (`packages/expo-ui/`) usually name one unit
+someone owns, where a PR touching it is the signal working; the remaining volume comes
+mostly from such package directories, and from wide two-segment ones like
+`docs/pages/`, which an author should narrow by hand.
+
+In CI the config comes from the trusted base ref while refs resolve against the PR head tree, so a PR that
 moves cited code is reported against the config that will actually review it.
 
 ## Two Checkers, One Grammar
@@ -172,6 +209,7 @@ the glob dialect must land in `./ref-check` and `src/core/config-refs.ts` togeth
 same annotation will pass one checker and fail the other.
 
 [verify]: 0007-cli-commands-and-ci.explainer.md#verify-config-the-config-guard
+[dialect]: 0004-diff-noise-and-prompts.explainer.md#the-mini-glob-dialect
 [verify5]: 0005-verification-fingerprints-rendering.explainer.md#verifier-confinement-and-fail-open
 [routing]: 0006-config-schema-loading-routing.explainer.md#routing-manifest
 [pipeline]: 0002-review-engine-pipeline.explainer.md#pipeline-stages
