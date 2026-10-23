@@ -11,8 +11,9 @@
   // e.g. `---\nmodel: anthropic/claude-opus-5-5\n---`.
 
   "policy": {
-    // Phase 1: keep signal high by surfacing only critical/warning.
-    "includeSuggestions": false
+    // Phase 1: keep signal high by surfacing only critical, warning and design
+    // findings.
+    "minSeverity": "design"
     // "maxFindings": 10
   },
 

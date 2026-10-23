@@ -329,7 +329,7 @@ your-monorepo/
 {
   // NO "auth" block — locked centrally; a tokenEnv here is rejected by loader + CI guard.
   "model": "anthropic/claude-opus-5-5",
-  "policy": { "includeSuggestions": false },
+  "policy": { "minSeverity": "design" },
   "noise":  { "additionalIgnores": ["apps/api/**/__generated__/**"] }
   // shared.md, coordinator.md, agents/*.md live beside this file — the api team's roster.
 }
@@ -537,7 +537,7 @@ per-repo `noise.additionalIgnores`.
 ```jsonc
 {
   "model": "anthropic/claude-opus-5-5",       // default model for the specialists
-  "policy": { "includeSuggestions": false },  // suppress suggestion and nit findings
+  "policy": { "minSeverity": "design" },      // drop findings below this severity
   "chunk": { "maxChangedLines": 1000, "maxFiles": 20 },  // concurrency defaults: 6 (API key) / 3 (subscription)
   "noise": { "additionalIgnores": ["packages/*/build/**"] },
   "review": { "trigger": "all",               // which PRs `ecr ci` reviews: "all"

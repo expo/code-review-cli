@@ -10,9 +10,10 @@
   // scope (id = filename). shared.md + coordinator.md are this scope's prompts.
 
   "policy": {
-    // Keep signal high by surfacing only critical, warning and design findings. This
-    // setting covers both `suggestion` and `nit` findings.
-    "includeSuggestions": false
+    // Keep signal high by surfacing only critical, warning and design findings.
+    // Findings below `minSeverity` are dropped. From most to least severe: critical,
+    // warning, design, suggestion, nit.
+    "minSeverity": "design"
     // "maxFindings": 10
   },
 

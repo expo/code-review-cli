@@ -88,7 +88,7 @@ defaults). JSONC: `//` and `/* */` comments and trailing commas allowed.
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `model` | string | `"openai/gpt-5.5"` | `provider/model`. Default for all agents + coordinator. Override per-agent in frontmatter; global override via `REVIEWER_MODEL` env (empty/whitespace = unset). |
-| `policy.includeSuggestions` | bool | `false` | If false, `suggestion`- and `nit`-severity findings dropped. This is the "severity floor". |
+| `policy.minSeverity` | severity | `"design"` | Findings below it are dropped (order: `critical`, `warning`, `design`, `suggestion`, `nit`). This is the "severity floor". The deprecated `policy.includeSuggestions` still loads (`true` → `"nit"`, `false` → `"design"`) with a deprecation note; `ecr doctor` warns on it but does not fail. |
 | `policy.maxFindings` | int>0 | unset | Cap total findings (most-severe-first). |
 | `chunk.maxChangedLines` | int>0 | `1000` | Split threshold on added+removed lines. Under it = one full-context pass. |
 | `chunk.maxFiles` | int>0 | `20` | Secondary per-chunk file guard. |
@@ -325,7 +325,7 @@ structural/missing issues quote the single most relevant real line.
   defensible under a skeptical re-read.
 - **Severity/decision semantics**: `SEVERITIES=[critical,warning,design,suggestion,nit]`;
   `DECISIONS=[approve, approve_with_comments, request_changes]`. `request_changes` → exit 1, else 0.
-  `suggestion` and `nit` dropped unless `policy.includeSuggestions`. 0 findings → `approve`; `request_changes`
+  Findings below `policy.minSeverity` (default `design`) dropped. 0 findings → `approve`; `request_changes`
   with no surviving critical → softened to `approve_with_comments`. Any failed/timed-out pass caps
   the result at `approve_with_comments` (never a silent clean approve on incomplete coverage); if
   every pass fails, decision is `approve_with_comments` with `couldNotComplete:true` (render as

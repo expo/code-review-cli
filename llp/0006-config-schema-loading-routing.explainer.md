@@ -190,7 +190,11 @@ parsing through the hidden block would suddenly apply model pins the repo's cred
 cover. Warnings land in `LoadedConfig.setupWarnings`, absent when there are none so a clean setup
 keeps its review-cache key. `runReview` puts them first in `setupNotes` on every result, early
 returns included, so the PR comment's **Review setup** note keeps naming the fix; `ecr doctor`
-fails on them.
+fails on them. A deprecated config key that still loads as before (`policy.includeSuggestions`,
+mapped to `policy.minSeverity`) lands in `LoadedConfig.deprecations` instead: it rides in the same
+setup notes, but `ecr doctor` only warns on it, because nothing about the review changes and
+every repo scaffolded before the rename would otherwise fail doctor [observed: `load.ts`
+`resolvePolicy`; `doctor.ts`].
 
 An agent without `paths` gets no `paths` key at all, not `paths: undefined`, so its object shape
 and its review-cache key are unchanged [observed: `load.ts` agent construction]. The

@@ -31,7 +31,7 @@ const config = (over: Partial<LoadedConfig> = {}): LoadedConfig => ({
     temperature: 0,
     promptText: "dedupe",
   },
-  policy: { includeSuggestions: false },
+  policy: { minSeverity: "warning" },
   chunk: { maxChangedLines: 1000, maxFiles: 20 },
   noise: { additionalIgnores: [], additionalMarkers: [] },
   breakGlassMarker: "/skip-review",
