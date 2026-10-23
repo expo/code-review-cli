@@ -1,5 +1,11 @@
 // @ref LLP 0008#terminal-reporter — stdout carries the report (progress/logging goes to stderr) and the decision maps to a process exit code for pre-push/pre-commit gating
-import { decisionExitCode, decisionLabel, groupBySeverity, sortFindings } from "../core/render.js";
+import {
+  agentNotRunText,
+  decisionExitCode,
+  decisionLabel,
+  groupBySeverity,
+  sortFindings,
+} from "../core/render.js";
 import { SEVERITIES } from "../core/schema.js";
 import type { CoordinatorOutput, Finding, Severity } from "../core/schema.js";
 import type { Reporter } from "./reporter.js";
@@ -58,6 +64,16 @@ export class TerminalReporter implements Reporter {
     out.push(this.paint(BOLD, `AI code review — ${decisionLabel(review.decision)}`));
     out.push(this.tally(review.findings), "");
     out.push(review.summary, "");
+
+    const agentSummaries = review.agentSummaries ?? [];
+    if (agentSummaries.length > 0) {
+      out.push(this.paint(BOLD, "🔎 Reviewer summaries:"));
+      for (const { agent, summary, notRun } of agentSummaries) {
+        const text = notRun ? agentNotRunText(notRun) : (summary ?? "no summary");
+        out.push(this.paint(DIM, `  - ${agent}: ${text}`));
+      }
+      out.push("");
+    }
 
     if (review.incomplete.length > 0) {
       out.push(

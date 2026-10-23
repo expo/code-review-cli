@@ -132,6 +132,20 @@ test("aggregate: each scope keeps its hidden review trace across re-rendering", 
   );
 });
 
+test("aggregate: each scope lists its own agent summaries inside its fold", () => {
+  const results = [
+    scope("api", false, {
+      summary: "API scope summary.",
+      agentSummaries: [{ agent: "security", summary: "Checked the token handling." }],
+    }),
+  ];
+  const body = renderAggregateMarkdown(results, "tag", []);
+  const scopeSummary = body.indexOf("API scope summary.");
+  const section = body.indexOf("🔎 Reviewer summaries (1)");
+  expect(section).toBeGreaterThan(scopeSummary);
+  expect(body).toContain("- **security:** Checked the token handling.");
+});
+
 test("aggregate: a default-scope finding dismissed pre-routing (plain fp) lands in Dismissed (risk 9)", () => {
   const dFinding = finding({ title: "Carried", evidence: "const carriedOverDismissal = 1;" });
   const plainFp = fingerprintFinding(dFinding);
@@ -239,6 +253,30 @@ test('aggregate: oversized findings truncate with a "+N more" note and stay unde
   const body = renderAggregateMarkdown(results, "tag", []);
   expect(body.length).toBeLessThan(65_000);
   expect(body).toContain("more finding(s) — see the workflow log.");
+});
+
+test("aggregate: oversized agent summaries go before any finding, and the comment says so", () => {
+  // Each scope stays inside its own summary budget; together they overflow the body.
+  const agentSummaries = Array.from({ length: 20 }, (_, i) => ({
+    agent: `agent-${i}`,
+    summary: `${"word ".repeat(55)}${i}`,
+  }));
+  const results = Array.from({ length: 10 }, (_, i) =>
+    scope(`scope-${i}`, false, {
+      decision: "approve_with_comments",
+      findings: [finding({ title: `Scope ${i} finding`, evidence: `const scopeFinding${i} = 1;` })],
+      agentSummaries,
+    }),
+  );
+  const body = renderAggregateMarkdown(results, "tag", []);
+  expect(body.length).toBeLessThan(65_000);
+  expect(body).not.toContain("<summary>🔎 Reviewer summaries (");
+  expect(body).toContain("🔎 Reviewer summaries were left out to fit the comment size limit.");
+  for (let i = 0; i < 10; i++) {
+    expect(body).toContain(`Scope ${i} finding`);
+  }
+  const state = parseReviewState(body, "tag")!;
+  expect(state.scopes!.every((entry) => entry.review.agentSummaries === undefined)).toBe(true);
 });
 
 test("aggregate: unmatched files render as a coverage note", () => {

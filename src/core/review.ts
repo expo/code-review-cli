@@ -53,6 +53,8 @@ import {
   NO_TOOLS_INSTRUCTION,
 } from "./prompts.js";
 import {
+  AGENT_SUMMARIES_BYTES_LIMIT,
+  AGENT_SUMMARY_PARTS_LIMIT,
   fingerprintFinding,
   isOverallRiskHandoff,
   parseReviewerOutput,
@@ -63,6 +65,7 @@ import {
   SEVERITY_RANK,
 } from "./schema.js";
 import type {
+  AgentSummary,
   CoordinatorOutput,
   FeedbackRecord,
   Finding,
@@ -329,12 +332,19 @@ export async function runReview(
   }
 
   if (pathsSelection.agents.length === 0) {
+    const agentSummaries = buildAgentSummaries({
+      ran: [],
+      summaries: new Map(),
+      skippedByPaths: pathsSelection.skipped,
+      notRouted: [],
+    });
     const output: CoordinatorOutput = {
       decision: "approve",
       findings: [],
       summary:
         "No reviewer applies to these changes: no reviewable file matches any agent's `paths`.",
       incomplete: [],
+      ...(agentSummaries ? { agentSummaries } : {}),
     };
     await appendStepSummary(renderPathsSkipsMarkdown(pathsSkipped));
     await safeLog(logPath, {
@@ -549,6 +559,10 @@ export async function runReview(
   // comment state. These are deliberately separate from findings: they never reach
   // the coordinator, verification, policy, or decision paths.
   const agentTrace: Record<string, ReviewerTraceNotes> = {};
+  // Each reviewer's own summary for the comment. Like the trace, it never reaches the
+  // coordinator, verification, policy, or decision paths. A Map, so an agent id such as
+  // `constructor` cannot read an inherited property.
+  const agentSummaryParts: AgentSummaryParts = new Map();
   // First reviewer (by scheduling order) that produced each fingerprint, so a finding's
   // originating agent can be carried through the coordinator's merge/rewrite by matching
   // on fingerprint. Kept separate from agentFindings so the coordinator prompt and the
@@ -606,6 +620,9 @@ export async function runReview(
           : "Router unavailable; running all agents.",
       );
     }
+    const notRouted = pathsSelection.agents
+      .filter((agent) => !selectedAgents.includes(agent))
+      .map((agent) => agent.id);
 
     // Split the diff into focused chunks so each reviewer call sees a small file
     // set (better recall than one giant blob), and run all agent×chunk calls
@@ -829,6 +846,12 @@ export async function runReview(
       ...overrides,
     });
 
+    // Passes finish in any order, so each summary part is ordered by where its files
+    // sit in the diff: the same run always keeps the same parts.
+    const filePosition = new Map(workspace.files.map((file, index) => [file.path, index]));
+    const fileOrder = (files: PatchWorkspaceFile[]): number =>
+      filePosition.get(files[0]?.path ?? "") ?? 0;
+
     let completedPasses = 0;
     let failedPasses = 0;
     const taskProgress = (task: ReviewTask, line: string): void =>
@@ -865,6 +888,7 @@ export async function runReview(
         if (value.trace) {
           mergeTraceNotes(agentTrace, task.bucket, value.trace);
         }
+        mergeAgentSummary(agentSummaryParts, task.bucket, value.summary, fileOrder(task.files));
         for (const finding of value.findings) {
           const fp = fingerprintFinding(finding);
           if (!agentByFp.has(fp)) {
@@ -1469,8 +1493,18 @@ export async function runReview(
     // so setup advice is always the checker's, never model text.
     // `CoordinatorOutputSchema` knows the engine field so cached/embedded reviews can
     // parse it, but the coordinator must never author it. Strip any model-supplied
-    // value and attach only the trace assembled from reviewer pass outputs.
-    const outputWithTrace = attachReviewTrace(output, reviewTrace);
+    // value and attach only the trace assembled from reviewer pass outputs. The agent
+    // summaries follow the same rule.
+    const agentSummaries = buildAgentSummaries({
+      ran: [...selectedAgents.map((agent) => agent.id), ...(chunked ? [CROSS_CUTTING_AGENT] : [])],
+      summaries: agentSummaryParts,
+      skippedByPaths: pathsSelection.skipped,
+      notRouted,
+    });
+    const outputWithTrace = attachAgentSummaries(
+      attachReviewTrace(output, reviewTrace),
+      agentSummaries,
+    );
     const reviewed = {
       ...outputWithTrace,
       setupNotes,
@@ -1562,6 +1596,74 @@ export function attachReviewTrace(
 ): CoordinatorOutput {
   const { reviewTrace: _coordinatorTrace, ...withoutTrace } = output;
   return { ...withoutTrace, ...(reviewTrace ? { reviewTrace } : {}) };
+}
+
+/** Each agent's pass summaries, with the diff position each pass started at. */
+export type AgentSummaryParts = Map<string, { order: number; summary: string }[]>;
+
+/** Record one pass's summary for its agent, at `order` (the pass's place in the diff). */
+export function mergeAgentSummary(
+  target: AgentSummaryParts,
+  agent: string,
+  summary: string | undefined,
+  order: number,
+): void {
+  if (summary) {
+    target.set(agent, [...(target.get(agent) ?? []), { order, summary }]);
+  }
+}
+
+/**
+ * One row per roster agent: the agents that ran, in run order, with their summaries,
+ * then the agents that did not run, with the reason. A chunked agent keeps its first
+ * `AGENT_SUMMARY_PARTS_LIMIT` distinct parts in diff order. Undefined when the list is
+ * empty.
+ */
+export function buildAgentSummaries(input: {
+  ran: string[];
+  summaries: AgentSummaryParts;
+  skippedByPaths: string[];
+  notRouted: string[];
+}): AgentSummary[] | undefined {
+  const rows: AgentSummary[] = [
+    // An agent that shares the cross-file pass's id would otherwise get two rows.
+    ...[...new Set(input.ran)].map((agent) => {
+      const parts = [...(input.summaries.get(agent) ?? [])]
+        .sort(
+          (left, right) => left.order - right.order || left.summary.localeCompare(right.summary),
+        )
+        .map((part) => part.summary);
+      const summary = [...new Set(parts)].slice(0, AGENT_SUMMARY_PARTS_LIMIT).join(" ");
+      return summary ? { agent, summary } : { agent };
+    }),
+    ...input.skippedByPaths.map((agent) => ({ agent, notRun: "paths" as const })),
+    ...input.notRouted.map((agent) => ({ agent, notRun: "router" as const })),
+  ];
+  if (rows.length === 0) {
+    return undefined;
+  }
+  // The summaries share GitHub's ~65k comment body with the findings and the hidden
+  // state, so over budget the last rows lose their text but keep their place.
+  for (let index = rows.length - 1; index >= 0; index--) {
+    if (Buffer.byteLength(JSON.stringify(rows), "utf8") <= AGENT_SUMMARIES_BYTES_LIMIT) {
+      break;
+    }
+    const { summary: _dropped, ...row } = rows[index]!;
+    rows[index] = row;
+  }
+  return rows;
+}
+
+/**
+ * Replace any coordinator-authored agent summaries with the engine-assembled list,
+ * for the same reason as `attachReviewTrace`.
+ */
+export function attachAgentSummaries(
+  output: CoordinatorOutput,
+  agentSummaries: AgentSummary[] | undefined,
+): CoordinatorOutput {
+  const { agentSummaries: _coordinatorSummaries, ...withoutSummaries } = output;
+  return { ...withoutSummaries, ...(agentSummaries ? { agentSummaries } : {}) };
 }
 
 /**

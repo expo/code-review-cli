@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 
 import {
+  AGENT_SUMMARY_CHARS,
   extractJsonObject,
   fingerprintFinding,
   parseCoordinatorOutput,
@@ -96,6 +97,7 @@ test("structured parsers expose draft-07 contracts for provider-side validation"
       findings: { items: { properties: Record<string, unknown>; required: string[] } };
       trace: { properties: Record<string, unknown> };
       researchDecisions: { items: { properties: Record<string, unknown> } };
+      summary: { type: string };
     };
   };
   expect(reviewer.$schema).toBe("http://json-schema.org/draft-07/schema#");
@@ -104,6 +106,7 @@ test("structured parsers expose draft-07 contracts for provider-side validation"
   expect(reviewer.properties.trace.properties).toHaveProperty("checked");
   expect(reviewer.properties.trace.properties).toHaveProperty("uncertainties");
   expect(reviewer.properties.researchDecisions.items.properties).toHaveProperty("outcome");
+  expect(reviewer.properties.summary?.type).toBe("string");
 
   const coordinator = parseCoordinatorOutput.jsonSchema as {
     properties: Record<string, unknown>;
@@ -113,6 +116,7 @@ test("structured parsers expose draft-07 contracts for provider-side validation"
   expect(coordinator.properties.incomplete).toBeUndefined();
   expect(coordinator.properties.couldNotComplete).toBeUndefined();
   expect(coordinator.properties.reviewTrace).toBeUndefined();
+  expect(coordinator.properties.agentSummaries).toBeUndefined();
 
   expect(parseVerdict.jsonSchema).toMatchObject({
     type: "object",
@@ -150,6 +154,46 @@ test("reviewer trace parses bounded diagnostics and fails soft when malformed", 
   );
   expect(malformed.trace).toBeUndefined();
   expect(malformed.findings.map((finding) => finding.title)).toEqual(["Keep the real finding"]);
+});
+
+test("a reviewer summary parses to one clipped line and fails soft when malformed", () => {
+  const output = parseReviewerOutput(
+    JSON.stringify({ findings: [], summary: "  Checked the new\n  option   on iOS.  " }),
+  );
+  expect(output.summary).toBe("Checked the new option on iOS.");
+  const long = parseReviewerOutput(
+    JSON.stringify({ findings: [], summary: `${"word ".repeat(200)}end` }),
+  );
+  expect(long.summary!.length).toBeLessThanOrEqual(AGENT_SUMMARY_CHARS + 1);
+  expect(long.summary!.endsWith("…")).toBe(true);
+  const malformed = parseReviewerOutput(
+    JSON.stringify({
+      findings: [
+        {
+          severity: "warning",
+          category: "quality",
+          file: "a.ts",
+          title: "Keep the real finding",
+          rationale: "r",
+        },
+      ],
+      summary: { text: "not a string" },
+    }),
+  );
+  expect(malformed.summary).toBeUndefined();
+  expect(malformed.findings.map((finding) => finding.title)).toEqual(["Keep the real finding"]);
+});
+
+test("a clipped reviewer summary never ends in half of an emoji", () => {
+  const clip = (summary: string) =>
+    parseReviewerOutput(JSON.stringify({ findings: [], summary })).summary!;
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/;
+  // The cut lands between the two halves of the second emoji.
+  expect(clip(`${"x".repeat(AGENT_SUMMARY_CHARS - 1)}😀😀`)).toBe(
+    `${"x".repeat(AGENT_SUMMARY_CHARS - 1)}…`,
+  );
+  expect(lone.test(clip(`${"x".repeat(AGENT_SUMMARY_CHARS - 2)}😀😀`))).toBe(false);
+  expect(lone.test(clip(` ${"x".repeat(AGENT_SUMMARY_CHARS - 3)}😀😀`))).toBe(false);
 });
 
 test("reviewer research decisions parse bounded conclusions and fail soft when malformed", () => {
