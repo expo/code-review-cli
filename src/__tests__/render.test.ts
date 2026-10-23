@@ -160,6 +160,112 @@ test("a backtick before `@` does not keep a mention live in an agent summary", (
   expect(body).toContain("Closed `x`@\u200Boctocat, open `@\u200Bexpo/team.");
 });
 
+test("a mention renders visibly under the summary and names only valid logins", () => {
+  const review: CoordinatorOutput = {
+    ...base,
+    summary: "Overall summary.",
+    mentions: [
+      {
+        agent: "docs",
+        logins: ["amandeepmittal", "expo/docs", "not a login"],
+        reason: "Ask @someone else <br> to look.",
+      },
+    ],
+  };
+  const body = renderMarkdown(review, "tag");
+  const line =
+    "> 📣 @amandeepmittal @expo/docs: the `docs` reviewer asks for your review. Ask @\u200Bsomeone else to look.";
+  expect(body).toContain(line);
+  expect(body.indexOf(line)).toBeGreaterThan(body.indexOf("Overall summary."));
+  expect(body).not.toContain("not a login");
+
+  const state = parseReviewState(body, "tag")!;
+  expect(state.review.mentions).toEqual(review.mentions);
+  expect(renderMarkdown(state.review, "tag", state.dismissed)).toContain(line);
+  expect(renderMarkdown(base, "tag")).not.toContain("📣");
+});
+
+/** The `@login` / `@org/team` mentions GitHub would notify in `body`, before its state. */
+const liveMentions = (body: string): string[] =>
+  [...body.split("<!-- tag:")[0]!.matchAll(/(?:^|[^A-Za-z0-9_])@([A-Za-z0-9][\w/-]*)/g)].map(
+    (match) => match[1]!,
+  );
+
+test("model text in the comment and inline bodies never notifies; only the configured mention does", () => {
+  const mentioning = finding({
+    title: "Ask @title-user",
+    rationale: "Line one.\n@rationale-user should look at `@expo/team`.",
+    suggestion: "Ping @suggest-user.",
+    sources: [{ title: "Notes by @source-user", url: "https://example.com/a" }],
+  });
+  const requalified = finding({
+    title: "Moved @moved-user",
+    evidence: "const requalifiedThing = 1;",
+    requalifiedBy: { prNumber: 7, file: "b.ts", reason: "Fixed by @reason-user" },
+  });
+  const review: CoordinatorOutput = {
+    ...base,
+    summary: "Coordinator thanks @summary-user.",
+    findings: [mentioning, requalified],
+    mentions: [{ agent: "docs", logins: ["amandeepmittal"], reason: "New guide." }],
+  };
+  const body = renderMarkdown(review, "tag");
+  expect(liveMentions(body)).toEqual(["amandeepmittal"]);
+  // Still readable: the zero-width space is the only change, and lines survive.
+  expect(body).toContain("Coordinator thanks @\u200Bsummary-user.");
+  expect(body).toContain("  @\u200Brationale-user should look at `@\u200Bexpo/team`.");
+  expect(liveMentions(renderInlineCommentBody(mentioning, "tag", "abc"))).toEqual([]);
+});
+
+test("multi-line model text gets the same mention rules as a summary row", () => {
+  const sneaky = finding({
+    title: "Ask _@title-user_",
+    rationale: "Line one.\n&#64;rationale-user and &commat;other should look.",
+    suggestion: "Mail ops@example.com, not *@suggest-user* or @@run-user.",
+  });
+  const body = renderMarkdown({ ...base, findings: [sneaky] }, "tag");
+  expect(liveMentions(body)).toEqual([]);
+  expect(body).toContain("Ask _@\u200Btitle-user_");
+  expect(body).toContain("&amp;#64;rationale-user and &amp;commat;other should look.");
+  expect(body).toContain(
+    "Mail ops@example.com, not *@\u200Bsuggest-user* or @\u200B@\u200Brun-user.",
+  );
+  const inline = renderInlineCommentBody(sneaky, "tag", "abc");
+  expect(inline).toContain("&amp;#64;rationale-user");
+  expect(inline).toContain("_@\u200Btitle-user_");
+});
+
+test("a handle notifies once per comment: it stays live while present, and returns without a mention", () => {
+  const asking: CoordinatorOutput = {
+    ...base,
+    mentions: [{ agent: "docs", logins: ["Octocat", "expo/docs"], reason: "New guide." }],
+  };
+  const live = "> 📣 @Octocat @expo/docs: the `docs` reviewer asks for your review.";
+  const quiet = "> 📣 @\u200BOctocat @\u200Bexpo/docs: the `docs` reviewer asks for your review.";
+  const next = (body: string, review: CoordinatorOutput): string => {
+    const state = parseReviewState(body, "tag")!;
+    return renderMarkdown(review, "tag", [], undefined, [], [], undefined, state.mentioned);
+  };
+  const first = renderMarkdown(asking, "tag");
+  expect(first).toContain(live);
+  // A re-review that still asks keeps the same live mentions, so the edit adds none.
+  const steady = next(first, asking);
+  expect(steady).toContain(live);
+  const dropped = next(steady, base);
+  expect(dropped).not.toContain("📣");
+  // The request comes back: an edit that re-adds a live mention would notify again.
+  const back = next(dropped, asking);
+  expect(back).toContain(quiet);
+  expect(liveMentions(back)).toEqual([]);
+  expect(next(back, asking)).toContain(quiet);
+  // A handle the comment never notified still notifies.
+  const other = next(back, {
+    ...base,
+    mentions: [{ agent: "docs", logins: ["octocat", "hubot"], reason: "Again." }],
+  });
+  expect(liveMentions(other)).toEqual(["hubot"]);
+});
+
 const summaryRow = (summary: string): string => {
   const body = renderMarkdown({ ...base, agentSummaries: [{ agent: "docs", summary }] }, "tag");
   return body

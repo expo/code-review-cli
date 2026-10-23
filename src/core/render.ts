@@ -8,11 +8,14 @@ import {
   FeedbackRecordSchema,
   fingerprintFinding,
   knownSeverity,
+  MENTION_TARGET_RE,
+  MentionStateSchema,
   scopedFingerprint,
   SEVERITIES,
   SEVERITY_RANK,
 } from "./schema.js";
 import type {
+  AgentMention,
   AgentSummary,
   CoordinatorOutput,
   Decision,
@@ -20,6 +23,7 @@ import type {
   FeedbackPin,
   FeedbackRecord,
   Finding,
+  MentionState,
   Severity,
 } from "./schema.js";
 
@@ -249,6 +253,7 @@ const MAX_COMMENT_CHARS = 60_000;
  * per-PR dismissals. Findings whose fingerprint appears in `dismissed` render in a
  * collapsed "Dismissed" section instead of the main list. An oversized body leaves
  * out the agent summaries, from the visible rows and the embedded state, with a note.
+ * `mentioned` is the mention state of the comment this body replaces.
  */
 export function renderMarkdown(
   review: CoordinatorOutput,
@@ -258,9 +263,10 @@ export function renderMarkdown(
   feedback: FeedbackRecord[] = [],
   pins: FeedbackPin[] = [],
   inputHash?: string,
+  mentioned?: MentionState,
 ): string {
   // @ref LLP 0005#truncation-and-aggregate-state [implements] — over the size limit, the single comment leaves out the agent summaries, as the aggregate does first
-  const body = renderReviewBody(review, tag, dismissed, link, feedback, pins, inputHash);
+  const body = renderReviewBody(review, tag, dismissed, link, feedback, pins, inputHash, mentioned);
   if (body.length <= MAX_COMMENT_CHARS || !review.agentSummaries?.length) {
     return body;
   }
@@ -268,7 +274,17 @@ export function renderMarkdown(
   // budget, and a body over GitHub's limit fails to post: the review would be lost to
   // the failure notice. The summaries never affect the decision, so they go.
   const { agentSummaries: _leftOut, ...withoutSummaries } = review;
-  return renderReviewBody(withoutSummaries, tag, dismissed, link, feedback, pins, inputHash, true);
+  return renderReviewBody(
+    withoutSummaries,
+    tag,
+    dismissed,
+    link,
+    feedback,
+    pins,
+    inputHash,
+    mentioned,
+    true,
+  );
 }
 
 function renderReviewBody(
@@ -279,6 +295,7 @@ function renderReviewBody(
   feedback: FeedbackRecord[],
   pins: FeedbackPin[],
   inputHash: string | undefined,
+  mentioned: MentionState | undefined,
   summariesLeftOut = false,
 ): string {
   const dismissedByFp = new Map(dismissed.map((record) => [record.fp, record]));
@@ -299,9 +316,11 @@ function renderReviewBody(
   lines.push(
     `**Decision:** ${review.couldNotComplete ? "No review — every pass failed" : decisionLabel(review.decision)}`,
     "",
-    stripStateMarkers(review.summary),
+    modelText(review.summary),
     "",
   );
+  const mentionState = nextMentionState(mentionHandles(review.mentions), mentioned);
+  lines.push(...mentionLines(review.mentions, mentionState.live));
   lines.push(
     ...(summariesLeftOut
       ? [AGENT_SUMMARIES_LEFT_OUT, ""]
@@ -350,7 +369,7 @@ function renderReviewBody(
     for (const { finding, fp } of dropped) {
       const suffix = droppedSuffix(dismissedByFp.get(fp), feedbackByFp.get(fp));
       lines.push(
-        `- **${stripStateMarkers(finding.title)}** — ${location(finding, link)} \`id:${fp}\`${suffix}`,
+        `- **${modelText(finding.title)}** — ${location(finding, link)} \`id:${fp}\`${suffix}`,
       );
     }
     lines.push("", "_Re-add one with `/undismiss <id>`._", "</details>", "");
@@ -363,7 +382,16 @@ function renderReviewBody(
   lines.push("", `<!-- ${tag}:fingerprints=${JSON.stringify(fingerprints)} -->`);
   lines.push(
     `<!-- ${tag}:state=${encodeState(
-      reviewState({ review, dismissed, ...(inputHash ? { inputHash } : {}) }, feedbackByFp, pins),
+      reviewState(
+        {
+          review,
+          dismissed,
+          ...(inputHash ? { inputHash } : {}),
+          ...withMentionState(mentionState),
+        },
+        feedbackByFp,
+        pins,
+      ),
     )} -->`,
   );
   return lines.join("\n");
@@ -416,7 +444,7 @@ function indentContinuation(value: string, indent = "  "): string[] {
 }
 
 function sourceLabel(value: string): string {
-  return stripStateMarkers(value)
+  return modelText(value)
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/([\\[\]])/g, "\\$1");
@@ -473,14 +501,14 @@ function renderFindingLines(
     // The one-line rationale stays here as the durable audit trail (the author
     // can collapse/resolve the thread; they cannot edit this comment).
     return [
-      `- **${stripStateMarkers(finding.title)}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\` · 💬 [inline comment](${inlineUrl})${replyAnnotation(reply)}`,
-      ...indentContinuation(oneLineRationale(stripStateMarkers(finding.rationale))),
+      `- **${modelText(finding.title)}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\` · 💬 [inline comment](${inlineUrl})${replyAnnotation(reply)}`,
+      ...indentContinuation(breakMentions(oneLineRationale(stripStateMarkers(finding.rationale)))),
       "",
     ];
   }
   const out = [
-    `- **${stripStateMarkers(finding.title)}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\`${replyAnnotation(reply)}`,
-    ...indentContinuation(stripStateMarkers(finding.rationale)),
+    `- **${modelText(finding.title)}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\`${replyAnnotation(reply)}`,
+    ...indentContinuation(modelText(finding.rationale)),
   ];
   if (finding.sources?.length) {
     const sources = finding.sources
@@ -492,7 +520,7 @@ function renderFindingLines(
     // A rationale may end in raw HTML (`</details>`). GitHub requires a truly
     // blank line before it resumes Markdown parsing; without this separator the
     // suggestion's emphasis markers are rendered literally.
-    out.push("", ...indentContinuation(`**Suggestion:** ${stripStateMarkers(finding.suggestion)}`));
+    out.push("", ...indentContinuation(`**Suggestion:** ${modelText(finding.suggestion)}`));
   }
   // Separator so a rationale ending in `</details>` cannot swallow the next
   // bullet. Findings are already loose list items, so this changes no spacing.
@@ -511,9 +539,9 @@ function renderFindingLines(
 export function renderInlineCommentBody(finding: Finding, tag: string, fp: string): string {
   const lines = [
     inlineCommentMarker(tag, fp),
-    `**${severityHeading(knownSeverity(finding.severity))}: ${stripStateMarkers(finding.title)}** _(${finding.category})_ · \`id:${fp}\``,
+    `**${severityHeading(knownSeverity(finding.severity))}: ${modelText(finding.title)}** _(${finding.category})_ · \`id:${fp}\``,
     "",
-    stripStateMarkers(finding.rationale),
+    modelText(finding.rationale),
   ];
   if (finding.sources?.length) {
     const sources = finding.sources
@@ -522,7 +550,7 @@ export function renderInlineCommentBody(finding: Finding, tag: string, fp: strin
     lines.push("", `**Sources:** ${sources}`);
   }
   if (finding.suggestion) {
-    lines.push("", `**Suggestion:** ${stripStateMarkers(finding.suggestion)}`);
+    lines.push("", `**Suggestion:** ${modelText(finding.suggestion)}`);
   }
   lines.push(
     "",
@@ -554,6 +582,55 @@ export const AGENT_NOT_RUN_TEXT: Record<NonNullable<AgentSummary["notRun"]>, str
   paths: "not run: no changed file matches its `paths`",
   router: "not run: the router did not select it",
 };
+
+/** The valid handles a set of mentions names. */
+function mentionHandles(mentions: AgentMention[] = []): string[] {
+  // The state is parsed back from the comment body, so check every login again.
+  return mentions.flatMap(({ logins }) => logins.filter((login) => MENTION_TARGET_RE.test(login)));
+}
+
+// @ref LLP 0005#comment-rendering [implements] — a handle notifies once per comment: an edit that adds a mention notifies, so a request that drops out and comes back renders without a live mention
+/**
+ * Which handles this render mentions for real. A handle stays live while it stays in
+ * the comment. One the comment notified before, which left and came back, renders
+ * as plain text: GitHub notifies a person when an edit adds a mention of them, so a
+ * request that flaps between runs would otherwise notify on every return.
+ */
+function nextMentionState(handles: string[], prior?: MentionState): MentionState {
+  const priorLive = new Set(prior?.live ?? []);
+  const priorNotified = new Set(prior?.notified ?? []);
+  const live = [...new Set(handles.map((handle) => handle.toLowerCase()))].filter(
+    (handle) => priorLive.has(handle) || !priorNotified.has(handle),
+  );
+  return { live, notified: [...new Set([...priorNotified, ...live])] };
+}
+
+/** The state field for `mentionState`, or nothing when the comment never mentioned anyone. */
+function withMentionState(mentionState: MentionState): { mentioned?: MentionState } {
+  return mentionState.notified.length > 0 ? { mentioned: mentionState } : {};
+}
+
+/**
+ * One visible line per human review that an agent asked for, which mentions the people
+ * from the agent's config. A handle not in `live` shows without notifying. Empty when
+ * there are none.
+ */
+function mentionLines(mentions: AgentMention[] = [], live: string[] = []): string[] {
+  const liveSet = new Set(live);
+  return mentions.flatMap(({ agent, logins, reason }) => {
+    const handles = mentionHandles([{ agent, logins, reason }]);
+    if (handles.length === 0) {
+      return [];
+    }
+    const people = handles
+      .map((login) => (liveSet.has(login.toLowerCase()) ? `@${login}` : `@\u200B${login}`))
+      .join(" ");
+    return [
+      `> 📣 ${people}: the \`${stripStateMarkers(agent)}\` reviewer asks for your review. ${plainModelLine(reason)}`,
+      "",
+    ];
+  });
+}
 
 /**
  * `AGENT_NOT_RUN_TEXT` for `reason`. A comment's state is re-rendered without a schema
@@ -612,19 +689,38 @@ const AT_REFERENCE_RE = /&(?=#0*64;|#[xX]0*40;|commat;)/g;
 function plainModelLine(text: string): string {
   const flat = text
     .replace(FORMATTING_TAG_RE, " ")
-    // Shown as typed: `&amp;#64;` renders as the text `&#64;`, never as `@`.
-    .replace(AT_REFERENCE_RE, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/\s+/g, " ")
     .trim();
+  return breakMentions(flat);
+}
+
+/**
+ * Text with every `@mention` broken, so it can never notify anyone. Only the
+ * engine-owned mention lines notify people.
+ */
+function breakMentions(text: string): string {
   // GitHub notifies `@login` and `@org/team` when the `@` starts a text node or follows
   // a non-word character. Markdown can start a text node at almost any punctuation
   // (`_@x_` renders as `<em>@x</em>`), so only an ASCII letter or digit before the `@`
   // is safe to trust, which keeps an email address whole. Everywhere else a zero-width
   // space after the `@` keeps the text readable and stops the notification.
-  // A lookbehind, not a captured preceding character: a capture would consume the
-  // first `@` of `@@login`, leave the second unmatched, and `@\u200B@login` notifies.
-  return flat.replace(/(?<![A-Za-z0-9])@/g, "@\u200B");
+  return (
+    text
+      // Shown as typed: `&amp;#64;` renders as the text `&#64;`, never as `@`.
+      .replace(AT_REFERENCE_RE, "&amp;")
+      // A lookbehind, not a captured preceding character: a capture would consume the
+      // first `@` of `@@login`, leave the second unmatched, and `@\u200B@login` notifies.
+      .replace(/(?<![A-Za-z0-9])@/g, "@\u200B")
+  );
+}
+
+/**
+ * Model-written prose for the comment body: no forged state marker, and no live
+ * `@mention`. Multi-line text keeps its lines and formatting.
+ */
+function modelText(text: string): string {
+  return breakMentions(stripStateMarkers(text));
 }
 
 // @ref LLP 0012#run-points-command-and-review [implements] — setup advice renders outside the findings list, so it never blocks
@@ -665,9 +761,9 @@ function requalificationAuditNote(requalified: Finding[]): string[] {
  * addressing PR and the exact upstack path relied on. */
 function addressedLines(finding: Finding, fp: string, link?: LinkContext): string[] {
   const requalified = finding.requalifiedBy!;
-  const reason = requalified.reason ? `: ${stripStateMarkers(requalified.reason)}` : "";
+  const reason = requalified.reason ? `: ${modelText(requalified.reason)}` : "";
   return [
-    `- **${stripStateMarkers(finding.title)}** — ${location(finding, link)} \`id:${fp}\` — addressed in ` +
+    `- **${modelText(finding.title)}** — ${location(finding, link)} \`id:${fp}\` — addressed in ` +
       `#${requalified.prNumber} (\`${stripStateMarkers(requalified.file)}\`)${reason}`,
   ];
 }
@@ -787,6 +883,8 @@ export interface ReviewState {
    * comment, the pins are migrated out of the records themselves.
    */
   pins?: FeedbackPin[];
+  /** v6: who this comment's mention lines notify, so a later render never notifies twice. */
+  mentioned?: MentionState;
 }
 
 const DECISION_RANK: Record<Decision, number> = {
@@ -818,10 +916,14 @@ export function renderAggregateMarkdown(
   tag: string,
   dismissed: DismissalRecord[],
   link?: LinkContext,
-  opts?: { unmatchedFiles?: string[] },
+  opts?: { unmatchedFiles?: string[]; mentioned?: MentionState },
   feedback: FeedbackRecord[] = [],
   pins: FeedbackPin[] = [],
 ): string {
+  const mentionState = nextMentionState(
+    results.flatMap((result) => mentionHandles(result.review.mentions)),
+    opts?.mentioned,
+  );
   const dismissedByFp = new Map(dismissed.map((record) => [record.fp, record]));
   const idOf = (result: ScopeReviewResult, finding: Finding): string =>
     scopedFingerprint(result.isDefault ? null : result.scope, finding);
@@ -937,8 +1039,12 @@ export function renderAggregateMarkdown(
       // @ref LLP 0011#suppression-is-never-silent — a reply-suppressed scope opens
       // its fold so the audit note is visible, matching renderMarkdown and LLP 0010's
       // visible-suppression rule (else a scope replies cleared reads as clean).
+      // A human-review request opens it too: the people it notifies must find it.
+      const mentions = mentionLines(result.review.mentions, mentionState.live);
       const open =
-        shown.length > 0 || requalifiedAll.length > 0 || replies.length > 0 ? " open" : "";
+        shown.length > 0 || requalifiedAll.length > 0 || replies.length > 0 || mentions.length > 0
+          ? " open"
+          : "";
       const keptCount = shown.length + hidden;
       lines.push(
         `<details${open}>`,
@@ -946,8 +1052,9 @@ export function renderAggregateMarkdown(
         "",
       );
       if (result.review.summary) {
-        lines.push(stripStateMarkers(result.review.summary), "");
+        lines.push(modelText(result.review.summary), "");
       }
+      lines.push(...mentions);
       if (withSummaries) {
         lines.push(...agentSummariesSection(result.review.agentSummaries));
       } else if (result.review.agentSummaries?.length) {
@@ -993,7 +1100,7 @@ export function renderAggregateMarkdown(
       for (const { finding, id, scope } of allDropped) {
         const suffix = droppedSuffix(dismissedByFp.get(id), feedbackById.get(id));
         lines.push(
-          `- **${stripStateMarkers(finding.title)}** — ${location(finding, link)} \`id:${id}\` _(${stripStateMarkers(scope)})_${suffix}`,
+          `- **${modelText(finding.title)}** — ${location(finding, link)} \`id:${id}\` _(${stripStateMarkers(scope)})_${suffix}`,
         );
       }
       lines.push("", "_Re-add one with `/undismiss <id>`._", "</details>", "");
@@ -1071,7 +1178,11 @@ export function renderAggregateMarkdown(
     // decided — or a maintainer's restore, which no later run could recover.
     lines.push(
       `<!-- ${tag}:state=${encodeState(
-        reviewState({ review: merged, dismissed, scopes: stateScopes }, feedbackById, pins),
+        reviewState(
+          { review: merged, dismissed, scopes: stateScopes, ...withMentionState(mentionState) },
+          feedbackById,
+          pins,
+        ),
       )} -->`,
     );
     return lines.join("\n");
@@ -1126,10 +1237,13 @@ export function parseReviewState(body: string, tag: string): ReviewState | null 
       // collectPins lifts those into the set. Without this, the first render by this
       // version would write a state with no pins at all and silently release every
       // `/undismiss` a maintainer had already made.
+      const { mentioned: rawMentioned, ...rest } = parsed;
+      const mentioned = MentionStateSchema.safeParse(rawMentioned);
       return {
-        ...parsed,
+        ...rest,
         feedback: records,
         pins: collectPins(parsedPins.success ? parsedPins.data : [], records),
+        ...(mentioned.success ? { mentioned: mentioned.data } : {}),
       };
     }
   } catch {

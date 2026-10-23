@@ -298,3 +298,60 @@ test("loadReviewConfig: `includeSuggestions` loads as a floor, with a deprecatio
     }
   }
 });
+
+test("loadReviewConfig: front-matter `mention` loads GitHub logins and teams onto the agent", async () => {
+  const root = await configDirWithAgent(
+    '---\nmention:\n  - amandeepmittal\n  - "@expo/docs"\n---\nIOS',
+  );
+  try {
+    const config = await loadReviewConfig(root);
+    const ios = config.agents.find((agent) => agent.id === "ios")!;
+    const plain = config.agents.find((agent) => agent.id === "plain")!;
+    expect(ios.mention).toEqual(["amandeepmittal", "expo/docs"]);
+    expect("mention" in plain).toBe(false);
+    expect("setupWarnings" in config).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("loadReviewConfig: an invalid `mention` is a warning, and the agent mentions no one", async () => {
+  const cases: Array<[string, string]> = [
+    ["mention: amandeepmittal", "is not a list"],
+    ["mention: []", "is empty"],
+    ['mention: ["aman deep"]', 'entry 1 ("aman deep") is not a GitHub login or team'],
+  ];
+  for (const [line, expected] of cases) {
+    const root = await configDirWithAgent(`---\n${line}\n---\nIOS`);
+    try {
+      const config = await loadReviewConfig(root);
+      const ios = config.agents.find((agent) => agent.id === "ios")!;
+      expect("mention" in ios, line).toBe(false);
+      expect(config.setupWarnings, line).toHaveLength(1);
+      const [warning] = config.setupWarnings!;
+      expect(warning).toContain(path.join(CONFIG_DIRNAME, "agents", "ios.md"));
+      expect(warning).toContain(expected);
+      expect(warning).toContain("mentions no one");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("loadReviewConfig: an invalid `mention` entry is left out, and the valid ones still load", async () => {
+  const root = await configDirWithAgent(
+    '---\nmention: ["amandeepmittal", "aman deep", "expo/docs", "-x"]\n---\nIOS',
+  );
+  try {
+    const config = await loadReviewConfig(root);
+    const ios = config.agents.find((agent) => agent.id === "ios")!;
+    expect(ios.mention).toEqual(["amandeepmittal", "expo/docs"]);
+    expect(config.setupWarnings).toHaveLength(1);
+    const [warning] = config.setupWarnings!;
+    expect(warning).toContain(path.join(CONFIG_DIRNAME, "agents", "ios.md"));
+    expect(warning).toContain('entries 2 ("aman deep"), 4 ("-x") are not a GitHub login or team');
+    expect(warning).toContain("leaves them out");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

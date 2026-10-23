@@ -226,7 +226,10 @@ export const AGENT_SUMMARY_CHARS = 280;
 export const AGENT_SUMMARY_PARTS_LIMIT = 2;
 export const AGENT_SUMMARIES_BYTES_LIMIT = 8_000;
 
-function clipAgentSummary(text: string): string {
+function clipModelLine(text: unknown): string {
+  if (typeof text !== "string") {
+    return "";
+  }
   const flat = text.replace(/\s+/g, " ").trim();
   if (flat.length <= AGENT_SUMMARY_CHARS) {
     return flat;
@@ -248,6 +251,12 @@ const ReviewerModelOutputSchema = z.object({
     .describe(
       `One or two sentences, at most ${AGENT_SUMMARY_CHARS} characters, on what this pass reviewed and concluded`,
     ),
+  humanReview: z
+    .string()
+    .optional()
+    .describe(
+      "Only when the role prompt asks for it: one sentence on why a person should review this change",
+    ),
 });
 
 /**
@@ -261,6 +270,7 @@ export const ReviewerOutputSchema = z
     trace: z.unknown().optional(),
     researchDecisions: z.unknown().optional(),
     summary: z.unknown().optional(),
+    humanReview: z.unknown().optional(),
   })
   .transform((output) => {
     const trace = ReviewerTraceNotesSchema.safeParse(output.trace);
@@ -268,12 +278,14 @@ export const ReviewerOutputSchema = z
       .array(ResearchDecisionSchema)
       .max(8)
       .safeParse(output.researchDecisions);
-    const summary = typeof output.summary === "string" ? clipAgentSummary(output.summary) : "";
+    const summary = clipModelLine(output.summary);
+    const humanReview = clipModelLine(output.humanReview);
     return {
       findings: output.findings,
       ...(trace.success ? { trace: trace.data } : {}),
       ...(researchDecisions.success ? { researchDecisions: researchDecisions.data } : {}),
       ...(summary ? { summary } : {}),
+      ...(humanReview ? { humanReview } : {}),
     };
   });
 export type ReviewerOutput = z.infer<typeof ReviewerOutputSchema>;
@@ -301,6 +313,37 @@ export const AgentSummarySchema = z.object({
   notRun: z.enum(AGENT_NOT_RUN_REASONS).optional(),
 });
 export type AgentSummary = z.infer<typeof AgentSummarySchema>;
+
+/**
+ * A GitHub login or an `org/team` slug, without the `@`: the only text a review
+ * mentions. A login is at most 39 characters of letters, digits and single inner
+ * hyphens, with an optional Enterprise Managed User `_shortcode` suffix. A team slug
+ * is letters, digits and underscores joined by single hyphens.
+ */
+export const MENTION_TARGET_RE =
+  /^(?=[A-Za-z0-9_-]{1,39}(?:\/|$))[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:_[A-Za-z0-9]+)?(?:\/(?=[A-Za-z0-9_-]{1,100}$)[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*)?$/;
+
+/**
+ * An agent's request for a human review: the people its config names, and the
+ * agent's reason.
+ */
+export const AgentMentionSchema = z.object({
+  agent: z.string(),
+  logins: z.array(z.string()),
+  reason: z.string(),
+});
+export type AgentMention = z.infer<typeof AgentMentionSchema>;
+
+/**
+ * Who a review comment's mention lines notify, carried in its state. `live` are the
+ * handles the body mentions for real, and `notified` every handle the comment has
+ * ever mentioned. Handles are lowercase, as GitHub compares logins.
+ */
+export const MentionStateSchema = z.object({
+  live: z.array(z.string()),
+  notified: z.array(z.string()),
+});
+export type MentionState = z.infer<typeof MentionStateSchema>;
 
 /** Mode-agnostic coordinator result; each Reporter decides how to render it. */
 const CoordinatorModelOutputSchema = z.object({
@@ -349,6 +392,11 @@ export const CoordinatorOutputSchema = CoordinatorModelOutputSchema.extend({
    * decision or the finding set.
    */
   agentSummaries: z.array(AgentSummarySchema).optional().catch(undefined),
+  /**
+   * Human reviews that agents asked for. Engine-owned: the people come from each
+   * agent's trusted config, never from model text.
+   */
+  mentions: z.array(AgentMentionSchema).optional().catch(undefined),
 });
 export type CoordinatorOutput = z.infer<typeof CoordinatorOutputSchema>;
 

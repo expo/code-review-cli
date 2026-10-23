@@ -12,7 +12,8 @@
   // shared.md (prepended to every agent + coordinator) and coordinator.md are
   // reserved filenames. Per-agent overrides go in each file's YAML frontmatter,
   // e.g. `---\nmodel: anthropic/claude-opus-5-5\n---`. `paths: ["packages/ios/**"]`
-  // there limits an agent to changes that touch those globs.
+  // there limits an agent to changes that touch those globs, and `mention: [octocat]`
+  // names the people the review mentions when that agent asks for a human review.
 
   // @ref LLP 0009#config-and-prompt-templates [implements] — suggestions off by default, not a schema limit
   "policy": {

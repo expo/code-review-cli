@@ -4,6 +4,7 @@ import {
   AGENT_SUMMARY_CHARS,
   extractJsonObject,
   fingerprintFinding,
+  MENTION_TARGET_RE,
   parseCoordinatorOutput,
   parseReviewerOutput,
   parseVerdict,
@@ -182,6 +183,50 @@ test("a reviewer summary parses to one clipped line and fails soft when malforme
   );
   expect(malformed.summary).toBeUndefined();
   expect(malformed.findings.map((finding) => finding.title)).toEqual(["Keep the real finding"]);
+});
+
+test("a reviewer's human-review reason parses to one clipped line and fails soft", () => {
+  const output = parseReviewerOutput(
+    JSON.stringify({ findings: [], humanReview: " The new guide\n changes the setup steps. " }),
+  );
+  expect(output.humanReview).toBe("The new guide changes the setup steps.");
+  expect(parseReviewerOutput(JSON.stringify({ findings: [] })).humanReview).toBeUndefined();
+  expect(
+    parseReviewerOutput(JSON.stringify({ findings: [], humanReview: true })).humanReview,
+  ).toBeUndefined();
+});
+
+test("a mention target follows GitHub's login and team slug rules", () => {
+  const valid = [
+    "octocat",
+    "a",
+    "a-b-c",
+    "x".repeat(39),
+    "name_shortcode",
+    "expo/docs",
+    "org/my_team-1",
+  ];
+  for (const target of valid) {
+    expect(MENTION_TARGET_RE.test(target), target).toBe(true);
+  }
+  const invalid = [
+    "-octocat",
+    "octocat-",
+    "octo--cat",
+    "x".repeat(40),
+    "_shortcode",
+    "name_",
+    `${"x".repeat(35)}_abcd`,
+    "org/",
+    "org/-team",
+    "org/team-",
+    "org/team.x",
+    "org/team/x",
+    "aman deep",
+  ];
+  for (const target of invalid) {
+    expect(MENTION_TARGET_RE.test(target), target).toBe(false);
+  }
 });
 
 test("a clipped reviewer summary never ends in half of an emoji", () => {

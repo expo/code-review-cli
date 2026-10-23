@@ -534,6 +534,35 @@ paths:
 - Quote each glob. A YAML value that starts with `*` must be quoted to stay valid
   YAML for other tools.
 
+`mention` lets an agent ask specific people for a human review. It takes a list of
+GitHub logins or `org/team` slugs:
+
+```yaml
+mention:
+  - octocat
+```
+
+- The agent decides when a change needs a human review: its role prompt tells it
+  when to set `humanReview`, one sentence on why. The PR comment then shows a
+  visible `📣 @octocat: the docs reviewer asks for your review.` line with that
+  reason under the overall summary. Without a `humanReview`, the agent mentions no
+  one.
+- Only the trusted config names people. The model writes only the reason, and the
+  reporter breaks every `@` mention in model-written text: the reason, the summaries,
+  and each finding's title, rationale and suggestion.
+- The bot edits its comment in place on each re-review. GitHub also notifies a
+  person when an edit adds a mention of them, so a mention that first appears on a
+  re-review still notifies. Each person is notified once per comment: if a request
+  goes away on a later run and comes back, the line names them without a live
+  mention. A comment the bot deletes and posts again starts over.
+- A team mention may not notify anyone. GitHub notifies only people with read access
+  to the repository, and a team only when the comment's author can see it. The
+  default `GITHUB_TOKEN` posts as `github-actions[bot]`, which is not an organization
+  member. This is untested: if a team must hear about it, list its people's logins.
+- An invalid `mention` (not a list or an empty list) is ignored. An entry that is
+  not a login or team is left out, and the agent still mentions the others. Either
+  way the review names the agent file and the fix under **Review setup**.
+
 For a real-world example, see eas-cli's
 [`.expo-agents/code-review/`](https://github.com/expo/eas-cli/tree/main/.expo-code-review)
 — correctness/security/consistency agents, a stronger model for security, and

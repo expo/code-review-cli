@@ -417,6 +417,12 @@ export interface LoadedAgent {
    * or chunk that has at least one matching changed file. Absent means every change.
    */
   paths?: string[];
+  /**
+   * Frontmatter `mention`: GitHub logins or `org/team` slugs. When the agent asks for a
+   * human review, the review comment mentions them. Absent means the agent mentions
+   * no one.
+   */
+  mention?: string[];
 }
 
 /**
