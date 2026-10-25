@@ -234,8 +234,8 @@ export const ReviewConfigSchema = z.object({
       maxAdjudications: 10,
     }),
   // Inline PR review comments for findings anchored to a line in the diff: the
-  // main comment stays the durable state store and renders such findings short,
-  // linking to the inline thread. ROOT-ONLY (the comment lifecycle is global) and
+  // main comment stays the durable state store and shows only each such finding's
+  // id, linked to the inline thread. ROOT-ONLY (the comment lifecycle is global) and
   // off by default — a feature that mutates N comments per run earns trust with
   // field data first. Turning it off later leaves existing threads up (documented);
   // clear() still sweeps them on comment-mode switches.

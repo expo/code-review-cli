@@ -409,15 +409,7 @@ function renderSeveritySections(
   feedbackById?: Map<string, FeedbackRecord>,
 ): string[] {
   const out: string[] = [];
-  const sorted = sortFindings(findings);
-  // A finding with a live inline thread is read there, on the flagged line, so the
-  // list does not repeat it. It stays in the embedded state, so `/dismiss` and reply
-  // matching still find it.
-  const inlined = sorted.flatMap((finding) => {
-    const url = validInlineUrl(link, idFor(finding));
-    return url ? [{ finding, url }] : [];
-  });
-  const listed = sorted.filter((finding) => !validInlineUrl(link, idFor(finding)));
+  const { inlined, listed } = splitInlined(sortFindings(findings), link, idFor);
   const groups = groupBySeverity(listed);
   for (const severity of SEVERITIES) {
     const group = groups[severity];
@@ -431,27 +423,63 @@ function renderSeveritySections(
     }
     out.push("");
   }
-  out.push(...inlinedCountLines(inlined));
+  out.push(...inlinedLines(inlined, feedbackById));
   return out;
 }
 
+// @ref LLP 0008#inline-threads [implements] — an inlined finding shows only its linked id in the main comment
 /**
- * One line that counts the findings posted as inline threads, by severity, and links
- * the most severe thread. `inlined` is sorted, so the first entry is that thread.
+ * Split findings into those with a live inline thread and those the main comment
+ * lists in full. An inlined finding is read in its thread, on the flagged line, so
+ * the main comment does not repeat it. It stays in the embedded state, so `/dismiss`
+ * and reply matching still find it. Order is kept.
  */
-function inlinedCountLines(inlined: { finding: Finding; url: string }[]): string[] {
-  const first = inlined[0];
-  if (!first) {
+function splitInlined(
+  findings: Finding[],
+  link: LinkContext | undefined,
+  idFor: (finding: Finding) => string,
+): { inlined: { finding: Finding; id: string; url: string }[]; listed: Finding[] } {
+  const inlined: { finding: Finding; id: string; url: string }[] = [];
+  const listed: Finding[] = [];
+  for (const finding of findings) {
+    const id = idFor(finding);
+    const url = validInlineUrl(link, id);
+    if (url) {
+      inlined.push({ finding, id, url });
+    } else {
+      listed.push(finding);
+    }
+  }
+  return { inlined, listed };
+}
+
+/**
+ * The findings posted as inline threads, one row per severity: each thread's id,
+ * linked to the thread, plus a reply link when an author answered it. The id is
+ * what `/dismiss` takes, so it must stay visible in the main comment.
+ */
+function inlinedLines(
+  inlined: { finding: Finding; id: string; url: string }[],
+  feedbackById?: Map<string, FeedbackRecord>,
+): string[] {
+  if (inlined.length === 0) {
     return [];
   }
-  const groups = groupBySeverity(inlined.map((entry) => entry.finding));
-  const counts = SEVERITIES.filter((severity) => groups[severity].length > 0).map(
-    (severity) => `${severityHeading(severity)} ${groups[severity].length}`,
-  );
-  return [
-    `💬 **Inline comments on the diff (${inlined.length}):** ${[...counts, `[first thread](${first.url})`].join(" · ")}`,
-    "",
-  ];
+  const out = [`💬 **Inline comments on the diff (${inlined.length})**`, ""];
+  for (const severity of SEVERITIES) {
+    const group = inlined.filter((entry) => knownSeverity(entry.finding.severity) === severity);
+    if (group.length === 0) {
+      continue;
+    }
+    const threads = group.map(({ id, url }) => {
+      const reply = feedbackById?.get(id);
+      const replied = reply ? ` (💬 ${replyLink(`${replyAuthor(reply)} replied`, reply)})` : "";
+      return `[\`id:${id}\`](${url})${replied}`;
+    });
+    out.push(`- ${severityHeading(severity)}: ${threads.join(", ")}`);
+  }
+  out.push("");
+  return out;
 }
 
 // @ref LLP 0005#comment-rendering [constrained-by] — blank lines must stay truly empty or <details> escapes the list (euxy#45)
@@ -1000,25 +1028,37 @@ export function renderAggregateMarkdown(
       lines.push("> 🔗 **Review setup:**", ...setupLines, "");
     }
 
-    // Shown = the most-severe N kept findings per scope (N = limitPerScope). The
-    // embedded state trims KEPT findings to the same set so a truncated comment
+    // @ref LLP 0008#inline-threads [implements] — the size cap trims listed findings only
+    // Shown = every inlined kept finding plus the most-severe N listed ones per scope
+    // (N = limitPerScope). The limit applies to listed findings only: an inlined
+    // finding renders as one short id link, and the inline cap (`maxComments`)
+    // already bounds how many there are. Cutting the combined list would drop listed
+    // findings for inlined ones, and a listed finding has nowhere else to appear.
+    // The embedded state trims KEPT findings to the same set so a truncated comment
     // still fits GitHub's body limit (the hidden findings are noted, not silently
     // carried) — but dismissed findings are always kept in state (see below).
-    const rendered = perScope.map(({ result, kept, requalified, dropped, feedback: replies }) => ({
-      result,
-      replies,
-      shown: sortFindings(kept.map((entry) => entry.finding)).slice(0, limitPerScope),
-      hidden: Math.max(0, kept.length - limitPerScope),
-      // The requalified section is trimmed by the same per-scope limit as shown: it
-      // is coordinator-populated (a wide stack can requalify many findings at once),
-      // and an untrimmed section would keep the truncation loop below from ever
-      // converging under MAX_COMMENT_CHARS. The audit note carries the TOTAL count,
-      // so trimming never hides that requalification happened.
-      requalified: requalified.slice(0, limitPerScope),
-      requalifiedHidden: Math.max(0, requalified.length - limitPerScope),
-      requalifiedAll: requalified,
-      dropped,
-    }));
+    const rendered = perScope.map(({ result, kept, requalified, dropped, feedback: replies }) => {
+      const { inlined, listed } = splitInlined(
+        sortFindings(kept.map((entry) => entry.finding)),
+        link,
+        (finding) => idOf(result, finding),
+      );
+      return {
+        result,
+        replies,
+        shown: [...inlined.map((entry) => entry.finding), ...listed.slice(0, limitPerScope)],
+        hidden: Math.max(0, listed.length - limitPerScope),
+        // The requalified section is trimmed by the same per-scope limit as shown: it
+        // is coordinator-populated (a wide stack can requalify many findings at once),
+        // and an untrimmed section would keep the truncation loop below from ever
+        // converging under MAX_COMMENT_CHARS. The audit note carries the TOTAL count,
+        // so trimming never hides that requalification happened.
+        requalified: requalified.slice(0, limitPerScope),
+        requalifiedHidden: Math.max(0, requalified.length - limitPerScope),
+        requalifiedAll: requalified,
+        dropped,
+      };
+    });
 
     for (const {
       result,

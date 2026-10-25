@@ -12,12 +12,13 @@ import {
   inlineStubBody,
   parseInlineMarkerFp,
   renderInlineCommentBody,
+  renderAggregateMarkdown,
   renderMarkdown,
 } from "../core/render.js";
 import type { LinkContext } from "../core/render.js";
 import { hasUnquotedInlineMarker, matchReplies, replyIsNewer } from "../core/responses.js";
 import type { ReplyComment } from "../core/responses.js";
-import { applyPins, fingerprintFinding } from "../core/schema.js";
+import { applyPins, fingerprintFinding, scopedFingerprint } from "../core/schema.js";
 import type { CoordinatorOutput, FeedbackRecord, Finding } from "../core/schema.js";
 
 const finding = (over: Partial<Finding> = {}): Finding => ({
@@ -309,7 +310,9 @@ test("activeFindings: drops dismissed, reply-cleared, and requalified findings",
 
 // ---- inlined findings leave the finding list ----
 
-test("renderMarkdown: an inlined finding is only counted, with a link to its thread; others render full", () => {
+const threadUrl = (n: number): string => `https://github.com/o/r/pull/1#discussion_r${n}`;
+
+test("renderMarkdown: an inlined finding is only linked by id; others render full", () => {
   const inlined = finding({ suggestion: "cache the observer" });
   const other = finding({
     file: "b.ts",
@@ -326,17 +329,17 @@ test("renderMarkdown: an inlined finding is only counted, with a link to its thr
   const link: LinkContext = {
     repo: "o/r",
     prNumber: 1,
-    inlineUrls: new Map([
-      [fingerprintFinding(inlined), "https://github.com/o/r/pull/1#discussion_r123"],
-    ]),
+    inlineUrls: new Map([[fingerprintFinding(inlined), threadUrl(123)]]),
   };
   const body = renderMarkdown(review, TAG, [], link);
   // The inline thread holds the finding, so the list does not repeat it.
   expect(body).not.toContain("Observer restarts for cached instances");
   expect(body).not.toContain("getInstances() restarts the push token observer");
   expect(body).not.toContain("cache the observer");
+  // Its id stays visible for `/dismiss`, linked to the thread.
+  expect(body).toContain("💬 **Inline comments on the diff (1)**");
   expect(body).toContain(
-    "💬 **Inline comments on the diff (1):** ⚠️ Warning 1 · [first thread](https://github.com/o/r/pull/1#discussion_r123)",
+    `- ⚠️ Warning: [\`id:${fingerprintFinding(inlined)}\`](${threadUrl(123)})`,
   );
   // The heading counts only the findings listed under it.
   expect(body).toContain("### ⚠️ Warning (1)");
@@ -347,12 +350,13 @@ test("renderMarkdown: an inlined finding is only counted, with a link to its thr
   expect(body).toContain(`"${fingerprintFinding(inlined)}"`);
 });
 
-test("renderMarkdown: when every finding is inlined, the list is only the count line", () => {
+test("renderMarkdown: when every finding is inlined, the list is only the inline rows", () => {
   const warning = finding();
-  const nit = finding({ severity: "nit", file: "c.ts", title: "Nit title" });
+  const nitA = finding({ severity: "nit", file: "c.ts", title: "Nit A" });
+  const nitB = finding({ severity: "nit", file: "d.ts", title: "Nit B" });
   const review: CoordinatorOutput = {
     decision: "approve_with_comments",
-    findings: [nit, warning],
+    findings: [nitA, warning, nitB],
     summary: "s",
     incomplete: [],
   };
@@ -360,17 +364,161 @@ test("renderMarkdown: when every finding is inlined, the list is only the count 
     repo: "o/r",
     prNumber: 1,
     inlineUrls: new Map([
-      [fingerprintFinding(nit), "https://github.com/o/r/pull/1#discussion_r2"],
-      [fingerprintFinding(warning), "https://github.com/o/r/pull/1#discussion_r1"],
+      [fingerprintFinding(nitA), threadUrl(2)],
+      [fingerprintFinding(warning), threadUrl(1)],
+      [fingerprintFinding(nitB), threadUrl(3)],
     ]),
   };
   const body = renderMarkdown(review, TAG, [], link);
   expect(body).not.toContain("###");
   expect(body).not.toContain("No findings.");
-  // Most severe first, and the link goes to the most severe thread.
+  expect(body).toContain("💬 **Inline comments on the diff (3)**");
+  // One row per severity, most severe first.
+  const warningRow = body.indexOf("- ⚠️ Warning: ");
+  const nitRow = body.indexOf("- 🐧 Nit: ");
+  expect(warningRow).toBeGreaterThan(-1);
+  expect(nitRow).toBeGreaterThan(warningRow);
+  expect(
+    body
+      .slice(nitRow)
+      .split("\n")[0]!
+      .match(/discussion_r/g),
+  ).toHaveLength(2);
+});
+
+test("renderMarkdown: an inlined finding with a reply links the reply next to its id", () => {
+  const inlined = finding();
+  const fp = fingerprintFinding(inlined);
+  const review: CoordinatorOutput = {
+    decision: "approve_with_comments",
+    findings: [inlined],
+    summary: "s",
+    incomplete: [],
+  };
+  const reply: FeedbackRecord = {
+    fp,
+    by: "octocat",
+    commentId: 5,
+    url: "https://github.com/o/r/pull/1#issuecomment-5",
+    maintainer: false,
+    applied: false,
+  };
+  const link: LinkContext = { repo: "o/r", prNumber: 1, inlineUrls: new Map([[fp, threadUrl(9)]]) };
+  const body = renderMarkdown(review, TAG, [], link, [reply]);
   expect(body).toContain(
-    "💬 **Inline comments on the diff (2):** ⚠️ Warning 1 · 🐧 Nit 1 · [first thread](https://github.com/o/r/pull/1#discussion_r1)",
+    `[\`id:${fp}\`](${threadUrl(9)}) (💬 [@octocat replied](https://github.com/o/r/pull/1#issuecomment-5))`,
   );
+});
+
+test("renderAggregateMarkdown: a named scope's inline threads match by the scope's ids", () => {
+  const inlined = finding();
+  const listed = finding({ file: "b.ts", title: "Listed finding", rationale: "Listed." });
+  const scopedId = scopedFingerprint("ios", inlined);
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    // A plain fingerprint must not match: the scope renders scoped ids.
+    inlineUrls: new Map([
+      [scopedId, threadUrl(4)],
+      [fingerprintFinding(listed), threadUrl(5)],
+    ]),
+  };
+  const body = renderAggregateMarkdown(
+    [
+      {
+        scope: "ios",
+        isDefault: false,
+        review: {
+          decision: "approve_with_comments",
+          findings: [inlined, listed],
+          summary: "s",
+          incomplete: [],
+        },
+      },
+    ],
+    TAG,
+    [],
+    link,
+  );
+  expect(body).toContain(`[\`id:${scopedId}\`](${threadUrl(4)})`);
+  expect(body).not.toContain("Observer restarts for cached instances");
+  expect(body).toContain("**Listed finding**");
+  expect(body).not.toContain(threadUrl(5));
+});
+
+test("renderAggregateMarkdown: a scope whose findings are all inlined stays open, with no 'No findings.'", () => {
+  const inlined = finding();
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    inlineUrls: new Map([[fingerprintFinding(inlined), threadUrl(6)]]),
+  };
+  const body = renderAggregateMarkdown(
+    [
+      {
+        scope: "root",
+        isDefault: true,
+        review: {
+          decision: "approve_with_comments",
+          findings: [inlined],
+          summary: "s",
+          incomplete: [],
+        },
+      },
+    ],
+    TAG,
+    [],
+    link,
+  );
+  expect(body).toContain("<details open>");
+  expect(body).toContain("root — Ready for human review (with comments) (1)");
+  expect(body).not.toContain("No findings.");
+  expect(body).toContain(threadUrl(6));
+});
+
+test("renderAggregateMarkdown: truncation trims listed findings only, never for inlined ones", () => {
+  // 30 inlined warnings and 10 listed nits, each nit large enough that the comment
+  // overflows and the per-scope limit must cut.
+  const inlined = Array.from({ length: 30 }, (_, index) =>
+    finding({ file: `w${index}.ts`, title: `Warning ${index}` }),
+  );
+  const listed = Array.from({ length: 10 }, (_, index) =>
+    finding({
+      severity: "nit",
+      file: `n${index}.ts`,
+      title: `Listed nit ${index}`,
+      rationale: "x".repeat(6_000),
+    }),
+  );
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    inlineUrls: new Map(inlined.map((f, index) => [fingerprintFinding(f), threadUrl(100 + index)])),
+  };
+  const body = renderAggregateMarkdown(
+    [
+      {
+        scope: "root",
+        isDefault: true,
+        review: {
+          decision: "approve_with_comments",
+          findings: [...inlined, ...listed],
+          summary: "s",
+          incomplete: [],
+        },
+      },
+    ],
+    TAG,
+    [],
+    link,
+  );
+  // Every inlined thread is still linked.
+  expect(body).toContain("💬 **Inline comments on the diff (30)**");
+  // Some listed nits are shown, and the note counts only the listed ones left out.
+  const shownNits = listed.filter((f) => body.includes(`**${f.title}**`)).length;
+  expect(shownNits).toBeGreaterThan(0);
+  expect(shownNits).toBeLessThan(10);
+  expect(body).toContain(`…and ${10 - shownNits} more finding(s)`);
 });
 
 test("renderMarkdown: a non-github inline URL is ignored (full form)", () => {

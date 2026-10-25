@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import path, { delimiter } from "node:path";
 
 import { resetTrustedToolCache } from "../core/exec.js";
-import { renderInlineCommentBody } from "../core/render.js";
+import { inlineStubBody, renderInlineCommentBody, renderMarkdown } from "../core/render.js";
 import type { LinkContext } from "../core/render.js";
-import type { Finding } from "../core/schema.js";
+import { fingerprintFinding } from "../core/schema.js";
+import type { CoordinatorOutput, Finding } from "../core/schema.js";
 import { GitHubReporter, ghApiFailure, inlineUrlsByFp } from "../reporters/github.js";
 
 const TAG = "expo-ai-code-reviewer";
@@ -46,7 +47,8 @@ test("inlineUrlsByFp: maps our marked comments to their permalinks", () => {
 // FAKE_GH_PATCH_ERROR makes editing an existing comment fail. FAKE_GH_COMMENT_ERROR
 // and FAKE_GH_COMMENT_BODY do for a single comment POST what the REVIEW pair does. The review's
 // comments are served from review-comments-<page>.json, and the PR's existing review
-// comments from pr-comments.json.
+// comments from pr-comments.json. The PR's issue comments come from
+// issue-comments.json, and an issue comment edit is copied to issue-patch.json.
 const FAKE_GH = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_GH_DIR/calls.log"
 eval "last=\\\${$#}"
@@ -75,6 +77,11 @@ case "$*" in
     fi
     n=$(wc -l < "$FAKE_GH_DIR/calls.log" | tr -d ' ')
     printf '{"html_url": "https://github.com/o/r/pull/7#discussion_r%s"}' "$n" ;;
+  *"-X GET "*"/issues/"*"/comments"*)
+    if [ -f "$FAKE_GH_DIR/issue-comments.json" ]; then cat "$FAKE_GH_DIR/issue-comments.json"; else printf '[]'; fi ;;
+  *"-X PATCH "*"/issues/comments/"*)
+    cp "$last" "$FAKE_GH_DIR/issue-patch.json"
+    printf '{}' ;;
   *"-X GET "*"/comments"*)
     if [ -f "$FAKE_GH_DIR/pr-comments.json" ]; then cat "$FAKE_GH_DIR/pr-comments.json"; else printf '[]'; fi ;;
   *"-X PATCH "*)
@@ -430,4 +437,63 @@ test("ghApiFailure: caps each message, not the whole text, so a late throttle su
   expect(error.message).toBe(
     `creating the review failed: gh: Validation Failed (HTTP 422): Validation Failed; Line could not be resolved; ${"x".repeat(200)}; was submitted too quickly`,
   );
+});
+
+// ---- /dismiss re-renders with the live inline threads ----
+
+test("applyDismissal: the re-rendered comment links findings with live threads, not stubs", async () => {
+  const live = finding();
+  const stubbed = finding({ file: "b.ts", line: 9, title: "Stubbed thread finding" });
+  const dismissed = finding({ file: "c.ts", line: 3, title: "Dismissed finding" });
+  const [liveFp, stubbedFp, dismissedFp] = [live, stubbed, dismissed].map(fingerprintFinding);
+  const review: CoordinatorOutput = {
+    decision: "approve_with_comments",
+    findings: [live, stubbed, dismissed],
+    summary: "s",
+    incomplete: [],
+  };
+  await writeFile(
+    path.join(dir, "issue-comments.json"),
+    JSON.stringify([{ id: 900, body: renderMarkdown(review, TAG), user: { login: "ecr-bot" } }]),
+    "utf8",
+  );
+  await writeFile(
+    path.join(dir, "pr-comments.json"),
+    JSON.stringify([
+      {
+        id: 81,
+        body: renderInlineCommentBody(live, TAG, liveFp!),
+        user: { login: "ecr-bot" },
+        html_url: "https://github.com/o/r/pull/7#discussion_r81",
+      },
+      {
+        id: 82,
+        body: inlineStubBody(TAG, stubbedFp!),
+        user: { login: "ecr-bot" },
+        html_url: "https://github.com/o/r/pull/7#discussion_r82",
+      },
+    ]),
+    "utf8",
+  );
+  const reporter = new GitHubReporter({
+    prNumber: 7,
+    repo: "o/r",
+    commentTag: TAG,
+    ownLogin: "ecr-bot",
+    headSha: HEAD,
+    inline: { enabled: true, maxComments: 20 },
+    linkContext: { repo: "o/r", prNumber: 7 },
+  });
+  await reporter.applyDismissal([dismissedFp!], []);
+  const { body } = JSON.parse(await readFile(path.join(dir, "issue-patch.json"), "utf8")) as {
+    body: string;
+  };
+  // The live thread is linked by id, not listed again.
+  expect(body).toContain(`[\`id:${liveFp}\`](https://github.com/o/r/pull/7#discussion_r81)`);
+  expect(body).not.toContain("**Observer restarts for cached instances**");
+  // A stub is no live thread, so its finding stays listed in full.
+  expect(body).toContain("**Stubbed thread finding**");
+  expect(body).not.toContain("discussion_r82");
+  // The dismissed finding moves to the dismissed section.
+  expect(body).toContain("Dismissed on this PR (1)");
 });

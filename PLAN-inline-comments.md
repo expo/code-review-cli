@@ -4,7 +4,7 @@
 
 Findings anchored to a line in the PR diff land as inline review comments on
 that line. The main issue comment does not list an inlined finding again: it
-counts the inlined findings by severity and links the most severe thread. The main
+shows each inlined finding's id, linked to its thread, in one row per severity. The main
 comment stays the single durable state store (embedded state, dismissals,
 feedback records, pins, `/dismiss` target). Inline comments are a derived
 presentation layer, converged on every run.
@@ -172,9 +172,10 @@ main comments are cleared today.
 - `LinkContext.inlineUrls?: Map<string, string>`. NEVER mutate the shared
   routed-flow `link` object — render with a copy `{ ...link, inlineUrls }`.
 - `renderSeveritySections` leaves every finding with an inline URL out of the
-  severity lists and adds one line: `💬 **Inline comments on the diff (n):**`,
-  a count per severity, and a link to the most severe thread. Severity headings
-  count only the findings listed under them. Missing URL ⇒ full form (tested).
+  severity lists. Under `💬 **Inline comments on the diff (n)**` it adds one row
+  per severity with each finding's `id:` linked to its thread, plus a reply link
+  when an author answered. Severity headings count only the findings listed under
+  them. Missing URL ⇒ full form (tested). See LLP 0008 "Inline Threads".
 - Embedded state unchanged.
 
 ### Inline replies → feedback
@@ -210,14 +211,14 @@ main comments are cleared today.
   + pure exported planner, replyComments extension, clear(), applyDismissal
   additive sync.
 - `src/core/render.ts` — inline marker helpers (anchored parse), inline body
-  renderer, `LinkContext.inlineUrls`, main-comment count line.
+  renderer, `LinkContext.inlineUrls`, main-comment id rows.
 - `src/core/responses.ts` — threadFp, unquoted-marker backstop.
 - `src/core/schema.ts` — applyPins same-stream guard.
 - `src/commands/ci.ts` — wire config, `couldNotComplete: true` on both failure
   literals, aggregate teardown flag. `review.ts`, `post-review.ts`,
   `dismiss.ts` — wire config.
 - Tests: planner (create/patch/stub/delete, sticky cap, dedupe, additive mode),
-  marker anchor/forgery, count line + missing-URL fallback, backstop vs
+  marker anchor/forgery, id rows + missing-URL fallback, backstop vs
   quote-reply, threadFp in all match modes, applyPins stream guard,
   couldNotComplete literals.
 - `templates/config.jsonc`, `README.md`.
