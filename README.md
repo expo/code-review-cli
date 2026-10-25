@@ -744,11 +744,12 @@ the defaults are asymmetric: [LLP 0011](./llp/0011-author-feedback.explainer.md)
 
 Off by default. When enabled, each finding anchored to a line that is actually in
 the PR's diff is posted as an inline review comment on that line, carrying the
-full rationale, sources, and suggestion. The main comment still lists every
-finding, but an inlined one renders short — title, links, category, id, and a
-one-line rationale — plus a `💬 inline comment` link to the thread. The main
-comment remains the single durable state store: `/dismiss`, embedded state, and
-reply adjudication are unchanged.
+full rationale, sources, and suggestion. The main comment does not list an
+inlined finding again: it shows one `💬 Inline comments on the diff` line with a
+count per severity and a link to the most severe thread. Findings that are not
+inlined (outside the diff, over `maxComments`, or with no thread link) are listed
+in full as before. The main comment remains the single durable state store:
+`/dismiss`, embedded state, and reply adjudication are unchanged.
 
 ```jsonc
 "inline": {

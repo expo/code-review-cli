@@ -3,8 +3,8 @@
 ## Goal
 
 Findings anchored to a line in the PR diff land as inline review comments on
-that line. The main issue comment keeps every finding but renders an inlined
-one SHORT: title + one-line rationale + link to the inline thread. The main
+that line. The main issue comment does not list an inlined finding again: it
+counts the inlined findings by severity and links the most severe thread. The main
 comment stays the single durable state store (embedded state, dismissals,
 feedback records, pins, `/dismiss` target). Inline comments are a derived
 presentation layer, converged on every run.
@@ -16,8 +16,9 @@ presentation layer, converged on every run.
   Individual review comments isolate failures and PATCH in place.
 - No multi-line comments; single `line` + `side: "RIGHT"` only.
 - No GraphQL thread resolution, and no detection of author-resolved/outdated
-  threads. Accepted risk: the PR author can collapse inline threads; the main
-  comment therefore keeps a one-line rationale per finding (see Short form).
+  threads. Accepted risk: the PR author can resolve (collapse) an inline thread.
+  The thread stays on the PR and anyone can expand it, and the author cannot
+  edit or delete the bot's comment, so the main comment only counts it.
 - `ecr feedback` retroactive crawl keeps reading issue comments only. The
   review-comments fetch in `replyComments` is gated on the reporter having an
   ENABLED `inline` option, so the crawl (which passes none) gains no fetches.
@@ -166,16 +167,14 @@ threads are STUBBED, bare ones deleted — never delete a thread humans wrote in
 covers the fp-namespace flip on per-scope↔single switches, symmetric with how
 main comments are cleared today.
 
-### Main-comment short form
+### Main-comment count line
 
 - `LinkContext.inlineUrls?: Map<string, string>`. NEVER mutate the shared
   routed-flow `link` object — render with a copy `{ ...link, inlineUrls }`.
-- `renderFindingLines` with an inline URL: `- **title** —
-  [file:line](thread-url) _(category)_ · id:… · 💬 [inline](url)` + reply
-  annotation + ONE-LINE truncated rationale (~160 chars, word boundary) — the
-  audit trail survives the author collapsing/resolving inline threads.
-  Sources/suggestion/full rationale live inline only. Missing URL ⇒ full form
-  (tested).
+- `renderSeveritySections` leaves every finding with an inline URL out of the
+  severity lists and adds one line: `💬 **Inline comments on the diff (n):**`,
+  a count per severity, and a link to the most severe thread. Severity headings
+  count only the findings listed under them. Missing URL ⇒ full form (tested).
 - Embedded state unchanged.
 
 ### Inline replies → feedback
@@ -211,14 +210,14 @@ main comments are cleared today.
   + pure exported planner, replyComments extension, clear(), applyDismissal
   additive sync.
 - `src/core/render.ts` — inline marker helpers (anchored parse), inline body
-  renderer, `LinkContext.inlineUrls`, short form + rationale truncation.
+  renderer, `LinkContext.inlineUrls`, main-comment count line.
 - `src/core/responses.ts` — threadFp, unquoted-marker backstop.
 - `src/core/schema.ts` — applyPins same-stream guard.
 - `src/commands/ci.ts` — wire config, `couldNotComplete: true` on both failure
   literals, aggregate teardown flag. `review.ts`, `post-review.ts`,
   `dismiss.ts` — wire config.
 - Tests: planner (create/patch/stub/delete, sticky cap, dedupe, additive mode),
-  marker anchor/forgery, short form + missing-URL fallback, backstop vs
+  marker anchor/forgery, count line + missing-URL fallback, backstop vs
   quote-reply, threadFp in all match modes, applyPins stream guard,
   couldNotComplete literals.
 - `templates/config.jsonc`, `README.md`.

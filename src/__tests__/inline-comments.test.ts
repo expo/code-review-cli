@@ -10,7 +10,6 @@ import type { ExistingInlineComment } from "../reporters/github.js";
 import {
   inlineCommentMarker,
   inlineStubBody,
-  oneLineRationale,
   parseInlineMarkerFp,
   renderInlineCommentBody,
   renderMarkdown,
@@ -85,29 +84,6 @@ test("inlineStubBody: neutral — never claims resolved or dismissed", () => {
   expect(stub.toLowerCase()).not.toContain("resolved");
   expect(stub.toLowerCase()).not.toContain("dismissed");
   expect(stub).toContain("main review comment");
-});
-
-// ---- oneLineRationale ----
-
-test("oneLineRationale: strips HTML tags, collapses whitespace, escapes <, truncates at a word boundary", () => {
-  expect(oneLineRationale("a\n\nb   c")).toBe("a b c");
-  expect(oneLineRationale("<details>x</details>")).toBe("x");
-  expect(oneLineRationale("High — reason.<br>**Impact:** Medium<BR/>end")).toBe(
-    "High — reason. **Impact:** Medium end",
-  );
-  expect(oneLineRationale("<details><summary>Why</summary>\n\nbody</details>")).toBe("Why body");
-  // Non-formatting angle brackets stay, escaped.
-  expect(oneLineRationale("returns `Promise<void>` when a < b")).toBe(
-    "returns `Promise&lt;void>` when a &lt; b",
-  );
-  const long = Array.from({ length: 60 }, (_, i) => `word${i}`).join(" ");
-  const short = oneLineRationale(long);
-  expect(short.length).toBeLessThanOrEqual(161);
-  expect(short.endsWith("…")).toBe(true);
-  // Cut lands on a word boundary: the kept prefix is followed by a space in the input.
-  const kept = short.slice(0, -1);
-  expect(long.startsWith(kept)).toBe(true);
-  expect(long[kept.length]).toBe(" ");
 });
 
 // ---- planner ----
@@ -331,11 +307,16 @@ test("activeFindings: drops dismissed, reply-cleared, and requalified findings",
   expect(active.map((entry) => entry.fp)).toEqual(["keep01"]);
 });
 
-// ---- short form ----
+// ---- inlined findings leave the finding list ----
 
-test("renderMarkdown: an inlined finding renders short with the thread link; others render full", () => {
+test("renderMarkdown: an inlined finding is only counted, with a link to its thread; others render full", () => {
   const inlined = finding({ suggestion: "cache the observer" });
-  const other = finding({ file: "b.ts", title: "Other finding", suggestion: "do the thing" });
+  const other = finding({
+    file: "b.ts",
+    title: "Other finding",
+    rationale: "Other rationale.",
+    suggestion: "do the thing",
+  });
   const review: CoordinatorOutput = {
     decision: "approve_with_comments",
     findings: [inlined, other],
@@ -350,12 +331,46 @@ test("renderMarkdown: an inlined finding renders short with the thread link; oth
     ]),
   };
   const body = renderMarkdown(review, TAG, [], link);
-  expect(body).toContain("[inline comment](https://github.com/o/r/pull/1#discussion_r123)");
-  // Short form: the one-line rationale survives, the suggestion moves inline-only.
-  expect(body).toContain("getInstances() restarts the push token observer");
+  // The inline thread holds the finding, so the list does not repeat it.
+  expect(body).not.toContain("Observer restarts for cached instances");
+  expect(body).not.toContain("getInstances() restarts the push token observer");
   expect(body).not.toContain("cache the observer");
+  expect(body).toContain(
+    "💬 **Inline comments on the diff (1):** ⚠️ Warning 1 · [first thread](https://github.com/o/r/pull/1#discussion_r123)",
+  );
+  // The heading counts only the findings listed under it.
+  expect(body).toContain("### ⚠️ Warning (1)");
   // The non-inlined finding keeps its full form.
+  expect(body).toContain("**Other finding**");
   expect(body).toContain("**Suggestion:** do the thing");
+  // The embedded state still carries every finding.
+  expect(body).toContain(`"${fingerprintFinding(inlined)}"`);
+});
+
+test("renderMarkdown: when every finding is inlined, the list is only the count line", () => {
+  const warning = finding();
+  const nit = finding({ severity: "nit", file: "c.ts", title: "Nit title" });
+  const review: CoordinatorOutput = {
+    decision: "approve_with_comments",
+    findings: [nit, warning],
+    summary: "s",
+    incomplete: [],
+  };
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    inlineUrls: new Map([
+      [fingerprintFinding(nit), "https://github.com/o/r/pull/1#discussion_r2"],
+      [fingerprintFinding(warning), "https://github.com/o/r/pull/1#discussion_r1"],
+    ]),
+  };
+  const body = renderMarkdown(review, TAG, [], link);
+  expect(body).not.toContain("###");
+  expect(body).not.toContain("No findings.");
+  // Most severe first, and the link goes to the most severe thread.
+  expect(body).toContain(
+    "💬 **Inline comments on the diff (2):** ⚠️ Warning 1 · 🐧 Nit 1 · [first thread](https://github.com/o/r/pull/1#discussion_r1)",
+  );
 });
 
 test("renderMarkdown: a non-github inline URL is ignored (full form)", () => {

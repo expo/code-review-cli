@@ -741,7 +741,7 @@ export class GitHubReporter implements Reporter {
       : await this.computeFeedback(withFp, priorRecords, pinsIn);
     const link = await this.linkContextAsync();
     // Inline threads converge to the ACTIVE findings before the body renders, so
-    // the short form can link each one. A failed run (couldNotComplete) posts an
+    // the body knows which findings to count instead of list. A failed run (couldNotComplete) posts an
     // empty findings list that proves nothing — additive-only, no teardown.
     const inlineUrls = await this.syncInline(activeFindings(withFp, dismissed, records), link, {
       teardown: review.couldNotComplete !== true,

@@ -167,9 +167,9 @@
 
   // Inline PR comments (ROOT-ONLY, off by default). When enabled, each finding
   // anchored to a line in the PR diff is posted as an inline review comment on
-  // that line (full rationale/suggestion there), and the main comment renders it
-  // short — title, links, a one-line rationale — with a link to the thread. The
-  // main comment stays the single source of truth (state, /dismiss, replies).
+  // that line (full rationale/suggestion there). The main comment does not list
+  // it again; it shows one line that counts the inline comments and links the
+  // most severe thread. The main comment stays the single source of truth (state, /dismiss, replies).
   // Threads update in place across re-reviews; a retired thread with human
   // replies is stubbed, never deleted. Replies on inline threads are matched to
   // their finding like main-comment replies (same clearing rules).

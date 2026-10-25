@@ -44,9 +44,9 @@ export interface LinkContext {
   /**
    * Permalinks to this run's live inline finding comments, keyed by the SAME id the
    * comment renders (plain fingerprint, or scope-namespaced for an aggregate). A
-   * finding with an entry renders in SHORT form — title, links, one-line rationale —
-   * because its full text lives in the inline thread; a finding without one renders
-   * in full exactly as before. Callers must pass a per-render COPY of a shared
+   * finding with an entry is left out of the finding list and only counted, because
+   * its full text lives in the inline thread; a finding without one renders in full.
+   * Callers must pass a per-render COPY of a shared
    * LinkContext (`{ ...link, inlineUrls }`), never mutate the shared object: the
    * routed ci flow shares one context across every scope reporter.
    */
@@ -409,7 +409,16 @@ function renderSeveritySections(
   feedbackById?: Map<string, FeedbackRecord>,
 ): string[] {
   const out: string[] = [];
-  const groups = groupBySeverity(sortFindings(findings));
+  const sorted = sortFindings(findings);
+  // A finding with a live inline thread is read there, on the flagged line, so the
+  // list does not repeat it. It stays in the embedded state, so `/dismiss` and reply
+  // matching still find it.
+  const inlined = sorted.flatMap((finding) => {
+    const url = validInlineUrl(link, idFor(finding));
+    return url ? [{ finding, url }] : [];
+  });
+  const listed = sorted.filter((finding) => !validInlineUrl(link, idFor(finding)));
+  const groups = groupBySeverity(listed);
   for (const severity of SEVERITIES) {
     const group = groups[severity];
     if (group.length === 0) {
@@ -422,7 +431,27 @@ function renderSeveritySections(
     }
     out.push("");
   }
+  out.push(...inlinedCountLines(inlined));
   return out;
+}
+
+/**
+ * One line that counts the findings posted as inline threads, by severity, and links
+ * the most severe thread. `inlined` is sorted, so the first entry is that thread.
+ */
+function inlinedCountLines(inlined: { finding: Finding; url: string }[]): string[] {
+  const first = inlined[0];
+  if (!first) {
+    return [];
+  }
+  const groups = groupBySeverity(inlined.map((entry) => entry.finding));
+  const counts = SEVERITIES.filter((severity) => groups[severity].length > 0).map(
+    (severity) => `${severityHeading(severity)} ${groups[severity].length}`,
+  );
+  return [
+    `💬 **Inline comments on the diff (${inlined.length}):** ${[...counts, `[first thread](${first.url})`].join(" · ")}`,
+    "",
+  ];
 }
 
 // @ref LLP 0005#comment-rendering [constrained-by] — blank lines must stay truly empty or <details> escapes the list (euxy#45)
@@ -450,9 +479,6 @@ function sourceLabel(value: string): string {
     .replace(/([\\[\]])/g, "\\$1");
 }
 
-/** Longest one-line rationale excerpt the short form keeps in the main comment. */
-const SHORT_RATIONALE_CHARS = 160;
-
 /**
  * HTML formatting tags a model writes into a rationale (`<br>`, `<details>`, ...).
  * A fixed list, not "anything in angle brackets", so a type like `Promise<void>`
@@ -460,28 +486,6 @@ const SHORT_RATIONALE_CHARS = 160;
  */
 const FORMATTING_TAG_RE =
   /<\/?(?:a|b|blockquote|br|code|del|details|div|em|h[1-6]|hr|i|kbd|li|ol|p|pre|s|span|strong|sub|summary|sup|table|tbody|td|th|thead|tr|u|ul)\b[^<>]*>/gi;
-
-/**
- * A rationale reduced to one plain line for the short (inlined) form: HTML
- * formatting tags removed (an escaped `<br>` would show as literal text),
- * whitespace collapsed, every remaining `<` escaped so a truncated HTML block can
- * never leave an unclosed tag in the comment, cut at a word boundary with an
- * ellipsis. This excerpt is the audit trail that survives the PR author collapsing
- * or resolving the inline thread, so it must always be non-empty when the rationale is.
- */
-export function oneLineRationale(text: string): string {
-  const flat = text
-    .replace(FORMATTING_TAG_RE, " ")
-    .replace(/</g, "&lt;")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (flat.length <= SHORT_RATIONALE_CHARS) {
-    return flat;
-  }
-  const cut = flat.slice(0, SHORT_RATIONALE_CHARS);
-  const atWord = cut.slice(0, cut.lastIndexOf(" "));
-  return `${atWord.length > 0 ? atWord : cut}…`;
-}
 
 /** Only ever link to github.com from a stored/returned URL (see REPLY_URL_RE). */
 function validInlineUrl(link: LinkContext | undefined, id: string): string | null {
@@ -495,17 +499,6 @@ function renderFindingLines(
   id: string = fingerprintFinding(finding),
   reply?: FeedbackRecord,
 ): string[] {
-  const inlineUrl = validInlineUrl(link, id);
-  if (inlineUrl) {
-    // Short form: the full text lives in the inline thread on the flagged line.
-    // The one-line rationale stays here as the durable audit trail (the author
-    // can collapse/resolve the thread; they cannot edit this comment).
-    return [
-      `- **${modelText(finding.title)}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\` · 💬 [inline comment](${inlineUrl})${replyAnnotation(reply)}`,
-      ...indentContinuation(breakMentions(oneLineRationale(stripStateMarkers(finding.rationale)))),
-      "",
-    ];
-  }
   const out = [
     `- **${modelText(finding.title)}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\`${replyAnnotation(reply)}`,
     ...indentContinuation(modelText(finding.rationale)),
@@ -532,7 +525,7 @@ function renderFindingLines(
  * Full body of one inline (PR review) finding comment: identity marker at byte 0,
  * then the finding rendered whole — everything model-written passes
  * stripStateMarkers, same as the main comment. The footer teaches the clearing
- * flow (an UNQUOTED id citation), since the main comment only shows the short form.
+ * flow (an UNQUOTED id citation), since the main comment only counts this finding.
  * The body must never contain `:state=`/`:fingerprints=` (it would be dropped as
  * our own main comment by the reply matcher's backstop) — it doesn't.
  */
