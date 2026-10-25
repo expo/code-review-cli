@@ -983,7 +983,11 @@ export function renderAggregateMarkdown(
   const worst = worstDecision(results.map((result) => result.review.decision));
   const unmatched = opts?.unmatchedFiles ?? [];
 
-  const buildBody = (limitPerScope: number, withSummaries: boolean): string => {
+  const buildBody = (
+    limitPerScope: number,
+    inlinedLimit: number,
+    withSummaries: boolean,
+  ): string => {
     const lines: string[] = [
       commentMarker(tag),
       "## 🤖 AI code review",
@@ -1028,13 +1032,13 @@ export function renderAggregateMarkdown(
       lines.push("> 🔗 **Review setup:**", ...setupLines, "");
     }
 
-    // @ref LLP 0008#inline-threads [implements] — the size cap trims listed findings only
-    // Shown = every inlined kept finding plus the most-severe N listed ones per scope
-    // (N = limitPerScope). The limit applies to listed findings only: an inlined
-    // finding renders as one short id link, and the inline cap (`maxComments`)
-    // already bounds how many there are. Cutting the combined list would drop listed
-    // findings for inlined ones, and a listed finding has nowhere else to appear.
-    // The embedded state trims KEPT findings to the same set so a truncated comment
+    // @ref LLP 0008#inline-threads [implements] — the size cap trims inlined findings before listed ones
+    // Shown = the most-severe `limitPerScope` listed and `inlinedLimit` inlined kept
+    // findings per scope. The two limits are separate, and the loop below lowers
+    // `inlinedLimit` first: a trimmed inlined finding still has its thread on the PR,
+    // while a listed one appears nowhere else. Inlined findings must be trimmable at
+    // all, because each renders as one id link but carries its full text in the
+    // embedded state. The embedded state trims KEPT findings to the same set so a truncated comment
     // still fits GitHub's body limit (the hidden findings are noted, not silently
     // carried) — but dismissed findings are always kept in state (see below).
     const rendered = perScope.map(({ result, kept, requalified, dropped, feedback: replies }) => {
@@ -1046,8 +1050,12 @@ export function renderAggregateMarkdown(
       return {
         result,
         replies,
-        shown: [...inlined.map((entry) => entry.finding), ...listed.slice(0, limitPerScope)],
+        shown: [
+          ...inlined.slice(0, inlinedLimit).map((entry) => entry.finding),
+          ...listed.slice(0, limitPerScope),
+        ],
         hidden: Math.max(0, listed.length - limitPerScope),
+        inlinedHidden: Math.max(0, inlined.length - inlinedLimit),
         // The requalified section is trimmed by the same per-scope limit as shown: it
         // is coordinator-populated (a wide stack can requalify many findings at once),
         // and an untrimmed section would keep the truncation loop below from ever
@@ -1065,6 +1073,7 @@ export function renderAggregateMarkdown(
       replies,
       shown,
       hidden,
+      inlinedHidden,
       requalified,
       requalifiedAll,
       requalifiedHidden,
@@ -1078,7 +1087,7 @@ export function renderAggregateMarkdown(
         shown.length > 0 || requalifiedAll.length > 0 || replies.length > 0 || mentions.length > 0
           ? " open"
           : "";
-      const keptCount = shown.length + hidden;
+      const keptCount = shown.length + hidden + inlinedHidden;
       lines.push(
         `<details${open}>`,
         `<summary>${stripStateMarkers(result.scope)} — ${decisionLabel(result.review.decision)} (${keptCount})</summary>`,
@@ -1104,6 +1113,9 @@ export function renderAggregateMarkdown(
       }
       if (hidden > 0) {
         lines.push(`_…and ${hidden} more finding(s) — see the workflow log._`, "");
+      }
+      if (inlinedHidden > 0) {
+        lines.push(`_…and ${inlinedHidden} more inline comment(s) on the diff._`, "");
       }
       if (requalifiedAll.length > 0) {
         lines.push(
@@ -1151,7 +1163,7 @@ export function renderAggregateMarkdown(
     // across re-renders. The per-scope data (`scopes`) plus a merged v1 `review`
     // keep both v2 and v1 consumers working.
     const stateScopes: ScopeReviewResult[] = rendered.map(
-      ({ result, shown, hidden, requalified, requalifiedHidden, dropped }) => {
+      ({ result, shown, hidden, inlinedHidden, requalified, requalifiedHidden, dropped }) => {
         // @ref LLP 0011#suppression-is-never-silent — strip any per-scope `feedback`
         // a freshly-reviewed scope's ReviewRunResult carries: the top-level feedback
         // array (reviewState below) is the single source of truth. A stale per-scope
@@ -1172,7 +1184,7 @@ export function renderAggregateMarkdown(
           isDefault: result.isDefault,
           // A truncated state is not the full result and therefore cannot be a cache
           // source. Omit its hash so the next run retries instead of reusing a subset.
-          ...(hidden === 0 && requalifiedHidden === 0
+          ...(hidden === 0 && inlinedHidden === 0 && requalifiedHidden === 0
             ? result.inputHash
               ? { inputHash: result.inputHash }
               : {}
@@ -1222,13 +1234,23 @@ export function renderAggregateMarkdown(
   };
 
   let limit = Number.POSITIVE_INFINITY;
+  let inlinedLimit = Number.POSITIVE_INFINITY;
   let withSummaries = true;
-  let body = buildBody(limit, withSummaries);
+  let body = buildBody(limit, inlinedLimit, withSummaries);
   // Agent summaries go before any finding: they never affect the decision, and each
   // scope's summary budget does not bound the sum across scopes.
   if (body.length > MAX_COMMENT_CHARS) {
     withSummaries = false;
-    body = buildBody(limit, withSummaries);
+    body = buildBody(limit, inlinedLimit, withSummaries);
+  }
+  // Inlined findings go next, down to none: each one keeps its thread on the PR.
+  const largestInlined = Math.max(0, ...perScope.map((entry) => entry.kept.length));
+  while (body.length > MAX_COMMENT_CHARS && inlinedLimit > 0) {
+    inlinedLimit =
+      inlinedLimit === Number.POSITIVE_INFINITY
+        ? Math.floor(largestInlined / 2)
+        : Math.floor(inlinedLimit / 2);
+    body = buildBody(limit, inlinedLimit, withSummaries);
   }
   // Seed from the largest per-scope section the limit applies to — kept OR
   // requalified — so the halving loop shrinks whichever one is oversized.
@@ -1241,7 +1263,7 @@ export function renderAggregateMarkdown(
       limit === Number.POSITIVE_INFINITY
         ? Math.max(3, Math.floor(largestScope / 2))
         : Math.max(3, Math.floor(limit / 2));
-    body = buildBody(limit, withSummaries);
+    body = buildBody(limit, inlinedLimit, withSummaries);
   }
   return body;
 }

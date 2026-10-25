@@ -476,7 +476,20 @@ test("renderAggregateMarkdown: a scope whose findings are all inlined stays open
   expect(body).toContain(threadUrl(6));
 });
 
-test("renderAggregateMarkdown: truncation trims listed findings only, never for inlined ones", () => {
+const rootScope = (findings: Finding[]) => [
+  {
+    scope: "root",
+    isDefault: true,
+    review: {
+      decision: "approve_with_comments" as const,
+      findings,
+      summary: "s",
+      incomplete: [],
+    },
+  },
+];
+
+test("renderAggregateMarkdown: truncation trims inlined findings before listed ones", () => {
   // 30 inlined warnings and 10 listed nits, each nit large enough that the comment
   // overflows and the per-scope limit must cut.
   const inlined = Array.from({ length: 30 }, (_, index) =>
@@ -487,7 +500,7 @@ test("renderAggregateMarkdown: truncation trims listed findings only, never for 
       severity: "nit",
       file: `n${index}.ts`,
       title: `Listed nit ${index}`,
-      rationale: "x".repeat(6_000),
+      rationale: "x".repeat(3_000),
     }),
   );
   const link: LinkContext = {
@@ -495,30 +508,38 @@ test("renderAggregateMarkdown: truncation trims listed findings only, never for 
     prNumber: 1,
     inlineUrls: new Map(inlined.map((f, index) => [fingerprintFinding(f), threadUrl(100 + index)])),
   };
-  const body = renderAggregateMarkdown(
-    [
-      {
-        scope: "root",
-        isDefault: true,
-        review: {
-          decision: "approve_with_comments",
-          findings: [...inlined, ...listed],
-          summary: "s",
-          incomplete: [],
-        },
-      },
-    ],
-    TAG,
-    [],
-    link,
-  );
-  // Every inlined thread is still linked.
-  expect(body).toContain("💬 **Inline comments on the diff (30)**");
-  // Some listed nits are shown, and the note counts only the listed ones left out.
+  const body = renderAggregateMarkdown(rootScope([...inlined, ...listed]), TAG, [], link);
+  expect(body.length).toBeLessThanOrEqual(60_000);
+  // Every inlined finding went first: their threads stay on the PR.
+  expect(body).not.toContain("💬 **Inline comments on the diff");
+  expect(body).toContain("…and 30 more inline comment(s) on the diff.");
+  // Then the listed nits, and the note counts only the listed ones left out.
   const shownNits = listed.filter((f) => body.includes(`**${f.title}**`)).length;
   expect(shownNits).toBeGreaterThan(0);
   expect(shownNits).toBeLessThan(10);
   expect(body).toContain(`…and ${10 - shownNits} more finding(s)`);
+  // The scope header still counts every kept finding.
+  expect(body).toContain("(40)");
+});
+
+test("renderAggregateMarkdown: long inlined findings are trimmed so listed ones stay", () => {
+  // The inlined findings render as id links, but their full text rides the state.
+  const inlined = Array.from({ length: 20 }, (_, index) =>
+    finding({ file: `w${index}.ts`, title: `Warning ${index}`, rationale: "y".repeat(4_000) }),
+  );
+  const listed = Array.from({ length: 10 }, (_, index) =>
+    finding({ severity: "nit", file: `n${index}.ts`, title: `Listed nit ${index}` }),
+  );
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    inlineUrls: new Map(inlined.map((f, index) => [fingerprintFinding(f), threadUrl(200 + index)])),
+  };
+  const body = renderAggregateMarkdown(rootScope([...inlined, ...listed]), TAG, [], link);
+  expect(body.length).toBeLessThanOrEqual(60_000);
+  expect(listed.every((f) => body.includes(`**${f.title}**`))).toBe(true);
+  expect(body).toMatch(/…and \d+ more inline comment\(s\) on the diff\./);
+  expect(body).not.toContain("more finding(s)");
 });
 
 test("renderMarkdown: a non-github inline URL is ignored (full form)", () => {
