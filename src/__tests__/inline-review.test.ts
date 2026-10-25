@@ -4,9 +4,14 @@ import { tmpdir } from "node:os";
 import path, { delimiter } from "node:path";
 
 import { resetTrustedToolCache } from "../core/exec.js";
-import { inlineStubBody, renderInlineCommentBody, renderMarkdown } from "../core/render.js";
+import {
+  inlineStubBody,
+  renderAggregateMarkdown,
+  renderInlineCommentBody,
+  renderMarkdown,
+} from "../core/render.js";
 import type { LinkContext } from "../core/render.js";
-import { fingerprintFinding } from "../core/schema.js";
+import { fingerprintFinding, scopedFingerprint } from "../core/schema.js";
 import type { CoordinatorOutput, Finding } from "../core/schema.js";
 import { GitHubReporter, ghApiFailure, inlineUrlsByFp } from "../reporters/github.js";
 
@@ -49,6 +54,7 @@ test("inlineUrlsByFp: maps our marked comments to their permalinks", () => {
 // comments are served from review-comments-<page>.json, and the PR's existing review
 // comments from pr-comments.json. The PR's issue comments come from
 // issue-comments.json, and an issue comment edit is copied to issue-patch.json.
+// FAKE_GH_PR_LIST_ERROR makes listing the PR's review comments fail.
 const FAKE_GH = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_GH_DIR/calls.log"
 eval "last=\\\${$#}"
@@ -83,6 +89,7 @@ case "$*" in
     cp "$last" "$FAKE_GH_DIR/issue-patch.json"
     printf '{}' ;;
   *"-X GET "*"/comments"*)
+    if [ -n "$FAKE_GH_PR_LIST_ERROR" ]; then echo "$FAKE_GH_PR_LIST_ERROR" >&2; exit 1; fi
     if [ -f "$FAKE_GH_DIR/pr-comments.json" ]; then cat "$FAKE_GH_DIR/pr-comments.json"; else printf '[]'; fi ;;
   *"-X PATCH "*)
     if [ -n "$FAKE_GH_PATCH_ERROR" ]; then echo "$FAKE_GH_PATCH_ERROR" >&2; exit 1; fi
@@ -112,6 +119,7 @@ beforeEach(async () => {
     "FAKE_GH_PATCH_ERROR",
     "FAKE_GH_COMMENT_ERROR",
     "FAKE_GH_COMMENT_BODY",
+    "FAKE_GH_PR_LIST_ERROR",
     "GITHUB_STEP_SUMMARY",
   ]) {
     saved[name] = process.env[name];
@@ -127,6 +135,7 @@ beforeEach(async () => {
   delete process.env.FAKE_GH_PATCH_ERROR;
   delete process.env.FAKE_GH_COMMENT_ERROR;
   delete process.env.FAKE_GH_COMMENT_BODY;
+  delete process.env.FAKE_GH_PR_LIST_ERROR;
   delete process.env.GITHUB_STEP_SUMMARY;
   resetTrustedToolCache();
 });
@@ -464,36 +473,169 @@ test("applyDismissal: the re-rendered comment links findings with live threads, 
         id: 81,
         body: renderInlineCommentBody(live, TAG, liveFp!),
         user: { login: "ecr-bot" },
-        html_url: "https://github.com/o/r/pull/7#discussion_r81",
+        html_url: "https://github.com/o/r/pull/801#discussion_r81",
       },
       {
         id: 82,
         body: inlineStubBody(TAG, stubbedFp!),
         user: { login: "ecr-bot" },
-        html_url: "https://github.com/o/r/pull/7#discussion_r82",
+        html_url: "https://github.com/o/r/pull/801#discussion_r82",
       },
     ]),
     "utf8",
   );
   const reporter = new GitHubReporter({
-    prNumber: 7,
+    prNumber: 801,
     repo: "o/r",
     commentTag: TAG,
     ownLogin: "ecr-bot",
     headSha: HEAD,
     inline: { enabled: true, maxComments: 20 },
-    linkContext: { repo: "o/r", prNumber: 7 },
+    linkContext: { repo: "o/r", prNumber: 801 },
   });
   await reporter.applyDismissal([dismissedFp!], []);
   const { body } = JSON.parse(await readFile(path.join(dir, "issue-patch.json"), "utf8")) as {
     body: string;
   };
   // The live thread is linked by id, not listed again.
-  expect(body).toContain(`[\`id:${liveFp}\`](https://github.com/o/r/pull/7#discussion_r81)`);
+  expect(body).toContain(`[\`id:${liveFp}\`](https://github.com/o/r/pull/801#discussion_r81)`);
   expect(body).not.toContain("**Observer restarts for cached instances**");
   // A stub is no live thread, so its finding stays listed in full.
   expect(body).toContain("**Stubbed thread finding**");
   expect(body).not.toContain("discussion_r82");
   // The dismissed finding moves to the dismissed section.
   expect(body).toContain("Dismissed on this PR (1)");
+});
+
+// A dismissal setup: the main comment, and our review comments.
+// Each test uses its own PR number: the reporter caches review comments per PR.
+async function dismissalFixture(
+  prNumber: number,
+  issueBody: string,
+  threads: Array<{ id: number; body: string }>,
+): Promise<GitHubReporter> {
+  await writeFile(
+    path.join(dir, "issue-comments.json"),
+    JSON.stringify([{ id: 900, body: issueBody, user: { login: "ecr-bot" } }]),
+    "utf8",
+  );
+  await writeFile(
+    path.join(dir, "pr-comments.json"),
+    JSON.stringify(
+      threads.map((thread) => ({
+        ...thread,
+        user: { login: "ecr-bot" },
+        html_url: `https://github.com/o/r/pull/${prNumber}#discussion_r${thread.id}`,
+      })),
+    ),
+    "utf8",
+  );
+  return new GitHubReporter({
+    prNumber,
+    repo: "o/r",
+    commentTag: TAG,
+    ownLogin: "ecr-bot",
+    headSha: HEAD,
+    inline: { enabled: true, maxComments: 20 },
+    linkContext: { repo: "o/r", prNumber },
+  });
+}
+
+async function patchedMainComment(): Promise<string> {
+  return (
+    JSON.parse(await readFile(path.join(dir, "issue-patch.json"), "utf8")) as { body: string }
+  ).body;
+}
+
+test("applyDismissal: /undismiss restores the thread before the main comment links it", async () => {
+  const restored = finding({ title: "Restored finding" });
+  const fp = fingerprintFinding(restored);
+  const review: CoordinatorOutput = {
+    decision: "approve_with_comments",
+    findings: [restored],
+    summary: "s",
+    incomplete: [],
+  };
+  const reporter = await dismissalFixture(803, renderMarkdown(review, TAG, [{ fp }]), [
+    { id: 91, body: inlineStubBody(TAG, fp) },
+  ]);
+  await reporter.applyDismissal([], [fp]);
+  const calls = (await readFile(path.join(dir, "calls.log"), "utf8")).trim().split("\n");
+  const patches = calls.filter((call) => call.includes("-X PATCH"));
+  // The thread PATCH comes first, then the main comment.
+  expect(patches[0]).toContain("repos/o/r/pulls/comments/91");
+  expect(patches[1]).toContain("repos/o/r/issues/comments/900");
+  expect(await patchedMainComment()).toContain(
+    `[\`id:${fp}\`](https://github.com/o/r/pull/803#discussion_r91)`,
+  );
+});
+
+test("applyDismissal: a failed restore leaves the finding listed in full, not linked to a stub", async () => {
+  process.env.FAKE_GH_PATCH_ERROR = "HTTP 500";
+  const restored = finding({ title: "Restored finding" });
+  const fp = fingerprintFinding(restored);
+  const review: CoordinatorOutput = {
+    decision: "approve_with_comments",
+    findings: [restored],
+    summary: "s",
+    incomplete: [],
+  };
+  const reporter = await dismissalFixture(804, renderMarkdown(review, TAG, [{ fp }]), [
+    { id: 92, body: inlineStubBody(TAG, fp) },
+  ]);
+  await reporter.applyDismissal([], [fp]);
+  const body = await patchedMainComment();
+  expect(body).toContain("**Restored finding**");
+  expect(body).not.toContain("discussion_r92");
+});
+
+test("applyDismissal: when the threads can't be listed, every finding renders in full", async () => {
+  process.env.FAKE_GH_PR_LIST_ERROR = "HTTP 502";
+  const live = finding();
+  const other = finding({ file: "b.ts", title: "Other finding" });
+  const review: CoordinatorOutput = {
+    decision: "approve_with_comments",
+    findings: [live, other],
+    summary: "s",
+    incomplete: [],
+  };
+  const reporter = await dismissalFixture(805, renderMarkdown(review, TAG), [
+    { id: 93, body: renderInlineCommentBody(live, TAG, fingerprintFinding(live)) },
+  ]);
+  await reporter.applyDismissal([fingerprintFinding(other)], []);
+  const body = await patchedMainComment();
+  expect(body).toContain("**Observer restarts for cached instances**");
+  expect(body).not.toContain("discussion_r93");
+  expect(body).toContain("Dismissed on this PR (1)");
+});
+
+test("applyDismissal: an aggregate comment links threads by the scope's ids", async () => {
+  const live = finding();
+  const dismissed = finding({ file: "c.ts", title: "Dismissed finding" });
+  const liveId = scopedFingerprint("ios", live);
+  const dismissedId = scopedFingerprint("ios", dismissed);
+  const issueBody = renderAggregateMarkdown(
+    [
+      {
+        scope: "ios",
+        isDefault: false,
+        review: {
+          decision: "approve_with_comments",
+          findings: [live, dismissed],
+          summary: "s",
+          incomplete: [],
+        },
+      },
+    ],
+    TAG,
+    [],
+  );
+  const reporter = await dismissalFixture(806, issueBody, [
+    { id: 94, body: renderInlineCommentBody(live, TAG, liveId) },
+  ]);
+  const result = await reporter.applyDismissal([dismissedId], []);
+  expect(result.matched).toEqual([dismissedId]);
+  const body = await patchedMainComment();
+  expect(body).toContain(`[\`id:${liveId}\`](https://github.com/o/r/pull/806#discussion_r94)`);
+  expect(body).not.toContain("**Observer restarts for cached instances**");
 });

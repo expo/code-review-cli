@@ -44,7 +44,7 @@ export interface LinkContext {
   /**
    * Permalinks to this run's live inline finding comments, keyed by the SAME id the
    * comment renders (plain fingerprint, or scope-namespaced for an aggregate). A
-   * finding with an entry is left out of the finding list and only counted, because
+   * finding with an entry is left out of the finding list and shown only as its linked id, because
    * its full text lives in the inline thread; a finding without one renders in full.
    * Callers must pass a per-render COPY of a shared
    * LinkContext (`{ ...link, inlineUrls }`), never mutate the shared object: the
@@ -553,7 +553,7 @@ function renderFindingLines(
  * Full body of one inline (PR review) finding comment: identity marker at byte 0,
  * then the finding rendered whole — everything model-written passes
  * stripStateMarkers, same as the main comment. The footer teaches the clearing
- * flow (an UNQUOTED id citation), since the main comment only counts this finding.
+ * flow (an UNQUOTED id citation), since the main comment shows only its linked id.
  * The body must never contain `:state=`/`:fingerprints=` (it would be dropped as
  * our own main comment by the reply matcher's backstop) — it doesn't.
  */
@@ -1038,7 +1038,8 @@ export function renderAggregateMarkdown(
     // `inlinedLimit` first: a trimmed inlined finding still has its thread on the PR,
     // while a listed one appears nowhere else. Inlined findings must be trimmable at
     // all, because each renders as one id link but carries its full text in the
-    // embedded state. The embedded state trims KEPT findings to the same set so a truncated comment
+    // embedded state. Both limits stop at 3, so a scope with kept findings always
+    // shows some, and keeps them in the state for `/dismiss`. The embedded state trims KEPT findings to the same set so a truncated comment
     // still fits GitHub's body limit (the hidden findings are noted, not silently
     // carried) — but dismissed findings are always kept in state (see below).
     const rendered = perScope.map(({ result, kept, requalified, dropped, feedback: replies }) => {
@@ -1243,13 +1244,19 @@ export function renderAggregateMarkdown(
     withSummaries = false;
     body = buildBody(limit, inlinedLimit, withSummaries);
   }
-  // Inlined findings go next, down to none: each one keeps its thread on the PR.
-  const largestInlined = Math.max(0, ...perScope.map((entry) => entry.kept.length));
-  while (body.length > MAX_COMMENT_CHARS && inlinedLimit > 0) {
+  // Inlined findings go next, down to 3: each trimmed one keeps its thread on the PR.
+  const largestInlined = Math.max(
+    0,
+    ...perScope.map(
+      ({ result, kept }) =>
+        kept.filter(({ finding }) => validInlineUrl(link, idOf(result, finding))).length,
+    ),
+  );
+  while (body.length > MAX_COMMENT_CHARS && inlinedLimit > 3) {
     inlinedLimit =
       inlinedLimit === Number.POSITIVE_INFINITY
-        ? Math.floor(largestInlined / 2)
-        : Math.floor(inlinedLimit / 2);
+        ? Math.max(3, Math.floor(largestInlined / 2))
+        : Math.max(3, Math.floor(inlinedLimit / 2));
     body = buildBody(limit, inlinedLimit, withSummaries);
   }
   // Seed from the largest per-scope section the limit applies to — kept OR

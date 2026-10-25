@@ -18,7 +18,7 @@ presentation layer, converged on every run.
 - No GraphQL thread resolution, and no detection of author-resolved/outdated
   threads. Accepted risk: the PR author can resolve (collapse) an inline thread.
   The thread stays on the PR and anyone can expand it, and the author cannot
-  edit or delete the bot's comment, so the main comment only counts it.
+  edit or delete the bot's comment, so the main comment shows only its id.
 - `ecr feedback` retroactive crawl keeps reading issue comments only. The
   review-comments fetch in `replyComments` is gated on the reporter having an
   ENABLED `inline` option, so the crawl (which passes none) gains no fetches.
@@ -167,7 +167,7 @@ threads are STUBBED, bare ones deleted — never delete a thread humans wrote in
 covers the fp-namespace flip on per-scope↔single switches, symmetric with how
 main comments are cleared today.
 
-### Main-comment count line
+### Main-comment id rows
 
 - `LinkContext.inlineUrls?: Map<string, string>`. NEVER mutate the shared
   routed-flow `link` object — render with a copy `{ ...link, inlineUrls }`.

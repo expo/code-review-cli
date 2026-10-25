@@ -741,7 +741,8 @@ export class GitHubReporter implements Reporter {
       : await this.computeFeedback(withFp, priorRecords, pinsIn);
     const link = await this.linkContextAsync();
     // Inline threads converge to the ACTIVE findings before the body renders, so
-    // the body knows which findings to count instead of list. A failed run (couldNotComplete) posts an
+    // the body links those findings by id instead of listing them. A failed run
+    // (couldNotComplete) posts an
     // empty findings list that proves nothing — additive-only, no teardown.
     const inlineUrls = await this.syncInline(activeFindings(withFp, dismissed, records), link, {
       teardown: review.couldNotComplete !== true,
@@ -1738,8 +1739,8 @@ export class GitHubReporter implements Reporter {
     // @ref LLP 0008#inline-threads [implements] — /dismiss renders with the live thread links
     // Our inline threads, read BEFORE the render: the main comment links a finding
     // with a live thread instead of listing it again, like a review run does. A stub
-    // is no live thread, unless this action restores it below. Fail-soft: without
-    // the threads, every finding renders in full.
+    // is no live thread. Fail-soft: without the threads, every finding renders in
+    // full, and a dismissal must never fail on the inline layer.
     let own: ExistingInlineComment[] | null = null;
     if (this.options.inline?.enabled) {
       try {
@@ -1750,12 +1751,41 @@ export class GitHubReporter implements Reporter {
         );
       }
     }
-    const restored = new Set(remove);
+    // Restore `/undismiss`ed threads BEFORE the render, so the main comment links a
+    // thread only once it shows the finding again. A restore that fails leaves a stub,
+    // and its finding renders in full.
+    const bodies = new Map((own ?? []).map((comment) => [comment.fp, comment.body]));
+    if (own) {
+      try {
+        const byFp = new Map(own.map((comment) => [comment.fp, comment]));
+        const findingById = stateFindingsById(state);
+        for (const fp of remove) {
+          const comment = byFp.get(fp);
+          const finding = findingById.get(fp);
+          // A finding truncated out of the state (or a thread that was deleted) just
+          // renders full-form in the main comment until the next review re-creates it.
+          if (!comment || !finding) {
+            continue;
+          }
+          const full = renderInlineCommentBody(finding, this.options.commentTag, fp);
+          if (!inlineBodiesEqual(comment.body, full)) {
+            await this.patchReviewComment(comment.id, full);
+            bodies.set(fp, full);
+          }
+        }
+      } catch (error) {
+        process.stderr.write(
+          `inline sync: thread restore skipped (findings render in the main comment): ${errorMessage(error)}\n`,
+        );
+      }
+    }
     const inlineUrls = new Map(
       (own ?? []).flatMap((comment) =>
         comment.url &&
-        (restored.has(comment.fp) ||
-          !inlineBodiesEqual(comment.body, inlineStubBody(this.options.commentTag, comment.fp)))
+        !inlineBodiesEqual(
+          bodies.get(comment.fp) ?? comment.body,
+          inlineStubBody(this.options.commentTag, comment.fp),
+        )
           ? [[comment.fp, comment.url] as const]
           : [],
       ),
@@ -1790,7 +1820,6 @@ export class GitHubReporter implements Reporter {
     if (own) {
       try {
         const byFp = new Map(own.map((comment) => [comment.fp, comment]));
-        const findingById = stateFindingsById(state);
         for (const fp of next.matched) {
           const comment = byFp.get(fp);
           if (!comment) {
@@ -1799,19 +1828,6 @@ export class GitHubReporter implements Reporter {
           const stub = inlineStubBody(this.options.commentTag, fp);
           if (!inlineBodiesEqual(comment.body, stub)) {
             await this.patchReviewComment(comment.id, stub);
-          }
-        }
-        for (const fp of remove) {
-          const comment = byFp.get(fp);
-          const finding = findingById.get(fp);
-          // A finding truncated out of the state (or a thread that was deleted) just
-          // renders full-form in the main comment until the next review re-creates it.
-          if (!comment || !finding) {
-            continue;
-          }
-          const full = renderInlineCommentBody(finding, this.options.commentTag, fp);
-          if (!inlineBodiesEqual(comment.body, full)) {
-            await this.patchReviewComment(comment.id, full);
           }
         }
       } catch (error) {

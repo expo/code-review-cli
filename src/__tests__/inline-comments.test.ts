@@ -12,6 +12,7 @@ import {
   inlineStubBody,
   parseInlineMarkerFp,
   renderInlineCommentBody,
+  parseReviewState,
   renderAggregateMarkdown,
   renderMarkdown,
 } from "../core/render.js";
@@ -510,9 +511,9 @@ test("renderAggregateMarkdown: truncation trims inlined findings before listed o
   };
   const body = renderAggregateMarkdown(rootScope([...inlined, ...listed]), TAG, [], link);
   expect(body.length).toBeLessThanOrEqual(60_000);
-  // Every inlined finding went first: their threads stay on the PR.
-  expect(body).not.toContain("💬 **Inline comments on the diff");
-  expect(body).toContain("…and 30 more inline comment(s) on the diff.");
+  // Inlined findings went first, down to 3: the trimmed ones keep their threads.
+  expect(body).toContain("💬 **Inline comments on the diff (3)**");
+  expect(body).toContain("…and 27 more inline comment(s) on the diff.");
   // Then the listed nits, and the note counts only the listed ones left out.
   const shownNits = listed.filter((f) => body.includes(`**${f.title}**`)).length;
   expect(shownNits).toBeGreaterThan(0);
@@ -540,6 +541,54 @@ test("renderAggregateMarkdown: long inlined findings are trimmed so listed ones 
   expect(listed.every((f) => body.includes(`**${f.title}**`))).toBe(true);
   expect(body).toMatch(/…and \d+ more inline comment\(s\) on the diff\./);
   expect(body).not.toContain("more finding(s)");
+});
+
+test("renderAggregateMarkdown: a scope keeps 3 inlined findings in the comment and the state", () => {
+  // A scope with only inlined findings next to a scope whose large listed findings
+  // overflow the comment: the cap must not empty the first scope.
+  const inlined = Array.from({ length: 8 }, (_, index) =>
+    finding({ file: `w${index}.ts`, title: `Warning ${index}` }),
+  );
+  const listed = Array.from({ length: 10 }, (_, index) =>
+    finding({
+      severity: "nit",
+      file: `n${index}.ts`,
+      title: `Nit ${index}`,
+      rationale: "x".repeat(3_000),
+    }),
+  );
+  const ids = inlined.map((f) => scopedFingerprint("ios", f));
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    inlineUrls: new Map(ids.map((id, index) => [id, threadUrl(300 + index)])),
+  };
+  const scope = (name: string, findings: Finding[]) => ({
+    scope: name,
+    isDefault: false,
+    inputHash: `hash-${name}`,
+    review: {
+      decision: "approve_with_comments" as const,
+      findings,
+      summary: "s",
+      incomplete: [],
+    },
+  });
+  const body = renderAggregateMarkdown(
+    [scope("ios", inlined), scope("web", listed)],
+    TAG,
+    [],
+    link,
+  );
+  expect(body.length).toBeLessThanOrEqual(60_000);
+  expect(body).not.toContain("No findings.");
+  expect(body).toContain("…and 5 more inline comment(s) on the diff.");
+  const state = parseReviewState(body, TAG)!;
+  const ios = state.scopes!.find((entry) => entry.scope === "ios")!;
+  // The 3 shown inlined findings stay in the state, so `/dismiss` accepts their ids.
+  expect(ios.review.findings).toHaveLength(3);
+  // A trimmed scope is not the full result, so its input hash is left out.
+  expect(ios.inputHash).toBeUndefined();
 });
 
 test("renderMarkdown: a non-github inline URL is ignored (full form)", () => {
