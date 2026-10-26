@@ -365,6 +365,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
             cwd,
             feedback: config.feedback,
             inline: config.inline,
+            readyForHumanLabel: config.review.readyForHumanLabel,
             headSha,
           })
         : null;

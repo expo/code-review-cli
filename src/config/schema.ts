@@ -160,6 +160,12 @@ export const ReviewConfigSchema = z.object({
       // Opt a single PR out of review. A label (not a config flag) because labels
       // are write-gated to maintainers — a PR author can't add one to dodge review.
       skipLabel: z.string().default("ai-review:skip"),
+      // A label `ecr ci` adds when the review decision is "Ready for human review",
+      // with or without comments, and removes when a later review requests changes or
+      // fails. It only removes the label when it added it. Unset (the default) turns
+      // labelling off. Single-comment mode only: per-scope comments have no one
+      // decision for the PR.
+      readyForHumanLabel: z.string().min(1).optional(),
     })
     .default({ trigger: "all", label: "ai-review", skipLabel: "ai-review:skip" }),
   // Stack-aware requalification: walk the OPEN PRs stacked on top of this one and
@@ -508,6 +514,7 @@ export interface LoadedConfig {
     trigger: "all" | "label";
     label: string;
     skipLabel: string;
+    readyForHumanLabel?: string;
   };
   /** Root-only stack-aware requalification settings (see ReviewConfigSchema.stack). */
   stack: {

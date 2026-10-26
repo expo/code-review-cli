@@ -16,6 +16,7 @@ import {
   renderAggregateMarkdown,
   renderInlineCommentBody,
   renderMarkdown,
+  worstDecision,
 } from "../core/render.js";
 import type { LinkContext, ReviewState, ScopeReviewResult } from "../core/render.js";
 import { matchReplies } from "../core/responses.js";
@@ -71,6 +72,11 @@ export interface GitHubReporterOptions {
    * tag's inline comments so a comment-mode switch or a disable cleans up.
    */
   inline?: LoadedConfig["inline"];
+  /**
+   * `review.readyForHumanLabel`: the label to add when a posted review is ready for a
+   * human (see readyForHuman), and to remove when it is not. Unset ⇒ no labels.
+   */
+  readyForHumanLabel?: string;
   /**
    * The head commit this run reviews (the PR's immutable head OID, from the source's
    * metadata). Feedback merging binds a stored verdict to the source it judged, so a
@@ -395,6 +401,19 @@ export function activeFindings(
  * the routed ci flow shares one LinkContext across reporters, so never mutate it. */
 function withInlineUrls(link: LinkContext, inlineUrls: Map<string, string>): LinkContext {
   return inlineUrls.size > 0 ? { ...link, inlineUrls } : link;
+}
+
+/**
+ * Whether a posted review is ready for a human: every review ran, and the decision
+ * (the worst one, for an aggregate) is "Ready for human review", with or without
+ * comments. Exported for tests.
+ */
+export function readyForHuman(reviews: CoordinatorOutput[]): boolean {
+  return (
+    reviews.length > 0 &&
+    reviews.every((review) => review.couldNotComplete !== true) &&
+    worstDecision(reviews.map((review) => review.decision)) !== "request_changes"
+  );
 }
 
 // @ref LLP 0011#suppression-is-never-silent [implements] — a verdict carries only while BOTH the reply and the reviewed source are unchanged
@@ -758,6 +777,7 @@ export class GitHubReporter implements Reporter {
         state?.mentioned,
       ),
     );
+    await this.syncReadyLabel(readyForHuman([review]));
   }
 
   /**
@@ -808,6 +828,7 @@ export class GitHubReporter implements Reporter {
         pins,
       ),
     );
+    await this.syncReadyLabel(readyForHuman(results.map((result) => result.review)));
   }
 
   /**
@@ -1963,6 +1984,81 @@ export class GitHubReporter implements Reporter {
         { cwd: this.options.cwd },
       ),
     );
+  }
+
+  // @ref LLP 0008#comment-lifecycle [implements] — the ready label follows the decision; only our own label is removed
+  /**
+   * Add `readyForHumanLabel` when `ready`, or remove it when not. The label is
+   * removed only when this reporter's account added it last, so a label a person
+   * added stays. Fail-soft: the review comment is already posted, and a label
+   * failure only logs.
+   */
+  private async syncReadyLabel(ready: boolean): Promise<void> {
+    const label = this.options.readyForHumanLabel;
+    if (!label) {
+      return;
+    }
+    try {
+      const gh = await resolveTrustedTool("gh");
+      const issue = `repos/${this.options.repo}/issues/${this.options.prNumber}`;
+      const { stdout } = await run(
+        gh,
+        ["api", "-X", "GET", `${issue}/labels`, "-f", "per_page=100", "--jq", ".[].name"],
+        { cwd: this.options.cwd },
+      );
+      const present = stdout.split("\n").some((name) => name === label);
+      if (ready && !present) {
+        await run(gh, ["api", "-X", "POST", `${issue}/labels`, "-f", `labels[]=${label}`], {
+          cwd: this.options.cwd,
+        });
+      } else if (!ready && present && (await this.addedLabelLast(label))) {
+        await run(gh, ["api", "-X", "DELETE", `${issue}/labels/${encodeURIComponent(label)}`], {
+          cwd: this.options.cwd,
+        });
+      }
+    } catch (error) {
+      process.stderr.write(`ready label: update skipped: ${errorMessage(error)}\n`);
+    }
+  }
+
+  /** Whether the newest `labeled` event for `label` on this PR is from our account. */
+  private async addedLabelLast(label: string): Promise<boolean> {
+    const ownLogin = await this.resolveOwnLogin();
+    if (!ownLogin) {
+      return false;
+    }
+    const gh = await resolveTrustedTool("gh");
+    let actor: string | undefined;
+    for (let page = 1; page <= GitHubReporter.MAX_COMMENT_PAGES; page++) {
+      const { stdout } = await run(
+        gh,
+        [
+          "api",
+          "-X",
+          "GET",
+          `repos/${this.options.repo}/issues/${this.options.prNumber}/events`,
+          "-f",
+          "per_page=100",
+          "-f",
+          `page=${page}`,
+        ],
+        { cwd: this.options.cwd },
+      );
+      const events = JSON.parse(stdout) as Array<{
+        event?: string;
+        label?: { name?: string };
+        actor?: { login?: string } | null;
+      }>;
+      for (const event of events) {
+        if (event.event === "labeled" && event.label?.name === label) {
+          actor = event.actor?.login;
+        }
+      }
+      if (events.length < 100) {
+        break;
+      }
+    }
+    return actor === ownLogin;
   }
 
   private async deleteComment(commentId: number): Promise<void> {

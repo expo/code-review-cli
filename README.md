@@ -580,13 +580,23 @@ per-repo `noise.additionalIgnores`.
   "noise": { "additionalIgnores": ["packages/*/build/**"] },
   "review": { "trigger": "all",               // which PRs `ecr ci` reviews: "all"
               "label": "ai-review",            // (default, except ai-review:skip) or
-              "skipLabel": "ai-review:skip" }, // "label" (only labeled PRs)
+              "skipLabel": "ai-review:skip",   // "label" (only labeled PRs)
+              "readyForHumanLabel": "ready for human" }, // optional, see below
   "breakGlass": { "marker": "/skip-review" }, // PR body marker that skips the review
   "commentTag": "expo-ai-code-reviewer",      // hidden tag used to find/update the comment
   "auth": { "providers": {
     "anthropic": { "tokenEnv": "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN" } } }
 }
 ```
+
+`review.readyForHumanLabel` (off by default) names a label that `ecr ci` adds to
+the PR when the review decision is "Ready for human review", with or without
+comments. A later review that requests changes, or a review that fails, removes
+it, but only when the reviewer's account added it last: a label a person added
+stays. It works in the single comment mode; per-scope comments have no one
+decision for the PR, so that mode sets no label. `/dismiss` does not change the
+decision, so it does not change the label. The workflow token needs
+`issues: write`.
 
 </details>
 
