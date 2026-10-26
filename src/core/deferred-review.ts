@@ -60,6 +60,8 @@ export function reviewPostingConfigFingerprint(config: LoadedConfig): string {
         // saved review must not post under a different inline policy than it was
         // saved with.
         inline: config.inline,
+        // The ready label is a PR mutation too.
+        readyForHumanLabel: config.review.readyForHumanLabel,
       }),
     )
     .digest("hex");

@@ -167,6 +167,21 @@ export const ReviewConfigSchema = z.object({
       // decision for the PR.
       readyForHumanLabel: z.string().min(1).optional(),
     })
+    // The ready label must not act as a trigger label: as `label` (or `label:<agent>`)
+    // it would opt PRs in by itself, and as `skipLabel` the first ready review would
+    // stop every later one.
+    .refine(
+      (review) =>
+        review.readyForHumanLabel === undefined ||
+        (review.readyForHumanLabel !== review.label &&
+          !review.readyForHumanLabel.startsWith(`${review.label}:`) &&
+          review.readyForHumanLabel !== review.skipLabel),
+      {
+        message:
+          "review.readyForHumanLabel must differ from review.label, review.skipLabel, and every `<label>:<agent>` label",
+        path: ["readyForHumanLabel"],
+      },
+    )
     .default({ trigger: "all", label: "ai-review", skipLabel: "ai-review:skip" }),
   // Stack-aware requalification: walk the OPEN PRs stacked on top of this one and
   // let the coordinator mark absence-style findings a later PR already addresses.

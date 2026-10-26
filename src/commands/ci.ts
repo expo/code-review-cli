@@ -835,6 +835,7 @@ async function runRoutedCi(
     commentTag: rootTag,
     breakGlassMarker: rootConfig.breakGlassMarker,
     cwd,
+    readyForHumanLabel: rootConfig.review.readyForHumanLabel,
   });
   try {
     if (await bgReporter.checkBreakGlass()) {
@@ -1196,7 +1197,8 @@ async function runRoutedCi(
     // (--scopes) skips this mode-switch cleanup: the root-tag comment may hold the
     // other scopes' aggregate results.
     if (!scopesFilter) {
-      await reporterFor(rootTag).clear();
+      // It also removes a ready label the single comment mode added.
+      await reporterFor(rootTag, false, rootConfig.review.readyForHumanLabel).clear();
     }
     process.stderr.write("CI reviewer: posted per-scope reviews.\n");
   }

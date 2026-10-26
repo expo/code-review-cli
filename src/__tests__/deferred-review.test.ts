@@ -40,6 +40,7 @@ function config(configDir: string, overrides: Partial<LoadedConfig> = {}): Loade
       protectedCategories: ["security", "secrets"],
       maxAdjudications: 10,
     },
+    review: { trigger: "all", label: "ai-review", skipLabel: "ai-review:skip" },
     ...overrides,
   } as LoadedConfig;
 }
@@ -143,6 +144,11 @@ test("posting config fingerprint covers every comment-policy input", () => {
   );
   expect(
     reviewPostingConfigFingerprint(config(root, { feedback: { ...base.feedback, mode: "off" } })),
+  ).not.toBe(fingerprint);
+  expect(
+    reviewPostingConfigFingerprint(
+      config(root, { review: { ...base.review, readyForHumanLabel: "ready for human" } }),
+    ),
   ).not.toBe(fingerprint);
 });
 

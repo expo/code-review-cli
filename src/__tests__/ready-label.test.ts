@@ -24,6 +24,8 @@ test("readyForHuman: both 'Ready for human review' decisions, every review compl
   expect(readyForHuman([review({ decision: "approve_with_comments" })])).toBe(true);
   expect(readyForHuman([review({ decision: "request_changes" })])).toBe(false);
   expect(readyForHuman([review({ couldNotComplete: true })])).toBe(false);
+  // Partial coverage: a pass timed out, so the review may have missed something.
+  expect(readyForHuman([review({ incomplete: ["security timed out"] })])).toBe(false);
   // An aggregate is as ready as its worst scope.
   expect(readyForHuman([review(), review({ decision: "request_changes" })])).toBe(false);
   expect(readyForHuman([review(), review({ couldNotComplete: true })])).toBe(false);
@@ -36,24 +38,37 @@ test("config: review.readyForHumanLabel is optional and never empty", () => {
     ReviewConfigSchema.parse({ review: { readyForHumanLabel: LABEL } }).review.readyForHumanLabel,
   ).toBe(LABEL);
   expect(ReviewConfigSchema.safeParse({ review: { readyForHumanLabel: "" } }).success).toBe(false);
+  // It must not act as a trigger label.
+  for (const readyForHumanLabel of ["ai-review", "ai-review:ready", "ai-review:skip"]) {
+    expect(ReviewConfigSchema.safeParse({ review: { readyForHumanLabel } }).success).toBe(false);
+  }
+  expect(
+    ReviewConfigSchema.safeParse({
+      review: { label: "review-me", readyForHumanLabel: "ai-review" },
+    }).success,
+  ).toBe(true);
 });
 
 // ---- the reporter adds and removes the label through a fake `gh` on PATH ----
 
-// A fake `gh` that logs each call. The PR's labels come from labels.txt (one per
-// line) and its issue events from events.json. FAKE_GH_LABEL_ERROR makes every
-// label call fail.
+// A fake `gh` that logs each call. The PR's labels come from labels.json, and page N
+// of its issue events from events-N.json. FAKE_GH_LABEL_ERROR makes every label call
+// fail, and FAKE_GH_USER_ERROR makes `gh api user` fail.
 const FAKE_GH = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_GH_DIR/calls.log"
 case "$*" in
   *"/labels"*)
     if [ -n "$FAKE_GH_LABEL_ERROR" ]; then echo "$FAKE_GH_LABEL_ERROR" >&2; exit 1; fi
     case "$*" in
-      *"-X GET "*) if [ -f "$FAKE_GH_DIR/labels.txt" ]; then cat "$FAKE_GH_DIR/labels.txt"; fi ;;
+      *"-X GET "*) if [ -f "$FAKE_GH_DIR/labels.json" ]; then cat "$FAKE_GH_DIR/labels.json"; else printf '[]'; fi ;;
       *) printf '[]' ;;
     esac ;;
   *"/events"*)
-    if [ -f "$FAKE_GH_DIR/events.json" ]; then cat "$FAKE_GH_DIR/events.json"; else printf '[]'; fi ;;
+    page=$(printf '%s' "$*" | sed -n 's/.*page=\\([0-9]*\\).*/\\1/p')
+    if [ -f "$FAKE_GH_DIR/events-$page.json" ]; then cat "$FAKE_GH_DIR/events-$page.json"; else printf '[]'; fi ;;
+  "api user"*)
+    if [ -n "$FAKE_GH_USER_ERROR" ]; then echo "HTTP 403" >&2; exit 1; fi
+    printf 'ecr-bot\\n' ;;
   *"-X GET "*"/comments"*) printf '[]' ;;
   *"-X POST "*"/comments --input "*) printf '{"id": 1}' ;;
   *) echo "unexpected gh call: $*" >&2; exit 1 ;;
@@ -68,12 +83,20 @@ beforeEach(async () => {
   await writeFile(path.join(dir, "gh"), FAKE_GH, "utf8");
   await chmod(path.join(dir, "gh"), 0o755);
   await writeFile(path.join(dir, "calls.log"), "", "utf8");
-  for (const name of ["PATH", "FAKE_GH_DIR", "FAKE_GH_LABEL_ERROR"]) {
+  for (const name of [
+    "PATH",
+    "FAKE_GH_DIR",
+    "FAKE_GH_LABEL_ERROR",
+    "FAKE_GH_USER_ERROR",
+    "GITHUB_ACTIONS",
+  ]) {
     saved[name] = process.env[name];
   }
   process.env.PATH = `${dir}${delimiter}${saved.PATH ?? ""}`;
   process.env.FAKE_GH_DIR = dir;
   delete process.env.FAKE_GH_LABEL_ERROR;
+  delete process.env.FAKE_GH_USER_ERROR;
+  delete process.env.GITHUB_ACTIONS;
   resetTrustedToolCache();
 });
 
@@ -89,38 +112,71 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-// Each test uses its own PR number: the reporter caches some reads per PR.
-async function post(
-  prNumber: number,
-  posted: CoordinatorOutput,
-  opts: { labels?: string[]; labeledBy?: string; readyForHumanLabel?: string | null } = {},
-): Promise<string[]> {
-  if (opts.labels) {
-    await writeFile(path.join(dir, "labels.txt"), opts.labels.join("\n"), "utf8");
-  }
-  if (opts.labeledBy) {
+type LabelEvent = { event: "labeled" | "unlabeled"; actor: string };
+
+async function fixture(opts: { labels?: string[]; events?: LabelEvent[][] }): Promise<void> {
+  await writeFile(
+    path.join(dir, "labels.json"),
+    JSON.stringify((opts.labels ?? []).map((name) => ({ name }))),
+    "utf8",
+  );
+  for (const [index, page] of (opts.events ?? []).entries()) {
     await writeFile(
-      path.join(dir, "events.json"),
-      JSON.stringify([
-        { event: "labeled", label: { name: LABEL }, actor: { login: "someone-else" } },
-        { event: "unlabeled", label: { name: LABEL }, actor: { login: "someone-else" } },
-        { event: "labeled", label: { name: LABEL }, actor: { login: opts.labeledBy } },
-      ]),
+      path.join(dir, `events-${index + 1}.json`),
+      JSON.stringify(
+        page.map(({ event, actor }) => ({
+          event,
+          label: { name: LABEL },
+          actor: { login: actor },
+        })),
+      ),
       "utf8",
     );
   }
-  const reporter = new GitHubReporter({
+}
+
+// Each test uses its own PR number: the reporter caches some reads per PR.
+function reporterFor(
+  prNumber: number,
+  opts: { readyForHumanLabel?: string | null; ownLogin?: string | null } = {},
+): GitHubReporter {
+  return new GitHubReporter({
     prNumber,
     repo: "o/r",
     commentTag: TAG,
-    ownLogin: "ecr-bot",
+    ...(opts.ownLogin === null ? {} : { ownLogin: opts.ownLogin ?? "ecr-bot" }),
     linkContext: { repo: "o/r", prNumber },
     ...(opts.readyForHumanLabel === null
       ? {}
       : { readyForHumanLabel: opts.readyForHumanLabel ?? LABEL }),
   });
-  await reporter.report(posted);
+}
+
+async function calls(): Promise<string[]> {
   return (await readFile(path.join(dir, "calls.log"), "utf8")).trim().split("\n");
+}
+
+async function post(
+  prNumber: number,
+  posted: CoordinatorOutput,
+  opts: { labels?: string[]; labeledBy?: string; readyForHumanLabel?: string | null } = {},
+): Promise<string[]> {
+  await fixture({
+    ...(opts.labels ? { labels: opts.labels } : {}),
+    ...(opts.labeledBy
+      ? {
+          events: [
+            [
+              { event: "labeled", actor: "someone-else" },
+              { event: "unlabeled", actor: "someone-else" },
+              { event: "labeled", actor: opts.labeledBy },
+            ],
+          ],
+        }
+      : {}),
+  });
+  await reporterFor(prNumber, { readyForHumanLabel: opts.readyForHumanLabel }).report(posted);
+  return calls();
 }
 
 const labelCalls = (calls: string[]): string[] =>
@@ -169,29 +225,84 @@ test("report: a label failure does not fail the report", async () => {
 });
 
 test("reportAggregate: the worst scope decides, so one scope that requests changes removes it", async () => {
-  await writeFile(path.join(dir, "labels.txt"), LABEL, "utf8");
-  await writeFile(
-    path.join(dir, "events.json"),
-    JSON.stringify([{ event: "labeled", label: { name: LABEL }, actor: { login: "ecr-bot" } }]),
-    "utf8",
-  );
-  const reporter = new GitHubReporter({
-    prNumber: 907,
-    repo: "o/r",
-    commentTag: TAG,
-    ownLogin: "ecr-bot",
-    linkContext: { repo: "o/r", prNumber: 907 },
-    readyForHumanLabel: LABEL,
-  });
-  await reporter.reportAggregate(
+  await fixture({ labels: [LABEL], events: [[{ event: "labeled", actor: "ecr-bot" }]] });
+  await reporterFor(907).reportAggregate(
     [
       { scope: "ios", isDefault: false, review: review() },
       { scope: "web", isDefault: false, review: review({ decision: "request_changes" }) },
     ],
     [],
   );
-  const calls = (await readFile(path.join(dir, "calls.log"), "utf8")).trim().split("\n");
-  expect(labelCalls(calls)).toEqual([
+  expect(labelCalls(await calls())).toEqual([
     "api -X DELETE repos/o/r/issues/907/labels/ready%20for%20human",
+  ]);
+});
+
+test("report: a label a person removed is not added again", async () => {
+  await fixture({
+    events: [
+      [
+        { event: "labeled", actor: "ecr-bot" },
+        { event: "unlabeled", actor: "a-maintainer" },
+      ],
+    ],
+  });
+  await reporterFor(908).report(review());
+  expect(labelCalls(await calls())).toEqual([]);
+});
+
+test("report: a label the bot removed is added again when the PR is ready", async () => {
+  await fixture({
+    events: [
+      [
+        { event: "labeled", actor: "ecr-bot" },
+        { event: "unlabeled", actor: "ecr-bot" },
+      ],
+    ],
+  });
+  await reporterFor(909).report(review());
+  expect(labelCalls(await calls())).toEqual([
+    `api -X POST repos/o/r/issues/909/labels -f labels[]=${LABEL}`,
+  ]);
+});
+
+test("report: the newest label event wins across pages of events", async () => {
+  // A person added it on page 1, the bot added it again on page 2.
+  const filler = Array.from({ length: 99 }, () => ({ event: "unlabeled" as const, actor: "x" }));
+  await fixture({
+    labels: [LABEL],
+    events: [
+      [{ event: "labeled", actor: "a-maintainer" }, ...filler],
+      [{ event: "labeled", actor: "ecr-bot" }],
+    ],
+  });
+  await reporterFor(910).report(review({ decision: "request_changes" }));
+  const all = await calls();
+  expect(all.filter((call) => call.includes("/events"))).toHaveLength(2);
+  expect(labelCalls(all)).toEqual([
+    "api -X DELETE repos/o/r/issues/910/labels/ready%20for%20human",
+  ]);
+});
+
+test("report: with no known own login, the label is never removed", async () => {
+  process.env.FAKE_GH_USER_ERROR = "1";
+  await fixture({ labels: [LABEL], events: [[{ event: "labeled", actor: "ecr-bot" }]] });
+  await reporterFor(911, { ownLogin: null }).report(review({ decision: "request_changes" }));
+  expect(labelCalls(await calls())).toEqual([]);
+});
+
+test("clear: deleting the review comment removes the bot's label", async () => {
+  await fixture({ labels: [LABEL], events: [[{ event: "labeled", actor: "ecr-bot" }]] });
+  await reporterFor(912).clear();
+  expect(labelCalls(await calls())).toEqual([
+    "api -X DELETE repos/o/r/issues/912/labels/ready%20for%20human",
+  ]);
+});
+
+test("postSkipNote: a skipped review removes the bot's label", async () => {
+  await fixture({ labels: [LABEL], events: [[{ event: "labeled", actor: "ecr-bot" }]] });
+  await reporterFor(913).postSkipNote();
+  expect(labelCalls(await calls())).toEqual([
+    "api -X DELETE repos/o/r/issues/913/labels/ready%20for%20human",
   ]);
 });

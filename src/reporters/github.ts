@@ -404,14 +404,14 @@ function withInlineUrls(link: LinkContext, inlineUrls: Map<string, string>): Lin
 }
 
 /**
- * Whether a posted review is ready for a human: every review ran, and the decision
- * (the worst one, for an aggregate) is "Ready for human review", with or without
- * comments. Exported for tests.
+ * Whether a posted review is ready for a human: every review ran with full coverage
+ * (no pass timed out or failed), and the decision (the worst one, for an aggregate)
+ * is "Ready for human review", with or without comments. Exported for tests.
  */
 export function readyForHuman(reviews: CoordinatorOutput[]): boolean {
   return (
     reviews.length > 0 &&
-    reviews.every((review) => review.couldNotComplete !== true) &&
+    reviews.every((review) => review.couldNotComplete !== true && review.incomplete.length === 0) &&
     worstDecision(reviews.map((review) => review.decision)) !== "request_changes"
   );
 }
@@ -728,6 +728,8 @@ export class GitHubReporter implements Reporter {
     await this.upsertComment(
       `${this.marker}\n🤖 AI review skipped via \`${this.options.breakGlassMarker}\`.`,
     );
+    // A skipped review clears nobody for a human.
+    await this.syncReadyLabel(false);
   }
 
   /**
@@ -1113,6 +1115,8 @@ export class GitHubReporter implements Reporter {
     for (const comment of await this.ownComments()) {
       await this.deleteComment(comment.id);
     }
+    // With no review comment, no review clears the PR for a human.
+    await this.syncReadyLabel(false);
     // Sweep this tag's inline threads too, gated on the config KEY being present
     // (not on `enabled`), so a comment-mode switch or a later disable still cleans
     // up — while callers that never wire `inline` (break-glass reporter, terminal
@@ -1988,10 +1992,10 @@ export class GitHubReporter implements Reporter {
 
   // @ref LLP 0008#comment-lifecycle [implements] — the ready label follows the decision; only our own label is removed
   /**
-   * Add `readyForHumanLabel` when `ready`, or remove it when not. The label is
-   * removed only when this reporter's account added it last, so a label a person
-   * added stays. Fail-soft: the review comment is already posted, and a label
-   * failure only logs.
+   * Add `readyForHumanLabel` when `ready`, or remove it when not. The label's history
+   * on the PR decides what is ours: it is removed only when our account added it
+   * last, and it is not added again once a person removed it. Fail-soft: the review
+   * comment is already posted, and a label failure only logs.
    */
   private async syncReadyLabel(ready: boolean): Promise<void> {
     const label = this.options.readyForHumanLabel;
@@ -2003,15 +2007,27 @@ export class GitHubReporter implements Reporter {
       const issue = `repos/${this.options.repo}/issues/${this.options.prNumber}`;
       const { stdout } = await run(
         gh,
-        ["api", "-X", "GET", `${issue}/labels`, "-f", "per_page=100", "--jq", ".[].name"],
-        { cwd: this.options.cwd },
+        ["api", "-X", "GET", `${issue}/labels`, "-f", "per_page=100"],
+        {
+          cwd: this.options.cwd,
+        },
       );
-      const present = stdout.split("\n").some((name) => name === label);
-      if (ready && !present) {
+      const present = (JSON.parse(stdout) as Array<{ name?: string }>).some(
+        (entry) => entry.name === label,
+      );
+      if (ready === present) {
+        return;
+      }
+      const [last, ownLogin] = await Promise.all([
+        this.lastLabelEvent(label),
+        this.resolveOwnLogin(),
+      ]);
+      const ours = ownLogin != null && last?.actor === ownLogin;
+      if (ready && !(last?.event === "unlabeled" && !ours)) {
         await run(gh, ["api", "-X", "POST", `${issue}/labels`, "-f", `labels[]=${label}`], {
           cwd: this.options.cwd,
         });
-      } else if (!ready && present && (await this.addedLabelLast(label))) {
+      } else if (!ready && last?.event === "labeled" && ours) {
         await run(gh, ["api", "-X", "DELETE", `${issue}/labels/${encodeURIComponent(label)}`], {
           cwd: this.options.cwd,
         });
@@ -2021,14 +2037,15 @@ export class GitHubReporter implements Reporter {
     }
   }
 
-  /** Whether the newest `labeled` event for `label` on this PR is from our account. */
-  private async addedLabelLast(label: string): Promise<boolean> {
-    const ownLogin = await this.resolveOwnLogin();
-    if (!ownLogin) {
-      return false;
-    }
+  /**
+   * The newest `labeled` or `unlabeled` event for `label` on this PR, or null. The
+   * events API lists the oldest first, so the last match wins.
+   */
+  private async lastLabelEvent(
+    label: string,
+  ): Promise<{ event: "labeled" | "unlabeled"; actor?: string } | null> {
     const gh = await resolveTrustedTool("gh");
-    let actor: string | undefined;
+    let last: { event: "labeled" | "unlabeled"; actor?: string } | null = null;
     for (let page = 1; page <= GitHubReporter.MAX_COMMENT_PAGES; page++) {
       const { stdout } = await run(
         gh,
@@ -2049,16 +2066,22 @@ export class GitHubReporter implements Reporter {
         label?: { name?: string };
         actor?: { login?: string } | null;
       }>;
-      for (const event of events) {
-        if (event.event === "labeled" && event.label?.name === label) {
-          actor = event.actor?.login;
+      for (const entry of events) {
+        if (
+          (entry.event === "labeled" || entry.event === "unlabeled") &&
+          entry.label?.name === label
+        ) {
+          last = {
+            event: entry.event,
+            ...(entry.actor?.login ? { actor: entry.actor.login } : {}),
+          };
         }
       }
       if (events.length < 100) {
         break;
       }
     }
-    return actor === ownLogin;
+    return last;
   }
 
   private async deleteComment(commentId: number): Promise<void> {

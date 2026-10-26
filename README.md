@@ -589,14 +589,29 @@ per-repo `noise.additionalIgnores`.
 }
 ```
 
-`review.readyForHumanLabel` (off by default) names a label that `ecr ci` adds to
-the PR when the review decision is "Ready for human review", with or without
-comments. A later review that requests changes, or a review that fails, removes
-it, but only when the reviewer's account added it last: a label a person added
-stays. It works in the single comment mode; per-scope comments have no one
-decision for the PR, so that mode sets no label. `/dismiss` does not change the
-decision, so it does not change the label. The workflow token needs
-`issues: write`.
+`review.readyForHumanLabel` (off by default) names a label that `ecr ci`,
+`ecr post-review` and `ecr review --pr <n> --post` add to the PR when the review
+is ready for a human: the decision is "Ready for human review", with or without
+comments, and every pass finished (partial coverage gets no label).
+
+- A later review that requests changes or does not finish, a `/skip-review`, or a
+  run that deletes the review comment removes the label, but only when the
+  reviewer's account added it last. A label a person added stays.
+- When a person removes the label, the reviewer does not add it again on that PR.
+- It works in the single comment mode. Per-scope comments have no one decision
+  for the PR, so that mode sets no label.
+- `/dismiss` does not change the decision, so it does not change the label.
+- When the reviewer fails before it can load the config, it leaves the label as
+  it is.
+- The reviewer knows its own labels by login: `gh api user`, or
+  `github-actions[bot]` for the default `GITHUB_TOKEN`. With a GitHub App token
+  the login is not known, so the reviewer never removes the label. With a personal
+  token, the reviewer treats labels that person added as its own.
+- The decision comes from a model that reads untrusted PR content, so a prompt
+  injection can earn the label. Never use it as a merge gate or in branch
+  protection.
+- The label must differ from `review.label`, `review.skipLabel` and every
+  `<label>:<agent>` label. The workflow token needs `issues: write`.
 
 </details>
 
