@@ -4,8 +4,8 @@
 
 Findings anchored to a line in the PR diff land as inline review comments on
 that line. The main issue comment does not list an inlined finding again: it
-shows each inlined finding's id, linked to its thread, and its location, in one row per severity. The main
-comment stays the single durable state store (embedded state, dismissals,
+shows each inlined finding's id, linked to its thread, and its location, in one
+row per severity. The main comment stays the single durable state store (embedded state, dismissals,
 feedback records, pins, `/dismiss` target). Inline comments are a derived
 presentation layer, converged on every run.
 
@@ -15,10 +15,10 @@ presentation layer, converged on every run.
   (one bad anchor 422s the whole post) and cannot be upserted across runs.
   Individual review comments isolate failures and PATCH in place.
 - No multi-line comments; single `line` + `side: "RIGHT"` only.
-- No GraphQL thread resolution, and no detection of author-resolved/outdated
-  threads. Accepted risk: the PR author can resolve (collapse) an inline thread.
-  The thread stays on the PR and anyone can expand it, and the author cannot
-  edit or delete the bot's comment, so the main comment shows only its id.
+- No GraphQL thread resolution, and no detection of author-resolved threads.
+  Accepted risk: the PR author can resolve (collapse) an inline thread, and the
+  main comment then shows only its id; the thread stays on the PR and anyone can
+  expand it. Outdated threads (`line: null`) are detected and listed in full.
 - `ecr feedback` retroactive crawl keeps reading issue comments only. The
   review-comments fetch in `replyComments` is gated on the reporter having an
   ENABLED `inline` option, so the crawl (which passes none) gains no fetches.

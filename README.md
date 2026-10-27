@@ -748,8 +748,8 @@ full rationale, sources, and suggestion. The main comment does not list an
 inlined finding again: under `💬 Inline comments on the diff` it shows one row per
 severity with each finding's `id:`, linked to its thread, and its current
 location, so `/dismiss` still has the id. Findings that are not inlined (outside
-the diff, over `maxComments`, with no thread link, or whose thread could not be
-updated to show them) are listed in full as before. The main comment remains the
+the diff, over `maxComments`, with no thread link, with an outdated thread, or
+whose thread could not be updated to show them) are listed in full as before. The main comment remains the
 single durable state store: `/dismiss` and reply adjudication work on inlined
 findings too. When an aggregate comment is too long, inlined findings are left out
 of it before listed ones; their threads stay on the PR, but `/dismiss` can't find

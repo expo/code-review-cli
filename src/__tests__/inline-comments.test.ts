@@ -511,19 +511,81 @@ test("renderAggregateMarkdown: truncation trims inlined findings before listed o
   };
   const body = renderAggregateMarkdown(rootScope([...inlined, ...listed]), TAG, [], link);
   expect(body.length).toBeLessThanOrEqual(60_000);
-  // Every inlined finding went before any listed one: the trimmed ones keep their
-  // threads, and the note says their ids are not in this comment.
-  expect(body).not.toContain("Inline comments on the diff");
-  expect(body).toContain(
-    "…and 30 more inline comment(s) on the diff. This comment is full, so `/dismiss` can't find their ids.",
-  );
-  // Then the listed nits, and the note counts only the listed ones left out.
+  // The listed nits are cut, and the note counts only the listed ones left out.
   const shownNits = listed.filter((f) => body.includes(`**${f.title}**`)).length;
   expect(shownNits).toBeGreaterThanOrEqual(3);
   expect(shownNits).toBeLessThan(10);
   expect(body).toContain(`…and ${10 - shownNits} more finding(s)`);
+  // Inlined findings fill the room left; the trimmed ones keep their threads, and
+  // the note says their ids are not in this comment.
+  const linkedIds = (
+    body.match(/\[`id:[0-9a-f]+`\]\(https:\/\/github\.com\/o\/r\/pull\/1#discussion_r/g) ?? []
+  ).length;
+  expect(linkedIds).toBeLessThan(30);
+  expect(body).toContain(
+    `…and ${30 - linkedIds} more inline comment(s) on the diff. This comment is full, so \`/dismiss\` can't find their ids.`,
+  );
   // The scope header still counts every kept finding.
   expect(body).toContain("(40)");
+});
+
+test("renderAggregateMarkdown: one scope's overflow leaves a scope that fits whole", () => {
+  // Small inlined findings in ios, large listed nits in web: only web is trimmed,
+  // and ios keeps every finding and its input hash.
+  const ios = Array.from({ length: 6 }, (_, index) =>
+    finding({ file: `w${index}.ts`, title: `Warning ${index}` }),
+  );
+  const web = Array.from({ length: 40 }, (_, index) =>
+    finding({
+      severity: "nit",
+      file: `n${index}.ts`,
+      title: `Nit ${index}`,
+      rationale: "x".repeat(1_200),
+    }),
+  );
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    inlineUrls: new Map(
+      ios.map((f, index) => [scopedFingerprint("ios", f), threadUrl(500 + index)]),
+    ),
+  };
+  const scope = (name: string, findings: Finding[]) => ({
+    scope: name,
+    isDefault: false,
+    inputHash: `hash-${name}`,
+    review: { decision: "approve_with_comments" as const, findings, summary: "s", incomplete: [] },
+  });
+  const body = renderAggregateMarkdown([scope("ios", ios), scope("web", web)], TAG, [], link);
+  expect(body.length).toBeLessThanOrEqual(60_000);
+  const state = parseReviewState(body, TAG)!;
+  const iosState = state.scopes!.find((entry) => entry.scope === "ios")!;
+  expect(iosState.review.findings).toHaveLength(6);
+  expect(iosState.inputHash).toBe("hash-ios");
+  expect(body).toContain("more finding(s)");
+});
+
+test("renderAggregateMarkdown: large findings at the floor go below it rather than overflow", () => {
+  // Three listed nits so large that keeping all three exceeds GitHub's limit.
+  const inlined = Array.from({ length: 3 }, (_, index) =>
+    finding({ file: `w${index}.ts`, title: `Warning ${index}` }),
+  );
+  const listed = Array.from({ length: 3 }, (_, index) =>
+    finding({
+      severity: "nit",
+      file: `n${index}.ts`,
+      title: `Nit ${index}`,
+      rationale: "x".repeat(6_000),
+    }),
+  );
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    inlineUrls: new Map(inlined.map((f, index) => [fingerprintFinding(f), threadUrl(600 + index)])),
+  };
+  const body = renderAggregateMarkdown(rootScope([...inlined, ...listed]), TAG, [], link);
+  expect(body.length).toBeLessThanOrEqual(60_000);
+  expect(body).toContain("more finding(s)");
 });
 
 test("renderAggregateMarkdown: a scope at the size floor keeps 3 findings in total", () => {

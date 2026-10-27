@@ -414,6 +414,38 @@ test("syncInline: a stub thread whose restore fails is not linked", async () => 
   expect(urls.get("bbbb22")).toBe("https://github.com/o/r/pull/7#discussion_r80");
 });
 
+test("syncInline: an outdated thread is not linked", async () => {
+  // GitHub returns line null once the commented line left the diff: the thread is
+  // collapsed, so the main comment lists the finding in full.
+  await writeFile(
+    path.join(dir, "pr-comments.json"),
+    JSON.stringify([
+      {
+        id: 81,
+        body: renderInlineCommentBody(finding(), TAG, "aaaa11"),
+        line: null,
+        user: { login: "ecr-bot" },
+        html_url: "https://github.com/o/r/pull/7#discussion_r81",
+      },
+      {
+        id: 82,
+        body: renderInlineCommentBody(
+          finding({ file: "b.ts", line: 9, severity: "suggestion" }),
+          TAG,
+          "bbbb22",
+        ),
+        line: 9,
+        user: { login: "ecr-bot" },
+        html_url: "https://github.com/o/r/pull/7#discussion_r82",
+      },
+    ]),
+    "utf8",
+  );
+  const { urls } = await syncNewThreads(716);
+  expect(urls.has("aaaa11")).toBe(false);
+  expect(urls.get("bbbb22")).toBe("https://github.com/o/r/pull/7#discussion_r82");
+});
+
 test("syncInline: the spam throttle during the one-by-one fallback aborts the rest", async () => {
   await writeStaleThread();
   process.env.FAKE_GH_REVIEW_ERROR = "gh: Unprocessable Entity (HTTP 422)";
@@ -547,7 +579,7 @@ test("applyDismissal: the re-rendered comment links findings with live threads, 
 async function dismissalFixture(
   prNumber: number,
   issueBody: string,
-  threads: Array<{ id: number; body: string }>,
+  threads: Array<{ id: number; body: string; line?: number | null }>,
 ): Promise<GitHubReporter> {
   await writeFile(
     path.join(dir, "issue-comments.json"),
@@ -622,6 +654,46 @@ test("applyDismissal: a failed restore leaves the finding listed in full, not li
   const body = await patchedMainComment();
   expect(body).toContain("**Restored finding**");
   expect(body).not.toContain("discussion_r92");
+});
+
+test("applyDismissal: a thread showing an older version of the finding is not linked", async () => {
+  // A review's update of this thread failed, so it still shows older text under the
+  // same fingerprint; linking it would hide the current text.
+  const current = finding({ rationale: "The current wording." });
+  const other = finding({ file: "b.ts", title: "Other finding" });
+  const fp = fingerprintFinding(current);
+  const review: CoordinatorOutput = {
+    decision: "approve_with_comments",
+    findings: [current, other],
+    summary: "s",
+    incomplete: [],
+  };
+  const reporter = await dismissalFixture(808, renderMarkdown(review, TAG), [
+    { id: 94, body: renderInlineCommentBody(finding({ rationale: "Older wording." }), TAG, fp) },
+  ]);
+  await reporter.applyDismissal([fingerprintFinding(other)], []);
+  const body = await patchedMainComment();
+  expect(body).toContain("The current wording.");
+  expect(body).not.toContain("discussion_r94");
+});
+
+test("applyDismissal: an outdated thread is not linked", async () => {
+  const live = finding();
+  const other = finding({ file: "b.ts", title: "Other finding" });
+  const fp = fingerprintFinding(live);
+  const review: CoordinatorOutput = {
+    decision: "approve_with_comments",
+    findings: [live, other],
+    summary: "s",
+    incomplete: [],
+  };
+  const reporter = await dismissalFixture(809, renderMarkdown(review, TAG), [
+    { id: 95, body: renderInlineCommentBody(live, TAG, fp), line: null },
+  ]);
+  await reporter.applyDismissal([fingerprintFinding(other)], []);
+  const body = await patchedMainComment();
+  expect(body).toContain("**Observer restarts for cached instances**");
+  expect(body).not.toContain("discussion_r95");
 });
 
 test("applyDismissal: when the threads can't be listed, every finding renders in full", async () => {

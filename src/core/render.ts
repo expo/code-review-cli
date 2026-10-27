@@ -1054,7 +1054,10 @@ export function renderAggregateMarkdown(
         (finding) => idOf(result, finding),
       );
       const listedShown = listed.slice(0, limitPerScope);
-      const inlinedShown = inlined.slice(0, Math.max(inlinedLimit, 3 - listedShown.length));
+      const inlinedShown = inlined.slice(
+        0,
+        Math.max(inlinedLimit, Math.min(3, limitPerScope) - listedShown.length),
+      );
       return {
         result,
         replies,
@@ -1279,7 +1282,45 @@ export function renderAggregateMarkdown(
         : Math.max(3, Math.floor(limit / 2));
     body = buildBody(limit, inlinedLimit, withSummaries);
   }
+  // Both limits are shared by every scope and halving overshoots, so give back what
+  // still fits, inlined findings first: when another scope's listed findings caused
+  // the overflow, a scope that fits keeps all of its findings and its input hash.
+  if (body.length <= MAX_COMMENT_CHARS) {
+    inlinedLimit = largestFitting(inlinedLimit, largestInlined, (n) =>
+      buildBody(limit, n, withSummaries),
+    );
+    limit = largestFitting(limit, largestScope, (n) => buildBody(n, inlinedLimit, withSummaries));
+    body = buildBody(limit, inlinedLimit, withSummaries);
+  }
+  // At the floor of 3 the body can still be too long when those findings are large.
+  // A body over GitHub's limit is not posted at all, so go below the floor.
+  while (body.length > MAX_COMMENT_CHARS && limit > 0) {
+    limit = Math.floor(limit / 2);
+    body = buildBody(limit, inlinedLimit, withSummaries);
+  }
   return body;
+}
+
+/**
+ * The largest limit in [`from`, `to`] whose body fits MAX_COMMENT_CHARS, found by
+ * binary search (a body only grows with its limit); POSITIVE_INFINITY when `to`
+ * fits, so the caller's "no limit" stays exact. `from` must already fit.
+ */
+function largestFitting(from: number, to: number, build: (limit: number) => string): number {
+  if (from === Number.POSITIVE_INFINITY || from >= to) {
+    return from;
+  }
+  let lo = from;
+  let hi = to;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (build(mid).length <= MAX_COMMENT_CHARS) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return lo >= to ? Number.POSITIVE_INFINITY : lo;
 }
 
 function encodeState(state: ReviewState): string {
