@@ -6,7 +6,7 @@ import path, { delimiter } from "node:path";
 import { resetTrustedToolCache } from "../core/exec.js";
 import { ReviewConfigSchema } from "../config/schema.js";
 import type { CoordinatorOutput } from "../core/schema.js";
-import { GitHubReporter, readyForHuman } from "../reporters/github.js";
+import { GitHubReporter, readyForHuman, viewerRestLogin } from "../reporters/github.js";
 
 const TAG = "expo-ai-code-reviewer";
 const LABEL = "ready for human";
@@ -85,7 +85,8 @@ test("config: review.readyForHumanLabel is optional and never empty", () => {
 
 // A fake `gh` that logs each call. The PR's labels come from labels.json, and page N
 // of its issue events from events-N.json. FAKE_GH_LABEL_ERROR makes every label call
-// fail, and FAKE_GH_USER_ERROR makes `gh api user` fail.
+// fail, FAKE_GH_USER_ERROR makes `gh api user` fail, and FAKE_GH_VIEWER is what the
+// GraphQL `viewer` query returns (it fails when unset).
 const FAKE_GH = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_GH_DIR/calls.log"
 case "$*" in
@@ -101,6 +102,9 @@ case "$*" in
   "api user"*)
     if [ -n "$FAKE_GH_USER_ERROR" ]; then echo "HTTP 403" >&2; exit 1; fi
     printf 'ecr-bot\\n' ;;
+  "api graphql"*)
+    if [ -z "$FAKE_GH_VIEWER" ]; then echo "HTTP 401" >&2; exit 1; fi
+    printf '%s' "$FAKE_GH_VIEWER" ;;
   *"-X GET "*"/comments"*) printf '[]' ;;
   *"-X POST "*"/comments --input "*) printf '{"id": 1}' ;;
   *) echo "unexpected gh call: $*" >&2; exit 1 ;;
@@ -120,6 +124,7 @@ beforeEach(async () => {
     "FAKE_GH_DIR",
     "FAKE_GH_LABEL_ERROR",
     "FAKE_GH_USER_ERROR",
+    "FAKE_GH_VIEWER",
     "GITHUB_ACTIONS",
   ]) {
     saved[name] = process.env[name];
@@ -128,6 +133,7 @@ beforeEach(async () => {
   process.env.FAKE_GH_DIR = dir;
   delete process.env.FAKE_GH_LABEL_ERROR;
   delete process.env.FAKE_GH_USER_ERROR;
+  delete process.env.FAKE_GH_VIEWER;
   delete process.env.GITHUB_ACTIONS;
   resetTrustedToolCache();
 });
@@ -343,6 +349,32 @@ test("report: with no known own login, the label is never removed", async () => 
   expect(labelCalls(await calls())).toEqual([]);
 });
 
+test("report: a GitHub App token is known by its GraphQL viewer", async () => {
+  // An installation token can't read `/user`; under Actions the fallback would guess
+  // github-actions[bot], which is not this App.
+  process.env.FAKE_GH_USER_ERROR = "1";
+  process.env.GITHUB_ACTIONS = "true";
+  process.env.FAKE_GH_VIEWER = JSON.stringify({ login: "review-app", __typename: "Bot" });
+  await fixture({ labels: [LABEL], events: [[{ event: "labeled", actor: "review-app[bot]" }]] });
+  await reporterFor(960, { ownLogin: null }).report(review({ decision: "request_changes" }));
+  expect(labelCalls(await calls())).toEqual([
+    "api -X DELETE repos/o/r/issues/960/labels/ready%20for%20human",
+  ]);
+});
+
+test("report: under Actions without a viewer, the login falls back to github-actions[bot]", async () => {
+  process.env.FAKE_GH_USER_ERROR = "1";
+  process.env.GITHUB_ACTIONS = "true";
+  await fixture({
+    labels: [LABEL],
+    events: [[{ event: "labeled", actor: "github-actions[bot]" }]],
+  });
+  await reporterFor(961, { ownLogin: null }).report(review({ decision: "request_changes" }));
+  expect(labelCalls(await calls())).toEqual([
+    "api -X DELETE repos/o/r/issues/961/labels/ready%20for%20human",
+  ]);
+});
+
 test("report: a label spelled in another case on the PR is the same label", async () => {
   await fixture({
     labels: ["Ready For Human"],
@@ -437,4 +469,26 @@ test("postSkipNote: a skipped review removes the bot's label", async () => {
   expect(labelCalls(await calls())).toEqual([
     "api -X DELETE repos/o/r/issues/913/labels/ready%20for%20human",
   ]);
+});
+
+test("viewerRestLogin: names a bot the way REST does, and only a bot", () => {
+  expect(viewerRestLogin({ login: "review-app", __typename: "Bot" })).toBe("review-app[bot]");
+  expect(viewerRestLogin({ login: "review-app[bot]", __typename: "Bot" })).toBe("review-app[bot]");
+  // Only an installation token asks `viewer`, so anything but a Bot is not trusted.
+  expect(viewerRestLogin({ login: "octocat", __typename: "User" })).toBeNull();
+  expect(viewerRestLogin({ login: "review-app" })).toBeNull();
+  expect(viewerRestLogin({ login: "" })).toBeNull();
+  expect(viewerRestLogin(null)).toBeNull();
+});
+
+test("removeReadyLabel: removes the bot's label and leaves a person's", async () => {
+  await fixture({ labels: [LABEL], events: [[{ event: "labeled", actor: "ecr-bot" }]] });
+  await reporterFor(962).removeReadyLabel();
+  expect(labelCalls(await calls())).toEqual([
+    "api -X DELETE repos/o/r/issues/962/labels/ready%20for%20human",
+  ]);
+  await writeFile(path.join(dir, "calls.log"), "", "utf8");
+  await fixture({ labels: [LABEL], events: [[{ event: "labeled", actor: "octocat" }]] });
+  await reporterFor(963).removeReadyLabel();
+  expect(labelCalls(await calls())).toEqual([]);
 });

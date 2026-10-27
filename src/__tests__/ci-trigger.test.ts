@@ -1,6 +1,9 @@
 import { test, expect } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
-import { shouldBypassTriggerGate, shouldReview } from "../commands/ci.js";
+import { isNewCommitsEvent, shouldBypassTriggerGate, shouldReview } from "../commands/ci.js";
 
 const policy = { trigger: "all" as const, label: "ai-review", skipLabel: "ai-review:skip" };
 const labelMode = { ...policy, trigger: "label" as const };
@@ -48,4 +51,33 @@ test("a pull_request event without --force does NOT bypass the trigger gate", ()
   expect(shouldBypassTriggerGate([], {})).toBe(false);
   // an unrelated flag does not bypass
   expect(shouldBypassTriggerGate(["--route"], { GITHUB_EVENT_NAME: "pull_request" })).toBe(false);
+});
+
+test("isNewCommitsEvent: only a pull_request synchronize is new commits", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ecr-event-"));
+  try {
+    const eventFor = async (action: string): Promise<string> => {
+      const file = path.join(dir, `${action}.json`);
+      await writeFile(file, JSON.stringify({ action, number: 1 }), "utf8");
+      return file;
+    };
+    const env = async (name: string, action: string) => ({
+      GITHUB_EVENT_NAME: name,
+      GITHUB_EVENT_PATH: await eventFor(action),
+    });
+    expect(await isNewCommitsEvent(await env("pull_request", "synchronize"))).toBe(true);
+    expect(await isNewCommitsEvent(await env("pull_request_target", "synchronize"))).toBe(true);
+    expect(await isNewCommitsEvent(await env("pull_request", "opened"))).toBe(false);
+    expect(await isNewCommitsEvent(await env("pull_request", "labeled"))).toBe(false);
+    expect(await isNewCommitsEvent(await env("issue_comment", "created"))).toBe(false);
+    expect(await isNewCommitsEvent({ GITHUB_EVENT_NAME: "pull_request" })).toBe(false);
+    expect(
+      await isNewCommitsEvent({
+        GITHUB_EVENT_NAME: "pull_request",
+        GITHUB_EVENT_PATH: path.join(dir, "missing.json"),
+      }),
+    ).toBe(false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

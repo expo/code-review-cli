@@ -64,6 +64,24 @@ async function resolvePrNumber(): Promise<number | null> {
   return match ? Number(match[1]) : null;
 }
 
+/**
+ * Whether the Actions event is new commits on the PR (`pull_request` or
+ * `pull_request_target` with action `synchronize`). False when there is no event.
+ */
+export async function isNewCommitsEvent(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  if (!env.GITHUB_EVENT_NAME?.startsWith("pull_request") || !env.GITHUB_EVENT_PATH) {
+    return false;
+  }
+  try {
+    const event = JSON.parse(await readFile(env.GITHUB_EVENT_PATH, "utf8")) as {
+      action?: string;
+    };
+    return event.action === "synchronize";
+  } catch {
+    return false;
+  }
+}
+
 const CI_USAGE = `ecr ci — review the current GitHub PR and post/update one comment.
 
 For GitHub Actions: reads the PR number + repo from the event/env, gets the diff
@@ -581,6 +599,11 @@ async function runLegacyCi(
       `CI reviewer: break-glass check failed (continuing): ${errorMessage(error)}\n`,
     );
   }
+  // The ready label described the previous head; the review adds it back if this one
+  // is ready.
+  if (await isNewCommitsEvent()) {
+    await reporter.removeReadyLabel();
+  }
 
   const stack = resolveStackWalk(config.stack, noStackAware);
   const stackConfirm = resolveStackConfirm(config.stack, noStackAware);
@@ -848,6 +871,11 @@ async function runRoutedCi(
     process.stderr.write(
       `CI reviewer: break-glass check failed (continuing): ${errorMessage(error)}\n`,
     );
+  }
+  // The ready label described the previous head; the review adds it back if this one
+  // is ready.
+  if (await isNewCommitsEvent()) {
+    await bgReporter.removeReadyLabel();
   }
 
   // Build ONE link context for all scopes (rate-limit hygiene): diff lines from the

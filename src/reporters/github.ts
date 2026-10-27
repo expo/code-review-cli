@@ -641,6 +641,21 @@ export function selectOwnComments(
 }
 
 /**
+ * The REST login for a GraphQL `viewer` that is a bot, or null. Only an installation
+ * token reaches the `viewer` query, and its identity is a Bot; anything else falls
+ * back to the default GITHUB_TOKEN's login. REST names a bot `<slug>[bot]` (that is
+ * what comment authors and label event actors carry), and GraphQL may leave the
+ * suffix off. Exported for tests.
+ */
+export function viewerRestLogin(viewer: unknown): string | null {
+  const { login, __typename: type } = (viewer ?? {}) as { login?: unknown; __typename?: unknown };
+  if (type !== "Bot" || typeof login !== "string" || login === "") {
+    return null;
+  }
+  return login.endsWith("[bot]") ? login : `${login}[bot]`;
+}
+
+/**
  * Maintains exactly one PR comment, updating it in place across re-reviews (and
  * cleaning up duplicates) so the review converges instead of churning. Runs the
  * break-glass check first. Never approves or requests changes: a run's new inline
@@ -658,9 +673,10 @@ export class GitHubReporter implements Reporter {
   /**
    * The login of the account this reporter comments as, so its own comment is
    * recognized by AUTHOR (see selectOwnComments for why the body marker is not enough).
-   * Resolution: `gh api user` (a user/PAT token), else the scaffolded workflow's default
-   * GITHUB_TOKEN identity, `github-actions[bot]`, when running under Actions — an
-   * installation token can't read `/user`. Null when neither is available, which makes
+   * Resolution: `gh api user` (a user/PAT token); else GraphQL `viewer`, which also
+   * answers for an installation token (the default GITHUB_TOKEN or a GitHub App's),
+   * since those can't read `/user`; else, under Actions, the default GITHUB_TOKEN
+   * identity, `github-actions[bot]`. Null when none is available, which makes
    * selectOwnComments treat no comment as ours (fail closed). Memoized: the identity is
    * stable for the process, and every reporter method consults it.
    */
@@ -669,8 +685,8 @@ export class GitHubReporter implements Reporter {
       return Promise.resolve(this.options.ownLogin);
     }
     this.ownLoginResolution ??= (async () => {
+      const gh = await resolveTrustedTool("gh");
       try {
-        const gh = await resolveTrustedTool("gh");
         const { stdout } = await run(gh, ["api", "user", "--jq", ".login"], {
           cwd: this.options.cwd,
         });
@@ -679,7 +695,20 @@ export class GitHubReporter implements Reporter {
           return login;
         }
       } catch {
-        // The default GITHUB_TOKEN is an installation token: `/user` returns 403.
+        // An installation token can't read `/user` (403).
+      }
+      try {
+        const { stdout } = await run(
+          gh,
+          ["api", "graphql", "-f", "query={ viewer { login __typename } }", "--jq", ".data.viewer"],
+          { cwd: this.options.cwd },
+        );
+        const login = viewerRestLogin(JSON.parse(stdout));
+        if (login) {
+          return login;
+        }
+      } catch {
+        // Fall back to the default GITHUB_TOKEN's identity below.
       }
       return process.env.GITHUB_ACTIONS ? "github-actions[bot]" : null;
     })();
@@ -2068,6 +2097,14 @@ export class GitHubReporter implements Reporter {
         { cwd: this.options.cwd },
       ),
     );
+  }
+
+  /**
+   * Remove our ready label before reviewing new commits, so it never says "ready" for
+   * a head no review has seen; the review's report adds it back when it is ready.
+   */
+  async removeReadyLabel(): Promise<void> {
+    await this.syncReadyLabel(false);
   }
 
   // @ref LLP 0008#comment-lifecycle [implements] — the ready label follows the decision; only our own label is removed
