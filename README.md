@@ -607,8 +607,11 @@ comments, and the run reviewed the whole PR. These runs get no label:
 
 A run that gets no label, a `/skip-review` that `ecr ci` acts on, or a run that
 deletes the review comment removes the label, but only when the reviewer added
-it last. Nothing else changes the label, so a ready label added before a push
-stays until the next review posts.
+it last. `ecr ci` also removes it when new commits are pushed, before it reviews
+them, so the label never says "ready" for commits no review has seen. With a
+personal or GitHub App token that removal starts another run of the workflow,
+which cancels this one and reviews the same commits; the default `GITHUB_TOKEN`
+starts no runs.
 
 - `ecr post-review` and `ecr review --pr <n> --post` post nothing on a PR with
   `/skip-review`, and `ecr ci` does nothing on a PR its trigger policy skips (such
@@ -617,17 +620,16 @@ stays until the next review posts.
 - The reviewer recognises its labels by login, from the label's newest
   `labeled` or `unlabeled` event on the PR. It removes the label only when its
   own login added it last, and does not add it again when another login removed
-  it last. Its login is `gh api user`, or, when that fails under GitHub Actions,
-  `github-actions[bot]`, the login of the default `GITHUB_TOKEN`. So:
+  it last. Its login is `gh api user` for a personal token, or GraphQL `viewer`
+  for an installation token (the default `GITHUB_TOKEN`, `github-actions[bot]`, or
+  a GitHub App's, `<app>[bot]`); when both fail under GitHub Actions it assumes
+  `github-actions[bot]`. So:
   - With a personal token, that person's own removals count as the reviewer's,
     and the next ready review adds the label again.
   - Under the default `GITHUB_TOKEN`, other workflows' label changes are
     `github-actions[bot]` too, and count as the reviewer's.
   - A local `ecr review --pr <n> --post` and CI use different logins, so neither
     removes a label the other added.
-  - A GitHub App token cannot read `gh api user`, and its login is not
-    `github-actions[bot]`, so the reviewer never removes the label it added (nor
-    recognises its own review comment).
   - On a PR with 3,000 events or more, the reviewer cannot tell who changed the
     label last, and leaves it as it is.
 - It works in the single comment mode. Per-scope comments have no one decision
