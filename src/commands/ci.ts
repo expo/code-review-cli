@@ -1152,9 +1152,13 @@ async function runRoutedCi(
         : undefined;
       // A --scopes partial run carries the other scopes out of (possibly truncated)
       // embedded state, so its target set is incomplete: inline teardown must not
-      // run (failed scopes are handled inside reportAggregate itself).
+      // run (failed scopes are handled inside reportAggregate itself). Nor is the PR
+      // ready for a human while a scope its files route to has no result.
       await aggregate.reportAggregate(finalResults, resolution.unmatched, aggFeedback, {
         inlineTeardown: !scopesFilter,
+        coverageComplete: resolution.active.every((scope) =>
+          finalResults.some((result) => result.scope === scope.name),
+        ),
       });
     }
     // Clean up any per-scope comments from a previous per-scope run. A partial run

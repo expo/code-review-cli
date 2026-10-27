@@ -592,21 +592,31 @@ per-repo `noise.additionalIgnores`.
 `review.readyForHumanLabel` (off by default) names a label that `ecr ci`,
 `ecr post-review` and `ecr review --pr <n> --post` add to the PR when the review
 is ready for a human: the decision is "Ready for human review", with or without
-comments, and every pass finished (partial coverage gets no label).
+comments, and the review covers the whole PR. Partial coverage gets no label: a
+pass that did not finish, a scope with no result (such as on a `--scopes` run
+before the other scopes have one), or a changed file that no scope matches. With
+a routing manifest that has no `**/*` catch-all scope, a PR that touches a file
+outside every scope never gets the label.
 
-- A later review that requests changes or does not finish, a `/skip-review`, or a
+- A later review that is not ready, a `/skip-review` that `ecr ci` acts on, or a
   run that deletes the review comment removes the label, but only when the
   reviewer's account added it last. A label a person added stays.
+- `ecr post-review` and `ecr review --pr <n> --post` post nothing on a PR with
+  `/skip-review`, and `ecr ci` does nothing on a PR its trigger policy skips (such
+  as one labeled `review.skipLabel`). Both leave the review comment and the label
+  as they are.
 - When a person removes the label, the reviewer does not add it again on that PR.
 - It works in the single comment mode. Per-scope comments have no one decision
   for the PR, so that mode sets no label.
 - `/dismiss` does not change the decision, so it does not change the label.
 - When the reviewer fails before it can load the config, it leaves the label as
   it is.
-- The reviewer knows its own labels by login: `gh api user`, or
-  `github-actions[bot]` for the default `GITHUB_TOKEN`. With a GitHub App token
-  the login is not known, so the reviewer never removes the label. With a personal
-  token, the reviewer treats labels that person added as its own.
+- The reviewer knows its own labels by login: `gh api user`, or, when that fails
+  under GitHub Actions, `github-actions[bot]`, the login of the default
+  `GITHUB_TOKEN`. A GitHub App token cannot read `gh api user`, and its login is
+  not `github-actions[bot]`, so the reviewer never removes the label it added (nor
+  recognises its own review comment). With a personal token, the reviewer treats
+  labels that person added as its own.
 - The decision comes from a model that reads untrusted PR content, so a prompt
   injection can earn the label. Never use it as a merge gate or in branch
   protection.

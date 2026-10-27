@@ -39,7 +39,15 @@ test("config: review.readyForHumanLabel is optional and never empty", () => {
   ).toBe(LABEL);
   expect(ReviewConfigSchema.safeParse({ review: { readyForHumanLabel: "" } }).success).toBe(false);
   // It must not act as a trigger label.
-  for (const readyForHumanLabel of ["ai-review", "ai-review:ready", "ai-review:skip"]) {
+  // Label names are unique regardless of case, so a case variant is the same label.
+  for (const readyForHumanLabel of [
+    "ai-review",
+    "ai-review:ready",
+    "ai-review:skip",
+    "AI-Review",
+    "AI-Review:Ready",
+    "AI-Review:Skip",
+  ]) {
     expect(ReviewConfigSchema.safeParse({ review: { readyForHumanLabel } }).success).toBe(false);
   }
   expect(
@@ -112,7 +120,7 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-type LabelEvent = { event: "labeled" | "unlabeled"; actor: string };
+type LabelEvent = { event: "labeled" | "unlabeled"; actor: string; label?: string };
 
 async function fixture(opts: { labels?: string[]; events?: LabelEvent[][] }): Promise<void> {
   await writeFile(
@@ -124,9 +132,9 @@ async function fixture(opts: { labels?: string[]; events?: LabelEvent[][] }): Pr
     await writeFile(
       path.join(dir, `events-${index + 1}.json`),
       JSON.stringify(
-        page.map(({ event, actor }) => ({
+        page.map(({ event, actor, label }) => ({
           event,
-          label: { name: LABEL },
+          label: { name: label ?? LABEL },
           actor: { login: actor },
         })),
       ),
@@ -289,6 +297,69 @@ test("report: with no known own login, the label is never removed", async () => 
   await fixture({ labels: [LABEL], events: [[{ event: "labeled", actor: "ecr-bot" }]] });
   await reporterFor(911, { ownLogin: null }).report(review({ decision: "request_changes" }));
   expect(labelCalls(await calls())).toEqual([]);
+});
+
+test("report: a label spelled in another case on the PR is the same label", async () => {
+  await fixture({
+    labels: ["Ready For Human"],
+    events: [[{ event: "labeled", actor: "ecr-bot", label: "Ready For Human" }]],
+  });
+  await reporterFor(914).report(review({ decision: "request_changes" }));
+  // DELETE uses the PR's spelling of the label.
+  expect(labelCalls(await calls())).toEqual([
+    "api -X DELETE repos/o/r/issues/914/labels/Ready%20For%20Human",
+  ]);
+});
+
+test("report: a person's removal of the label in another case is respected", async () => {
+  await fixture({
+    events: [
+      [
+        { event: "labeled", actor: "ecr-bot" },
+        { event: "unlabeled", actor: "a-maintainer", label: "Ready For Human" },
+      ],
+    ],
+  });
+  await reporterFor(915).report(review());
+  expect(labelCalls(await calls())).toEqual([]);
+});
+
+test("reportAggregate: unmatched files leave the PR not ready", async () => {
+  await fixture({ labels: [LABEL], events: [[{ event: "labeled", actor: "ecr-bot" }]] });
+  await reporterFor(916).reportAggregate(
+    [{ scope: "ios", isDefault: false, review: review() }],
+    ["scripts/release.sh"],
+  );
+  expect(labelCalls(await calls())).toEqual([
+    "api -X DELETE repos/o/r/issues/916/labels/ready%20for%20human",
+  ]);
+});
+
+test("reportAggregate: a scope with no result leaves the PR not ready", async () => {
+  await fixture({});
+  await reporterFor(917).reportAggregate(
+    [{ scope: "ios", isDefault: false, review: review() }],
+    [],
+    undefined,
+    { coverageComplete: false },
+  );
+  expect(labelCalls(await calls())).toEqual([]);
+});
+
+test("reportAggregate: every scope ready with full coverage adds the label", async () => {
+  await fixture({});
+  await reporterFor(918).reportAggregate(
+    [
+      { scope: "ios", isDefault: false, review: review() },
+      { scope: "web", isDefault: false, review: review({ decision: "approve_with_comments" }) },
+    ],
+    [],
+    undefined,
+    { coverageComplete: true },
+  );
+  expect(labelCalls(await calls())).toEqual([
+    `api -X POST repos/o/r/issues/918/labels -f labels[]=${LABEL}`,
+  ]);
 });
 
 test("clear: deleting the review comment removes the bot's label", async () => {

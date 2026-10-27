@@ -160,22 +160,29 @@ export const ReviewConfigSchema = z.object({
       // Opt a single PR out of review. A label (not a config flag) because labels
       // are write-gated to maintainers — a PR author can't add one to dodge review.
       skipLabel: z.string().default("ai-review:skip"),
-      // A label `ecr ci` adds when the review decision is "Ready for human review",
-      // with or without comments, and removes when a later review requests changes or
-      // fails. It only removes the label when it added it. Unset (the default) turns
-      // labelling off. Single-comment mode only: per-scope comments have no one
-      // decision for the PR.
+      // A label the reviewer adds when the review decision is "Ready for human
+      // review", with or without comments, and the review covers the whole PR. It
+      // removes the label when a later review is not ready or `ecr ci` acts on a
+      // `/skip-review`, and only when it added it; a PR the trigger policy skips keeps
+      // its comment and label. Unset (the default) turns labelling off. Single-comment
+      // mode only: per-scope comments have no one decision for the PR.
       readyForHumanLabel: z.string().min(1).optional(),
     })
     // The ready label must not act as a trigger label: as `label` (or `label:<agent>`)
     // it would opt PRs in by itself, and as `skipLabel` the first ready review would
-    // stop every later one.
+    // stop every later one. GitHub label names are unique regardless of case, so a
+    // case variant would apply the same label.
     .refine(
-      (review) =>
-        review.readyForHumanLabel === undefined ||
-        (review.readyForHumanLabel !== review.label &&
-          !review.readyForHumanLabel.startsWith(`${review.label}:`) &&
-          review.readyForHumanLabel !== review.skipLabel),
+      (review) => {
+        const ready = review.readyForHumanLabel?.toLowerCase();
+        const label = review.label.toLowerCase();
+        return (
+          ready === undefined ||
+          (ready !== label &&
+            !ready.startsWith(`${label}:`) &&
+            ready !== review.skipLabel.toLowerCase())
+        );
+      },
       {
         message:
           "review.readyForHumanLabel must differ from review.label, review.skipLabel, and every `<label>:<agent>` label",

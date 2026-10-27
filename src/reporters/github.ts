@@ -789,12 +789,14 @@ export class GitHubReporter implements Reporter {
    * (possibly truncated) embedded state — so the inline sync must not stub/delete
    * threads it merely cannot see. Any failed scope forces the same, since its
    * findings list is empty without being clean.
+   * `opts.coverageComplete: false` marks a run whose results leave out a scope the
+   * PR's files route to, so the PR is not ready for a human; unmatched files do the same.
    */
   async reportAggregate(
     results: ScopeReviewResult[],
     unmatchedFiles: string[],
     feedback?: FeedbackRecord[],
-    opts?: { inlineTeardown?: boolean },
+    opts?: { inlineTeardown?: boolean; coverageComplete?: boolean },
   ): Promise<void> {
     const existing = await this.findExistingComment();
     const state = existing ? parseReviewState(existing.body, this.options.commentTag) : null;
@@ -830,7 +832,11 @@ export class GitHubReporter implements Reporter {
         pins,
       ),
     );
-    await this.syncReadyLabel(readyForHuman(results.map((result) => result.review)));
+    await this.syncReadyLabel(
+      (opts?.coverageComplete ?? true) &&
+        unmatchedFiles.length === 0 &&
+        readyForHuman(results.map((result) => result.review)),
+    );
   }
 
   /**
@@ -2012,9 +2018,12 @@ export class GitHubReporter implements Reporter {
           cwd: this.options.cwd,
         },
       );
-      const present = (JSON.parse(stdout) as Array<{ name?: string }>).some(
-        (entry) => entry.name === label,
+      // Label names are unique regardless of case, so the PR's label may be spelled
+      // differently from the config; DELETE needs the PR's spelling.
+      const current = (JSON.parse(stdout) as Array<{ name?: string }>).find(
+        (entry) => entry.name?.toLowerCase() === label.toLowerCase(),
       );
+      const present = current?.name !== undefined;
       if (ready === present) {
         return;
       }
@@ -2028,9 +2037,11 @@ export class GitHubReporter implements Reporter {
           cwd: this.options.cwd,
         });
       } else if (!ready && last?.event === "labeled" && ours) {
-        await run(gh, ["api", "-X", "DELETE", `${issue}/labels/${encodeURIComponent(label)}`], {
-          cwd: this.options.cwd,
-        });
+        await run(
+          gh,
+          ["api", "-X", "DELETE", `${issue}/labels/${encodeURIComponent(current?.name ?? label)}`],
+          { cwd: this.options.cwd },
+        );
       }
     } catch (error) {
       process.stderr.write(`ready label: update skipped: ${errorMessage(error)}\n`);
@@ -2038,8 +2049,8 @@ export class GitHubReporter implements Reporter {
   }
 
   /**
-   * The newest `labeled` or `unlabeled` event for `label` on this PR, or null. The
-   * events API lists the oldest first, so the last match wins.
+   * The newest `labeled` or `unlabeled` event for `label` (in any case) on this PR, or
+   * null. The events API lists the oldest first, so the last match wins.
    */
   private async lastLabelEvent(
     label: string,
@@ -2069,7 +2080,7 @@ export class GitHubReporter implements Reporter {
       for (const entry of events) {
         if (
           (entry.event === "labeled" || entry.event === "unlabeled") &&
-          entry.label?.name === label
+          entry.label?.name?.toLowerCase() === label.toLowerCase()
         ) {
           last = {
             event: entry.event,
