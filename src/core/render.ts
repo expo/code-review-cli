@@ -44,9 +44,9 @@ export interface LinkContext {
   /**
    * Permalinks to this run's live inline finding comments, keyed by the SAME id the
    * comment renders (plain fingerprint, or scope-namespaced for an aggregate). A
-   * finding with an entry renders in SHORT form — title, links, one-line rationale —
-   * because its full text lives in the inline thread; a finding without one renders
-   * in full exactly as before. Callers must pass a per-render COPY of a shared
+   * finding with an entry is left out of the finding list and shown only as its linked id, because
+   * its full text lives in the inline thread; a finding without one renders in full.
+   * Callers must pass a per-render COPY of a shared
    * LinkContext (`{ ...link, inlineUrls }`), never mutate the shared object: the
    * routed ci flow shares one context across every scope reporter.
    */
@@ -409,7 +409,8 @@ function renderSeveritySections(
   feedbackById?: Map<string, FeedbackRecord>,
 ): string[] {
   const out: string[] = [];
-  const groups = groupBySeverity(sortFindings(findings));
+  const { inlined, listed } = splitInlined(sortFindings(findings), link, idFor);
+  const groups = groupBySeverity(listed);
   for (const severity of SEVERITIES) {
     const group = groups[severity];
     if (group.length === 0) {
@@ -422,6 +423,65 @@ function renderSeveritySections(
     }
     out.push("");
   }
+  out.push(...inlinedLines(inlined, link, feedbackById));
+  return out;
+}
+
+// @ref LLP 0008#inline-threads [implements] — an inlined finding shows only its linked id in the main comment
+/**
+ * Split findings into those with a live inline thread and those the main comment
+ * lists in full. An inlined finding is read in its thread, on the flagged line, so
+ * the main comment does not repeat it. It stays in the embedded state, so `/dismiss`
+ * and reply matching still find it. Order is kept.
+ */
+function splitInlined(
+  findings: Finding[],
+  link: LinkContext | undefined,
+  idFor: (finding: Finding) => string,
+): { inlined: { finding: Finding; id: string; url: string }[]; listed: Finding[] } {
+  const inlined: { finding: Finding; id: string; url: string }[] = [];
+  const listed: Finding[] = [];
+  for (const finding of findings) {
+    const id = idFor(finding);
+    const url = validInlineUrl(link, id);
+    if (url) {
+      inlined.push({ finding, id, url });
+    } else {
+      listed.push(finding);
+    }
+  }
+  return { inlined, listed };
+}
+
+/**
+ * The findings posted as inline threads, one row per severity: each thread's id,
+ * linked to the thread, its current location, and a reply link when an author
+ * answered it. The id is what `/dismiss` takes, so it must stay visible in the main
+ * comment. The location is here because the fingerprint leaves out the line: a
+ * finding whose line moved keeps its thread on the old line.
+ */
+function inlinedLines(
+  inlined: { finding: Finding; id: string; url: string }[],
+  link: LinkContext | undefined,
+  feedbackById?: Map<string, FeedbackRecord>,
+): string[] {
+  if (inlined.length === 0) {
+    return [];
+  }
+  const out = [`💬 **Inline comments on the diff (${inlined.length})**`, ""];
+  for (const severity of SEVERITIES) {
+    const group = inlined.filter((entry) => knownSeverity(entry.finding.severity) === severity);
+    if (group.length === 0) {
+      continue;
+    }
+    const threads = group.map(({ finding, id, url }) => {
+      const reply = feedbackById?.get(id);
+      const replied = reply ? ` (💬 ${replyLink(`${replyAuthor(reply)} replied`, reply)})` : "";
+      return `[\`id:${id}\`](${url}) ${location(finding, link)}${replied}`;
+    });
+    out.push(`- ${severityHeading(severity)}: ${threads.join(", ")}`);
+  }
+  out.push("");
   return out;
 }
 
@@ -450,9 +510,6 @@ function sourceLabel(value: string): string {
     .replace(/([\\[\]])/g, "\\$1");
 }
 
-/** Longest one-line rationale excerpt the short form keeps in the main comment. */
-const SHORT_RATIONALE_CHARS = 160;
-
 /**
  * HTML formatting tags a model writes into a rationale (`<br>`, `<details>`, ...).
  * A fixed list, not "anything in angle brackets", so a type like `Promise<void>`
@@ -460,28 +517,6 @@ const SHORT_RATIONALE_CHARS = 160;
  */
 const FORMATTING_TAG_RE =
   /<\/?(?:a|b|blockquote|br|code|del|details|div|em|h[1-6]|hr|i|kbd|li|ol|p|pre|s|span|strong|sub|summary|sup|table|tbody|td|th|thead|tr|u|ul)\b[^<>]*>/gi;
-
-/**
- * A rationale reduced to one plain line for the short (inlined) form: HTML
- * formatting tags removed (an escaped `<br>` would show as literal text),
- * whitespace collapsed, every remaining `<` escaped so a truncated HTML block can
- * never leave an unclosed tag in the comment, cut at a word boundary with an
- * ellipsis. This excerpt is the audit trail that survives the PR author collapsing
- * or resolving the inline thread, so it must always be non-empty when the rationale is.
- */
-export function oneLineRationale(text: string): string {
-  const flat = text
-    .replace(FORMATTING_TAG_RE, " ")
-    .replace(/</g, "&lt;")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (flat.length <= SHORT_RATIONALE_CHARS) {
-    return flat;
-  }
-  const cut = flat.slice(0, SHORT_RATIONALE_CHARS);
-  const atWord = cut.slice(0, cut.lastIndexOf(" "));
-  return `${atWord.length > 0 ? atWord : cut}…`;
-}
 
 /** Only ever link to github.com from a stored/returned URL (see REPLY_URL_RE). */
 function validInlineUrl(link: LinkContext | undefined, id: string): string | null {
@@ -495,17 +530,6 @@ function renderFindingLines(
   id: string = fingerprintFinding(finding),
   reply?: FeedbackRecord,
 ): string[] {
-  const inlineUrl = validInlineUrl(link, id);
-  if (inlineUrl) {
-    // Short form: the full text lives in the inline thread on the flagged line.
-    // The one-line rationale stays here as the durable audit trail (the author
-    // can collapse/resolve the thread; they cannot edit this comment).
-    return [
-      `- **${modelText(finding.title)}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\` · 💬 [inline comment](${inlineUrl})${replyAnnotation(reply)}`,
-      ...indentContinuation(breakMentions(oneLineRationale(stripStateMarkers(finding.rationale)))),
-      "",
-    ];
-  }
   const out = [
     `- **${modelText(finding.title)}** — ${location(finding, link)} _(${finding.category})_ · \`id:${id}\`${replyAnnotation(reply)}`,
     ...indentContinuation(modelText(finding.rationale)),
@@ -532,7 +556,7 @@ function renderFindingLines(
  * Full body of one inline (PR review) finding comment: identity marker at byte 0,
  * then the finding rendered whole — everything model-written passes
  * stripStateMarkers, same as the main comment. The footer teaches the clearing
- * flow (an UNQUOTED id citation), since the main comment only shows the short form.
+ * flow (an UNQUOTED id citation), since the main comment shows only its linked id.
  * The body must never contain `:state=`/`:fingerprints=` (it would be dropped as
  * our own main comment by the reply matcher's backstop) — it doesn't.
  */
@@ -555,7 +579,7 @@ export function renderInlineCommentBody(finding: Finding, tag: string, fp: strin
   lines.push(
     "",
     "---",
-    `_🤖 AI review finding — reply here to respond; write \`id:${fp}\` (outside any quote) in your reply to formally answer it. Full review in the main PR comment._`,
+    `_🤖 AI review finding — reply here to respond; write \`id:${fp}\` (outside any quote) in your reply to formally answer it. The review's decision is in the main PR comment._`,
   );
   return lines.join("\n");
 }
@@ -962,7 +986,11 @@ export function renderAggregateMarkdown(
   const worst = worstDecision(results.map((result) => result.review.decision));
   const unmatched = opts?.unmatchedFiles ?? [];
 
-  const buildBody = (limitPerScope: number, withSummaries: boolean): string => {
+  const buildBody = (
+    limitPerScope: number,
+    inlinedLimit: number,
+    withSummaries: boolean,
+  ): string => {
     const lines: string[] = [
       commentMarker(tag),
       "## 🤖 AI code review",
@@ -1007,31 +1035,53 @@ export function renderAggregateMarkdown(
       lines.push("> 🔗 **Review setup:**", ...setupLines, "");
     }
 
-    // Shown = the most-severe N kept findings per scope (N = limitPerScope). The
-    // embedded state trims KEPT findings to the same set so a truncated comment
-    // still fits GitHub's body limit (the hidden findings are noted, not silently
-    // carried) — but dismissed findings are always kept in state (see below).
-    const rendered = perScope.map(({ result, kept, requalified, dropped, feedback: replies }) => ({
-      result,
-      replies,
-      shown: sortFindings(kept.map((entry) => entry.finding)).slice(0, limitPerScope),
-      hidden: Math.max(0, kept.length - limitPerScope),
-      // The requalified section is trimmed by the same per-scope limit as shown: it
-      // is coordinator-populated (a wide stack can requalify many findings at once),
-      // and an untrimmed section would keep the truncation loop below from ever
-      // converging under MAX_COMMENT_CHARS. The audit note carries the TOTAL count,
-      // so trimming never hides that requalification happened.
-      requalified: requalified.slice(0, limitPerScope),
-      requalifiedHidden: Math.max(0, requalified.length - limitPerScope),
-      requalifiedAll: requalified,
-      dropped,
-    }));
+    // @ref LLP 0008#inline-threads [implements] — the size cap trims inlined findings before listed ones
+    // Shown = the most-severe `limitPerScope` listed and `inlinedLimit` inlined kept
+    // findings per scope. The loop below lowers `inlinedLimit` first, down to 0: a
+    // trimmed inlined finding still has its thread on the PR, while a listed one
+    // appears nowhere else. Inlined findings must be trimmable at all, because each
+    // renders as one id link but carries its full text in the embedded state. A scope
+    // with kept findings still keeps at least 3 in total (inlined ones fill up to 3
+    // when fewer are listed), the same floor as one limit, so it shows some and keeps
+    // them in the state for `/dismiss`. The embedded state trims KEPT findings to the
+    // same set so a truncated comment still fits GitHub's body limit (the hidden
+    // findings are noted, not silently carried) — but dismissed findings are always
+    // kept in state (see below).
+    const rendered = perScope.map(({ result, kept, requalified, dropped, feedback: replies }) => {
+      const { inlined, listed } = splitInlined(
+        sortFindings(kept.map((entry) => entry.finding)),
+        link,
+        (finding) => idOf(result, finding),
+      );
+      const listedShown = listed.slice(0, limitPerScope);
+      const inlinedShown = inlined.slice(
+        0,
+        Math.max(inlinedLimit, Math.min(3, limitPerScope) - listedShown.length),
+      );
+      return {
+        result,
+        replies,
+        shown: [...inlinedShown.map((entry) => entry.finding), ...listedShown],
+        hidden: listed.length - listedShown.length,
+        inlinedHidden: inlined.length - inlinedShown.length,
+        // The requalified section is trimmed by the same per-scope limit as shown: it
+        // is coordinator-populated (a wide stack can requalify many findings at once),
+        // and an untrimmed section would keep the truncation loop below from ever
+        // converging under MAX_COMMENT_CHARS. The audit note carries the TOTAL count,
+        // so trimming never hides that requalification happened.
+        requalified: requalified.slice(0, limitPerScope),
+        requalifiedHidden: Math.max(0, requalified.length - limitPerScope),
+        requalifiedAll: requalified,
+        dropped,
+      };
+    });
 
     for (const {
       result,
       replies,
       shown,
       hidden,
+      inlinedHidden,
       requalified,
       requalifiedAll,
       requalifiedHidden,
@@ -1045,7 +1095,7 @@ export function renderAggregateMarkdown(
         shown.length > 0 || requalifiedAll.length > 0 || replies.length > 0 || mentions.length > 0
           ? " open"
           : "";
-      const keptCount = shown.length + hidden;
+      const keptCount = shown.length + hidden + inlinedHidden;
       lines.push(
         `<details${open}>`,
         `<summary>${stripStateMarkers(result.scope)} — ${decisionLabel(result.review.decision)} (${keptCount})</summary>`,
@@ -1071,6 +1121,12 @@ export function renderAggregateMarkdown(
       }
       if (hidden > 0) {
         lines.push(`_…and ${hidden} more finding(s) — see the workflow log._`, "");
+      }
+      if (inlinedHidden > 0) {
+        lines.push(
+          `_…and ${inlinedHidden} more inline comment(s) on the diff. This comment is full, so \`/dismiss\` can't find their ids._`,
+          "",
+        );
       }
       if (requalifiedAll.length > 0) {
         lines.push(
@@ -1118,7 +1174,7 @@ export function renderAggregateMarkdown(
     // across re-renders. The per-scope data (`scopes`) plus a merged v1 `review`
     // keep both v2 and v1 consumers working.
     const stateScopes: ScopeReviewResult[] = rendered.map(
-      ({ result, shown, hidden, requalified, requalifiedHidden, dropped }) => {
+      ({ result, shown, hidden, inlinedHidden, requalified, requalifiedHidden, dropped }) => {
         // @ref LLP 0011#suppression-is-never-silent — strip any per-scope `feedback`
         // a freshly-reviewed scope's ReviewRunResult carries: the top-level feedback
         // array (reviewState below) is the single source of truth. A stale per-scope
@@ -1139,7 +1195,7 @@ export function renderAggregateMarkdown(
           isDefault: result.isDefault,
           // A truncated state is not the full result and therefore cannot be a cache
           // source. Omit its hash so the next run retries instead of reusing a subset.
-          ...(hidden === 0 && requalifiedHidden === 0
+          ...(hidden === 0 && inlinedHidden === 0 && requalifiedHidden === 0
             ? result.inputHash
               ? { inputHash: result.inputHash }
               : {}
@@ -1189,13 +1245,29 @@ export function renderAggregateMarkdown(
   };
 
   let limit = Number.POSITIVE_INFINITY;
+  let inlinedLimit = Number.POSITIVE_INFINITY;
   let withSummaries = true;
-  let body = buildBody(limit, withSummaries);
+  let body = buildBody(limit, inlinedLimit, withSummaries);
   // Agent summaries go before any finding: they never affect the decision, and each
   // scope's summary budget does not bound the sum across scopes.
   if (body.length > MAX_COMMENT_CHARS) {
     withSummaries = false;
-    body = buildBody(limit, withSummaries);
+    body = buildBody(limit, inlinedLimit, withSummaries);
+  }
+  // Inlined findings go next, all of them before any listed one: each trimmed one
+  // keeps its thread on the PR.
+  const largestInlined = Math.max(
+    0,
+    ...perScope.map(
+      ({ result, kept }) =>
+        kept.filter(({ finding }) => validInlineUrl(link, idOf(result, finding))).length,
+    ),
+  );
+  while (body.length > MAX_COMMENT_CHARS && inlinedLimit > 0) {
+    inlinedLimit = Math.floor(
+      (inlinedLimit === Number.POSITIVE_INFINITY ? largestInlined : inlinedLimit) / 2,
+    );
+    body = buildBody(limit, inlinedLimit, withSummaries);
   }
   // Seed from the largest per-scope section the limit applies to — kept OR
   // requalified — so the halving loop shrinks whichever one is oversized.
@@ -1208,9 +1280,47 @@ export function renderAggregateMarkdown(
       limit === Number.POSITIVE_INFINITY
         ? Math.max(3, Math.floor(largestScope / 2))
         : Math.max(3, Math.floor(limit / 2));
-    body = buildBody(limit, withSummaries);
+    body = buildBody(limit, inlinedLimit, withSummaries);
+  }
+  // Both limits are shared by every scope and halving overshoots, so give back what
+  // still fits, inlined findings first: when another scope's listed findings caused
+  // the overflow, a scope that fits keeps all of its findings and its input hash.
+  if (body.length <= MAX_COMMENT_CHARS) {
+    inlinedLimit = largestFitting(inlinedLimit, largestInlined, (n) =>
+      buildBody(limit, n, withSummaries),
+    );
+    limit = largestFitting(limit, largestScope, (n) => buildBody(n, inlinedLimit, withSummaries));
+    body = buildBody(limit, inlinedLimit, withSummaries);
+  }
+  // At the floor of 3 the body can still be too long when those findings are large.
+  // A body over GitHub's limit is not posted at all, so go below the floor.
+  while (body.length > MAX_COMMENT_CHARS && limit > 0) {
+    limit = Math.floor(limit / 2);
+    body = buildBody(limit, inlinedLimit, withSummaries);
   }
   return body;
+}
+
+/**
+ * The largest limit in [`from`, `to`] whose body fits MAX_COMMENT_CHARS, found by
+ * binary search (a body only grows with its limit); POSITIVE_INFINITY when `to`
+ * fits, so the caller's "no limit" stays exact. `from` must already fit.
+ */
+function largestFitting(from: number, to: number, build: (limit: number) => string): number {
+  if (from === Number.POSITIVE_INFINITY || from >= to) {
+    return from;
+  }
+  let lo = from;
+  let hi = to;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (build(mid).length <= MAX_COMMENT_CHARS) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return lo >= to ? Number.POSITIVE_INFINITY : lo;
 }
 
 function encodeState(state: ReviewState): string {

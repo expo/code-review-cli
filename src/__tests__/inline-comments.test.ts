@@ -10,15 +10,16 @@ import type { ExistingInlineComment } from "../reporters/github.js";
 import {
   inlineCommentMarker,
   inlineStubBody,
-  oneLineRationale,
   parseInlineMarkerFp,
   renderInlineCommentBody,
+  parseReviewState,
+  renderAggregateMarkdown,
   renderMarkdown,
 } from "../core/render.js";
 import type { LinkContext } from "../core/render.js";
 import { hasUnquotedInlineMarker, matchReplies, replyIsNewer } from "../core/responses.js";
 import type { ReplyComment } from "../core/responses.js";
-import { applyPins, fingerprintFinding } from "../core/schema.js";
+import { applyPins, fingerprintFinding, scopedFingerprint } from "../core/schema.js";
 import type { CoordinatorOutput, FeedbackRecord, Finding } from "../core/schema.js";
 
 const finding = (over: Partial<Finding> = {}): Finding => ({
@@ -85,29 +86,6 @@ test("inlineStubBody: neutral — never claims resolved or dismissed", () => {
   expect(stub.toLowerCase()).not.toContain("resolved");
   expect(stub.toLowerCase()).not.toContain("dismissed");
   expect(stub).toContain("main review comment");
-});
-
-// ---- oneLineRationale ----
-
-test("oneLineRationale: strips HTML tags, collapses whitespace, escapes <, truncates at a word boundary", () => {
-  expect(oneLineRationale("a\n\nb   c")).toBe("a b c");
-  expect(oneLineRationale("<details>x</details>")).toBe("x");
-  expect(oneLineRationale("High — reason.<br>**Impact:** Medium<BR/>end")).toBe(
-    "High — reason. **Impact:** Medium end",
-  );
-  expect(oneLineRationale("<details><summary>Why</summary>\n\nbody</details>")).toBe("Why body");
-  // Non-formatting angle brackets stay, escaped.
-  expect(oneLineRationale("returns `Promise<void>` when a < b")).toBe(
-    "returns `Promise&lt;void>` when a &lt; b",
-  );
-  const long = Array.from({ length: 60 }, (_, i) => `word${i}`).join(" ");
-  const short = oneLineRationale(long);
-  expect(short.length).toBeLessThanOrEqual(161);
-  expect(short.endsWith("…")).toBe(true);
-  // Cut lands on a word boundary: the kept prefix is followed by a space in the input.
-  const kept = short.slice(0, -1);
-  expect(long.startsWith(kept)).toBe(true);
-  expect(long[kept.length]).toBe(" ");
 });
 
 // ---- planner ----
@@ -331,11 +309,18 @@ test("activeFindings: drops dismissed, reply-cleared, and requalified findings",
   expect(active.map((entry) => entry.fp)).toEqual(["keep01"]);
 });
 
-// ---- short form ----
+// ---- inlined findings leave the finding list ----
 
-test("renderMarkdown: an inlined finding renders short with the thread link; others render full", () => {
+const threadUrl = (n: number): string => `https://github.com/o/r/pull/1#discussion_r${n}`;
+
+test("renderMarkdown: an inlined finding is only linked by id; others render full", () => {
   const inlined = finding({ suggestion: "cache the observer" });
-  const other = finding({ file: "b.ts", title: "Other finding", suggestion: "do the thing" });
+  const other = finding({
+    file: "b.ts",
+    title: "Other finding",
+    rationale: "Other rationale.",
+    suggestion: "do the thing",
+  });
   const review: CoordinatorOutput = {
     decision: "approve_with_comments",
     findings: [inlined, other],
@@ -345,17 +330,359 @@ test("renderMarkdown: an inlined finding renders short with the thread link; oth
   const link: LinkContext = {
     repo: "o/r",
     prNumber: 1,
+    inlineUrls: new Map([[fingerprintFinding(inlined), threadUrl(123)]]),
+  };
+  const body = renderMarkdown(review, TAG, [], link);
+  // The inline thread holds the finding, so the list does not repeat it.
+  expect(body).not.toContain("Observer restarts for cached instances");
+  expect(body).not.toContain("getInstances() restarts the push token observer");
+  expect(body).not.toContain("cache the observer");
+  // Its id stays visible for `/dismiss`, linked to the thread.
+  expect(body).toContain("💬 **Inline comments on the diff (1)**");
+  expect(body).toContain(
+    `- ⚠️ Warning: [\`id:${fingerprintFinding(inlined)}\`](${threadUrl(123)})`,
+  );
+  // The heading counts only the findings listed under it.
+  expect(body).toContain("### ⚠️ Warning (1)");
+  // The non-inlined finding keeps its full form.
+  expect(body).toContain("**Other finding**");
+  expect(body).toContain("**Suggestion:** do the thing");
+  // The embedded state still carries every finding.
+  expect(body).toContain(`"${fingerprintFinding(inlined)}"`);
+});
+
+test("renderMarkdown: when every finding is inlined, the list is only the inline rows", () => {
+  const warning = finding();
+  const nitA = finding({ severity: "nit", file: "c.ts", title: "Nit A" });
+  const nitB = finding({ severity: "nit", file: "d.ts", title: "Nit B" });
+  const review: CoordinatorOutput = {
+    decision: "approve_with_comments",
+    findings: [nitA, warning, nitB],
+    summary: "s",
+    incomplete: [],
+  };
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
     inlineUrls: new Map([
-      [fingerprintFinding(inlined), "https://github.com/o/r/pull/1#discussion_r123"],
+      [fingerprintFinding(nitA), threadUrl(2)],
+      [fingerprintFinding(warning), threadUrl(1)],
+      [fingerprintFinding(nitB), threadUrl(3)],
     ]),
   };
   const body = renderMarkdown(review, TAG, [], link);
-  expect(body).toContain("[inline comment](https://github.com/o/r/pull/1#discussion_r123)");
-  // Short form: the one-line rationale survives, the suggestion moves inline-only.
-  expect(body).toContain("getInstances() restarts the push token observer");
-  expect(body).not.toContain("cache the observer");
-  // The non-inlined finding keeps its full form.
-  expect(body).toContain("**Suggestion:** do the thing");
+  expect(body).not.toContain("###");
+  expect(body).not.toContain("No findings.");
+  expect(body).toContain("💬 **Inline comments on the diff (3)**");
+  // One row per severity, most severe first.
+  const warningRow = body.indexOf("- ⚠️ Warning: ");
+  const nitRow = body.indexOf("- 🐧 Nit: ");
+  expect(warningRow).toBeGreaterThan(-1);
+  expect(nitRow).toBeGreaterThan(warningRow);
+  expect(
+    body
+      .slice(nitRow)
+      .split("\n")[0]!
+      .match(/discussion_r/g),
+  ).toHaveLength(2);
+});
+
+test("renderMarkdown: an inlined finding with a reply links the reply next to its id", () => {
+  const inlined = finding();
+  const fp = fingerprintFinding(inlined);
+  const review: CoordinatorOutput = {
+    decision: "approve_with_comments",
+    findings: [inlined],
+    summary: "s",
+    incomplete: [],
+  };
+  const reply: FeedbackRecord = {
+    fp,
+    by: "octocat",
+    commentId: 5,
+    url: "https://github.com/o/r/pull/1#issuecomment-5",
+    maintainer: false,
+    applied: false,
+  };
+  const link: LinkContext = { repo: "o/r", prNumber: 1, inlineUrls: new Map([[fp, threadUrl(9)]]) };
+  const body = renderMarkdown(review, TAG, [], link, [reply]);
+  expect(body).toContain(
+    `[\`id:${fp}\`](${threadUrl(9)}) \`a.ts:5\` (💬 [@octocat replied](https://github.com/o/r/pull/1#issuecomment-5))`,
+  );
+});
+
+test("renderAggregateMarkdown: a named scope's inline threads match by the scope's ids", () => {
+  const inlined = finding();
+  const listed = finding({ file: "b.ts", title: "Listed finding", rationale: "Listed." });
+  const scopedId = scopedFingerprint("ios", inlined);
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    // A plain fingerprint must not match: the scope renders scoped ids.
+    inlineUrls: new Map([
+      [scopedId, threadUrl(4)],
+      [fingerprintFinding(listed), threadUrl(5)],
+    ]),
+  };
+  const body = renderAggregateMarkdown(
+    [
+      {
+        scope: "ios",
+        isDefault: false,
+        review: {
+          decision: "approve_with_comments",
+          findings: [inlined, listed],
+          summary: "s",
+          incomplete: [],
+        },
+      },
+    ],
+    TAG,
+    [],
+    link,
+  );
+  expect(body).toContain(`[\`id:${scopedId}\`](${threadUrl(4)})`);
+  expect(body).not.toContain("Observer restarts for cached instances");
+  expect(body).toContain("**Listed finding**");
+  expect(body).not.toContain(threadUrl(5));
+});
+
+test("renderAggregateMarkdown: a scope whose findings are all inlined stays open, with no 'No findings.'", () => {
+  const inlined = finding();
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    inlineUrls: new Map([[fingerprintFinding(inlined), threadUrl(6)]]),
+  };
+  const body = renderAggregateMarkdown(
+    [
+      {
+        scope: "root",
+        isDefault: true,
+        review: {
+          decision: "approve_with_comments",
+          findings: [inlined],
+          summary: "s",
+          incomplete: [],
+        },
+      },
+    ],
+    TAG,
+    [],
+    link,
+  );
+  expect(body).toContain("<details open>");
+  expect(body).toContain("root — Ready for human review (with comments) (1)");
+  expect(body).not.toContain("No findings.");
+  expect(body).toContain(threadUrl(6));
+});
+
+const rootScope = (findings: Finding[]) => [
+  {
+    scope: "root",
+    isDefault: true,
+    review: {
+      decision: "approve_with_comments" as const,
+      findings,
+      summary: "s",
+      incomplete: [],
+    },
+  },
+];
+
+test("renderAggregateMarkdown: truncation trims inlined findings before listed ones", () => {
+  // 30 inlined warnings and 10 listed nits, each nit large enough that the comment
+  // overflows and the per-scope limit must cut.
+  const inlined = Array.from({ length: 30 }, (_, index) =>
+    finding({ file: `w${index}.ts`, title: `Warning ${index}` }),
+  );
+  const listed = Array.from({ length: 10 }, (_, index) =>
+    finding({
+      severity: "nit",
+      file: `n${index}.ts`,
+      title: `Listed nit ${index}`,
+      rationale: "x".repeat(3_000),
+    }),
+  );
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    inlineUrls: new Map(inlined.map((f, index) => [fingerprintFinding(f), threadUrl(100 + index)])),
+  };
+  const body = renderAggregateMarkdown(rootScope([...inlined, ...listed]), TAG, [], link);
+  expect(body.length).toBeLessThanOrEqual(60_000);
+  // The listed nits are cut, and the note counts only the listed ones left out.
+  const shownNits = listed.filter((f) => body.includes(`**${f.title}**`)).length;
+  expect(shownNits).toBeGreaterThanOrEqual(3);
+  expect(shownNits).toBeLessThan(10);
+  expect(body).toContain(`…and ${10 - shownNits} more finding(s)`);
+  // Inlined findings fill the room left; the trimmed ones keep their threads, and
+  // the note says their ids are not in this comment.
+  const linkedIds = (
+    body.match(/\[`id:[0-9a-f]+`\]\(https:\/\/github\.com\/o\/r\/pull\/1#discussion_r/g) ?? []
+  ).length;
+  expect(linkedIds).toBeLessThan(30);
+  expect(body).toContain(
+    `…and ${30 - linkedIds} more inline comment(s) on the diff. This comment is full, so \`/dismiss\` can't find their ids.`,
+  );
+  // The scope header still counts every kept finding.
+  expect(body).toContain("(40)");
+});
+
+test("renderAggregateMarkdown: one scope's overflow leaves a scope that fits whole", () => {
+  // Small inlined findings in ios, large listed nits in web: only web is trimmed,
+  // and ios keeps every finding and its input hash.
+  const ios = Array.from({ length: 6 }, (_, index) =>
+    finding({ file: `w${index}.ts`, title: `Warning ${index}` }),
+  );
+  const web = Array.from({ length: 40 }, (_, index) =>
+    finding({
+      severity: "nit",
+      file: `n${index}.ts`,
+      title: `Nit ${index}`,
+      rationale: "x".repeat(1_200),
+    }),
+  );
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    inlineUrls: new Map(
+      ios.map((f, index) => [scopedFingerprint("ios", f), threadUrl(500 + index)]),
+    ),
+  };
+  const scope = (name: string, findings: Finding[]) => ({
+    scope: name,
+    isDefault: false,
+    inputHash: `hash-${name}`,
+    review: { decision: "approve_with_comments" as const, findings, summary: "s", incomplete: [] },
+  });
+  const body = renderAggregateMarkdown([scope("ios", ios), scope("web", web)], TAG, [], link);
+  expect(body.length).toBeLessThanOrEqual(60_000);
+  const state = parseReviewState(body, TAG)!;
+  const iosState = state.scopes!.find((entry) => entry.scope === "ios")!;
+  expect(iosState.review.findings).toHaveLength(6);
+  expect(iosState.inputHash).toBe("hash-ios");
+  expect(body).toContain("more finding(s)");
+});
+
+test("renderAggregateMarkdown: large findings at the floor go below it rather than overflow", () => {
+  // Three listed nits so large that keeping all three exceeds GitHub's limit.
+  const inlined = Array.from({ length: 3 }, (_, index) =>
+    finding({ file: `w${index}.ts`, title: `Warning ${index}` }),
+  );
+  const listed = Array.from({ length: 3 }, (_, index) =>
+    finding({
+      severity: "nit",
+      file: `n${index}.ts`,
+      title: `Nit ${index}`,
+      rationale: "x".repeat(6_000),
+    }),
+  );
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    inlineUrls: new Map(inlined.map((f, index) => [fingerprintFinding(f), threadUrl(600 + index)])),
+  };
+  const body = renderAggregateMarkdown(rootScope([...inlined, ...listed]), TAG, [], link);
+  expect(body.length).toBeLessThanOrEqual(60_000);
+  expect(body).toContain("more finding(s)");
+});
+
+test("renderAggregateMarkdown: a scope at the size floor keeps 3 findings in total", () => {
+  // 3 inlined warnings and 3 listed nits, all large: keeping 3 of each overflows
+  // GitHub's limit, so the floor is 3 per scope across both kinds.
+  const big = "x".repeat(5_000);
+  const inlined = Array.from({ length: 3 }, (_, index) =>
+    finding({ file: `w${index}.ts`, title: `Warning ${index}`, rationale: big }),
+  );
+  const listed = Array.from({ length: 3 }, (_, index) =>
+    finding({
+      severity: "nit",
+      file: `n${index}.ts`,
+      title: `Listed nit ${index}`,
+      rationale: big,
+    }),
+  );
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    inlineUrls: new Map(inlined.map((f, index) => [fingerprintFinding(f), threadUrl(400 + index)])),
+  };
+  const body = renderAggregateMarkdown(rootScope([...inlined, ...listed]), TAG, [], link);
+  expect(body.length).toBeLessThanOrEqual(60_000);
+  // The listed nits appear nowhere else, so they stay; the warnings keep their threads.
+  expect(listed.every((f) => body.includes(`**${f.title}**`))).toBe(true);
+  expect(body).toContain("…and 3 more inline comment(s) on the diff.");
+  const state = parseReviewState(body, TAG)!;
+  expect(state.scopes![0]!.review.findings).toHaveLength(3);
+});
+
+test("renderAggregateMarkdown: long inlined findings are trimmed so listed ones stay", () => {
+  // The inlined findings render as id links, but their full text rides the state.
+  const inlined = Array.from({ length: 20 }, (_, index) =>
+    finding({ file: `w${index}.ts`, title: `Warning ${index}`, rationale: "y".repeat(4_000) }),
+  );
+  const listed = Array.from({ length: 10 }, (_, index) =>
+    finding({ severity: "nit", file: `n${index}.ts`, title: `Listed nit ${index}` }),
+  );
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    inlineUrls: new Map(inlined.map((f, index) => [fingerprintFinding(f), threadUrl(200 + index)])),
+  };
+  const body = renderAggregateMarkdown(rootScope([...inlined, ...listed]), TAG, [], link);
+  expect(body.length).toBeLessThanOrEqual(60_000);
+  expect(listed.every((f) => body.includes(`**${f.title}**`))).toBe(true);
+  expect(body).toMatch(/…and \d+ more inline comment\(s\) on the diff\./);
+  expect(body).not.toContain("more finding(s)");
+});
+
+test("renderAggregateMarkdown: a scope keeps 3 inlined findings in the comment and the state", () => {
+  // A scope with only inlined findings next to a scope whose large listed findings
+  // overflow the comment: the cap must not empty the first scope.
+  const inlined = Array.from({ length: 8 }, (_, index) =>
+    finding({ file: `w${index}.ts`, title: `Warning ${index}` }),
+  );
+  const listed = Array.from({ length: 10 }, (_, index) =>
+    finding({
+      severity: "nit",
+      file: `n${index}.ts`,
+      title: `Nit ${index}`,
+      rationale: "x".repeat(3_000),
+    }),
+  );
+  const ids = inlined.map((f) => scopedFingerprint("ios", f));
+  const link: LinkContext = {
+    repo: "o/r",
+    prNumber: 1,
+    inlineUrls: new Map(ids.map((id, index) => [id, threadUrl(300 + index)])),
+  };
+  const scope = (name: string, findings: Finding[]) => ({
+    scope: name,
+    isDefault: false,
+    inputHash: `hash-${name}`,
+    review: {
+      decision: "approve_with_comments" as const,
+      findings,
+      summary: "s",
+      incomplete: [],
+    },
+  });
+  const body = renderAggregateMarkdown(
+    [scope("ios", inlined), scope("web", listed)],
+    TAG,
+    [],
+    link,
+  );
+  expect(body.length).toBeLessThanOrEqual(60_000);
+  expect(body).not.toContain("No findings.");
+  expect(body).toContain("…and 5 more inline comment(s) on the diff.");
+  const state = parseReviewState(body, TAG)!;
+  const ios = state.scopes!.find((entry) => entry.scope === "ios")!;
+  // The 3 shown inlined findings stay in the state, so `/dismiss` accepts their ids.
+  expect(ios.review.findings).toHaveLength(3);
+  // A trimmed scope is not the full result, so its input hash is left out.
+  expect(ios.inputHash).toBeUndefined();
 });
 
 test("renderMarkdown: a non-github inline URL is ignored (full form)", () => {
