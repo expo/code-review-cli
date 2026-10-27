@@ -1422,17 +1422,22 @@ export class GitHubReporter implements Reporter {
 
     // Sequential on purpose: parallel content creation is what trips GitHub's
     // secondary rate limit.
+    // A thread is linked only once it shows the finding: the main comment leaves a
+    // linked finding out, and a stub whose restore failed or was skipped shows nothing.
     for (const { comment, finding } of plan.patch) {
-      if (comment.url) {
-        urls.set(comment.fp, comment.url);
-      }
       const body = renderInlineCommentBody(finding, this.options.commentTag, comment.fp);
       if (inlineBodiesEqual(comment.body, body)) {
+        if (comment.url) {
+          urls.set(comment.fp, comment.url);
+        }
         continue;
       }
       await attempt(async () => {
         await this.patchReviewComment(comment.id, body);
         counts.patched++;
+        if (comment.url) {
+          urls.set(comment.fp, comment.url);
+        }
       });
     }
     if (creates.length > 0 && !aborted) {

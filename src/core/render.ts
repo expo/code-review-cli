@@ -423,7 +423,7 @@ function renderSeveritySections(
     }
     out.push("");
   }
-  out.push(...inlinedLines(inlined, feedbackById));
+  out.push(...inlinedLines(inlined, link, feedbackById));
   return out;
 }
 
@@ -455,11 +455,14 @@ function splitInlined(
 
 /**
  * The findings posted as inline threads, one row per severity: each thread's id,
- * linked to the thread, plus a reply link when an author answered it. The id is
- * what `/dismiss` takes, so it must stay visible in the main comment.
+ * linked to the thread, its current location, and a reply link when an author
+ * answered it. The id is what `/dismiss` takes, so it must stay visible in the main
+ * comment. The location is here because the fingerprint leaves out the line: a
+ * finding whose line moved keeps its thread on the old line.
  */
 function inlinedLines(
   inlined: { finding: Finding; id: string; url: string }[],
+  link: LinkContext | undefined,
   feedbackById?: Map<string, FeedbackRecord>,
 ): string[] {
   if (inlined.length === 0) {
@@ -471,10 +474,10 @@ function inlinedLines(
     if (group.length === 0) {
       continue;
     }
-    const threads = group.map(({ id, url }) => {
+    const threads = group.map(({ finding, id, url }) => {
       const reply = feedbackById?.get(id);
       const replied = reply ? ` (💬 ${replyLink(`${replyAuthor(reply)} replied`, reply)})` : "";
-      return `[\`id:${id}\`](${url})${replied}`;
+      return `[\`id:${id}\`](${url}) ${location(finding, link)}${replied}`;
     });
     out.push(`- ${severityHeading(severity)}: ${threads.join(", ")}`);
   }
@@ -576,7 +579,7 @@ export function renderInlineCommentBody(finding: Finding, tag: string, fp: strin
   lines.push(
     "",
     "---",
-    `_🤖 AI review finding — reply here to respond; write \`id:${fp}\` (outside any quote) in your reply to formally answer it. Full review in the main PR comment._`,
+    `_🤖 AI review finding — reply here to respond; write \`id:${fp}\` (outside any quote) in your reply to formally answer it. The review's decision is in the main PR comment._`,
   );
   return lines.join("\n");
 }
@@ -1034,29 +1037,30 @@ export function renderAggregateMarkdown(
 
     // @ref LLP 0008#inline-threads [implements] — the size cap trims inlined findings before listed ones
     // Shown = the most-severe `limitPerScope` listed and `inlinedLimit` inlined kept
-    // findings per scope. The two limits are separate, and the loop below lowers
-    // `inlinedLimit` first: a trimmed inlined finding still has its thread on the PR,
-    // while a listed one appears nowhere else. Inlined findings must be trimmable at
-    // all, because each renders as one id link but carries its full text in the
-    // embedded state. Both limits stop at 3, so a scope with kept findings always
-    // shows some, and keeps them in the state for `/dismiss`. The embedded state trims KEPT findings to the same set so a truncated comment
-    // still fits GitHub's body limit (the hidden findings are noted, not silently
-    // carried) — but dismissed findings are always kept in state (see below).
+    // findings per scope. The loop below lowers `inlinedLimit` first, down to 0: a
+    // trimmed inlined finding still has its thread on the PR, while a listed one
+    // appears nowhere else. Inlined findings must be trimmable at all, because each
+    // renders as one id link but carries its full text in the embedded state. A scope
+    // with kept findings still keeps at least 3 in total (inlined ones fill up to 3
+    // when fewer are listed), the same floor as one limit, so it shows some and keeps
+    // them in the state for `/dismiss`. The embedded state trims KEPT findings to the
+    // same set so a truncated comment still fits GitHub's body limit (the hidden
+    // findings are noted, not silently carried) — but dismissed findings are always
+    // kept in state (see below).
     const rendered = perScope.map(({ result, kept, requalified, dropped, feedback: replies }) => {
       const { inlined, listed } = splitInlined(
         sortFindings(kept.map((entry) => entry.finding)),
         link,
         (finding) => idOf(result, finding),
       );
+      const listedShown = listed.slice(0, limitPerScope);
+      const inlinedShown = inlined.slice(0, Math.max(inlinedLimit, 3 - listedShown.length));
       return {
         result,
         replies,
-        shown: [
-          ...inlined.slice(0, inlinedLimit).map((entry) => entry.finding),
-          ...listed.slice(0, limitPerScope),
-        ],
-        hidden: Math.max(0, listed.length - limitPerScope),
-        inlinedHidden: Math.max(0, inlined.length - inlinedLimit),
+        shown: [...inlinedShown.map((entry) => entry.finding), ...listedShown],
+        hidden: listed.length - listedShown.length,
+        inlinedHidden: inlined.length - inlinedShown.length,
         // The requalified section is trimmed by the same per-scope limit as shown: it
         // is coordinator-populated (a wide stack can requalify many findings at once),
         // and an untrimmed section would keep the truncation loop below from ever
@@ -1116,7 +1120,10 @@ export function renderAggregateMarkdown(
         lines.push(`_…and ${hidden} more finding(s) — see the workflow log._`, "");
       }
       if (inlinedHidden > 0) {
-        lines.push(`_…and ${inlinedHidden} more inline comment(s) on the diff._`, "");
+        lines.push(
+          `_…and ${inlinedHidden} more inline comment(s) on the diff. This comment is full, so \`/dismiss\` can't find their ids._`,
+          "",
+        );
       }
       if (requalifiedAll.length > 0) {
         lines.push(
@@ -1244,7 +1251,8 @@ export function renderAggregateMarkdown(
     withSummaries = false;
     body = buildBody(limit, inlinedLimit, withSummaries);
   }
-  // Inlined findings go next, down to 3: each trimmed one keeps its thread on the PR.
+  // Inlined findings go next, all of them before any listed one: each trimmed one
+  // keeps its thread on the PR.
   const largestInlined = Math.max(
     0,
     ...perScope.map(
@@ -1252,11 +1260,10 @@ export function renderAggregateMarkdown(
         kept.filter(({ finding }) => validInlineUrl(link, idOf(result, finding))).length,
     ),
   );
-  while (body.length > MAX_COMMENT_CHARS && inlinedLimit > 3) {
-    inlinedLimit =
-      inlinedLimit === Number.POSITIVE_INFINITY
-        ? Math.max(3, Math.floor(largestInlined / 2))
-        : Math.max(3, Math.floor(inlinedLimit / 2));
+  while (body.length > MAX_COMMENT_CHARS && inlinedLimit > 0) {
+    inlinedLimit = Math.floor(
+      (inlinedLimit === Number.POSITIVE_INFINITY ? largestInlined : inlinedLimit) / 2,
+    );
     body = buildBody(limit, inlinedLimit, withSummaries);
   }
   // Seed from the largest per-scope section the limit applies to — kept OR

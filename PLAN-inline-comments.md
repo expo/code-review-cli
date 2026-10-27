@@ -4,7 +4,7 @@
 
 Findings anchored to a line in the PR diff land as inline review comments on
 that line. The main issue comment does not list an inlined finding again: it
-shows each inlined finding's id, linked to its thread, in one row per severity. The main
+shows each inlined finding's id, linked to its thread, and its location, in one row per severity. The main
 comment stays the single durable state store (embedded state, dismissals,
 feedback records, pins, `/dismiss` target). Inline comments are a derived
 presentation layer, converged on every run.

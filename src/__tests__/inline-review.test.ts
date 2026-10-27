@@ -374,9 +374,44 @@ test("syncInline: a rate limit while editing a thread skips the review", async (
     "utf8",
   );
   process.env.FAKE_GH_PATCH_ERROR = "gh: API rate limit exceeded (HTTP 429)";
-  const { calls } = await syncNewThreads(713);
+  const { urls, calls } = await syncNewThreads(713);
   expect(calls.filter((call) => call.includes("-X PATCH"))).toHaveLength(1);
   expect(calls.filter((call) => call.includes("-X POST"))).toHaveLength(0);
+  // The thread still shows the older finding, so the main comment lists this one.
+  expect(urls.has("aaaa11")).toBe(false);
+});
+
+test("syncInline: a stub thread whose restore fails is not linked", async () => {
+  // A finding back after its thread was stubbed: the stub says to read the main
+  // comment, so linking it would leave the finding shown nowhere.
+  await writeFile(
+    path.join(dir, "pr-comments.json"),
+    JSON.stringify([
+      {
+        id: 79,
+        body: inlineStubBody(TAG, "aaaa11"),
+        user: { login: "ecr-bot" },
+        html_url: "https://github.com/o/r/pull/7#discussion_r79",
+      },
+      {
+        id: 80,
+        body: renderInlineCommentBody(
+          finding({ file: "b.ts", line: 9, severity: "suggestion" }),
+          TAG,
+          "bbbb22",
+        ),
+        user: { login: "ecr-bot" },
+        html_url: "https://github.com/o/r/pull/7#discussion_r80",
+      },
+    ]),
+    "utf8",
+  );
+  process.env.FAKE_GH_PATCH_ERROR = "gh: Bad Gateway (HTTP 502)";
+  const { urls, calls } = await syncNewThreads(715);
+  expect(calls.filter((call) => call.includes("-X PATCH"))).toHaveLength(1);
+  expect(urls.has("aaaa11")).toBe(false);
+  // A thread that already shows its finding needs no patch and stays linked.
+  expect(urls.get("bbbb22")).toBe("https://github.com/o/r/pull/7#discussion_r80");
 });
 
 test("syncInline: the spam throttle during the one-by-one fallback aborts the rest", async () => {
