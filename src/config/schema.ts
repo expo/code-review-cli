@@ -160,7 +160,32 @@ export const ReviewConfigSchema = z.object({
       // Opt a single PR out of review. A label (not a config flag) because labels
       // are write-gated to maintainers — a PR author can't add one to dodge review.
       skipLabel: z.string().default("ai-review:skip"),
+      // A label the reviewer adds when a review of the whole PR is ready for a human,
+      // and removes when it is not. Unset (the default) turns labelling off. See the
+      // README.
+      readyForHumanLabel: z.string().min(1).optional(),
     })
+    // The ready label must not act as a trigger label: as `label` (or `label:<agent>`)
+    // it would opt PRs in by itself, and as `skipLabel` the first ready review would
+    // stop every later one. GitHub label names are unique regardless of case, so a
+    // case variant would apply the same label.
+    .refine(
+      (review) => {
+        const ready = review.readyForHumanLabel?.toLowerCase();
+        const label = review.label.toLowerCase();
+        return (
+          ready === undefined ||
+          (ready !== label &&
+            !ready.startsWith(`${label}:`) &&
+            ready !== review.skipLabel.toLowerCase())
+        );
+      },
+      {
+        message:
+          "review.readyForHumanLabel must differ from review.label, review.skipLabel, and every `<label>:<agent>` label",
+        path: ["readyForHumanLabel"],
+      },
+    )
     .default({ trigger: "all", label: "ai-review", skipLabel: "ai-review:skip" }),
   // Stack-aware requalification: walk the OPEN PRs stacked on top of this one and
   // let the coordinator mark absence-style findings a later PR already addresses.
@@ -508,6 +533,7 @@ export interface LoadedConfig {
     trigger: "all" | "label";
     label: string;
     skipLabel: string;
+    readyForHumanLabel?: string;
   };
   /** Root-only stack-aware requalification settings (see ReviewConfigSchema.stack). */
   stack: {

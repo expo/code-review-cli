@@ -365,6 +365,8 @@ export async function reviewCommand(argv: string[]): Promise<void> {
             cwd,
             feedback: config.feedback,
             inline: config.inline,
+            readyForHumanLabel: config.review.readyForHumanLabel,
+            partialReview: Boolean(args.agents?.length),
             headSha,
           })
         : null;
@@ -402,6 +404,7 @@ export async function reviewCommand(argv: string[]): Promise<void> {
         headSha,
         review,
         feedback: review.feedback,
+        partialReview: Boolean(args.agents?.length),
       });
       process.stderr.write(`\nSaved postable review artifact: ${artifactPath}\n`);
     }

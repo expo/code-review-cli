@@ -16,6 +16,7 @@ import {
   renderAggregateMarkdown,
   renderInlineCommentBody,
   renderMarkdown,
+  worstDecision,
 } from "../core/render.js";
 import type { LinkContext, ReviewState, ScopeReviewResult } from "../core/render.js";
 import { matchReplies } from "../core/responses.js";
@@ -71,6 +72,17 @@ export interface GitHubReporterOptions {
    * tag's inline comments so a comment-mode switch or a disable cleans up.
    */
   inline?: LoadedConfig["inline"];
+  /**
+   * `review.readyForHumanLabel`: the label to add when a posted review is ready for a
+   * human (see readyForHuman), and to remove when it is not. Unset ⇒ no labels.
+   */
+  readyForHumanLabel?: string;
+  /**
+   * This run did not review the whole PR (an explicit agent subset, or a `--scopes`
+   * run that carries the other scopes' results over from the prior comment), so its
+   * decision cannot clear the PR for a human: the ready label is only ever removed.
+   */
+  partialReview?: boolean;
   /**
    * The head commit this run reviews (the PR's immutable head OID, from the source's
    * metadata). Feedback merging binds a stored verdict to the source it judged, so a
@@ -397,6 +409,29 @@ function withInlineUrls(link: LinkContext, inlineUrls: Map<string, string>): Lin
   return inlineUrls.size > 0 ? { ...link, inlineUrls } : link;
 }
 
+/**
+ * Whether a posted review is ready for a human: every review ran with full coverage
+ * (no pass timed out or failed) and at least one reviewer applied, and the decision
+ * (the worst one, for an aggregate) is "Ready for human review", with or without
+ * comments. A review where no agent's `paths` matched approves with every summary row
+ * `notRun`; a noise-only review has no rows and stays ready. Exported for tests.
+ */
+export function readyForHuman(reviews: CoordinatorOutput[]): boolean {
+  return (
+    reviews.length > 0 &&
+    reviews.every(
+      (review) =>
+        review.couldNotComplete !== true &&
+        review.incomplete.length === 0 &&
+        !(
+          review.agentSummaries?.length &&
+          review.agentSummaries.every((row) => row.notRun !== undefined)
+        ),
+    ) &&
+    worstDecision(reviews.map((review) => review.decision)) !== "request_changes"
+  );
+}
+
 // @ref LLP 0011#suppression-is-never-silent [implements] — a verdict carries only while BOTH the reply and the reviewed source are unchanged
 /**
  * Carry a decision already recorded in the prior comment state onto the freshly
@@ -709,6 +744,8 @@ export class GitHubReporter implements Reporter {
     await this.upsertComment(
       `${this.marker}\n🤖 AI review skipped via \`${this.options.breakGlassMarker}\`.`,
     );
+    // A skipped review clears nobody for a human.
+    await this.syncReadyLabel(false);
   }
 
   /**
@@ -758,6 +795,7 @@ export class GitHubReporter implements Reporter {
         state?.mentioned,
       ),
     );
+    await this.syncReadyLabel(readyForHuman([review]));
   }
 
   /**
@@ -767,6 +805,7 @@ export class GitHubReporter implements Reporter {
    * (possibly truncated) embedded state — so the inline sync must not stub/delete
    * threads it merely cannot see. Any failed scope forces the same, since its
    * findings list is empty without being clean.
+   * Unmatched files leave the PR not ready for a human.
    */
   async reportAggregate(
     results: ScopeReviewResult[],
@@ -807,6 +846,9 @@ export class GitHubReporter implements Reporter {
         records,
         pins,
       ),
+    );
+    await this.syncReadyLabel(
+      unmatchedFiles.length === 0 && readyForHuman(results.map((result) => result.review)),
     );
   }
 
@@ -1092,6 +1134,8 @@ export class GitHubReporter implements Reporter {
     for (const comment of await this.ownComments()) {
       await this.deleteComment(comment.id);
     }
+    // With no review comment, no review clears the PR for a human.
+    await this.syncReadyLabel(false);
     // Sweep this tag's inline threads too, gated on the config KEY being present
     // (not on `enabled`), so a comment-mode switch or a later disable still cleans
     // up — while callers that never wire `inline` (break-glass reporter, terminal
@@ -1963,6 +2007,114 @@ export class GitHubReporter implements Reporter {
         { cwd: this.options.cwd },
       ),
     );
+  }
+
+  // @ref LLP 0008#comment-lifecycle [implements] — the ready label follows the decision; only our own label is removed
+  /**
+   * Add `readyForHumanLabel` when `ready` (and the run is not partial), or remove it
+   * when not. The label's history on the PR decides what is ours: it is removed only
+   * when our account added it last, and it is not added again once another account
+   * removed it. Fail-soft: the review comment is already posted, and a label failure
+   * only logs.
+   */
+  private async syncReadyLabel(decisionReady: boolean): Promise<void> {
+    const label = this.options.readyForHumanLabel;
+    if (!label) {
+      return;
+    }
+    const ready = decisionReady && this.options.partialReview !== true;
+    try {
+      const gh = await resolveTrustedTool("gh");
+      const issue = `repos/${this.options.repo}/issues/${this.options.prNumber}`;
+      const { stdout } = await run(
+        gh,
+        ["api", "-X", "GET", `${issue}/labels`, "-f", "per_page=100"],
+        {
+          cwd: this.options.cwd,
+        },
+      );
+      // Label names are unique regardless of case, so the PR's label may be spelled
+      // differently from the config; DELETE needs the PR's spelling.
+      const current = (JSON.parse(stdout) as Array<{ name?: string }>).find(
+        (entry) => entry.name?.toLowerCase() === label.toLowerCase(),
+      );
+      const present = current?.name !== undefined;
+      if (ready === present) {
+        return;
+      }
+      const [last, ownLogin] = await Promise.all([
+        this.lastLabelEvent(label),
+        this.resolveOwnLogin(),
+      ]);
+      if (last === "undecided") {
+        process.stderr.write(
+          `ready label: update skipped: the PR has more than ${GitHubReporter.MAX_COMMENT_PAGES} pages of events, so whose label it is cannot be told\n`,
+        );
+        return;
+      }
+      const ours = ownLogin != null && last?.actor === ownLogin;
+      if (ready && !(last?.event === "unlabeled" && !ours)) {
+        await run(gh, ["api", "-X", "POST", `${issue}/labels`, "-f", `labels[]=${label}`], {
+          cwd: this.options.cwd,
+        });
+      } else if (!ready && last?.event === "labeled" && ours) {
+        await run(
+          gh,
+          ["api", "-X", "DELETE", `${issue}/labels/${encodeURIComponent(current?.name ?? label)}`],
+          { cwd: this.options.cwd },
+        );
+      }
+    } catch (error) {
+      process.stderr.write(`ready label: update skipped: ${errorMessage(error)}\n`);
+    }
+  }
+
+  /**
+   * The newest `labeled` or `unlabeled` event for `label` (in any case) on this PR, or
+   * null. The events API lists the oldest first, so the last match wins. "undecided"
+   * when the walk stops at the page cap on a full page: newer events may follow.
+   */
+  private async lastLabelEvent(
+    label: string,
+  ): Promise<{ event: "labeled" | "unlabeled"; actor?: string } | null | "undecided"> {
+    const gh = await resolveTrustedTool("gh");
+    let last: { event: "labeled" | "unlabeled"; actor?: string } | null = null;
+    for (let page = 1; page <= GitHubReporter.MAX_COMMENT_PAGES; page++) {
+      const { stdout } = await run(
+        gh,
+        [
+          "api",
+          "-X",
+          "GET",
+          `repos/${this.options.repo}/issues/${this.options.prNumber}/events`,
+          "-f",
+          "per_page=100",
+          "-f",
+          `page=${page}`,
+        ],
+        { cwd: this.options.cwd },
+      );
+      const events = JSON.parse(stdout) as Array<{
+        event?: string;
+        label?: { name?: string };
+        actor?: { login?: string } | null;
+      }>;
+      for (const entry of events) {
+        if (
+          (entry.event === "labeled" || entry.event === "unlabeled") &&
+          entry.label?.name?.toLowerCase() === label.toLowerCase()
+        ) {
+          last = {
+            event: entry.event,
+            ...(entry.actor?.login ? { actor: entry.actor.login } : {}),
+          };
+        }
+      }
+      if (events.length < 100) {
+        return last;
+      }
+    }
+    return "undecided";
   }
 
   private async deleteComment(commentId: number): Promise<void> {

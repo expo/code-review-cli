@@ -68,6 +68,9 @@
   //   "trigger": "label" — review only PRs labeled `label` (or `label:<agent>`).
   // The `skipLabel` is write-gated (only maintainers can add labels), so a PR
   // author can't opt their own PR out.
+  // `readyForHumanLabel` (optional, off by default): a label the reviewer adds when
+  // a review of the whole PR is ready for a human, and removes when it is not.
+  // Never use it as a merge gate. See the README.
   "review": { "trigger": "all", "label": "ai-review", "skipLabel": "ai-review:skip" },
 
   // A maintainer comment containing this marker skips the CI review.

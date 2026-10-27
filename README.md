@@ -580,13 +580,66 @@ per-repo `noise.additionalIgnores`.
   "noise": { "additionalIgnores": ["packages/*/build/**"] },
   "review": { "trigger": "all",               // which PRs `ecr ci` reviews: "all"
               "label": "ai-review",            // (default, except ai-review:skip) or
-              "skipLabel": "ai-review:skip" }, // "label" (only labeled PRs)
+              "skipLabel": "ai-review:skip",   // "label" (only labeled PRs)
+              "readyForHumanLabel": "ready for human" }, // optional, see below
   "breakGlass": { "marker": "/skip-review" }, // PR body marker that skips the review
   "commentTag": "expo-ai-code-reviewer",      // hidden tag used to find/update the comment
   "auth": { "providers": {
     "anthropic": { "tokenEnv": "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN" } } }
 }
 ```
+
+`review.readyForHumanLabel` (off by default) names a label that `ecr ci`,
+`ecr post-review` and `ecr review --pr <n> --post` add to the PR when the review
+is ready for a human: the decision is "Ready for human review", with or without
+comments, and the run reviewed the whole PR. These runs get no label:
+
+- A partial run: `--agents` (so `/review <agents>` too), `--scopes`, or a review
+  saved with `ecr review --pr <n> --save-review --agents <ids>` and
+  posted with `ecr post-review`. A bare `/review`, where the router picks the agents, is a
+  full run.
+- A run where a pass did not finish.
+- A run where no reviewer applied, because no changed file matches any agent's
+  `paths`.
+- A routed run with a changed file that no scope matches. With a routing
+  manifest that has no `**/*` catch-all scope, a PR that touches a file outside
+  every scope never gets the label.
+
+A run that gets no label, a `/skip-review` that `ecr ci` acts on, or a run that
+deletes the review comment removes the label, but only when the reviewer added
+it last. Nothing else changes the label, so a ready label added before a push
+stays until the next review posts.
+
+- `ecr post-review` and `ecr review --pr <n> --post` post nothing on a PR with
+  `/skip-review`, and `ecr ci` does nothing on a PR its trigger policy skips (such
+  as one labeled `review.skipLabel`). Both leave the review comment and the label
+  as they are.
+- The reviewer recognises its labels by login, from the label's newest
+  `labeled` or `unlabeled` event on the PR. It removes the label only when its
+  own login added it last, and does not add it again when another login removed
+  it last. Its login is `gh api user`, or, when that fails under GitHub Actions,
+  `github-actions[bot]`, the login of the default `GITHUB_TOKEN`. So:
+  - With a personal token, that person's own removals count as the reviewer's,
+    and the next ready review adds the label again.
+  - Under the default `GITHUB_TOKEN`, other workflows' label changes are
+    `github-actions[bot]` too, and count as the reviewer's.
+  - A local `ecr review --pr <n> --post` and CI use different logins, so neither
+    removes a label the other added.
+  - A GitHub App token cannot read `gh api user`, and its login is not
+    `github-actions[bot]`, so the reviewer never removes the label it added (nor
+    recognises its own review comment).
+  - On a PR with 3,000 events or more, the reviewer cannot tell who changed the
+    label last, and leaves it as it is.
+- It works in the single comment mode. Per-scope comments have no one decision
+  for the PR, so that mode sets no label.
+- `/dismiss` does not change the decision, so it does not change the label.
+- When the reviewer fails before it can load the config, it leaves the label as
+  it is.
+- The decision comes from a model that reads untrusted PR content, so a prompt
+  injection can earn the label. Never use it as a merge gate or in branch
+  protection.
+- The label must differ from `review.label`, `review.skipLabel` and every
+  `<label>:<agent>` label. The workflow token needs `issues: write`.
 
 </details>
 

@@ -565,6 +565,8 @@ async function runLegacyCi(
     cwd,
     feedback: config.feedback,
     inline: config.inline,
+    readyForHumanLabel: config.review.readyForHumanLabel,
+    partialReview: Boolean(agents?.length),
     headSha,
   });
 
@@ -834,6 +836,7 @@ async function runRoutedCi(
     commentTag: rootTag,
     breakGlassMarker: rootConfig.breakGlassMarker,
     cwd,
+    readyForHumanLabel: rootConfig.review.readyForHumanLabel,
   });
   try {
     if (await bgReporter.checkBreakGlass()) {
@@ -888,7 +891,11 @@ async function runRoutedCi(
   const stackWalk = resolveStackWalk(rootConfig.stack, noStackAware);
   const stackConfirm = resolveStackConfirm(rootConfig.stack, noStackAware);
 
-  const reporterFor = (tag: string, withLink = false): GitHubReporter =>
+  const reporterFor = (
+    tag: string,
+    withLink = false,
+    readyForHumanLabel?: string,
+  ): GitHubReporter =>
     new GitHubReporter({
       prNumber,
       repo,
@@ -900,6 +907,10 @@ async function runRoutedCi(
       // no explicit records match replies itself (annotate mode) at report time.
       feedback: rootConfig.feedback,
       inline: rootConfig.inline,
+      readyForHumanLabel,
+      // An agent subset reviews part of every scope; --scopes carries the other
+      // scopes' results over from the comment without checking them against the head.
+      partialReview: Boolean(agents?.length) || Boolean(scopesFilter),
       headSha,
     });
 
@@ -909,7 +920,16 @@ async function runRoutedCi(
   // `fetchAllComments` TTL cache) across the whole run — a fresh reporter per
   // scope would otherwise re-fetch the paginated comment list and re-resolve
   // the bot login once per scope for the identical comment.
-  const singleModeReporter = mode === "single" ? reporterFor(rootTag, true) : undefined;
+  // Only the single comment has one decision for the whole PR, so only it labels.
+  const singleModeReporter =
+    mode === "single"
+      ? reporterFor(rootTag, true, rootConfig.review.readyForHumanLabel)
+      : undefined;
+  if (mode !== "single" && rootConfig.review.readyForHumanLabel) {
+    process.stderr.write(
+      "CI reviewer: review.readyForHumanLabel applies to the single comment mode only; no label is set in per-scope mode.\n",
+    );
+  }
 
   // Per-scope mode has the same property, one comment tag at a time: a scope's feedback
   // seam reads the very comment that scope's review is posted to, so both must use the
@@ -1181,7 +1201,8 @@ async function runRoutedCi(
     // (--scopes) skips this mode-switch cleanup: the root-tag comment may hold the
     // other scopes' aggregate results.
     if (!scopesFilter) {
-      await reporterFor(rootTag).clear();
+      // It also removes a ready label the single comment mode added.
+      await reporterFor(rootTag, false, rootConfig.review.readyForHumanLabel).clear();
     }
     process.stderr.write("CI reviewer: posted per-scope reviews.\n");
   }

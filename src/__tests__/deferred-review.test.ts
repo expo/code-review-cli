@@ -40,6 +40,7 @@ function config(configDir: string, overrides: Partial<LoadedConfig> = {}): Loade
       protectedCategories: ["security", "secrets"],
       maxAdjudications: 10,
     },
+    review: { trigger: "all", label: "ai-review", skipLabel: "ai-review:skip" },
     ...overrides,
   } as LoadedConfig;
 }
@@ -83,6 +84,21 @@ test("writes and reads an owner-only exact review artifact", async () => {
   expect(parsed.review).toEqual(artifact().review);
   expect(parsed.configFingerprint).toBe(reviewPostingConfigFingerprint(loaded));
   expect(JSON.parse(await readFile(saved, "utf8"))).toEqual(parsed);
+});
+
+test("records a review saved from an agent subset as partial; older artifacts still parse", async () => {
+  const root = await tempRoot();
+  const loaded = config(path.join(root, ".expo-code-review"));
+  const saved = await writeDeferredReviewArtifact(loaded, {
+    repo: "expo/expo",
+    pr: 48557,
+    headSha: "a".repeat(40),
+    review: artifact().review,
+    partialReview: true,
+  });
+  expect((await readDeferredReviewArtifact(saved)).partialReview).toBe(true);
+  // artifact() has no partialReview field, as every artifact saved before it existed.
+  expect(artifact().partialReview).toBeUndefined();
 });
 
 test("strictly rejects malformed, oversized, and extended artifacts", async () => {
@@ -143,6 +159,11 @@ test("posting config fingerprint covers every comment-policy input", () => {
   );
   expect(
     reviewPostingConfigFingerprint(config(root, { feedback: { ...base.feedback, mode: "off" } })),
+  ).not.toBe(fingerprint);
+  expect(
+    reviewPostingConfigFingerprint(
+      config(root, { review: { ...base.review, readyForHumanLabel: "ready for human" } }),
+    ),
   ).not.toBe(fingerprint);
 });
 
