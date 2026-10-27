@@ -69,12 +69,8 @@
   // The `skipLabel` is write-gated (only maintainers can add labels), so a PR
   // author can't opt their own PR out.
   // `readyForHumanLabel` (optional, off by default): a label the reviewer adds when
-  // the decision is "Ready for human review" (with or without comments) and the
-  // review covers the whole PR, and removes when a later review is not ready or
-  // `ecr ci` acts on a `/skip-review`. It only removes the label when it added it,
-  // and does not add it again after a person removed it. A PR the trigger policy
-  // skips keeps its comment and label. Single-comment mode only. Never use it as a
-  // merge gate. See the README.
+  // a review of the whole PR is ready for a human, and removes when it is not.
+  // Never use it as a merge gate. See the README.
   "review": { "trigger": "all", "label": "ai-review", "skipLabel": "ai-review:skip" },
 
   // A maintainer comment containing this marker skips the CI review.

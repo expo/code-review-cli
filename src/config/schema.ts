@@ -160,12 +160,9 @@ export const ReviewConfigSchema = z.object({
       // Opt a single PR out of review. A label (not a config flag) because labels
       // are write-gated to maintainers — a PR author can't add one to dodge review.
       skipLabel: z.string().default("ai-review:skip"),
-      // A label the reviewer adds when the review decision is "Ready for human
-      // review", with or without comments, and the review covers the whole PR. It
-      // removes the label when a later review is not ready or `ecr ci` acts on a
-      // `/skip-review`, and only when it added it; a PR the trigger policy skips keeps
-      // its comment and label. Unset (the default) turns labelling off. Single-comment
-      // mode only: per-scope comments have no one decision for the PR.
+      // A label the reviewer adds when a review of the whole PR is ready for a human,
+      // and removes when it is not. Unset (the default) turns labelling off. See the
+      // README.
       readyForHumanLabel: z.string().min(1).optional(),
     })
     // The ready label must not act as a trigger label: as `label` (or `label:<agent>`)

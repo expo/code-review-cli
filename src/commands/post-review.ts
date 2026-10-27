@@ -149,6 +149,7 @@ export async function postReviewCommand(argv: string[]): Promise<void> {
       feedback: config.feedback,
       inline: config.inline,
       readyForHumanLabel: config.review.readyForHumanLabel,
+      partialReview: artifact.partialReview,
       headSha,
     });
     const result = await publishDeferredReview(reporter, artifact, async () => {

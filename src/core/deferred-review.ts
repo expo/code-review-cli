@@ -35,6 +35,8 @@ export const DeferredReviewArtifactSchema = z
     configFingerprint: z.string().regex(/^[0-9a-f]{64}$/i),
     review: CoordinatorOutputSchema,
     feedback: z.array(FeedbackRecordSchema).optional(),
+    /** Saved from an explicit agent subset, so posting it never adds the ready label. */
+    partialReview: z.boolean().optional(),
   })
   .strict();
 
@@ -46,6 +48,7 @@ export interface DeferredReviewInput {
   headSha: string;
   review: CoordinatorOutput;
   feedback?: FeedbackRecord[];
+  partialReview?: boolean;
 }
 
 /** Bind the artifact to the local config fields that affect the posted comment. */
@@ -89,6 +92,7 @@ export async function writeDeferredReviewArtifact(
     configFingerprint: reviewPostingConfigFingerprint(config),
     review: input.review,
     ...(input.feedback ? { feedback: input.feedback } : {}),
+    ...(input.partialReview ? { partialReview: true } : {}),
   });
   const serialized = `${JSON.stringify(artifact, null, 2)}\n`;
   const serializedBytes = Buffer.byteLength(serialized);

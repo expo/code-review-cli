@@ -86,6 +86,21 @@ test("writes and reads an owner-only exact review artifact", async () => {
   expect(JSON.parse(await readFile(saved, "utf8"))).toEqual(parsed);
 });
 
+test("records a review saved from an agent subset as partial; older artifacts still parse", async () => {
+  const root = await tempRoot();
+  const loaded = config(path.join(root, ".expo-code-review"));
+  const saved = await writeDeferredReviewArtifact(loaded, {
+    repo: "expo/expo",
+    pr: 48557,
+    headSha: "a".repeat(40),
+    review: artifact().review,
+    partialReview: true,
+  });
+  expect((await readDeferredReviewArtifact(saved)).partialReview).toBe(true);
+  // artifact() has no partialReview field, as every artifact saved before it existed.
+  expect(artifact().partialReview).toBeUndefined();
+});
+
 test("strictly rejects malformed, oversized, and extended artifacts", async () => {
   const root = await tempRoot();
   const malformed = path.join(root, "malformed.json");

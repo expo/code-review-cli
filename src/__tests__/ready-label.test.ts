@@ -32,6 +32,30 @@ test("readyForHuman: both 'Ready for human review' decisions, every review compl
   expect(readyForHuman([])).toBe(false);
 });
 
+test("readyForHuman: a review where no reviewer applied is not ready; a noise-only one is", () => {
+  const noReviewer = review({
+    agentSummaries: [
+      { agent: "ios", notRun: "paths" },
+      { agent: "web", notRun: "paths" },
+    ],
+  });
+  expect(readyForHuman([noReviewer])).toBe(false);
+  expect(
+    readyForHuman([
+      review({
+        agentSummaries: [
+          { agent: "ios", notRun: "paths" },
+          { agent: "correctness", summary: "Looks fine." },
+        ],
+      }),
+    ]),
+  ).toBe(true);
+  // Noise filtering left nothing to review, so there are no summary rows.
+  expect(readyForHuman([review({ summary: "No reviewable changes after noise filtering." })])).toBe(
+    true,
+  );
+});
+
 test("config: review.readyForHumanLabel is optional and never empty", () => {
   expect(ReviewConfigSchema.parse({}).review.readyForHumanLabel).toBeUndefined();
   expect(
@@ -146,7 +170,11 @@ async function fixture(opts: { labels?: string[]; events?: LabelEvent[][] }): Pr
 // Each test uses its own PR number: the reporter caches some reads per PR.
 function reporterFor(
   prNumber: number,
-  opts: { readyForHumanLabel?: string | null; ownLogin?: string | null } = {},
+  opts: {
+    readyForHumanLabel?: string | null;
+    ownLogin?: string | null;
+    partialReview?: boolean;
+  } = {},
 ): GitHubReporter {
   return new GitHubReporter({
     prNumber,
@@ -157,7 +185,23 @@ function reporterFor(
     ...(opts.readyForHumanLabel === null
       ? {}
       : { readyForHumanLabel: opts.readyForHumanLabel ?? LABEL }),
+    ...(opts.partialReview ? { partialReview: true } : {}),
   });
+}
+
+async function captureStderr(run: () => Promise<void>): Promise<string> {
+  const original = process.stderr.write;
+  const chunks: string[] = [];
+  process.stderr.write = ((chunk: unknown) => {
+    chunks.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    await run();
+  } finally {
+    process.stderr.write = original;
+  }
+  return chunks.join("");
 }
 
 async function calls(): Promise<string[]> {
@@ -335,15 +379,34 @@ test("reportAggregate: unmatched files leave the PR not ready", async () => {
   ]);
 });
 
-test("reportAggregate: a scope with no result leaves the PR not ready", async () => {
+test("reportAggregate: a partial run never adds the label", async () => {
   await fixture({});
-  await reporterFor(917).reportAggregate(
+  await reporterFor(917, { partialReview: true }).reportAggregate(
     [{ scope: "ios", isDefault: false, review: review() }],
     [],
-    undefined,
-    { coverageComplete: false },
   );
   expect(labelCalls(await calls())).toEqual([]);
+});
+
+test("report: a partial run removes the bot's label even when its review is ready", async () => {
+  await fixture({ labels: [LABEL], events: [[{ event: "labeled", actor: "ecr-bot" }]] });
+  await reporterFor(919, { partialReview: true }).report(review());
+  expect(labelCalls(await calls())).toEqual([
+    "api -X DELETE repos/o/r/issues/919/labels/ready%20for%20human",
+  ]);
+});
+
+test("report: events past the page cap leave the label as it is", async () => {
+  // Every page is full up to the cap, so a newer event may lie beyond it.
+  const page = Array.from({ length: 100 }, () => ({ event: "labeled" as const, actor: "ecr-bot" }));
+  await fixture({ labels: [LABEL], events: Array.from({ length: 30 }, () => page) });
+  const log = await captureStderr(() =>
+    reporterFor(920).report(review({ decision: "request_changes" })),
+  );
+  const all = await calls();
+  expect(all.filter((call) => call.includes("/events"))).toHaveLength(30);
+  expect(labelCalls(all)).toEqual([]);
+  expect(log).toContain("ready label: update skipped");
 });
 
 test("reportAggregate: every scope ready with full coverage adds the label", async () => {
@@ -354,8 +417,6 @@ test("reportAggregate: every scope ready with full coverage adds the label", asy
       { scope: "web", isDefault: false, review: review({ decision: "approve_with_comments" }) },
     ],
     [],
-    undefined,
-    { coverageComplete: true },
   );
   expect(labelCalls(await calls())).toEqual([
     `api -X POST repos/o/r/issues/918/labels -f labels[]=${LABEL}`,
