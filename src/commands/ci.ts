@@ -1464,8 +1464,6 @@ function parseListFlag(argv: string[], flag: string): string[] | undefined {
     .filter(Boolean);
 }
 
-/** Parse a single-value flag (`--flag value`); undefined when absent, throws when
- * present without a value (matching review.ts's requireValue). */
 /** Parse `--expect-head <sha>`: a full commit hash, lowercased, or undefined. */
 export function parseExpectHead(argv: string[]): string | undefined {
   const value = parseValueFlag(argv, "--expect-head");
@@ -1478,6 +1476,8 @@ export function parseExpectHead(argv: string[]): string | undefined {
   return value.toLowerCase();
 }
 
+/** Parse a single-value flag (`--flag value`); undefined when absent, throws when
+ * present without a value (matching review.ts's requireValue). */
 function parseValueFlag(argv: string[], flag: string): string | undefined {
   const index = argv.indexOf(flag);
   if (index === -1) {

@@ -19,6 +19,10 @@ export interface GitHubPRSourceOptions {
 
 /** A full 40-hex-char commit OID — the only ref form passed to security-sensitive git calls. */
 // @ref LLP 0008#pr-head-materialization [constrained-by] — the single gate: only a full 40-hex OID reaches git worktree add/fetch, closing the TOCTOU race and blocking ref/argument injection at once
+export function isCommitOid(value: string | undefined): value is string {
+  return typeof value === "string" && /^[0-9a-f]{40}$/i.test(value);
+}
+
 /**
  * The PR's head is not the commit this run reviews: it moved during the run, or it
  * is not the commit `ecr ci --expect-head` asked for. The message is safe to post.
@@ -34,10 +38,6 @@ export class HeadMovedError extends Error {
     );
     this.name = "HeadMovedError";
   }
-}
-
-export function isCommitOid(value: string | undefined): value is string {
-  return typeof value === "string" && /^[0-9a-f]{40}$/i.test(value);
 }
 
 /** One open child PR as returned by the pulls-list endpoint, pre-parsed. */
