@@ -24,7 +24,13 @@ import { errorMessage, publicFailureReason } from "../core/util.js";
 import { readContextFile } from "../core/context-file.js";
 import { buildDiffLineIndex } from "../core/render.js";
 import type { LinkContext, ReviewState, ScopeReviewResult } from "../core/render.js";
-import type { CoordinatorOutput, FeedbackPin, FeedbackRecord, Finding } from "../core/schema.js";
+import type {
+  CoordinatorOutput,
+  DiffEntry,
+  FeedbackPin,
+  FeedbackRecord,
+  Finding,
+} from "../core/schema.js";
 import { applyPins, collectPins, fingerprintFinding, scopedFingerprint } from "../core/schema.js";
 import { summarizePriorReview } from "../core/prior-review.js";
 import { dropStaleVerdict, feedbackApplied, feedbackNeedsRunSeam } from "../core/adjudicate.js";
@@ -36,7 +42,7 @@ import {
   reviewInputHash,
   reviewMatchesInput,
 } from "../core/review-cache.js";
-import { GitHubPRSource } from "../sources/github-pr.js";
+import { GitHubPRSource, HeadMovedError, isCommitOid } from "../sources/github-pr.js";
 import { memoizeSource, stackConfirmFromConfig, stackWalkFromConfig } from "../sources/source.js";
 import type { PreparedReadRoot, ReviewSource, StackWalkOptions } from "../sources/source.js";
 import { GitHubReporter } from "../reporters/github.js";
@@ -127,6 +133,9 @@ Options:
   --force              Manual override: review even if the trigger policy (label
                        trigger / ai-review:skip) would skip. Break-glass and the
                        auth lock still apply. A /review comment command implies this.
+  --expect-head <sha>  Review only when the PR's head is this full commit hash
+                       (for example the commit a maintainer labeled or commented
+                       on). Otherwise post a "not reviewed" note and stop.
   -h, --help           Show this help
 
 Env: GITHUB_REPOSITORY, GITHUB_EVENT_PATH/GITHUB_REF (PR number), GH_TOKEN,
@@ -152,9 +161,11 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
   // the default .expo-code-review/. Applies to config.jsonc AND routing.jsonc.
   let configDir: string | undefined;
   let contextFile: string | undefined;
+  let expectHead: string | undefined;
   try {
     configDir = parseValueFlag(argv, "--config-dir");
     contextFile = parseValueFlag(argv, "--context-file");
+    expectHead = parseExpectHead(argv);
   } catch (error) {
     process.stderr.write(`${errorMessage(error)}\n\n${CI_USAGE}`);
     process.exitCode = 2;
@@ -261,6 +272,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
         configDir,
         contextText,
         noStackAware,
+        expectHead,
       });
       return;
     }
@@ -275,6 +287,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
         configDir,
         contextText,
         noStackAware,
+        expectHead,
       });
     } catch (error) {
       // Fan-out failures stay non-blocking (single-writer property is the point).
@@ -485,6 +498,42 @@ interface CiRunOptions {
   contextText: string | undefined;
   /** --no-stack-aware: force stack-aware requalification off for this run. */
   noStackAware: boolean;
+  /** --expect-head: the full head commit hash this run may review, or undefined. */
+  expectHead?: string | undefined;
+}
+
+// @ref LLP 0007#ecr-ci-the-trusted-root-run [implements] — --expect-head pins the review to the commit the request named
+/**
+ * A HeadMovedError when `--expect-head` names a commit that is not the PR's head
+ * (unknown counts as different, so a metadata failure fails closed), else null.
+ */
+export function expectedHeadMismatch(
+  expectHead: string | undefined,
+  headOid: string | undefined,
+): HeadMovedError | null {
+  return expectHead !== undefined && headOid !== expectHead
+    ? new HeadMovedError(expectHead, headOid)
+    : null;
+}
+
+/** Post the "not reviewed" note for a head that is not the one this run may review. */
+async function postNotReviewed(reporter: GitHubReporter, error: HeadMovedError): Promise<void> {
+  process.stderr.write(`CI reviewer: not reviewing: ${error.message}.\n`);
+  try {
+    await reporter.report({
+      decision: "approve_with_comments",
+      findings: [],
+      summary: `⚠️ This change was **not** reviewed: ${error.message}.`,
+      incomplete: [],
+      // Not a review of anything: keeps the inline sync additive-only and removes
+      // the reviewer's ready label.
+      couldNotComplete: true,
+    });
+  } catch (postError) {
+    process.stderr.write(
+      `CI reviewer: also failed to post the not-reviewed note: ${errorMessage(postError)}\n`,
+    );
+  }
 }
 
 // @ref LLP 0010#config-and-cli-surface [implements] — under ci, stack-aware is gated by the trusted-base config; a stack walk failure only ever warns (source fails open), never a check failure
@@ -603,6 +652,11 @@ async function runLegacyCi(
   // is ready.
   if (await isNewCommitsEvent()) {
     await reporter.removeReadyLabel();
+  }
+  const headProblem = expectedHeadMismatch(options.expectHead, headSha);
+  if (headProblem) {
+    await postNotReviewed(reporter, headProblem);
+    return;
   }
 
   const stack = resolveStackWalk(config.stack, noStackAware);
@@ -818,7 +872,33 @@ async function runRoutedCi(
     return;
   }
 
-  const changed = await source.getChangedFiles();
+  let changed: DiffEntry[];
+  try {
+    const headProblem = expectedHeadMismatch(
+      options.expectHead,
+      (await source.getMetadata().catch(() => undefined))?.headOid,
+    );
+    if (headProblem) {
+      throw headProblem;
+    }
+    changed = await source.getChangedFiles();
+  } catch (error) {
+    if (!(error instanceof HeadMovedError)) {
+      throw error;
+    }
+    await postNotReviewed(
+      new GitHubReporter({
+        prNumber,
+        repo,
+        commentTag: rootTag,
+        breakGlassMarker: rootConfig.breakGlassMarker,
+        cwd,
+        readyForHumanLabel: rootConfig.review.readyForHumanLabel,
+      }),
+      error,
+    );
+    return;
+  }
   const resolution = resolveScopes(
     manifest,
     changed.map((file) => file.path),
@@ -1386,6 +1466,18 @@ function parseListFlag(argv: string[], flag: string): string[] | undefined {
 
 /** Parse a single-value flag (`--flag value`); undefined when absent, throws when
  * present without a value (matching review.ts's requireValue). */
+/** Parse `--expect-head <sha>`: a full commit hash, lowercased, or undefined. */
+export function parseExpectHead(argv: string[]): string | undefined {
+  const value = parseValueFlag(argv, "--expect-head");
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isCommitOid(value)) {
+    throw new Error(`--expect-head needs a full 40-character commit hash, got "${value}"`);
+  }
+  return value.toLowerCase();
+}
+
 function parseValueFlag(argv: string[], flag: string): string | undefined {
   const index = argv.indexOf(flag);
   if (index === -1) {
