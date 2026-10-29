@@ -16,6 +16,9 @@ test("parseExpectHead: a full commit hash, lowercased; anything else is a usage 
   expect(() => parseExpectHead(["--expect-head", "0123456"])).toThrow("40-character");
   expect(() => parseExpectHead(["--expect-head", "--force"])).toThrow("requires a value");
   expect(() => parseExpectHead(["--expect-head"])).toThrow("requires a value");
+  // Forms that would otherwise be ignored, and leave the run unpinned, fail loudly.
+  expect(() => parseExpectHead([`--expect-head=${HEAD}`])).toThrow("separate argument");
+  expect(() => parseExpectHead(["--expect-head", ""])).toThrow("is empty");
 });
 
 test("expectedHeadMismatch: only a named commit that is not the head stops the run", () => {

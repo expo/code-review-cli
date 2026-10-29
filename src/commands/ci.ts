@@ -133,9 +133,10 @@ Options:
   --force              Manual override: review even if the trigger policy (label
                        trigger / ai-review:skip) would skip. Break-glass and the
                        auth lock still apply. A /review comment command implies this.
-  --expect-head <sha>  Review only when the PR's head is this full commit hash
-                       (for example the commit a maintainer labeled or commented
-                       on). Otherwise post a "not reviewed" note and stop.
+  --expect-head <sha>  Review only when the PR's head is this full commit hash,
+                       for example \${{ github.event.pull_request.head.sha }} on
+                       a label event. Otherwise stop with a "not reviewed" note
+                       (logged only, with a routing.jsonc).
   -h, --help           Show this help
 
 Env: GITHUB_REPOSITORY, GITHUB_EVENT_PATH/GITHUB_REF (PR number), GH_TOKEN,
@@ -872,6 +873,35 @@ async function runRoutedCi(
     return;
   }
 
+  // Break-glass: ONE check via a reporter on the root marker, before fan-out.
+  const bgReporter = new GitHubReporter({
+    prNumber,
+    repo,
+    commentTag: rootTag,
+    breakGlassMarker: rootConfig.breakGlassMarker,
+    cwd,
+    readyForHumanLabel: rootConfig.review.readyForHumanLabel,
+  });
+  try {
+    if (await bgReporter.checkBreakGlass()) {
+      process.stderr.write(`CI reviewer: ${rootConfig.breakGlassMarker} detected; skipping.\n`);
+      await bgReporter.postSkipNote();
+      return;
+    }
+  } catch (error) {
+    process.stderr.write(
+      `CI reviewer: break-glass check failed (continuing): ${errorMessage(error)}\n`,
+    );
+  }
+  // The ready label described the previous head; the review adds it back if this one
+  // is ready.
+  if (await isNewCommitsEvent()) {
+    await bgReporter.removeReadyLabel();
+  }
+
+  // In the routed path the root comment holds the aggregate and its per-scope state,
+  // which a single "not reviewed" render would replace, so a head that is not the one
+  // this run may review only logs, and the reviewer's ready label goes.
   let changed: DiffEntry[];
   try {
     const headProblem = expectedHeadMismatch(
@@ -886,17 +916,8 @@ async function runRoutedCi(
     if (!(error instanceof HeadMovedError)) {
       throw error;
     }
-    await postNotReviewed(
-      new GitHubReporter({
-        prNumber,
-        repo,
-        commentTag: rootTag,
-        breakGlassMarker: rootConfig.breakGlassMarker,
-        cwd,
-        readyForHumanLabel: rootConfig.review.readyForHumanLabel,
-      }),
-      error,
-    );
+    process.stderr.write(`CI reviewer: not reviewing: ${error.message}.\n`);
+    await bgReporter.removeReadyLabel();
     return;
   }
   const resolution = resolveScopes(
@@ -931,32 +952,6 @@ async function runRoutedCi(
   }
 
   const mode = commentOverride ?? manifest.comment;
-
-  // Break-glass: ONE check via a reporter on the root marker, before fan-out.
-  const bgReporter = new GitHubReporter({
-    prNumber,
-    repo,
-    commentTag: rootTag,
-    breakGlassMarker: rootConfig.breakGlassMarker,
-    cwd,
-    readyForHumanLabel: rootConfig.review.readyForHumanLabel,
-  });
-  try {
-    if (await bgReporter.checkBreakGlass()) {
-      process.stderr.write(`CI reviewer: ${rootConfig.breakGlassMarker} detected; skipping.\n`);
-      await bgReporter.postSkipNote();
-      return;
-    }
-  } catch (error) {
-    process.stderr.write(
-      `CI reviewer: break-glass check failed (continuing): ${errorMessage(error)}\n`,
-    );
-  }
-  // The ready label described the previous head; the review adds it back if this one
-  // is ready.
-  if (await isNewCommitsEvent()) {
-    await bgReporter.removeReadyLabel();
-  }
 
   // Build ONE link context for all scopes (rate-limit hygiene): diff lines from the
   // already-fetched changed files, base OID from the memoized PR metadata (the same
@@ -1464,11 +1459,23 @@ function parseListFlag(argv: string[], flag: string): string[] | undefined {
     .filter(Boolean);
 }
 
-/** Parse `--expect-head <sha>`: a full commit hash, lowercased, or undefined. */
+/**
+ * Parse `--expect-head <sha>`: a full commit hash, lowercased, or undefined. Every
+ * malformed form throws instead of being ignored, because an ignored flag would
+ * review an unpinned head without a word.
+ */
 export function parseExpectHead(argv: string[]): string | undefined {
+  if (argv.some((arg) => arg.startsWith("--expect-head="))) {
+    throw new Error("--expect-head takes its value as a separate argument: --expect-head <sha>");
+  }
   const value = parseValueFlag(argv, "--expect-head");
   if (value === undefined) {
     return undefined;
+  }
+  if (value === "") {
+    throw new Error(
+      "--expect-head is empty; the workflow likely passed a PR head from an event that has none",
+    );
   }
   if (!isCommitOid(value)) {
     throw new Error(`--expect-head needs a full 40-character commit hash, got "${value}"`);
