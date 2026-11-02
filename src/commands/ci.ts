@@ -1459,6 +1459,9 @@ export function parseExpectHead(argv: string[]): string | undefined {
   if (argv.some((arg) => arg.startsWith("--expect-head="))) {
     throw new Error("--expect-head takes its value as a separate argument: --expect-head <sha>");
   }
+  if (argv.filter((arg) => arg === "--expect-head").length > 1) {
+    throw new Error("--expect-head was given more than once");
+  }
   const value = parseValueFlag(argv, "--expect-head");
   if (value === undefined) {
     return undefined;

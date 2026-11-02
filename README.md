@@ -380,6 +380,8 @@ Enforced in code and by an independent CI guard step, not by convention:
   (`github.event.pull_request.head.sha`) and a push before the run starts is not
   reviewed in its place. With a `routing.jsonc`, the run only logs the reason,
   since a note would replace the aggregate comment and its per-scope state.
+  Releases without the flag ignore it, so pin a release whose `ecr ci --help`
+  lists it.
 - **The model runtime never sees PR-owned ambient config.** The head worktree is
   scrubbed of `opencode.json{,c}`, `.opencode/`, `AGENTS.md`, `CLAUDE.md`,
   `.claude/`, `.mcp.json`, `.cursor*`, and `.env*` before the engine starts, so a
