@@ -45,6 +45,20 @@ test("setup note renders only when there is ref advice, and never as a finding",
   expect(body).toContain("No findings.");
 });
 
+test("a run that reviewed nothing renders No review, without claiming why", () => {
+  const body = renderMarkdown({ ...base, couldNotComplete: true }, "tag");
+  expect(body).toContain("**Decision:** No review\n");
+  const aggregate = renderAggregateMarkdown(
+    [
+      { scope: "app", review: { ...base, couldNotComplete: true } },
+      { scope: "docs", review: base },
+    ],
+    "tag",
+    [],
+  );
+  expect(aggregate).toContain("| app | No review | 0 |");
+});
+
 test("coverage note only renders when incomplete is non-empty (no more wolf-crying)", () => {
   expect(renderMarkdown(base, "tag")).not.toContain("Coverage note");
   expect(renderMarkdown({ ...base, incomplete: ["a pass timed out"] }, "tag")).toContain(
