@@ -24,13 +24,7 @@ import { errorMessage, publicFailureReason } from "../core/util.js";
 import { readContextFile } from "../core/context-file.js";
 import { buildDiffLineIndex } from "../core/render.js";
 import type { LinkContext, ReviewState, ScopeReviewResult } from "../core/render.js";
-import type {
-  CoordinatorOutput,
-  DiffEntry,
-  FeedbackPin,
-  FeedbackRecord,
-  Finding,
-} from "../core/schema.js";
+import type { CoordinatorOutput, FeedbackPin, FeedbackRecord, Finding } from "../core/schema.js";
 import { applyPins, collectPins, fingerprintFinding, scopedFingerprint } from "../core/schema.js";
 import { summarizePriorReview } from "../core/prior-review.js";
 import { dropStaleVerdict, feedbackApplied, feedbackNeedsRunSeam } from "../core/adjudicate.js";
@@ -42,7 +36,7 @@ import {
   reviewInputHash,
   reviewMatchesInput,
 } from "../core/review-cache.js";
-import { GitHubPRSource, HeadMovedError, isCommitOid } from "../sources/github-pr.js";
+import { GitHubPRSource, isCommitOid } from "../sources/github-pr.js";
 import { memoizeSource, stackConfirmFromConfig, stackWalkFromConfig } from "../sources/source.js";
 import type { PreparedReadRoot, ReviewSource, StackWalkOptions } from "../sources/source.js";
 import { GitHubReporter } from "../reporters/github.js";
@@ -505,26 +499,31 @@ interface CiRunOptions {
 
 // @ref LLP 0007#ecr-ci-the-trusted-root-run [implements] — --expect-head pins the review to the commit the request named
 /**
- * A HeadMovedError when `--expect-head` names a commit that is not the PR's head
- * (unknown counts as different, so a metadata failure fails closed), else null.
+ * Why the run must stop when `--expect-head` names a commit that is not the PR's head
+ * (unknown counts as different, so a metadata failure fails closed), else null. The
+ * reason is safe to post.
  */
 export function expectedHeadMismatch(
   expectHead: string | undefined,
   headOid: string | undefined,
-): HeadMovedError | null {
-  return expectHead !== undefined && headOid !== expectHead
-    ? new HeadMovedError(expectHead, headOid)
-    : null;
+): string | null {
+  if (expectHead === undefined || headOid === expectHead) {
+    return null;
+  }
+  return (
+    `the PR's head is ${headOid ?? "unknown"}, not ${expectHead}, ` +
+    "the commit this review was requested for"
+  );
 }
 
 /** Post the "not reviewed" note for a head that is not the one this run may review. */
-async function postNotReviewed(reporter: GitHubReporter, error: HeadMovedError): Promise<void> {
-  process.stderr.write(`CI reviewer: not reviewing: ${error.message}.\n`);
+async function postNotReviewed(reporter: GitHubReporter, reason: string): Promise<void> {
+  process.stderr.write(`CI reviewer: not reviewing: ${reason}.\n`);
   try {
     await reporter.report({
       decision: "approve_with_comments",
       findings: [],
-      summary: `⚠️ This change was **not** reviewed: ${error.message}.`,
+      summary: `⚠️ This change was **not** reviewed: ${reason}.`,
       incomplete: [],
       // Not a review of anything: keeps the inline sync additive-only and removes
       // the reviewer's ready label.
@@ -902,24 +901,16 @@ async function runRoutedCi(
   // In the routed path the root comment holds the aggregate and its per-scope state,
   // which a single "not reviewed" render would replace, so a head that is not the one
   // this run may review only logs, and the reviewer's ready label goes.
-  let changed: DiffEntry[];
-  try {
-    const headProblem = expectedHeadMismatch(
-      options.expectHead,
-      (await source.getMetadata().catch(() => undefined))?.headOid,
-    );
-    if (headProblem) {
-      throw headProblem;
-    }
-    changed = await source.getChangedFiles();
-  } catch (error) {
-    if (!(error instanceof HeadMovedError)) {
-      throw error;
-    }
-    process.stderr.write(`CI reviewer: not reviewing: ${error.message}.\n`);
+  const headProblem = expectedHeadMismatch(
+    options.expectHead,
+    (await source.getMetadata().catch(() => undefined))?.headOid,
+  );
+  if (headProblem) {
+    process.stderr.write(`CI reviewer: not reviewing: ${headProblem}.\n`);
     await bgReporter.removeReadyLabel();
     return;
   }
+  const changed = await source.getChangedFiles();
   const resolution = resolveScopes(
     manifest,
     changed.map((file) => file.path),

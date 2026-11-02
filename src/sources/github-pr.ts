@@ -23,23 +23,6 @@ export function isCommitOid(value: string | undefined): value is string {
   return typeof value === "string" && /^[0-9a-f]{40}$/i.test(value);
 }
 
-/**
- * The PR's head is not the commit this run reviews: it moved during the run, or it
- * is not the commit `ecr ci --expect-head` asked for. The message is safe to post.
- */
-export class HeadMovedError extends Error {
-  constructor(
-    readonly expected: string,
-    readonly actual: string | undefined,
-  ) {
-    super(
-      `the PR's head changed after the review was requested (expected ${expected.slice(0, 12)}, ` +
-        `now ${actual ? actual.slice(0, 12) : "unknown"}). Request the review again to review the new commits`,
-    );
-    this.name = "HeadMovedError";
-  }
-}
-
 /** One open child PR as returned by the pulls-list endpoint, pre-parsed. */
 export interface StackChildPr {
   number: number;
@@ -240,51 +223,32 @@ export class GitHubPRSource implements ReviewSource {
     };
   }
 
-  // @ref LLP 0008#pr-head-materialization [implements] — the diff is pinned to the same head OID as the tree
+  // @ref LLP 0008#pr-head-materialization [implements] — the diff is pinned to the same base and head OIDs as the trees
   /**
-   * The PR's diff, for the head OID that getMetadata() read. `gh pr diff` returns the
-   * diff of the PR as it is NOW, so when the head is known, the head is read again
-   * after the diff and a move throws HeadMovedError: the diff could belong to a newer
-   * push than the tree the agents read, or than the commit a maintainer asked for.
+   * The PR's diff between the base and head OIDs that getMetadata() read, the same
+   * commits the trusted config root and the head tree are checked out at. `gh pr diff`
+   * takes no commit and returns the PR as it is now, so it is used only when an OID
+   * is unknown.
    */
   async getChangedFiles(): Promise<DiffEntry[]> {
-    const metadata = await this.getMetadata();
+    const metadata = await this.getMetadata().catch(() => undefined);
+    const base = metadata?.baseOid;
+    const head = metadata?.headOid;
     const gh = await resolveTrustedTool("gh");
-    // gh colors the diff even into a pipe when the environment forces it
-    // (CLICOLOR_FORCE, GH_FORCE_TTY), and the escape codes before `diff --git` would
-    // make the whole PR parse as no files.
-    const { stdout } = await run(
-      gh,
-      ["pr", "diff", String(this.options.prNumber), ...this.repoArgs(), "--color", "never"],
-      { cwd: this.options.cwd },
-    );
-    if (isCommitOid(metadata.headOid)) {
-      const live = await this.liveHeadOid(gh);
-      if (live !== metadata.headOid) {
-        throw new HeadMovedError(metadata.headOid, live);
-      }
-    }
+    const args =
+      isCommitOid(base) && isCommitOid(head)
+        ? [
+            "api",
+            `repos/${this.options.repo ?? "{owner}/{repo}"}/compare/${base}...${head}`,
+            "-H",
+            "Accept: application/vnd.github.diff",
+          ]
+        : // gh colors the diff even into a pipe when the environment forces it
+          // (CLICOLOR_FORCE, GH_FORCE_TTY), and the escape codes before `diff --git`
+          // would make the whole PR parse as no files.
+          ["pr", "diff", String(this.options.prNumber), ...this.repoArgs(), "--color", "never"];
+    const { stdout } = await run(gh, args, { cwd: this.options.cwd });
     return parseUnifiedDiff(stdout);
-  }
-
-  /** The PR's head OID as GitHub reports it now, or undefined when it reports none. */
-  private async liveHeadOid(gh: string): Promise<string | undefined> {
-    const { stdout } = await run(
-      gh,
-      [
-        "pr",
-        "view",
-        String(this.options.prNumber),
-        ...this.repoArgs(),
-        "--json",
-        "headRefOid",
-        "--jq",
-        ".headRefOid",
-      ],
-      { cwd: this.options.cwd },
-    );
-    const oid = stdout.trim();
-    return isCommitOid(oid) ? oid.toLowerCase() : undefined;
   }
 
   /**

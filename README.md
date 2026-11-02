@@ -373,11 +373,10 @@ Enforced in code and by an independent CI guard step, not by convention:
   missing base fails closed — never a fallback to the checkout. (Temporary escape
   hatch: `ecr ci --unsafe-config-from-head`, with a loud warning; to be removed.)
 - **The review covers one commit, and can be pinned to the one you asked for.**
-  `ecr ci` reads the PR's head commit once. The tree it reads is checked out at that
-  commit, and after it fetches the diff it reads the head again: if a push moved it
-  in between, the run stops with a "not reviewed" note instead of reviewing a diff
-  from another commit. `ecr ci --expect-head <sha>` also stops when the head is not
-  `<sha>`, so a workflow can pass the commit a maintainer labeled
+  `ecr ci` reads the PR's base and head commits once. The tree it reads is checked
+  out at that head, and the diff compares those two commits, so a push during the
+  run cannot change either. `ecr ci --expect-head <sha>` also stops when the head is
+  not `<sha>`, so a workflow can pass the commit a maintainer labeled
   (`github.event.pull_request.head.sha`) and a push before the run starts is not
   reviewed in its place. With a `routing.jsonc`, the run only logs the reason,
   since a note would replace the aggregate comment and its per-scope state.
