@@ -42,6 +42,16 @@ const DIRECT_PROVIDER_ORDER: readonly ProviderId[] = [
   "react-native-worklets",
   "react-native",
   "metro",
+  "sqlite",
+  "git",
+  "node",
+  "mdn",
+  "github-actions",
+  "swift-book",
+  "kotlin-stdlib",
+  "jest",
+  "npm",
+  "pnpm",
   "expo",
 ];
 
@@ -74,6 +84,16 @@ const DIRECT_SOURCE_KIND: Record<ProviderId, SourceKind> = {
   "react-native-screens": "official-guide",
   "react-native-worklets": "official-guide",
   metro: "official-guide",
+  sqlite: "official-api",
+  git: "official-api",
+  node: "official-api",
+  mdn: "official-guide",
+  "github-actions": "official-guide",
+  "swift-book": "official-guide",
+  "kotlin-stdlib": "official-api",
+  jest: "official-api",
+  npm: "official-guide",
+  pnpm: "official-guide",
 };
 
 export interface DirectDocumentationTarget {

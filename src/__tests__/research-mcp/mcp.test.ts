@@ -134,6 +134,39 @@ test("stdio MCP reports unavailable remote discovery honestly", async () => {
   }
 });
 
+test("stdio MCP keeps a named provider whose platform differs from the query platform", async () => {
+  const cliPath = fileURLToPath(new URL("../../research-mcp/cli.ts", import.meta.url));
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [cliPath, "serve"],
+    stderr: "pipe",
+    env: {},
+  });
+  const client = new Client({ name: "test-client", version: "1.0.0" });
+
+  try {
+    await client.connect(transport);
+    // An iOS reviewer asks about SQLite, and a React Native reviewer about an Apple API.
+    for (const [platform, provider, query] of [
+      ["apple", "sqlite", "write-ahead log"],
+      ["react-native", "apple", "MainActor"],
+    ] as const) {
+      const response = await client.callTool({
+        name: "search_platform_docs",
+        arguments: { platform, providers: [provider], query, limit: 1 },
+      });
+      expect(response.isError).not.toBe(true);
+      const content = response.content as Array<{ type: string; text?: string }>;
+      const payload = JSON.parse(content.find((block) => block.type === "text")?.text ?? "") as {
+        warnings: string[];
+      };
+      expect(payload.warnings[0]).toMatch(/BRAVE_SEARCH_API_KEY is not set/);
+    }
+  } finally {
+    await client.close();
+  }
+});
+
 test("stdio MCP rejects credential-shaped searches before network access, auditing only the reason class", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "review-research-mcp-secret-"));
   const auditPath = path.join(directory, "audit.jsonl");

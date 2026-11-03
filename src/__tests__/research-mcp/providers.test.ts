@@ -23,6 +23,7 @@ import {
   resolveAllowedUrl,
   resolveAllowedRequestUrl,
   sdWebImageProvider,
+  swiftBookProvider,
   swiftEvolutionProvider,
   typescriptProvider,
   webStandardsProvider,
@@ -252,4 +253,24 @@ test("React Native contract providers admit only their fixed authoritative corpo
   expect(() =>
     resolveAllowedUrl(reactNativeProvider, "https://reactnative.dev/contributing/overview"),
   ).toThrow(/outside the react-native documentation allowlist/);
+});
+
+test("Swift book provider reads the static DocC data behind each page", () => {
+  const pageUrl = resolveAllowedUrl(
+    swiftBookProvider,
+    "https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/",
+  );
+  expect(swiftBookProvider.requestUrl(pageUrl).href).toBe(
+    "https://docs.swift.org/swift-book/data/documentation/the-swift-programming-language/concurrency.json",
+  );
+  expect(swiftBookProvider.responseFormat(pageUrl)).toBe("docc-json");
+  expect(
+    resolveAllowedRequestUrl(
+      swiftBookProvider,
+      "https://docs.swift.org/swift-book/data/documentation/the-swift-programming-language/concurrency.json",
+    ).pathname,
+  ).toBe("/swift-book/data/documentation/the-swift-programming-language/concurrency.json");
+  expect(() =>
+    resolveAllowedRequestUrl(swiftBookProvider, "https://docs.swift.org/compiler/data/index.json"),
+  ).toThrow();
 });

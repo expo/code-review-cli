@@ -127,6 +127,46 @@ const providerSearchDefinitions: Record<Exclude<ProviderId, "expo">, ProviderSea
     scopes: ["metrobundler.dev/docs"],
     sourceKind: "official-guide",
   },
+  sqlite: {
+    scopes: ["sqlite.org"],
+    sourceKind: "official-api",
+  },
+  git: {
+    scopes: ["git-scm.com/docs"],
+    sourceKind: "official-api",
+  },
+  node: {
+    scopes: ["nodejs.org/api", "nodejs.org/docs/latest/api"],
+    sourceKind: "official-api",
+  },
+  mdn: {
+    scopes: ["developer.mozilla.org/en-US/docs"],
+    sourceKind: "official-guide",
+  },
+  "github-actions": {
+    scopes: ["docs.github.com/en/actions"],
+    sourceKind: "official-guide",
+  },
+  "swift-book": {
+    scopes: ["docs.swift.org/swift-book"],
+    sourceKind: "official-guide",
+  },
+  "kotlin-stdlib": {
+    scopes: ["kotlinlang.org/api/core"],
+    sourceKind: "official-api",
+  },
+  jest: {
+    scopes: ["jestjs.io/docs"],
+    sourceKind: "official-api",
+  },
+  npm: {
+    scopes: ["docs.npmjs.com/cli"],
+    sourceKind: "official-guide",
+  },
+  pnpm: {
+    scopes: ["pnpm.io"],
+    sourceKind: "official-guide",
+  },
 };
 
 export interface RemoteSearchOptions {

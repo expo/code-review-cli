@@ -159,7 +159,11 @@ uses Apple for OS contracts; Kotlin, Java, and Gradle source uses Android for pl
 contracts. Explicit library signals add the owning provider—such as SDWebImage,
 Media3, Glide, or OkHttp—when library behavior also matters. Repository ownership is
 not documentation ownership, so a `packages/expo-*` path does not replace Apple or
-Android with Expo documentation.
+Android with Expo documentation. Runtimes, tools, and formats that code on any platform
+relies on (SQLite, Git, Node.js, the Swift book, npm) are owned by their own projects, so
+the platform only chooses the default providers. A provider the caller names is searched
+whatever platform the query names, because an iOS module that stores data in SQLite still
+needs the SQLite documentation.
 
 These checks bound the SHAPE of an outbound request, not its information content. The
 reviewing model reads repository data and then chooses the query terms and URL path,
@@ -230,7 +234,8 @@ The built-in source catalog covers Apple, Android, platform releases, Swift
 Evolution, SDWebImage, Media3, Glide, OkHttp, Kotlin coroutines, Gradle/AGP, selected JetBrains
 issues, Expo, React, React Native, WHATWG and W3C web specifications, Chrome DevTools
 Protocol, Flow, TypeScript, the Android NDK, CMake, CocoaPods, Metro, Reanimated,
-Gesture Handler, Screens, and Worklets. The React Native
+Gesture Handler, Screens, Worklets, SQLite, Git, Node.js, MDN, GitHub Actions, the Swift
+book, the Kotlin standard library, Jest, npm, and pnpm. The React Native
 additions cover the contracts its implementation must preserve: React semantics, its
 web-compatible APIs, the repository's type systems, and its native build and dependency
 managers. Hermes documentation is intentionally not fetched from the engine's `main`
