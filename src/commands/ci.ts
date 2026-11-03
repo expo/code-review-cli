@@ -36,7 +36,7 @@ import {
   reviewInputHash,
   reviewMatchesInput,
 } from "../core/review-cache.js";
-import { GitHubPRSource } from "../sources/github-pr.js";
+import { GitHubPRSource, isCommitOid } from "../sources/github-pr.js";
 import { memoizeSource, stackConfirmFromConfig, stackWalkFromConfig } from "../sources/source.js";
 import type { PreparedReadRoot, ReviewSource, StackWalkOptions } from "../sources/source.js";
 import { GitHubReporter } from "../reporters/github.js";
@@ -127,6 +127,10 @@ Options:
   --force              Manual override: review even if the trigger policy (label
                        trigger / ai-review:skip) would skip. Break-glass and the
                        auth lock still apply. A /review comment command implies this.
+  --expect-head <sha>  Review only when the PR's head is this full commit hash,
+                       for example \${{ github.event.pull_request.head.sha }} on
+                       a label event. Otherwise stop with a "not reviewed" note
+                       (logged only, with a routing.jsonc).
   -h, --help           Show this help
 
 Env: GITHUB_REPOSITORY, GITHUB_EVENT_PATH/GITHUB_REF (PR number), GH_TOKEN,
@@ -152,9 +156,11 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
   // the default .expo-code-review/. Applies to config.jsonc AND routing.jsonc.
   let configDir: string | undefined;
   let contextFile: string | undefined;
+  let expectHead: string | undefined;
   try {
     configDir = parseValueFlag(argv, "--config-dir");
     contextFile = parseValueFlag(argv, "--context-file");
+    expectHead = parseExpectHead(argv);
   } catch (error) {
     process.stderr.write(`${errorMessage(error)}\n\n${CI_USAGE}`);
     process.exitCode = 2;
@@ -261,6 +267,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
         configDir,
         contextText,
         noStackAware,
+        expectHead,
       });
       return;
     }
@@ -275,6 +282,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
         configDir,
         contextText,
         noStackAware,
+        expectHead,
       });
     } catch (error) {
       // Fan-out failures stay non-blocking (single-writer property is the point).
@@ -485,6 +493,47 @@ interface CiRunOptions {
   contextText: string | undefined;
   /** --no-stack-aware: force stack-aware requalification off for this run. */
   noStackAware: boolean;
+  /** --expect-head: the full head commit hash this run may review, or undefined. */
+  expectHead?: string | undefined;
+}
+
+// @ref LLP 0007#ecr-ci-the-trusted-root-run [implements] — --expect-head pins the review to the commit the request named
+/**
+ * Why the run must stop when `--expect-head` names a commit that is not the PR's head
+ * (unknown counts as different, so a metadata failure fails closed), else null. The
+ * reason is safe to post.
+ */
+export function expectedHeadMismatch(
+  expectHead: string | undefined,
+  headOid: string | undefined,
+): string | null {
+  if (expectHead === undefined || headOid === expectHead) {
+    return null;
+  }
+  return (
+    `the PR's head is ${headOid ?? "unknown"}, not ${expectHead}, ` +
+    "the commit this review was requested for"
+  );
+}
+
+/** Post the "not reviewed" note for a head that is not the one this run may review. */
+async function postNotReviewed(reporter: GitHubReporter, reason: string): Promise<void> {
+  process.stderr.write(`CI reviewer: not reviewing: ${reason}.\n`);
+  try {
+    await reporter.report({
+      decision: "approve_with_comments",
+      findings: [],
+      summary: `⚠️ This change was **not** reviewed: ${reason}.`,
+      incomplete: [],
+      // Not a review of anything: keeps the inline sync additive-only and removes
+      // the reviewer's ready label.
+      couldNotComplete: true,
+    });
+  } catch (postError) {
+    process.stderr.write(
+      `CI reviewer: also failed to post the not-reviewed note: ${errorMessage(postError)}\n`,
+    );
+  }
 }
 
 // @ref LLP 0010#config-and-cli-surface [implements] — under ci, stack-aware is gated by the trusted-base config; a stack walk failure only ever warns (source fails open), never a check failure
@@ -603,6 +652,11 @@ async function runLegacyCi(
   // is ready.
   if (await isNewCommitsEvent()) {
     await reporter.removeReadyLabel();
+  }
+  const headProblem = expectedHeadMismatch(options.expectHead, headSha);
+  if (headProblem) {
+    await postNotReviewed(reporter, headProblem);
+    return;
   }
 
   const stack = resolveStackWalk(config.stack, noStackAware);
@@ -818,6 +872,44 @@ async function runRoutedCi(
     return;
   }
 
+  // Break-glass: ONE check via a reporter on the root marker, before fan-out.
+  const bgReporter = new GitHubReporter({
+    prNumber,
+    repo,
+    commentTag: rootTag,
+    breakGlassMarker: rootConfig.breakGlassMarker,
+    cwd,
+    readyForHumanLabel: rootConfig.review.readyForHumanLabel,
+  });
+  try {
+    if (await bgReporter.checkBreakGlass()) {
+      process.stderr.write(`CI reviewer: ${rootConfig.breakGlassMarker} detected; skipping.\n`);
+      await bgReporter.postSkipNote();
+      return;
+    }
+  } catch (error) {
+    process.stderr.write(
+      `CI reviewer: break-glass check failed (continuing): ${errorMessage(error)}\n`,
+    );
+  }
+  // The ready label described the previous head; the review adds it back if this one
+  // is ready.
+  if (await isNewCommitsEvent()) {
+    await bgReporter.removeReadyLabel();
+  }
+
+  // In the routed path the root comment holds the aggregate and its per-scope state,
+  // which a single "not reviewed" render would replace, so a head that is not the one
+  // this run may review only logs, and the reviewer's ready label goes.
+  const headProblem = expectedHeadMismatch(
+    options.expectHead,
+    (await source.getMetadata().catch(() => undefined))?.headOid,
+  );
+  if (headProblem) {
+    process.stderr.write(`CI reviewer: not reviewing: ${headProblem}.\n`);
+    await bgReporter.removeReadyLabel();
+    return;
+  }
   const changed = await source.getChangedFiles();
   const resolution = resolveScopes(
     manifest,
@@ -851,32 +943,6 @@ async function runRoutedCi(
   }
 
   const mode = commentOverride ?? manifest.comment;
-
-  // Break-glass: ONE check via a reporter on the root marker, before fan-out.
-  const bgReporter = new GitHubReporter({
-    prNumber,
-    repo,
-    commentTag: rootTag,
-    breakGlassMarker: rootConfig.breakGlassMarker,
-    cwd,
-    readyForHumanLabel: rootConfig.review.readyForHumanLabel,
-  });
-  try {
-    if (await bgReporter.checkBreakGlass()) {
-      process.stderr.write(`CI reviewer: ${rootConfig.breakGlassMarker} detected; skipping.\n`);
-      await bgReporter.postSkipNote();
-      return;
-    }
-  } catch (error) {
-    process.stderr.write(
-      `CI reviewer: break-glass check failed (continuing): ${errorMessage(error)}\n`,
-    );
-  }
-  // The ready label described the previous head; the review adds it back if this one
-  // is ready.
-  if (await isNewCommitsEvent()) {
-    await bgReporter.removeReadyLabel();
-  }
 
   // Build ONE link context for all scopes (rate-limit hygiene): diff lines from the
   // already-fetched changed files, base OID from the memoized PR metadata (the same
@@ -1382,6 +1448,33 @@ function parseListFlag(argv: string[], flag: string): string[] | undefined {
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean);
+}
+
+/**
+ * Parse `--expect-head <sha>`: a full commit hash, lowercased, or undefined. Every
+ * malformed form throws instead of being ignored, because an ignored flag would
+ * review an unpinned head without a word.
+ */
+export function parseExpectHead(argv: string[]): string | undefined {
+  if (argv.some((arg) => arg.startsWith("--expect-head="))) {
+    throw new Error("--expect-head takes its value as a separate argument: --expect-head <sha>");
+  }
+  if (argv.filter((arg) => arg === "--expect-head").length > 1) {
+    throw new Error("--expect-head was given more than once");
+  }
+  const value = parseValueFlag(argv, "--expect-head");
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === "") {
+    throw new Error(
+      "--expect-head is empty; the workflow likely passed a PR head from an event that has none",
+    );
+  }
+  if (!isCommitOid(value)) {
+    throw new Error(`--expect-head needs a full 40-character commit hash, got "${value}"`);
+  }
+  return value.toLowerCase();
 }
 
 /** Parse a single-value flag (`--flag value`); undefined when absent, throws when

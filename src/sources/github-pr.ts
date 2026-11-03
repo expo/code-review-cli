@@ -223,16 +223,31 @@ export class GitHubPRSource implements ReviewSource {
     };
   }
 
+  // @ref LLP 0008#pr-head-materialization [implements] — the diff is pinned to the same base and head OIDs as the trees
+  /**
+   * The PR's diff between the base and head OIDs that getMetadata() read, the same
+   * commits the trusted config root and the head tree are checked out at. `gh pr diff`
+   * takes no commit and returns the PR as it is now, so it is used only when an OID
+   * is unknown.
+   */
   async getChangedFiles(): Promise<DiffEntry[]> {
+    const metadata = await this.getMetadata().catch(() => undefined);
+    const base = metadata?.baseOid;
+    const head = metadata?.headOid;
     const gh = await resolveTrustedTool("gh");
-    // gh colors the diff even into a pipe when the environment forces it
-    // (CLICOLOR_FORCE, GH_FORCE_TTY), and the escape codes before `diff --git` would
-    // make the whole PR parse as no files.
-    const { stdout } = await run(
-      gh,
-      ["pr", "diff", String(this.options.prNumber), ...this.repoArgs(), "--color", "never"],
-      { cwd: this.options.cwd },
-    );
+    const args =
+      isCommitOid(base) && isCommitOid(head)
+        ? [
+            "api",
+            `repos/${this.options.repo ?? "{owner}/{repo}"}/compare/${base}...${head}`,
+            "-H",
+            "Accept: application/vnd.github.diff",
+          ]
+        : // gh colors the diff even into a pipe when the environment forces it
+          // (CLICOLOR_FORCE, GH_FORCE_TTY), and the escape codes before `diff --git`
+          // would make the whole PR parse as no files.
+          ["pr", "diff", String(this.options.prNumber), ...this.repoArgs(), "--color", "never"];
+    const { stdout } = await run(gh, args, { cwd: this.options.cwd });
     return parseUnifiedDiff(stdout);
   }
 
