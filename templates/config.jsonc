@@ -52,6 +52,22 @@
   //   "timeoutMs": 30000
   // },
 
+  // Optional remote MCP servers (ROOT-ONLY), such as a code sandbox where a pass can
+  // check how a tool behaves. Each server is granted to the passes in `agents`
+  // (reviewer ids, plus "verifier" or "cross-cutting"), and only the `tools` listed
+  // are callable. `tokenEnv` names the env var sent as `Authorization: Bearer …`;
+  // it must hold a token minted for that server, never another secret. A server
+  // whose token env is unset is skipped. The url must be https (http only for
+  // localhost).
+  // "mcpServers": {
+  //   "sandbox": {
+  //     "url": "https://example.convex.site/mcp",
+  //     "tokenEnv": "REVIEW_SANDBOX_TOKEN",
+  //     "tools": ["list_sandboxes", "create_sandbox", "sandbox_write_file", "sandbox_exec"],
+  //     "agents": ["deep", "correctness", "verifier"]
+  //   }
+  // },
+
   // Large diffs are split into focused chunks by changed-line count, plus a
   // cross-cutting pass for multi-file issues. Diffs under maxChangedLines are one
   // full-context pass. Defaults shown; raise/lower per your model + PR sizes.
