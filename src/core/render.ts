@@ -314,7 +314,7 @@ function renderReviewBody(
 
   const lines: string[] = [commentMarker(tag), "## 🤖 AI code review", ""];
   lines.push(
-    `**Decision:** ${review.couldNotComplete ? "No review — every pass failed" : decisionLabel(review.decision)}`,
+    `**Decision:** ${review.couldNotComplete ? "No review" : decisionLabel(review.decision)}`,
     "",
     modelText(review.summary),
     "",
@@ -1002,7 +1002,7 @@ export function renderAggregateMarkdown(
     ];
     for (const { result, kept } of perScope) {
       lines.push(
-        `| ${stripStateMarkers(result.scope)} | ${result.review.couldNotComplete ? "No review — every pass failed" : decisionLabel(result.review.decision)} | ${kept.length} |`,
+        `| ${stripStateMarkers(result.scope)} | ${result.review.couldNotComplete ? "No review" : decisionLabel(result.review.decision)} | ${kept.length} |`,
       );
     }
     lines.push("");
