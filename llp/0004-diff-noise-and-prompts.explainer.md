@@ -249,6 +249,24 @@ and control characters [observed] (`src/core/prompts.ts:52-68`). Stripping the
 coordinator's tokens is what stops a PR title/body from forging a section
 boundary and escaping its fence.
 
+Before those steps, `sanitizeUntrusted` runs `stripHiddenText`, which removes
+what GitHub does not render: HTML comments (an unclosed one hides the rest of the
+text), reference-style markdown comments, and zero-width or bidi characters. A
+maintainer reading the PR cannot see that text, but the model reads all of it, so
+it is the cheapest place to hide an instruction. A fence or code span is matched
+first and kept whole, because GitHub shows its content as code. Code is matched in
+the same pass rather than swapped out for placeholders, so input cannot forge a
+placeholder to bring stripped text back. `buildCoordinatorTask` counts what the
+title and body hid and tells the coordinator to say so in the summary. A comment
+that the repository's pull request template also has is stripped but not counted:
+authors often leave the template's guidance comments in, and counting them flagged
+16 of 60 recent expo/expo PR bodies. `readPullRequestTemplateComments` reads the
+templates from the same trusted root as the config, never from the PR head, so a PR
+cannot copy its own hidden text into the template to make it look expected. This is
+defense in depth, not a boundary: an instruction in visible text passes through,
+and the containment in [LLP 0001](0001-trust-model.principles.md) is what bounds
+it.
+
 The diff body itself is **never** sanitized — only the path label around it is
 [observed] (`src/core/prompts.ts:12-25`, `inlineDiff`). Sanitizing the patch
 would corrupt the code under review (eat a legitimate backtick or tag-like token

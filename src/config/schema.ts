@@ -483,6 +483,11 @@ export interface AuthConfigEntry {
 export interface LoadedConfig {
   configDir: string;
   sharedPromptText: string;
+  /**
+   * Comment keys from the repository's pull request templates, read from the trusted
+   * root. The coordinator does not report these comments as hidden content.
+   */
+  prTemplateComments?: string[];
   agents: LoadedAgent[];
   /**
    * Prompt-file frontmatter problems found at load time (an invalid `paths`, a

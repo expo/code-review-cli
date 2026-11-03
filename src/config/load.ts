@@ -16,6 +16,7 @@ import type {
   RoutingScope,
 } from "./schema.js";
 import { MENTION_TARGET_RE } from "../core/schema.js";
+import { readPullRequestTemplateComments } from "../core/pr-template.js";
 import { toolMap } from "../core/tools.js";
 
 /**
@@ -141,7 +142,11 @@ export async function loadReviewConfig(
   options: LoadConfigOptions = {},
 ): Promise<LoadedConfig> {
   const dir = resolveConfigDir(repoRoot, options.configDir);
-  return (await loadConfigDir(dir, ReviewConfigSchema)).config;
+  const { config } = await loadConfigDir(dir, ReviewConfigSchema);
+  // From the same trusted root as the config, never from the PR head.
+  const prTemplateComments = await readPullRequestTemplateComments(repoRoot);
+  // Only when there are any, so a setup without a template keeps its review-cache key.
+  return prTemplateComments.length > 0 ? { ...config, prTemplateComments } : config;
 }
 
 /**
@@ -459,6 +464,7 @@ export async function loadScopeConfig(
     feedback: rootConfig.feedback,
     inline: rootConfig.inline,
     research: rootConfig.research,
+    ...(rootConfig.prTemplateComments ? { prTemplateComments: rootConfig.prTemplateComments } : {}),
     scopeName: scope.name,
   };
 }

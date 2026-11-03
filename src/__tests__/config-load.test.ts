@@ -355,3 +355,15 @@ test("loadReviewConfig: an invalid `mention` entry is left out, and the valid on
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("loadReviewConfig: reads the PR template comments from the repository root", async () => {
+  const root = await configDirWithAgent("IOS");
+  try {
+    expect("prTemplateComments" in (await loadReviewConfig(root))).toBe(false);
+    await mkdir(path.join(root, ".github"));
+    await writeFile(path.join(root, ".github", "pull_request_template.md"), "<!-- Why? -->\n");
+    expect((await loadReviewConfig(root)).prTemplateComments).toEqual(["<!-- Why? -->"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
