@@ -527,6 +527,13 @@ export function claudeActivities(eventValue: unknown, cwd: string): ClaudeActivi
     } else if (block.name === "Glob") {
       const target = activityPath(input.path, cwd);
       activities.push({ key, line: target && target !== "." ? `Glob ${target}` : "Glob" });
+    } else {
+      // Names only, never inputs. The model writes the name, so only the strict
+      // shape is echoed.
+      const mcp = /^mcp__([a-z][a-z0-9_]*)__([A-Za-z0-9_-]+)$/.exec(block.name);
+      if (mcp) {
+        activities.push({ key, line: `MCP ${mcp[1]}.${mcp[2]}` });
+      }
     }
   }
   return activities;

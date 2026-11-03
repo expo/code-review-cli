@@ -125,7 +125,8 @@ The Claude Code engine runs each review pass as a single stateless
 `claude -p --output-format stream-json --verbose` subprocess fed the task on stdin.
 The JSONL stream makes tool activity observable while the pass runs instead of leaving
 only a periodic heartbeat until the final result. The incremental decoder emits only
-bounded lifecycle metadata and read-tool names with confined repo-relative targets;
+bounded lifecycle metadata, read-tool names with confined repo-relative targets, and
+MCP tool calls as `MCP <server>.<tool>` names without their inputs;
 raw assistant text, tool results, grep patterns, and attempted host paths never reach
 the progress or error logs because model output is untrusted and may contain source
 secrets or terminal/log-injection payloads. If a stream ends without a final result,

@@ -391,6 +391,27 @@ test("parseClaudeResult: an error ignores stale structured_output", () => {
   expect(result.structuredOutputFailure).toBe(true);
 });
 
+test("claudeActivities: reports an MCP tool call by server and tool name only", () => {
+  const call = (name: string) =>
+    claudeActivities(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: name, name, input: { command: "echo DO_NOT_LOG_THIS" } },
+          ],
+        },
+      },
+      "/repo",
+    );
+  expect(call("mcp__sandbox__sandbox_exec")).toEqual([
+    { key: "mcp__sandbox__sandbox_exec", line: "MCP sandbox.sandbox_exec" },
+  ]);
+  // A name the model forged with a newline or another shape is not echoed.
+  expect(call("mcp__sandbox__exec\nforged log line")).toEqual([]);
+  expect(call("sandbox_exec")).toEqual([]);
+});
+
 test("claudeActivities: reports lifecycle and safe tool targets, never raw text/results/patterns", () => {
   expect(
     claudeActivities({ type: "system", subtype: "init", model: "claude-opus-5" }, "/repo"),
