@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { CONFIG_DIRNAME, loadReviewConfig } from "../config/load.js";
-import { buildAgentSummaries, runWithPreCheck } from "../core/review.js";
+import { attachPreCheckStop, buildAgentSummaries, runWithPreCheck } from "../core/review.js";
+import type { CoordinatorOutput } from "../core/schema.js";
 
 const task = (bucket: string) => ({ bucket });
 
@@ -83,6 +84,28 @@ test("buildAgentSummaries marks the agents a pre-check stopped as not run", () =
     skippedByPreCheck: ["deep"],
   });
   expect(rows).toEqual([{ agent: "shape" }, { agent: "deep", notRun: "preCheck" }]);
+});
+
+test("attachPreCheckStop never lets a stopped review approve, and says which agents did not run", () => {
+  const approved: CoordinatorOutput = {
+    decision: "approve",
+    findings: [],
+    summary: "s",
+    incomplete: [],
+  };
+  const stopped = attachPreCheckStop(approved, { stoppedBy: ["shape"], skipped: ["deep"] });
+  expect(stopped.decision).toBe("approve_with_comments");
+  expect(stopped.incomplete).toEqual([
+    "A pre-check (shape) found a blocking problem, so these reviewers did not run: deep.",
+  ]);
+
+  const blocked = attachPreCheckStop(
+    { ...approved, decision: "request_changes" },
+    { stoppedBy: ["shape"], skipped: ["deep"] },
+  );
+  expect(blocked.decision).toBe("request_changes");
+
+  expect(attachPreCheckStop(approved, { stoppedBy: [], skipped: [] })).toEqual(approved);
 });
 
 test("loads preCheckAgents that name agents in the roster", async () => {

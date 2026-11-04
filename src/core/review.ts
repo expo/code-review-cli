@@ -1053,17 +1053,21 @@ export async function runReview(
         );
         agentCosts["verifier"] = (agentCosts["verifier"] ?? 0) + check.cost;
         trackTokens("verifier", check.tokens);
-        return check.kept.length > 0;
+        // Only a real verdict may stop the review. A verify call that failed keeps the
+        // finding (fail-open), and that must not skip every other reviewer.
+        return check.confirmed.length > 0;
       },
     );
     const skippedByPreCheck =
       preCheck.stoppedBy.length > 0
         ? selectedAgents.map((agent) => agent.id).filter((id) => !preCheck.stoppedBy.includes(id))
         : [];
-    if (skippedByPreCheck.length > 0) {
-      progress(
-        `Pre-check (${preCheck.stoppedBy.join(", ")}) found a blocking problem. Skipping: ${skippedByPreCheck.join(", ")}.`,
-      );
+    const preCheckStop = { stoppedBy: preCheck.stoppedBy, skipped: skippedByPreCheck };
+    if (preCheck.stoppedBy.length > 0) {
+      const note = preCheckStopNote(preCheckStop);
+      progress(note);
+      // A coverage note, so the coordinator's summary says it and the review is not cached.
+      incomplete.push(note);
     }
 
     if (researchRuntime) {
@@ -1564,12 +1568,15 @@ export async function runReview(
       notRouted,
       skippedByPreCheck,
     });
-    const outputWithTrace = attachVerifierRejected(
-      attachMentions(
-        attachAgentSummaries(attachReviewTrace(output, reviewTrace), agentSummaries),
-        buildMentions(selectedAgents, humanReviewReasons),
+    const outputWithTrace = attachPreCheckStop(
+      attachVerifierRejected(
+        attachMentions(
+          attachAgentSummaries(attachReviewTrace(output, reviewTrace), agentSummaries),
+          buildMentions(selectedAgents, humanReviewReasons),
+        ),
+        verifierDropped,
       ),
-      verifierDropped,
+      preCheckStop,
     );
     const reviewed = { ...outputWithTrace, setupNotes };
     return feedbackRecords ? { ...reviewed, feedback: feedbackRecords } : reviewed;
@@ -1756,6 +1763,28 @@ export function attachMentions(
 ): CoordinatorOutput {
   const { mentions: _coordinatorMentions, ...withoutMentions } = output;
   return { ...withoutMentions, ...(mentions ? { mentions } : {}) };
+}
+
+function preCheckStopNote(stop: { stoppedBy: string[]; skipped: string[] }): string {
+  return `A pre-check (${stop.stoppedBy.join(", ")}) found a blocking problem, so these reviewers did not run: ${stop.skipped.join(", ")}.`;
+}
+
+/**
+ * A stopped review must never read as a clean approve: the coordinator or the final
+ * verifier can still drop the critical that stopped it, and no other reviewer ran.
+ */
+export function attachPreCheckStop(
+  output: CoordinatorOutput,
+  stop: { stoppedBy: string[]; skipped: string[] },
+): CoordinatorOutput {
+  if (stop.stoppedBy.length === 0) {
+    return output;
+  }
+  return {
+    ...output,
+    decision: output.decision === "approve" ? "approve_with_comments" : output.decision,
+    incomplete: [...new Set([...output.incomplete, preCheckStopNote(stop)])],
+  };
 }
 
 // @ref LLP 0002#pre-check-agents [implements] — a verifier-confirmed pre-check critical stops the other passes

@@ -104,6 +104,18 @@ test("absent evidence is ESCALATED, not hard-dropped (fail-open keeps it here)",
   expect(res.dropped).toEqual([]);
 });
 
+test("a critical whose verify call fails is kept but not confirmed", async () => {
+  // The dummy handle throws, so the verifier never judged it. Fail-open keeps it,
+  // but a caller that must act only on a real verdict reads `confirmed`.
+  const res = await verifyFindings(
+    handle,
+    [finding({ severity: "critical", title: "unjudged", evidence: "return items[next++]!;" })],
+    "/",
+  );
+  expect(res.kept.map((f) => f.title)).toEqual(["unjudged"]);
+  expect(res.confirmed).toEqual([]);
+});
+
 test("too-short evidence is unknown, kept without an LLM call", async () => {
   const res = await verifyFindings(handle, [finding({ title: "short", evidence: "x}" })], "/");
   expect(res.kept.map((f) => f.title)).toEqual(["short"]);
