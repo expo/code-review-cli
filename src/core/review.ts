@@ -1201,6 +1201,7 @@ export async function runReview(
         mcpServerGrants(availableMcpServers(config.mcpServers, process.env), VERIFIER_AGENT).map(
           (grant) => grant.name,
         ),
+        { title: metadata.title, body: metadata.body },
       );
       agentCosts["verifier"] = verification.cost;
       trackTokens("verifier", verification.tokens);
