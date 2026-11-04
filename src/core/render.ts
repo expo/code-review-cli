@@ -337,6 +337,7 @@ function renderReviewBody(
   }
 
   lines.push(...setupNote(review.setupNotes));
+  lines.push(...verifierRejectedNote(verifierRejectedLines(review.verifierRejected, link)));
   lines.push(...requalificationAuditNote(requalified.map((entry) => entry.finding)));
   lines.push(...feedbackAuditNote([...feedbackByFp.values()]));
 
@@ -747,6 +748,29 @@ function modelText(text: string): string {
   return breakMentions(stripStateMarkers(text));
 }
 
+function verifierRejectedLines(
+  rejected: CoordinatorOutput["verifierRejected"] = [],
+  link: LinkContext | undefined,
+  scope?: string,
+): string[] {
+  const prefix = scope === undefined ? "" : `[${stripStateMarkers(scope)}] `;
+  return rejected.map(
+    ({ finding, reason }) =>
+      `> - ${prefix}**${modelText(finding.title)}** — ${location(finding, link)}: ${modelText(reason)}`,
+  );
+}
+
+function verifierRejectedNote(lines: string[]): string[] {
+  if (lines.length === 0) {
+    return [];
+  }
+  return [
+    "> 🔎 **Rejected by the verifier:** these blocking quality findings were checked and dropped.",
+    ...lines,
+    "",
+  ];
+}
+
 // @ref LLP 0012#run-points-command-and-review [implements] — setup advice renders outside the findings list, so it never blocks
 /** Advice about the reviewer's own setup (stale refs, cited code this PR moves). */
 function setupNote(notes: string[] = []): string[] {
@@ -1034,6 +1058,13 @@ export function renderAggregateMarkdown(
     if (setupLines.length > 0) {
       lines.push("> 🔗 **Review setup:**", ...setupLines, "");
     }
+    lines.push(
+      ...verifierRejectedNote(
+        results.flatMap((result) =>
+          verifierRejectedLines(result.review.verifierRejected, link, result.scope),
+        ),
+      ),
+    );
 
     // @ref LLP 0008#inline-threads [implements] — the size cap trims inlined findings before listed ones
     // Shown = the most-severe `limitPerScope` listed and `inlinedLimit` inlined kept

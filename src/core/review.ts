@@ -1523,8 +1523,14 @@ export async function runReview(
       attachAgentSummaries(attachReviewTrace(output, reviewTrace), agentSummaries),
       buildMentions(selectedAgents, humanReviewReasons),
     );
+    // Only engine-assembled entries: the coordinator must not choose what this note claims.
+    const { verifierRejected: _coordinatorRejected, ...withoutRejected } = outputWithTrace;
+    const verifierRejected = verifierDropped.filter(
+      ({ finding }) => finding.category === "quality" && finding.severity === "critical",
+    );
     const reviewed = {
-      ...outputWithTrace,
+      ...withoutRejected,
+      ...(verifierRejected.length > 0 ? { verifierRejected } : {}),
       setupNotes,
     };
     return feedbackRecords ? { ...reviewed, feedback: feedbackRecords } : reviewed;
