@@ -872,7 +872,15 @@ export async function runReview(
     // TIMEOUT, instead of dropping the work we break it into units that converge:
     // subdivide the chunk, then a fast no-tools pass, and only report a coverage gap
     // when even that can't finish inside the budget — so dropped work is never silent.
-    await runGrowableQueue(tasks, concurrency, async (task, enqueue) => {
+    const verifierMcpServers = mcpServerGrants(
+      availableMcpServers(config.mcpServers, process.env),
+      VERIFIER_AGENT,
+    ).map((grant) => grant.name);
+    const pullRequestText = { title: metadata.title, body: metadata.body };
+    const runTask = async (
+      task: ReviewTask,
+      enqueue: (next: ReviewTask) => void,
+    ): Promise<void> => {
       const minutes = Math.round(task.maxWaitMs / 60000);
       try {
         const { value, cost, truncated, tokens, model } = await promptAndParse(
@@ -1021,7 +1029,46 @@ export async function runReview(
           );
         }
       }
-    });
+    };
+    const preCheck = await runWithPreCheck(
+      tasks,
+      config.preCheckAgents ?? [],
+      (wave) => runGrowableQueue(wave, concurrency, runTask),
+      async (agents) => {
+        const criticals = agents.flatMap((id) =>
+          (agentFindings[id] ?? []).filter((finding) => finding.severity === "critical"),
+        );
+        if (criticals.length === 0) {
+          return false;
+        }
+        progress(`Pre-check: verifying ${criticals.length} critical finding(s)…`);
+        const check = await verifyFindings(
+          handle,
+          criticals,
+          process.cwd(),
+          progress,
+          [],
+          verifierMcpServers,
+          pullRequestText,
+        );
+        agentCosts["verifier"] = (agentCosts["verifier"] ?? 0) + check.cost;
+        trackTokens("verifier", check.tokens);
+        // Only a real verdict may stop the review. A verify call that failed keeps the
+        // finding (fail-open), and that must not skip every other reviewer.
+        return check.confirmed.length > 0;
+      },
+    );
+    const skippedByPreCheck =
+      preCheck.stoppedBy.length > 0
+        ? selectedAgents.map((agent) => agent.id).filter((id) => !preCheck.stoppedBy.includes(id))
+        : [];
+    const preCheckStop = { stoppedBy: preCheck.stoppedBy, skipped: skippedByPreCheck };
+    if (preCheck.stoppedBy.length > 0) {
+      const note = preCheckStopNote(preCheckStop);
+      progress(note);
+      // A coverage note, so the coordinator's summary says it and the review is not cached.
+      incomplete.push(note);
+    }
 
     if (researchRuntime) {
       try {
@@ -1198,12 +1245,10 @@ export async function runReview(
         process.cwd(),
         progress,
         researchEvidence,
-        mcpServerGrants(availableMcpServers(config.mcpServers, process.env), VERIFIER_AGENT).map(
-          (grant) => grant.name,
-        ),
-        { title: metadata.title, body: metadata.body },
+        verifierMcpServers,
+        pullRequestText,
       );
-      agentCosts["verifier"] = verification.cost;
+      agentCosts["verifier"] = (agentCosts["verifier"] ?? 0) + verification.cost;
       trackTokens("verifier", verification.tokens);
       // Mirrors buildOpencodeConfig, which gives the verifier the first agent's model.
       trackModel(
@@ -1514,17 +1559,24 @@ export async function runReview(
     // value and attach only the trace assembled from reviewer pass outputs. The agent
     // summaries and mentions follow the same rule.
     const agentSummaries = buildAgentSummaries({
-      ran: [...selectedAgents.map((agent) => agent.id), ...(chunked ? [CROSS_CUTTING_AGENT] : [])],
+      ran: [
+        ...selectedAgents.map((agent) => agent.id).filter((id) => !skippedByPreCheck.includes(id)),
+        ...(chunked && preCheck.stoppedBy.length === 0 ? [CROSS_CUTTING_AGENT] : []),
+      ],
       summaries: agentSummaryParts,
       skippedByPaths: pathsSelection.skipped,
       notRouted,
+      skippedByPreCheck,
     });
-    const outputWithTrace = attachVerifierRejected(
-      attachMentions(
-        attachAgentSummaries(attachReviewTrace(output, reviewTrace), agentSummaries),
-        buildMentions(selectedAgents, humanReviewReasons),
+    const outputWithTrace = attachPreCheckStop(
+      attachVerifierRejected(
+        attachMentions(
+          attachAgentSummaries(attachReviewTrace(output, reviewTrace), agentSummaries),
+          buildMentions(selectedAgents, humanReviewReasons),
+        ),
+        verifierDropped,
       ),
-      verifierDropped,
+      preCheckStop,
     );
     const reviewed = { ...outputWithTrace, setupNotes };
     return feedbackRecords ? { ...reviewed, feedback: feedbackRecords } : reviewed;
@@ -1642,6 +1694,7 @@ export function buildAgentSummaries(input: {
   summaries: AgentSummaryParts;
   skippedByPaths: string[];
   notRouted: string[];
+  skippedByPreCheck?: string[];
 }): AgentSummary[] | undefined {
   const rows: AgentSummary[] = [
     // An agent that shares the cross-file pass's id would otherwise get two rows.
@@ -1656,6 +1709,7 @@ export function buildAgentSummaries(input: {
     }),
     ...input.skippedByPaths.map((agent) => ({ agent, notRun: "paths" as const })),
     ...input.notRouted.map((agent) => ({ agent, notRun: "router" as const })),
+    ...(input.skippedByPreCheck ?? []).map((agent) => ({ agent, notRun: "preCheck" as const })),
   ];
   if (rows.length === 0) {
     return undefined;
@@ -1709,6 +1763,55 @@ export function attachMentions(
 ): CoordinatorOutput {
   const { mentions: _coordinatorMentions, ...withoutMentions } = output;
   return { ...withoutMentions, ...(mentions ? { mentions } : {}) };
+}
+
+function preCheckStopNote(stop: { stoppedBy: string[]; skipped: string[] }): string {
+  return `A pre-check (${stop.stoppedBy.join(", ")}) found a blocking problem, so these reviewers did not run: ${stop.skipped.join(", ")}.`;
+}
+
+/**
+ * A stopped review must never read as a clean approve: the coordinator or the final
+ * verifier can still drop the critical that stopped it, and no other reviewer ran.
+ */
+export function attachPreCheckStop(
+  output: CoordinatorOutput,
+  stop: { stoppedBy: string[]; skipped: string[] },
+): CoordinatorOutput {
+  if (stop.stoppedBy.length === 0) {
+    return output;
+  }
+  return {
+    ...output,
+    decision: output.decision === "approve" ? "approve_with_comments" : output.decision,
+    incomplete: [...new Set([...output.incomplete, preCheckStopNote(stop)])],
+  };
+}
+
+// @ref LLP 0002#pre-check-agents [implements] — a verifier-confirmed pre-check critical stops the other passes
+/**
+ * Run the tasks of the pre-check agents first. When `confirmsCritical` reports a critical
+ * finding the verifier kept, the other tasks never run.
+ */
+export async function runWithPreCheck<T extends { bucket: string }>(
+  tasks: T[],
+  preCheckAgents: readonly string[],
+  run: (tasks: T[]) => Promise<void>,
+  confirmsCritical: (agents: string[]) => Promise<boolean>,
+): Promise<{ stoppedBy: string[] }> {
+  const preCheck = new Set(preCheckAgents);
+  const first = tasks.filter((task) => preCheck.has(task.bucket));
+  const rest = tasks.filter((task) => !preCheck.has(task.bucket));
+  if (first.length === 0) {
+    await run(rest);
+    return { stoppedBy: [] };
+  }
+  await run(first);
+  const ran = [...new Set(first.map((task) => task.bucket))];
+  if (await confirmsCritical(ran)) {
+    return { stoppedBy: ran };
+  }
+  await run(rest);
+  return { stoppedBy: [] };
 }
 
 /**

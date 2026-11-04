@@ -264,10 +264,22 @@ async function loadConfigDir(
     });
   }
 
+  for (const id of parsed.preCheckAgents ?? []) {
+    if (!agents.some((agent) => agent.id === id)) {
+      throw new Error(
+        `preCheckAgents lists "${id}", but ${label}/agents/ has no ${id}.md. Add the agent, or remove the id.`,
+      );
+    }
+  }
+
   const config: LoadedConfig = {
     configDir: dir,
     sharedPromptText,
     agents,
+    // Only when there are any, so a setup without pre-checks keeps its review-cache key.
+    ...(parsed.preCheckAgents && parsed.preCheckAgents.length > 0
+      ? { preCheckAgents: parsed.preCheckAgents }
+      : {}),
     // Only when there are any, so a clean setup keeps its review-cache key.
     ...(setupWarnings.length > 0 ? { setupWarnings } : {}),
     ...(deprecation ? { deprecations: [deprecation] } : {}),
