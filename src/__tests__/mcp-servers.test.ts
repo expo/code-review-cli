@@ -94,7 +94,13 @@ test("refuses a url that the engine would expand into an env var or a file", asy
 });
 
 test("refuses a token env that holds another secret or the model credential", async () => {
-  for (const tokenEnv of ["GH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "MODEL_TOKEN"]) {
+  for (const tokenEnv of [
+    "GH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
+    "META_API_KEY",
+    "MODEL_TOKEN",
+  ]) {
     await writeRootConfig({
       auth: { mode: "api-key", provider: "anthropic", tokenEnv: "MODEL_TOKEN" },
       mcpServers: { sandbox: { ...SANDBOX, tokenEnv } },

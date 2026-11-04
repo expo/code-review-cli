@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { McpServerConfig } from "../config/schema.js";
-import { FORBIDDEN_TOKEN_ENVS } from "./auth.js";
+import { FORBIDDEN_TOKEN_ENVS, MODEL_CREDENTIAL_ENVS } from "./auth.js";
 
 /** One server a pass may call, with the tool names it may call there. */
 export interface McpServerGrant {
@@ -11,15 +11,6 @@ export interface McpServerGrant {
   server: McpServerConfig;
   tools: string[];
 }
-
-// The model credential must never travel to a third-party server as its bearer.
-const MODEL_CREDENTIAL_ENVS = new Set([
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "CLAUDE_CODE_REVIEW_SHARED_API_TOKEN",
-  "OPENAI_API_KEY",
-]);
 
 /** The servers granted to one pass, in config order. */
 export function mcpServerGrants(
