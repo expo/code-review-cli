@@ -163,7 +163,8 @@ Android with Expo documentation. Runtimes, tools, and formats that code on any p
 relies on (SQLite, Git, Node.js, the Swift book, npm) are owned by their own projects, so
 the platform only chooses the default providers. A provider the caller names is searched
 whatever platform the query names, because an iOS module that stores data in SQLite still
-needs the SQLite documentation.
+needs the SQLite documentation. An issue tracker (JetBrains YouTrack) is the exception: its
+pages are user-written text, so a search names it only with its own platform.
 
 These checks bound the SHAPE of an outbound request, not its information content. The
 reviewing model reads repository data and then chooses the query terms and URL path,

@@ -55,7 +55,7 @@ const DIRECT_PROVIDER_ORDER: readonly ProviderId[] = [
   "expo",
 ];
 
-const DIRECT_SOURCE_KIND: Record<ProviderId, SourceKind> = {
+export const DIRECT_SOURCE_KIND: Record<ProviderId, SourceKind> = {
   apple: "official-api",
   "apple-releases": "release-notes",
   "swift-evolution": "official-guide",

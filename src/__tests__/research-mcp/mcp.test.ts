@@ -167,6 +167,35 @@ test("stdio MCP keeps a named provider whose platform differs from the query pla
   }
 });
 
+test("stdio MCP keeps issue-tracker providers to their own platform", async () => {
+  const cliPath = fileURLToPath(new URL("../../research-mcp/cli.ts", import.meta.url));
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [cliPath, "serve"],
+    stderr: "pipe",
+    env: {},
+  });
+  const client = new Client({ name: "test-client", version: "1.0.0" });
+
+  try {
+    await client.connect(transport);
+    const response = await client.callTool({
+      name: "search_platform_docs",
+      arguments: {
+        platform: "apple",
+        providers: ["jetbrains-issues"],
+        query: "coroutine cancellation",
+        limit: 1,
+      },
+    });
+    expect(response.isError).toBe(true);
+    const content = response.content as Array<{ type: string; text?: string }>;
+    expect(content[0]?.text).toMatch(/issue tracker/);
+  } finally {
+    await client.close();
+  }
+});
+
 test("stdio MCP rejects credential-shaped searches before network access, auditing only the reason class", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "review-research-mcp-secret-"));
   const auditPath = path.join(directory, "audit.jsonl");

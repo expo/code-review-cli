@@ -8,6 +8,7 @@ import { createResearchNetwork } from "./network.js";
 import { sanitizeDocumentationQuery } from "./query-sanitizer.js";
 import {
   DIRECT_DOCUMENT_CONTEXT_MODES,
+  DIRECT_SOURCE_KIND,
   fetchDocumentationUrl,
   resolveDirectDocumentationTarget,
 } from "./direct-fetch.js";
@@ -105,8 +106,21 @@ export async function createDocumentationServer(options: DocumentationServerOpti
         await audit.rejected("search_platform_docs", "query-rejected");
         throw error;
       }
-      // The platform picks the default providers. A provider the caller names is kept on
-      // any platform: an iOS change that uses SQLite still needs the SQLite docs.
+      // The platform picks the default providers. A documentation provider the caller names
+      // is kept on any platform: an iOS change that uses SQLite still needs the SQLite docs.
+      // An issue tracker holds user-written text, so it stays on its own platform.
+      const offPlatformTracker = providers?.find(
+        (provider) =>
+          platform !== "all" &&
+          DIRECT_SOURCE_KIND[provider] === "issue-tracker" &&
+          getProvider(provider).platform !== platform,
+      );
+      if (offPlatformTracker) {
+        await audit.rejected("search_platform_docs", "query-rejected");
+        throw new Error(
+          `The ${offPlatformTracker} issue tracker is for ${getProvider(offPlatformTracker).platform} only. Search it with that platform, or name a documentation provider.`,
+        );
+      }
       const selectedProviders = providers ?? defaultProviders(platform);
       if (selectedProviders.length === 0) {
         await audit.rejected("search_platform_docs", "query-rejected");
