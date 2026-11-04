@@ -38,7 +38,13 @@ export async function coordinate(
   onActivity?: (line: string) => void,
 ): Promise<CoordinationResult> {
   const system = buildCoordinatorSystem(config);
-  const text = buildCoordinatorTask(metadata, agentFindings, coverageNotes, stackManifest);
+  const text = buildCoordinatorTask(
+    metadata,
+    agentFindings,
+    coverageNotes,
+    stackManifest,
+    config.prTemplateComments,
+  );
   const { value, cost, tokens, truncated, model } = await promptAndParse(
     handle,
     {
