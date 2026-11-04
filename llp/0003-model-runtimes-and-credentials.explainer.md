@@ -231,11 +231,12 @@ each server is owner-only, lives in a private temp directory, and holds
 Claude child env stays an allowlist and gains only the token env of a server in use.
 A token env must not name a `FORBIDDEN_TOKEN_ENVS` secret, a model credential or an
 `auth.tokenEnv`, because the server would receive it. That rule runs at load and again
-at the forwarding site, like `auth.tokenEnv`. `mcpServers` is root-only: a scope config
+at the forwarding site, like `auth.tokenEnv`. A `url` must not contain `$`, `{` or `}`,
+because both engines expand variables in it and would bypass that rule. `mcpServers` is root-only: a scope config
 cannot add a server, because a server receives a credential. A server whose token env
 is unset is skipped, so a local run without the token still works
 ([observed] `mcp-servers.ts` `assertMcpServerTokenEnvs`/`availableMcpServers`,
-`schema.ts` `ScopeReviewConfigSchema`).
+`schema.ts` `McpServerConfigSchema`/`ScopeReviewConfigSchema`).
 
 The server, not ECR, bounds what a granted tool can do. A code sandbox must hold no
 credentials and must be able to refuse work beyond its budget: a pass that reads

@@ -26,9 +26,16 @@ function isHttpsOrLoopback(url: string): boolean {
 
 /** A remote MCP server that named review passes may call, such as a code sandbox. */
 export const McpServerConfigSchema = z.object({
-  url: z.url().refine(isHttpsOrLoopback, {
-    error: "mcpServers url must use https (plain http is allowed only for localhost)",
-  }),
+  url: z
+    .url()
+    .refine(isHttpsOrLoopback, {
+      error: "mcpServers url must use https (plain http is allowed only for localhost)",
+    })
+    // Claude Code expands `${VAR}` and OpenCode expands `{env:…}` and `{file:…}` in a
+    // url, which would send an env var or a file to the server outside tokenEnv's checks.
+    .refine((url) => !/[${}]/.test(url), {
+      error: "mcpServers url must not contain $, { or }; pass a credential with tokenEnv",
+    }),
   /** Env var whose value is sent as `Authorization: Bearer <value>`. */
   tokenEnv: z
     .string()
