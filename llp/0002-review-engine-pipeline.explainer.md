@@ -38,6 +38,12 @@ Both levels match each file's path and, for a rename, its old path too [observed
 
 The same cache argument fixes the cross-file pass's **configured** model to the first ROSTER agent's (what `buildOpencodeConfig` and `buildEngineMap` actually give that pass), not the first selected agent's. Comparing against the selected one reported a false model substitution, and with it a coverage note, whenever `paths`, `--agents`, or routing removed the first roster agent and the next one had a different model [observed: `taskModel` in `review.ts`].
 
+## Pre-Check Agents
+
+`preCheckAgents` in `config.jsonc` names agents that run before the others. `runWithPreCheck()` runs their tasks as a first wave. If one of them returns a critical finding, the verifier checks those criticals at once. When it keeps one, the other agents and the cross-cutting pass do not run, and each skipped agent gets the `preCheck` not-run reason in the agent summaries [observed: `runWithPreCheck` and its call in `runReview`]. The coordinator, the final verifier and the policy then run as usual over the pre-check findings, so the review still posts a normal comment with a decision.
+
+The stop needs the verifier, not only the pre-check model. A cheap model can be wrong, and a false stop loses the whole review. The criticals are checked twice, once to decide the stop and once in the final verification, so a stopped review costs one extra verifier call per critical. A pre-check agent keeps its `paths`, routing and `alwaysRun` rules: if it does not run, nothing stops the review. The loader refuses an id that is not an agent in the same setup [observed: `loadConfigDir` in `src/config/load.ts`].
+
 ## Concurrency and Budgets
 
 `effectiveConcurrency()` caps reviewer concurrency at **3 when the run leans on a subscription credential, 6 otherwise, and an explicit config value always wins** [observed] (`review.ts:93-127`, doc comment citing the eas-cli#4084 stall signature). One subscription account handles six parallel streams poorly — requests get parked server-side — and several PRs may review on the same credential at once, so subscription runs trade a little wall-clock for a lot of reliability.
