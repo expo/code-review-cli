@@ -391,7 +391,8 @@ test("parseClaudeResult: an error ignores stale structured_output", () => {
   expect(result.structuredOutputFailure).toBe(true);
 });
 
-test("claudeActivities: reports an MCP tool call by server and tool name only", () => {
+test("claudeActivities: reports a granted MCP tool call by server and tool name only", () => {
+  const granted = new Map([["mcp__sandbox__sandbox_exec", "sandbox.sandbox_exec"]]);
   const call = (name: string) =>
     claudeActivities(
       {
@@ -403,13 +404,14 @@ test("claudeActivities: reports an MCP tool call by server and tool name only", 
         },
       },
       "/repo",
+      granted,
     );
   expect(call("mcp__sandbox__sandbox_exec")).toEqual([
     { key: "mcp__sandbox__sandbox_exec", line: "MCP sandbox.sandbox_exec" },
   ]);
-  // A name the model forged with a newline or another shape is not echoed.
-  expect(call("mcp__sandbox__exec\nforged log line")).toEqual([]);
-  expect(call("sandbox_exec")).toEqual([]);
+  // The CLI denies an ungranted call, so the log must not claim it ran.
+  expect(call("mcp__sandbox__destroy_sandbox")).toEqual([]);
+  expect(call("mcp__sandbox__sandbox_exec\nforged log line")).toEqual([]);
 });
 
 test("claudeActivities: reports lifecycle and safe tool targets, never raw text/results/patterns", () => {
