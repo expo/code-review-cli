@@ -14,6 +14,8 @@ export interface DocumentationProvider {
 interface AllowedOrigin {
   hostname: string;
   prefixes: readonly string[];
+  /** Paths under an allowed prefix that are not documentation, such as a forum or a blog. */
+  excludes?: readonly string[];
 }
 
 function isSecurePublicUrl(url: URL, hostname: string): boolean {
@@ -34,7 +36,10 @@ function hasAllowedPath(url: URL, prefixes: readonly string[]): boolean {
 
 function acceptsOrigin(url: URL, origins: readonly AllowedOrigin[]): boolean {
   return origins.some(
-    ({ hostname, prefixes }) => isSecurePublicUrl(url, hostname) && hasAllowedPath(url, prefixes),
+    ({ hostname, prefixes, excludes = [] }) =>
+      isSecurePublicUrl(url, hostname) &&
+      hasAllowedPath(url, prefixes) &&
+      !hasAllowedPath(url, excludes),
   );
 }
 
@@ -499,6 +504,94 @@ export const metroProvider = htmlProvider("metro", "react-native", "Metro bundle
   { hostname: "metrobundler.dev", prefixes: [""] },
 ]);
 
+// Runtimes and tools that native and tooling code relies on. Their platform only sets the
+// result label: a reviewer names them explicitly from any platform.
+const sqliteNonDocumentationPaths = ["/forum", "/src", "/cgi"];
+
+export const sqliteProvider = htmlProvider("sqlite", "react-native", "SQLite documentation", [
+  { hostname: "sqlite.org", prefixes: [""], excludes: sqliteNonDocumentationPaths },
+  { hostname: "www.sqlite.org", prefixes: [""], excludes: sqliteNonDocumentationPaths },
+]);
+
+export const gitProvider = htmlProvider("git", "react-native", "Git reference documentation", [
+  { hostname: "git-scm.com", prefixes: ["/docs"] },
+]);
+
+export const nodeProvider = htmlProvider("node", "react-native", "Node.js API documentation", [
+  { hostname: "nodejs.org", prefixes: ["/api", "/docs/latest/api"] },
+]);
+
+export const mdnProvider = htmlProvider("mdn", "react-native", "MDN Web Docs", [
+  { hostname: "developer.mozilla.org", prefixes: ["/en-US/docs"] },
+]);
+
+export const githubActionsProvider = htmlProvider(
+  "github-actions",
+  "react-native",
+  "GitHub Actions documentation",
+  [{ hostname: "docs.github.com", prefixes: ["/en/actions"] }],
+);
+
+const swiftBookPrefix = "/swift-book/documentation";
+
+/** The Swift book is a static DocC archive: its pages are JS shells over JSON data. */
+export const swiftBookProvider: DocumentationProvider = {
+  id: "swift-book",
+  platform: "apple",
+  displayName: "The Swift Programming Language",
+  accepts(url) {
+    return isSecurePublicUrl(url, "docs.swift.org") && hasAllowedPath(url, [swiftBookPrefix]);
+  },
+  acceptsRequest(url) {
+    if (this.accepts(url)) return true;
+    if (
+      !isSecurePublicUrl(url, "docs.swift.org") ||
+      !url.pathname.startsWith("/swift-book/data/documentation/") ||
+      !url.pathname.endsWith(".json")
+    ) {
+      return false;
+    }
+    const correspondingDocumentUrl = new URL(url.href);
+    correspondingDocumentUrl.pathname = url.pathname
+      .replace(/^\/swift-book\/data\//, "/swift-book/")
+      .replace(/\.json$/, "");
+    return hasAllowedPath(correspondingDocumentUrl, [swiftBookPrefix]);
+  },
+  canonicalize: canonicalizeDocumentationUrl,
+  requestUrl(documentUrl) {
+    const documentPath = documentUrl.pathname
+      .replace(/\/$/, "")
+      .toLowerCase()
+      .replace(/^\/swift-book\//, "/swift-book/data/");
+    return new URL(`${documentPath}.json`, documentUrl.origin);
+  },
+  responseFormat() {
+    return "docc-json";
+  },
+};
+
+export const kotlinStdlibProvider = htmlProvider(
+  "kotlin-stdlib",
+  "android",
+  "Kotlin standard library API reference",
+  [{ hostname: "kotlinlang.org", prefixes: ["/api/core"] }],
+);
+
+export const jestProvider = htmlProvider("jest", "react-native", "Jest documentation", [
+  { hostname: "jestjs.io", prefixes: ["/docs"] },
+]);
+
+export const npmProvider = htmlProvider(
+  "npm",
+  "react-native",
+  "npm CLI and package.json documentation",
+  [{ hostname: "docs.npmjs.com", prefixes: ["/cli"] }],
+);
+
+export const pnpmProvider = htmlProvider("pnpm", "react-native", "pnpm documentation", [
+  { hostname: "pnpm.io", prefixes: [""], excludes: ["/blog"] },
+]);
+
 const providers: Record<ProviderId, DocumentationProvider> = {
   apple: appleProvider,
   "apple-releases": appleReleasesProvider,
@@ -528,6 +621,16 @@ const providers: Record<ProviderId, DocumentationProvider> = {
   "react-native-screens": reactNativeScreensProvider,
   "react-native-worklets": reactNativeWorkletsProvider,
   metro: metroProvider,
+  sqlite: sqliteProvider,
+  git: gitProvider,
+  node: nodeProvider,
+  mdn: mdnProvider,
+  "github-actions": githubActionsProvider,
+  "swift-book": swiftBookProvider,
+  "kotlin-stdlib": kotlinStdlibProvider,
+  jest: jestProvider,
+  npm: npmProvider,
+  pnpm: pnpmProvider,
 };
 
 export function getProvider(provider: ProviderId): DocumentationProvider {

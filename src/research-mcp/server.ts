@@ -8,6 +8,7 @@ import { createResearchNetwork } from "./network.js";
 import { sanitizeDocumentationQuery } from "./query-sanitizer.js";
 import {
   DIRECT_DOCUMENT_CONTEXT_MODES,
+  DIRECT_SOURCE_KIND,
   fetchDocumentationUrl,
   resolveDirectDocumentationTarget,
 } from "./direct-fetch.js";
@@ -25,7 +26,7 @@ const queryGuidance =
   "Formulate short documentation queries from exact API symbols plus one behavior or constraint term. Good: `CameraView barcodeScannerSettings`, `NWPathMonitor pathUpdateHandler`, `GestureDetector simultaneous gestures`. Avoid questions, prose, package/import names, code snippets, literals, paths, credentials, and other sensitive context. If the first result is broad, retry with a narrower symbol or member name.";
 
 const providerGuidance =
-  "Provider map: apple=Apple SDK APIs and Human Interface Guidelines; apple-releases=Xcode and Apple platform release notes; swift-evolution=Swift Evolution proposals; sdwebimage=SDWebImage APIs and caching/loading behavior; android=Android, Jetpack, Compose, and Google Play services APIs; android-releases=Android platform releases and behavior changes; android-ndk=Android NDK; media3=Jetpack Media3; glide=Glide; okhttp=OkHttp; kotlin-coroutines=Kotlin coroutines; gradle=Gradle; agp=Android Gradle Plugin; jetbrains-issues=JetBrains YouTrack context; expo=Expo documentation; react=React APIs and semantics; react-native=React Native core documentation; web-standards=WHATWG and W3C web platform standards; chrome-devtools-protocol=Chrome DevTools Protocol; flow=Flow type-system documentation; typescript=TypeScript declaration semantics; cmake=CMake build-system documentation; cocoapods=CocoaPods integration guides; react-native-reanimated=Reanimated; react-native-gesture-handler=Gesture Handler; react-native-screens=Screens; react-native-worklets=Worklets; metro=Metro bundler. Native source retains platform context: use apple/android for OS contracts and add the dependency, build-tool, type-system, or web-contract provider for behavior that source owns; repository ownership does not make a native API a React Native or Expo documentation query. Standards describe compatibility targets; confirm the reviewed implementation claims that target before applying them. Issue-tracker results are context, not API contracts.";
+  "Provider map: apple=Apple SDK APIs and Human Interface Guidelines; apple-releases=Xcode and Apple platform release notes; swift-evolution=Swift Evolution proposals; sdwebimage=SDWebImage APIs and caching/loading behavior; android=Android, Jetpack, Compose, and Google Play services APIs; android-releases=Android platform releases and behavior changes; android-ndk=Android NDK; media3=Jetpack Media3; glide=Glide; okhttp=OkHttp; kotlin-coroutines=Kotlin coroutines; gradle=Gradle; agp=Android Gradle Plugin; jetbrains-issues=JetBrains YouTrack context; expo=Expo documentation; react=React APIs and semantics; react-native=React Native core documentation; web-standards=WHATWG and W3C web platform standards; chrome-devtools-protocol=Chrome DevTools Protocol; flow=Flow type-system documentation; typescript=TypeScript declaration semantics; cmake=CMake build-system documentation; cocoapods=CocoaPods integration guides; react-native-reanimated=Reanimated; react-native-gesture-handler=Gesture Handler; react-native-screens=Screens; react-native-worklets=Worklets; metro=Metro bundler; sqlite=SQLite file format, journaling and SQL; git=Git commands and options; node=Node.js APIs; mdn=MDN JavaScript and web API references; github-actions=GitHub Actions workflows, events and permissions; swift-book=The Swift Programming Language book (language rules and concurrency); kotlin-stdlib=Kotlin standard library API; jest=Jest test runner and mocks; npm=npm CLI and package.json fields; pnpm=pnpm workspaces and CLI. Name a runtime or tool provider from any platform. Native source retains platform context: use apple/android for OS contracts and add the dependency, build-tool, type-system, or web-contract provider for behavior that source owns; repository ownership does not make a native API a React Native or Expo documentation query. Standards describe compatibility targets; confirm the reviewed implementation claims that target before applying them. Issue-tracker results are context, not API contracts.";
 
 export interface DocumentationServerOptions {
   braveApiKey?: string;
@@ -105,12 +106,25 @@ export async function createDocumentationServer(options: DocumentationServerOpti
         await audit.rejected("search_platform_docs", "query-rejected");
         throw error;
       }
-      const selectedProviders = (providers ?? defaultProviders(platform)).filter(
-        (provider) => platform === "all" || getProvider(provider).platform === platform,
+      // The platform picks the default providers. A documentation provider the caller names
+      // is kept on any platform: an iOS change that uses SQLite still needs the SQLite docs.
+      // An issue tracker holds user-written text, so it stays on its own platform.
+      const offPlatformTracker = providers?.find(
+        (provider) =>
+          platform !== "all" &&
+          DIRECT_SOURCE_KIND[provider] === "issue-tracker" &&
+          getProvider(provider).platform !== platform,
       );
+      if (offPlatformTracker) {
+        await audit.rejected("search_platform_docs", "query-rejected");
+        throw new Error(
+          `The ${offPlatformTracker} issue tracker is for ${getProvider(offPlatformTracker).platform} only. Search it with that platform, or name a documentation provider.`,
+        );
+      }
+      const selectedProviders = providers ?? defaultProviders(platform);
       if (selectedProviders.length === 0) {
         await audit.rejected("search_platform_docs", "query-rejected");
-        throw new Error("No selected documentation provider matches the requested platform");
+        throw new Error("No documentation provider selected");
       }
       const boundedLimit = Math.min(limit, maxResultsPerCall);
       const auditInput = {

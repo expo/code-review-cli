@@ -14,6 +14,7 @@ import {
   jetbrainsIssuesProvider,
   metroProvider,
   okHttpProvider,
+  pnpmProvider,
   reactNativeGestureHandlerProvider,
   reactNativeProvider,
   reactNativeReanimatedProvider,
@@ -23,6 +24,8 @@ import {
   resolveAllowedUrl,
   resolveAllowedRequestUrl,
   sdWebImageProvider,
+  sqliteProvider,
+  swiftBookProvider,
   swiftEvolutionProvider,
   typescriptProvider,
   webStandardsProvider,
@@ -252,4 +255,43 @@ test("React Native contract providers admit only their fixed authoritative corpo
   expect(() =>
     resolveAllowedUrl(reactNativeProvider, "https://reactnative.dev/contributing/overview"),
   ).toThrow(/outside the react-native documentation allowlist/);
+});
+
+test("Swift book provider reads the static DocC data behind each page", () => {
+  const pageUrl = resolveAllowedUrl(
+    swiftBookProvider,
+    "https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/",
+  );
+  expect(swiftBookProvider.requestUrl(pageUrl).href).toBe(
+    "https://docs.swift.org/swift-book/data/documentation/the-swift-programming-language/concurrency.json",
+  );
+  expect(swiftBookProvider.responseFormat(pageUrl)).toBe("docc-json");
+  expect(
+    resolveAllowedRequestUrl(
+      swiftBookProvider,
+      "https://docs.swift.org/swift-book/data/documentation/the-swift-programming-language/concurrency.json",
+    ).pathname,
+  ).toBe("/swift-book/data/documentation/the-swift-programming-language/concurrency.json");
+  expect(() =>
+    resolveAllowedRequestUrl(swiftBookProvider, "https://docs.swift.org/compiler/data/index.json"),
+  ).toThrow();
+});
+
+test("SQLite and pnpm providers admit documentation pages but not forum, source or blog pages", () => {
+  expect(resolveAllowedUrl(sqliteProvider, "https://sqlite.org/lang_select.html").pathname).toBe(
+    "/lang_select.html",
+  );
+  expect(resolveAllowedUrl(pnpmProvider, "https://pnpm.io/cli/install").pathname).toBe(
+    "/cli/install",
+  );
+  for (const url of [
+    "https://sqlite.org/forum/forumpost/abc",
+    "https://www.sqlite.org/src/timeline",
+    "https://sqlite.org/cgi/src/info/abc",
+  ]) {
+    expect(() => resolveAllowedUrl(sqliteProvider, url)).toThrow(/outside the sqlite/);
+  }
+  expect(() => resolveAllowedUrl(pnpmProvider, "https://pnpm.io/blog/releases/10.0")).toThrow(
+    /outside the pnpm/,
+  );
 });

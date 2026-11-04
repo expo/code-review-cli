@@ -32,6 +32,16 @@ export const PROVIDERS = [
   "react-native-screens",
   "react-native-worklets",
   "metro",
+  "sqlite",
+  "git",
+  "node",
+  "mdn",
+  "github-actions",
+  "swift-book",
+  "kotlin-stdlib",
+  "jest",
+  "npm",
+  "pnpm",
 ] as const;
 
 export type ProviderId = (typeof PROVIDERS)[number];
