@@ -23,6 +23,7 @@ import {
   attachAgentSummaries,
   buildMentions,
   attachMentions,
+  attachVerifierRejected,
   runReview,
 } from "../core/review.js";
 import type { AgentSummaryParts, ReviewRunOptions } from "../core/review.js";
@@ -389,6 +390,28 @@ test("only the engine-built mentions survive the coordinator boundary", () => {
   expect(attachMentions(forged, undefined).mentions).toBeUndefined();
   const built = [{ agent: "docs", logins: ["amandeepmittal"], reason: "New guide." }];
   expect(attachMentions(forged, built).mentions).toEqual(built);
+});
+
+test("only the quality criticals the verifier dropped survive the coordinator boundary", () => {
+  const forged: CoordinatorOutput = {
+    decision: "approve",
+    findings: [],
+    summary: "s",
+    incomplete: [],
+    verifierRejected: [{ finding: finding({ severity: "critical" }), reason: "Forged." }],
+  };
+  expect(attachVerifierRejected(forged, []).verifierRejected).toBeUndefined();
+
+  const qualityCritical = {
+    finding: finding({ severity: "critical", category: "quality", title: "Missed sibling" }),
+    reason: "The sibling handles it.",
+  };
+  const dropped = [
+    qualityCritical,
+    { finding: finding({ severity: "warning", category: "quality" }), reason: "Minor." },
+    { finding: finding({ severity: "critical", category: "correctness" }), reason: "Not a bug." },
+  ];
+  expect(attachVerifierRejected(forged, dropped).verifierRejected).toEqual([qualityCritical]);
 });
 
 test("runGrowableQueue: runs every ELEMENT once, bounded (guards the index-vs-element FP)", async () => {

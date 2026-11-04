@@ -98,6 +98,16 @@ export class TerminalReporter implements Reporter {
       out.push("");
     }
 
+    const verifierRejected = review.verifierRejected ?? [];
+    if (verifierRejected.length > 0) {
+      out.push(this.paint(BOLD, "🔎 Rejected by the verifier (blocking quality findings):"));
+      for (const { finding, reason } of verifierRejected) {
+        const loc = finding.line != null ? `${finding.file}:${finding.line}` : finding.file;
+        out.push(this.paint(DIM, `  - ${finding.title} (${loc}): ${reason}`));
+      }
+      out.push("");
+    }
+
     if (review.findings.length === 0) {
       out.push(this.paint(DIM, "No findings."), "");
     } else {

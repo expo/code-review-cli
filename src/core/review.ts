@@ -1201,6 +1201,7 @@ export async function runReview(
         mcpServerGrants(availableMcpServers(config.mcpServers, process.env), VERIFIER_AGENT).map(
           (grant) => grant.name,
         ),
+        { title: metadata.title, body: metadata.body },
       );
       agentCosts["verifier"] = verification.cost;
       trackTokens("verifier", verification.tokens);
@@ -1518,14 +1519,14 @@ export async function runReview(
       skippedByPaths: pathsSelection.skipped,
       notRouted,
     });
-    const outputWithTrace = attachMentions(
-      attachAgentSummaries(attachReviewTrace(output, reviewTrace), agentSummaries),
-      buildMentions(selectedAgents, humanReviewReasons),
+    const outputWithTrace = attachVerifierRejected(
+      attachMentions(
+        attachAgentSummaries(attachReviewTrace(output, reviewTrace), agentSummaries),
+        buildMentions(selectedAgents, humanReviewReasons),
+      ),
+      verifierDropped,
     );
-    const reviewed = {
-      ...outputWithTrace,
-      setupNotes,
-    };
+    const reviewed = { ...outputWithTrace, setupNotes };
     return feedbackRecords ? { ...reviewed, feedback: feedbackRecords } : reviewed;
   } catch (error) {
     await safeLog(logPath, {
@@ -1708,6 +1709,21 @@ export function attachMentions(
 ): CoordinatorOutput {
   const { mentions: _coordinatorMentions, ...withoutMentions } = output;
   return { ...withoutMentions, ...(mentions ? { mentions } : {}) };
+}
+
+/**
+ * Replace any coordinator-written note with the quality criticals the verifier dropped.
+ * The coordinator must not choose what this note claims.
+ */
+export function attachVerifierRejected(
+  output: CoordinatorOutput,
+  dropped: { finding: Finding; reason: string }[],
+): CoordinatorOutput {
+  const { verifierRejected: _coordinatorRejected, ...withoutRejected } = output;
+  const verifierRejected = dropped.filter(
+    ({ finding }) => finding.category === "quality" && finding.severity === "critical",
+  );
+  return { ...withoutRejected, ...(verifierRejected.length > 0 ? { verifierRejected } : {}) };
 }
 
 /**
