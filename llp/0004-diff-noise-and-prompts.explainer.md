@@ -252,7 +252,9 @@ boundary and escaping its fence.
 Before those steps, `sanitizeUntrusted` runs `stripHiddenText`, which removes
 what GitHub does not render: HTML comments (an unclosed one hides the rest of the
 text), reference-style markdown comments, and invisible format characters (the
-Unicode `Cf` class: zero-width, bidi and tag characters). A
+Unicode `Cf` class: zero-width, bidi and tag characters). It keeps the joiners
+and the soft hyphen, which emoji and some scripts need, and the tag characters of
+the England, Scotland and Wales flags. Other tag runs can spell hidden ASCII. A
 maintainer reading the PR cannot see that text, but the model reads all of it, so
 it is the cheapest place to hide an instruction. A fence or code span is matched
 first and kept whole, because GitHub shows its content as code. Code is matched in

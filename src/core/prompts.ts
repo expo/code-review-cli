@@ -358,7 +358,11 @@ const HIDDEN_TEXT = new RegExp(
     "(?<code>^[ \\t]*(?<fence>```|~~~)[^\\n]*\\n[\\s\\S]*?\\n[ \\t]*\\k<fence>[ \\t]*$|`[^`\\n]+`)",
     "(?<html><!--[\\s\\S]*?(?:-->|(?![\\s\\S])))",
     "(?<markdown>^[ \\t]*\\[(?://|#|comment)\\]:\\s*(?:#|<>)\\s*(?:\\(.*?\\)|\".*?\"|'.*?').*$)",
-    "(?<char>\\p{Cf})",
+    // The only subdivision flags emoji fonts draw: England, Scotland and Wales.
+    // Any other tag run could spell hidden text.
+    "(?<flag>\\u{1F3F4}\\u{E0067}\\u{E0062}(?:\\u{E0065}\\u{E006E}\\u{E0067}|\\u{E0073}\\u{E0063}\\u{E0074}|\\u{E0077}\\u{E006C}\\u{E0073})\\u{E007F})",
+    // Joiners and the soft hyphen are part of emoji and of normal words in some scripts.
+    "(?<char>(?![\\u00AD\\u200C\\u200D])\\p{Cf})",
   ].join("|"),
   "gimu",
 );
@@ -367,7 +371,7 @@ const HIDDEN_TEXT = new RegExp(
 /**
  * Remove the parts of author-controlled markdown that GitHub does not show a reader:
  * HTML comments, reference-style markdown comments, and invisible format characters
- * (Unicode Cf: zero-width, bidi and tag characters).
+ * (Unicode Cf: zero-width, bidi and tag characters, except those that emoji and words need).
  * A maintainer reading the PR cannot see them, but a model reads them.
  */
 export function stripHiddenText(input: string): {
@@ -380,7 +384,7 @@ export function stripHiddenText(input: string): {
   let hiddenCharacters = 0;
   const text = input.replace(HIDDEN_TEXT, (match: string, ...rest: unknown[]) => {
     const groups = rest.at(-1) as Record<string, string | undefined>;
-    if (groups.code !== undefined) {
+    if (groups.code !== undefined || groups.flag !== undefined) {
       return match;
     }
     if (groups.char !== undefined) {

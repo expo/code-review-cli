@@ -74,6 +74,24 @@ test("strips zero-width, bidi and tag characters", () => {
   expect(stripHiddenText(`ok${tagged}`)).toEqual({ text: "ok", comments: [], hiddenCharacters: 7 });
 });
 
+test("keeps the invisible characters that normal text and emoji need", () => {
+  const family = "👨‍👩‍👧";
+  const persian = "می‌خواهم";
+  const softHyphen = "re­view";
+  const englandFlag = "🏴\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}";
+  const text = `${family} ${persian} ${softHyphen} ${englandFlag}`;
+  expect(stripHiddenText(text)).toEqual({ text, comments: [], hiddenCharacters: 0 });
+});
+
+test("strips tag characters that are not part of a flag", () => {
+  const tagged = "\u{e0061}\u{e0062}\u{e007f}";
+  expect(stripHiddenText(`ok${tagged} 🏴${tagged}`)).toEqual({
+    text: "ok 🏴",
+    comments: [],
+    hiddenCharacters: 6,
+  });
+});
+
 test("keeps a comment that GitHub shows as code", () => {
   expect(sanitizeUntrusted("use the `<!-- placeholder -->` token")).toBe(
     "use the `<!-- placeholder -->` token",
