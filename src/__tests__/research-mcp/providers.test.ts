@@ -14,6 +14,7 @@ import {
   jetbrainsIssuesProvider,
   metroProvider,
   okHttpProvider,
+  pnpmProvider,
   reactNativeGestureHandlerProvider,
   reactNativeProvider,
   reactNativeReanimatedProvider,
@@ -23,6 +24,7 @@ import {
   resolveAllowedUrl,
   resolveAllowedRequestUrl,
   sdWebImageProvider,
+  sqliteProvider,
   swiftBookProvider,
   swiftEvolutionProvider,
   typescriptProvider,
@@ -273,4 +275,23 @@ test("Swift book provider reads the static DocC data behind each page", () => {
   expect(() =>
     resolveAllowedRequestUrl(swiftBookProvider, "https://docs.swift.org/compiler/data/index.json"),
   ).toThrow();
+});
+
+test("SQLite and pnpm providers admit documentation pages but not forum, source or blog pages", () => {
+  expect(resolveAllowedUrl(sqliteProvider, "https://sqlite.org/lang_select.html").pathname).toBe(
+    "/lang_select.html",
+  );
+  expect(resolveAllowedUrl(pnpmProvider, "https://pnpm.io/cli/install").pathname).toBe(
+    "/cli/install",
+  );
+  for (const url of [
+    "https://sqlite.org/forum/forumpost/abc",
+    "https://www.sqlite.org/src/timeline",
+    "https://sqlite.org/cgi/src/info/abc",
+  ]) {
+    expect(() => resolveAllowedUrl(sqliteProvider, url)).toThrow(/outside the sqlite/);
+  }
+  expect(() => resolveAllowedUrl(pnpmProvider, "https://pnpm.io/blog/releases/10.0")).toThrow(
+    /outside the pnpm/,
+  );
 });

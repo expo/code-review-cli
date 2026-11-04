@@ -14,6 +14,8 @@ export interface DocumentationProvider {
 interface AllowedOrigin {
   hostname: string;
   prefixes: readonly string[];
+  /** Paths under an allowed prefix that are not documentation, such as a forum or a blog. */
+  excludes?: readonly string[];
 }
 
 function isSecurePublicUrl(url: URL, hostname: string): boolean {
@@ -34,7 +36,10 @@ function hasAllowedPath(url: URL, prefixes: readonly string[]): boolean {
 
 function acceptsOrigin(url: URL, origins: readonly AllowedOrigin[]): boolean {
   return origins.some(
-    ({ hostname, prefixes }) => isSecurePublicUrl(url, hostname) && hasAllowedPath(url, prefixes),
+    ({ hostname, prefixes, excludes = [] }) =>
+      isSecurePublicUrl(url, hostname) &&
+      hasAllowedPath(url, prefixes) &&
+      !hasAllowedPath(url, excludes),
   );
 }
 
@@ -501,9 +506,11 @@ export const metroProvider = htmlProvider("metro", "react-native", "Metro bundle
 
 // Runtimes and tools that native and tooling code relies on. Their platform only sets the
 // result label: a reviewer names them explicitly from any platform.
+const sqliteNonDocumentationPaths = ["/forum", "/src", "/cgi"];
+
 export const sqliteProvider = htmlProvider("sqlite", "react-native", "SQLite documentation", [
-  { hostname: "sqlite.org", prefixes: [""] },
-  { hostname: "www.sqlite.org", prefixes: [""] },
+  { hostname: "sqlite.org", prefixes: [""], excludes: sqliteNonDocumentationPaths },
+  { hostname: "www.sqlite.org", prefixes: [""], excludes: sqliteNonDocumentationPaths },
 ]);
 
 export const gitProvider = htmlProvider("git", "react-native", "Git reference documentation", [
@@ -582,7 +589,7 @@ export const npmProvider = htmlProvider(
 );
 
 export const pnpmProvider = htmlProvider("pnpm", "react-native", "pnpm documentation", [
-  { hostname: "pnpm.io", prefixes: [""] },
+  { hostname: "pnpm.io", prefixes: [""], excludes: ["/blog"] },
 ]);
 
 const providers: Record<ProviderId, DocumentationProvider> = {
