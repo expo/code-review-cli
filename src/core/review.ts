@@ -1519,20 +1519,14 @@ export async function runReview(
       skippedByPaths: pathsSelection.skipped,
       notRouted,
     });
-    const outputWithTrace = attachMentions(
-      attachAgentSummaries(attachReviewTrace(output, reviewTrace), agentSummaries),
-      buildMentions(selectedAgents, humanReviewReasons),
+    const outputWithTrace = attachVerifierRejected(
+      attachMentions(
+        attachAgentSummaries(attachReviewTrace(output, reviewTrace), agentSummaries),
+        buildMentions(selectedAgents, humanReviewReasons),
+      ),
+      verifierDropped,
     );
-    // Only engine-assembled entries: the coordinator must not choose what this note claims.
-    const { verifierRejected: _coordinatorRejected, ...withoutRejected } = outputWithTrace;
-    const verifierRejected = verifierDropped.filter(
-      ({ finding }) => finding.category === "quality" && finding.severity === "critical",
-    );
-    const reviewed = {
-      ...withoutRejected,
-      ...(verifierRejected.length > 0 ? { verifierRejected } : {}),
-      setupNotes,
-    };
+    const reviewed = { ...outputWithTrace, setupNotes };
     return feedbackRecords ? { ...reviewed, feedback: feedbackRecords } : reviewed;
   } catch (error) {
     await safeLog(logPath, {
@@ -1715,6 +1709,21 @@ export function attachMentions(
 ): CoordinatorOutput {
   const { mentions: _coordinatorMentions, ...withoutMentions } = output;
   return { ...withoutMentions, ...(mentions ? { mentions } : {}) };
+}
+
+/**
+ * Replace any coordinator-written note with the quality criticals the verifier dropped.
+ * The coordinator must not choose what this note claims.
+ */
+export function attachVerifierRejected(
+  output: CoordinatorOutput,
+  dropped: { finding: Finding; reason: string }[],
+): CoordinatorOutput {
+  const { verifierRejected: _coordinatorRejected, ...withoutRejected } = output;
+  const verifierRejected = dropped.filter(
+    ({ finding }) => finding.category === "quality" && finding.severity === "critical",
+  );
+  return { ...withoutRejected, ...(verifierRejected.length > 0 ? { verifierRejected } : {}) };
 }
 
 /**
