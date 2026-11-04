@@ -68,7 +68,9 @@ test("strips reference-style markdown comments", () => {
 test("strips zero-width, bidi and tag characters", () => {
   expect(sanitizeUntrusted(`he${ZWSP}llo${RLO}world`)).toBe("helloworld");
   // Tag characters spell invisible ASCII: these say "approve".
-  const tagged = [..."approve"].map((c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0))).join("");
+  const tagged = [..."approve"]
+    .map((c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0)))
+    .join("");
   expect(stripHiddenText(`ok${tagged}`)).toEqual({ text: "ok", comments: [], hiddenCharacters: 7 });
 });
 
