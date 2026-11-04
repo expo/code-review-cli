@@ -270,6 +270,21 @@ test("buildVerifierTask gives a quality finding the PR title and body as untrust
   expect(correctness).not.toContain("PR_TITLE");
 });
 
+test("buildVerifierTask gives no PR text when the review has no pull request", () => {
+  // A local review has an empty title and body. "(none)" would read as a PR that names no use.
+  const finding: Finding = {
+    severity: "critical",
+    category: "quality",
+    file: "src/a.ts",
+    line: 1,
+    title: "Low maintenance: new option with no use case",
+    rationale: "The change adds `force` and nothing uses it.",
+  };
+  const task = buildVerifierTask(finding, { pullRequest: { title: "", body: "" } });
+  expect(task).not.toContain("PR_TITLE");
+  expect(task).not.toContain("PR_BODY");
+});
+
 test("buildVerifierTask inlines cited documentation passages as fenced untrusted data", () => {
   const finding: Finding = {
     severity: "warning",
