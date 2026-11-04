@@ -1,11 +1,19 @@
 // @ref LLP 0003#claude-code-cli-containment [implements] — argv/env hardening for the claude -p subprocess
 // @ref LLP 0003#two-engines-per-agent-dispatch [implements] — anthropic/* routing and the per-agent engine map
+import { rmSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { LoadedConfig } from "../config/schema.js";
+import type { LoadedConfig, McpServerConfig } from "../config/schema.js";
 import { checkAuthEntry } from "./auth.js";
 import { pathInside, resolveOnPath, run } from "./exec.js";
+import {
+  assertMcpServerTokenEnvs,
+  availableMcpServers,
+  mcpServerGrants,
+  writeClaudeMcpServerConfigs,
+} from "./mcp-servers.js";
 import {
   addTokenUsage,
   AgentTimeoutError,
@@ -53,6 +61,9 @@ export interface ClaudeCodeHandle extends OpencodeHandle {
   researchMcpConfigPath?: string;
   /** Only reviewer and cross-cutting roles may receive the documentation tools. */
   researchAgents?: ReadonlySet<string>;
+  /** Configured MCP servers whose token is set, and their config files by name. */
+  mcpServers?: Record<string, McpServerConfig>;
+  mcpServerConfigPaths?: ReadonlyMap<string, string>;
   /** The run's patch directory, readable by every pass that has read tools. */
   patchDir?: string;
 }
@@ -317,6 +328,10 @@ export function buildClaudeArgs(opts: {
    */
   extraReadRoots?: readonly string[];
   researchMcpConfigPath?: string;
+  /** Config files of the configured MCP servers granted to this pass. */
+  mcpServerConfigPaths?: readonly string[];
+  /** `mcp__<server>__<tool>` names this pass may call. Every other MCP tool is denied. */
+  mcpServerTools?: readonly string[];
   maxTurns?: number;
   jsonSchema?: Record<string, unknown>;
 }): string[] {
@@ -335,7 +350,15 @@ export function buildClaudeArgs(opts: {
   // scoped allow rules alone don't deny them when the allow list is empty.
   const deniedReadTools = ALL_READ_TOOLS.filter((tool) => !enabled.includes(tool));
   const researchTools = opts.researchMcpConfigPath ? [...CLAUDE_RESEARCH_TOOLS] : [];
-  const allowedTools = [...enabled.flatMap(scope), ...researchTools];
+  const allowedTools = [
+    ...enabled.flatMap(scope),
+    ...researchTools,
+    ...(opts.mcpServerTools ?? []),
+  ];
+  const mcpConfigPaths = [
+    ...(opts.researchMcpConfigPath ? [opts.researchMcpConfigPath] : []),
+    ...(opts.mcpServerConfigPaths ?? []),
+  ];
   return [
     "-p",
     "--output-format",
@@ -356,14 +379,8 @@ export function buildClaudeArgs(opts: {
     "--permission-mode",
     "dontAsk",
     "--strict-mcp-config",
-    ...(opts.researchMcpConfigPath
-      ? [
-          "--mcp-config",
-          opts.researchMcpConfigPath,
-          "--setting-sources",
-          "",
-          "--disable-slash-commands",
-        ]
+    ...(mcpConfigPaths.length > 0
+      ? ["--mcp-config", ...mcpConfigPaths, "--setting-sources", "", "--disable-slash-commands"]
       : ["--safe-mode"]),
     "--no-session-persistence",
     "--max-turns",
@@ -799,6 +816,7 @@ export async function runClaudePrompt(
     args.maxToolCalls !== 0 && handle.researchAgents?.has(args.agent)
       ? handle.researchMcpConfigPath
       : undefined;
+  const mcpGrants = args.maxToolCalls === 0 ? [] : mcpServerGrants(handle.mcpServers, args.agent);
   // A soft tool-call ceiling doubles as the CLI's per-pass turn bound (the closest
   // stateless analogue of OpenCode's mid-run tool-call cap).
   const maxTurns =
@@ -836,6 +854,13 @@ export async function runClaudePrompt(
         tools,
         ...(handle.patchDir ? { extraReadRoots: [handle.patchDir] } : {}),
         researchMcpConfigPath,
+        mcpServerConfigPaths: mcpGrants.flatMap((grant) => {
+          const file = handle.mcpServerConfigPaths?.get(grant.name);
+          return file ? [file] : [];
+        }),
+        mcpServerTools: mcpGrants.flatMap((grant) =>
+          grant.tools.map((tool) => `mcp__${grant.name}__${tool}`),
+        ),
         maxTurns,
         jsonSchema: args.jsonSchema,
       }),
@@ -1219,10 +1244,32 @@ export async function startClaudeCode(
   const researchAgents = new Set(config.agents.map((agent) => agent.id));
   researchAgents.add(CROSS_CUTTING_AGENT);
 
+  // Re-run the token deny-list at the forwarding site, as for auth.tokenEnv above.
+  assertMcpServerTokenEnvs(
+    config.mcpServers,
+    config.auth.flatMap((auth) => (auth.tokenEnv ? [auth.tokenEnv] : [])),
+  );
+  const mcpServers = availableMcpServers(config.mcpServers, process.env);
+  let mcpDir: string | undefined;
+  let mcpServerConfigPaths: Map<string, string> | undefined;
+  if (Object.keys(mcpServers).length > 0) {
+    mcpDir = await mkdtemp(path.join(tmpdir(), "ecr-mcp-"));
+    mcpServerConfigPaths = await writeClaudeMcpServerConfigs(mcpServers, mcpDir);
+    for (const server of Object.values(mcpServers)) {
+      if (server.tokenEnv) {
+        childEnv[server.tokenEnv] = process.env[server.tokenEnv];
+      }
+    }
+  }
+
   return {
     client: undefined,
     url: "",
-    close: () => {},
+    close: () => {
+      if (mcpDir) {
+        rmSync(mcpDir, { recursive: true, force: true });
+      }
+    },
     // NOT the default watch file: that is the host's real OpenCode log, which this
     // engine never writes — stale 429s from unrelated OpenCode use would be counted
     // as evidence for this run. A nonexistent path keeps check() at zero; evidence
@@ -1236,6 +1283,7 @@ export async function startClaudeCode(
     childEnv,
     ...(research ? { researchMcpConfigPath: research.claudeConfigPath } : {}),
     researchAgents,
+    ...(mcpServerConfigPaths ? { mcpServers, mcpServerConfigPaths } : {}),
     ...(patchDir ? { patchDir } : {}),
   };
 }

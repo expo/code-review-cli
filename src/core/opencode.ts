@@ -14,6 +14,7 @@ import { pathInside, resolveOnPath } from "./exec.js";
 import { RateLimitWatch } from "./throttle.js";
 import { OPENCODE_RESEARCH_TOOLS, toolMap } from "./tools.js";
 import { errorMessage, sleep } from "./util.js";
+import { opencodeGrantedTools, opencodeMcpServers } from "./mcp-servers.js";
 import type { ResearchMcpRuntime } from "./research.js";
 
 /** Discriminant for the Claude Code CLI engine (see core/claude-code.ts). */
@@ -245,6 +246,7 @@ export function buildOpencodeConfig(
       tools: {
         ...reviewer.tools,
         ...Object.fromEntries(OPENCODE_RESEARCH_TOOLS.map((name) => [name, Boolean(research)])),
+        ...opencodeGrantedTools(config.mcpServers, reviewer.id),
       },
     };
   }
@@ -259,6 +261,7 @@ export function buildOpencodeConfig(
     tools: {
       ...CROSS_CUTTING_TOOLS,
       ...Object.fromEntries(OPENCODE_RESEARCH_TOOLS.map((name) => [name, Boolean(research)])),
+      ...opencodeGrantedTools(config.mcpServers, CROSS_CUTTING_AGENT),
     },
   };
   agent[VERIFIER_AGENT] = {
@@ -268,7 +271,7 @@ export function buildOpencodeConfig(
     temperature: config.agents[0]?.temperature ?? 0.1,
     prompt:
       "You verify code-review findings against the actual source. Follow the user message exactly and return only the requested JSON.",
-    tools: VERIFIER_TOOLS,
+    tools: { ...VERIFIER_TOOLS, ...opencodeGrantedTools(config.mcpServers, VERIFIER_AGENT) },
   };
   agent[STACK_VERIFIER_AGENT] = {
     description: "Confirms a requalification against the addressing PR's inlined patch.",
@@ -357,22 +360,29 @@ export function buildOpencodeConfig(
     };
   }
 
-  return {
-    $schema: "https://opencode.ai/config.json",
-    agent,
+  const mcpServers = opencodeMcpServers(config.mcpServers);
+  const mcp = {
     ...(research
       ? {
-          mcp: {
-            platform_docs: {
-              type: "local",
-              command: [research.command, ...research.args],
-              environment: research.environment,
-              enabled: true,
-              timeout: config.research.timeoutMs,
-            },
+          platform_docs: {
+            type: "local",
+            command: [research.command, ...research.args],
+            environment: research.environment,
+            enabled: true,
+            timeout: config.research.timeoutMs,
           },
         }
       : {}),
+    ...mcpServers,
+  };
+  return {
+    $schema: "https://opencode.ai/config.json",
+    agent,
+    // A configured server's tools are off everywhere, then on per granted pass.
+    ...(Object.keys(mcpServers).length > 0
+      ? { tools: Object.fromEntries(Object.keys(mcpServers).map((name) => [`${name}_*`, false])) }
+      : {}),
+    ...(Object.keys(mcp).length > 0 ? { mcp } : {}),
     ...(Object.keys(provider).length > 0 ? { provider } : {}),
   };
 }

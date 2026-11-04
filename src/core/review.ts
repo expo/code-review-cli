@@ -25,6 +25,7 @@ import {
   promptAndParse,
   STACK_VERIFIER_AGENT,
   startOpencode,
+  VERIFIER_AGENT,
 } from "./opencode.js";
 import type { OpencodeHandle, TokenUsage } from "./opencode.js";
 import {
@@ -83,6 +84,7 @@ import { sortFindings } from "./render.js";
 import { appendStepSummary } from "./step-summary.js";
 import { errorMessage, sleep } from "./util.js";
 import { reviewSetupRefNotes } from "./config-refs.js";
+import { availableMcpServers, mcpServerGrants } from "./mcp-servers.js";
 import { verifyFindings } from "./verify.js";
 import { applyInlineIgnores } from "./suppress.js";
 import {
@@ -456,7 +458,12 @@ export async function runReview(
   let claudeHandle: ClaudeCodeHandle | null = null;
   try {
     if (usesOpencode) {
-      opencodeHandle = await startOpencode(buildOpencodeConfig(config, researchRuntime));
+      opencodeHandle = await startOpencode(
+        buildOpencodeConfig(
+          { ...config, mcpServers: availableMcpServers(config.mcpServers, process.env) },
+          researchRuntime,
+        ),
+      );
     }
   } catch (error) {
     await auth.cleanup();
@@ -1191,6 +1198,9 @@ export async function runReview(
         process.cwd(),
         progress,
         researchEvidence,
+        mcpServerGrants(availableMcpServers(config.mcpServers, process.env), VERIFIER_AGENT).map(
+          (grant) => grant.name,
+        ),
       );
       agentCosts["verifier"] = verification.cost;
       trackTokens("verifier", verification.tokens);

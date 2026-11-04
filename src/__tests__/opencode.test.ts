@@ -469,6 +469,42 @@ test("buildOpencodeConfig grants the bundled MCP only to reviewer roles", () => 
   }
 });
 
+test("buildOpencodeConfig turns a configured MCP server off, then on for granted agents only", () => {
+  const config = {
+    ...configWith({
+      agents: [
+        { id: "deep", model: "openai/gpt-5.5" },
+        { id: "security", model: "openai/gpt-5.5" },
+      ],
+    }),
+    mcpServers: {
+      sandbox: {
+        url: "https://sandbox.example/mcp",
+        tokenEnv: "REVIEW_SANDBOX_TOKEN",
+        tools: ["sandbox_exec"],
+        agents: ["deep", "verifier"],
+      },
+    },
+  } as LoadedConfig;
+  const opencode = buildOpencodeConfig(config) as {
+    tools: Record<string, boolean>;
+    agent: Record<string, { tools: Record<string, boolean> }>;
+    mcp: Record<string, unknown>;
+  };
+  expect(opencode.mcp.sandbox).toEqual({
+    type: "remote",
+    url: "https://sandbox.example/mcp",
+    headers: { Authorization: "Bearer {env:REVIEW_SANDBOX_TOKEN}" },
+    oauth: false,
+    enabled: true,
+  });
+  expect(opencode.tools["sandbox_*"]).toBe(false);
+  expect(opencode.agent.deep!.tools.sandbox_sandbox_exec).toBe(true);
+  expect(opencode.agent.verifier!.tools.sandbox_sandbox_exec).toBe(true);
+  expect(opencode.agent.security!.tools.sandbox_sandbox_exec).toBeUndefined();
+  expect(opencode.agent.deep!.tools.sandbox_destroy_sandbox).toBeUndefined();
+});
+
 test("no upstream aliases ⇒ no provider key in the OpenCode config at all", () => {
   const opencode = buildOpencodeConfig(configWith({})) as Record<string, unknown>;
   expect("provider" in opencode).toBe(false);
