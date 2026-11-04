@@ -45,6 +45,25 @@ test("setup note renders only when there is ref advice, and never as a finding",
   expect(body).toContain("No findings.");
 });
 
+test("a quality critical the verifier rejected is listed with its reason, outside the findings", () => {
+  const rejected = {
+    finding: finding({ severity: "critical", title: "Sibling @someone keeps the bug" }),
+    reason: "The PR says the sibling never runs this path.",
+  };
+  const body = renderMarkdown({ ...base, verifierRejected: [rejected] }, "tag");
+  expect(body).toContain("🔎 **Rejected by the verifier:**");
+  expect(body).toContain("Sibling @\u200bsomeone keeps the bug");
+  expect(body).toContain("The PR says the sibling never runs this path.");
+  expect(body).toContain("No findings.");
+  const aggregate = renderAggregateMarkdown(
+    [{ scope: "app", review: { ...base, verifierRejected: [rejected] } }],
+    "tag",
+    [],
+  );
+  expect(aggregate).toContain("🔎 **Rejected by the verifier:**");
+  expect(aggregate).toContain("[app]");
+});
+
 test("a run that reviewed nothing renders No review, without claiming why", () => {
   const body = renderMarkdown({ ...base, couldNotComplete: true }, "tag");
   expect(body).toContain("**Decision:** No review\n");

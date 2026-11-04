@@ -397,6 +397,14 @@ export const CoordinatorOutputSchema = CoordinatorModelOutputSchema.extend({
    * agent's trusted config, never from model text.
    */
   mentions: z.array(AgentMentionSchema).optional().catch(undefined),
+  /**
+   * Quality criticals the verifier rejected, with its reason. Engine-owned and rendered
+   * outside the findings, so a maintainer sees what PR text or code dismissed them.
+   */
+  verifierRejected: z
+    .array(z.object({ finding: FindingSchema, reason: z.string() }))
+    .optional()
+    .catch(undefined),
 });
 export type CoordinatorOutput = z.infer<typeof CoordinatorOutputSchema>;
 
