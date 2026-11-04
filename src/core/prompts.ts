@@ -358,16 +358,17 @@ const HIDDEN_TEXT = new RegExp(
     "(?<code>^[ \\t]*(?<fence>```|~~~)[^\\n]*\\n[\\s\\S]*?\\n[ \\t]*\\k<fence>[ \\t]*$|`[^`\\n]+`)",
     "(?<html><!--[\\s\\S]*?(?:-->|(?![\\s\\S])))",
     "(?<markdown>^[ \\t]*\\[(?://|#|comment)\\]:\\s*(?:#|<>)\\s*(?:\\(.*?\\)|\".*?\"|'.*?').*$)",
-    "(?<char>[\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2069\\ufeff\\u00ad])",
+    "(?<char>\\p{Cf})",
   ].join("|"),
-  "gim",
+  "gimu",
 );
 
 // @ref LLP 0004#prompt-assembly-and-sanitization [implements] — hidden text: text GitHub does not render
 /**
  * Remove the parts of author-controlled markdown that GitHub does not show a reader:
- * HTML comments, reference-style markdown comments, and zero-width or bidi
- * characters. A maintainer reading the PR cannot see them, but a model reads them.
+ * HTML comments, reference-style markdown comments, and invisible format characters
+ * (Unicode Cf: zero-width, bidi and tag characters).
+ * A maintainer reading the PR cannot see them, but a model reads them.
  */
 export function stripHiddenText(input: string): {
   text: string;
