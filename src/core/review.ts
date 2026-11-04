@@ -1259,6 +1259,7 @@ export async function runReview(
         progress,
         researchEvidence,
         mcpServerGrants(mcpProxy?.servers, VERIFIER_AGENT).map((grant) => grant.name),
+        { title: metadata.title, body: metadata.body },
       );
       agentCosts["verifier"] = verification.cost;
       trackTokens("verifier", verification.tokens);
