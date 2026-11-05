@@ -554,10 +554,18 @@ export async function discoverSetupDirs(root: string): Promise<string[]> {
         continue; // a setup dir never nests another
       }
       if (entry.name === ".expo-agents") {
-        // The shared Expo agent-tools dir: only its code-review/ child is ours.
+        // The shared Expo agent-tools dir: its code-review/ child is ours.
         const setup = path.join(dir, CONFIG_DIRNAME);
         if ((await pathKind(setup)) === "dir") {
           found.push(setup);
+        }
+        // A routing scope may keep its config in another child, such as
+        // .expo-agents/<scope>/.expo-agents/code-review, so walk the other children too.
+        const tools = await readdir(child, { withFileTypes: true }).catch(() => []);
+        for (const tool of tools) {
+          if (tool.isDirectory() && path.join(child, tool.name) !== setup) {
+            await walk(path.join(child, tool.name));
+          }
         }
         continue;
       }

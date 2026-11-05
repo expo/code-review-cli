@@ -388,6 +388,18 @@ test("scope setup dirs are swept too, and dot dirs (other worktrees) are not", a
   );
 });
 
+test("a setup dir nested inside .expo-agents, such as a routed scope config, is swept", async () => {
+  const root = await makeRepo({
+    ".expo-agents/code-review/agents/security.md": "# Security\n",
+    ".expo-agents/autonomous-code-review/.expo-agents/code-review/agents/deep.md": `<!-- ${REF} src/gone.ts -->\n`,
+  });
+  const dirs = await discoverSetupDirs(root);
+  expect(dirs.map((d) => path.relative(root, d)).sort()).toEqual([
+    path.join(".expo-agents", "autonomous-code-review", ".expo-agents", "code-review"),
+    path.join(".expo-agents", "code-review"),
+  ]);
+});
+
 test("one ref covers the prose form of the same citation", async () => {
   const root = await makeRepo(
     setup({
