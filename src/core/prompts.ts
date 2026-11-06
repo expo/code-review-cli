@@ -406,18 +406,19 @@ export function sanitizeUntrusted(input: string, maxLength = 4000): string {
   if (!input) {
     return "";
   }
-  let out = stripHiddenText(input)
-    .text.replace(/`{3,}/g, "'''")
+  // Control characters go and the cut happens first: removing a NUL from `PR_BO\0DY`,
+  // or cutting `PR_BODYX` short, must not leave a boundary line after the check below.
+  let out = stripHiddenText(input.replace(CONTROL_CHARS, "")).text;
+  const truncated = out.length > maxLength;
+  out = out
+    .slice(0, maxLength)
     .replace(/<\/?\s*(system|user|assistant|instructions?|prompt|tool)[^>]*>/gi, "")
+    .replace(/`{3,}/g, "'''")
     // Neutralize the coordinator's section-boundary tokens (`<<<PR_TITLE`,
     // `PR_TITLE`, `<<<PR_BODY`, `PR_BODY`) so an author-controlled title/body
     // can't forge a boundary line and escape its section.
-    .replace(/^\s*<{0,3}PR_(?:TITLE|BODY)\s*$/gim, "")
-    .replace(CONTROL_CHARS, "");
-  if (out.length > maxLength) {
-    out = `${out.slice(0, maxLength)}\n…[truncated]`;
-  }
-  return out.trim();
+    .replace(/^\s*<{0,3}PR_(?:TITLE|BODY)\s*$/gim, "");
+  return (truncated ? `${out}\n…[truncated]` : out).trim();
 }
 
 /**
