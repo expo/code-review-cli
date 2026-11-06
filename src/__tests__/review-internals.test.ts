@@ -411,7 +411,29 @@ test("only the quality criticals the verifier dropped survive the coordinator bo
     { finding: finding({ severity: "warning", category: "quality" }), reason: "Minor." },
     { finding: finding({ severity: "critical", category: "correctness" }), reason: "Not a bug." },
   ];
-  expect(attachVerifierRejected(forged, dropped).verifierRejected).toEqual([qualityCritical]);
+  const kept = attachVerifierRejected(forged, dropped).verifierRejected;
+  expect(kept?.map(({ finding: f, reason }) => [f.title, f.file, f.line, reason])).toEqual([
+    [
+      "Missed sibling",
+      qualityCritical.finding.file,
+      qualityCritical.finding.line,
+      "The sibling handles it.",
+    ],
+  ]);
+  // The comment state keeps only what the note shows, bounded.
+  const long = attachVerifierRejected(forged, [
+    {
+      finding: {
+        ...qualityCritical.finding,
+        rationale: "r".repeat(5000),
+        evidence: "e".repeat(50_000),
+      },
+      reason: "x".repeat(5000),
+    },
+  ]).verifierRejected![0]!;
+  expect(long.finding.rationale).toBe("");
+  expect(long.finding.evidence).toBeUndefined();
+  expect(long.reason.length).toBe(500);
 });
 
 test("runGrowableQueue: runs every ELEMENT once, bounded (guards the index-vs-element FP)", async () => {
