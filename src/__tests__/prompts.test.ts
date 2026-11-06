@@ -31,6 +31,12 @@ test("neutralizes the coordinator PR_TITLE/PR_BODY boundary tokens", () => {
   expect(out).toContain("line2");
 });
 
+test("a control character or the length cut cannot rebuild a boundary token", () => {
+  expect(sanitizeUntrusted("a\nPR_BO\u0000DY\nb")).not.toMatch(/^PR_BODY$/m);
+  expect(sanitizeUntrusted("a\n<sys\u0000tem>x")).not.toContain("<system>");
+  expect(sanitizeUntrusted("a\nPR_BODYX", 9)).not.toMatch(/^PR_BODY$/m);
+});
+
 test("truncates very long input", () => {
   const out = sanitizeUntrusted("a".repeat(5000), 100);
   expect(out.length).toBeLessThan(200);
