@@ -1721,6 +1721,8 @@ export function attachMentions(
   return { ...withoutMentions, ...(mentions ? { mentions } : {}) };
 }
 
+const VERIFIER_REJECTED_TEXT_MAX = 500;
+
 /**
  * Replace any coordinator-written note with the quality criticals the verifier dropped.
  * The coordinator must not choose what this note claims.
@@ -1730,9 +1732,21 @@ export function attachVerifierRejected(
   dropped: { finding: Finding; reason: string }[],
 ): CoordinatorOutput {
   const { verifierRejected: _coordinatorRejected, ...withoutRejected } = output;
-  const verifierRejected = dropped.filter(
-    ({ finding }) => finding.category === "quality" && finding.severity === "critical",
-  );
+  // Only what the note shows: the comment embeds this list in its state, outside the
+  // size cap, so the rationale and evidence of a dropped finding stay in the run log.
+  const verifierRejected = dropped
+    .filter(({ finding }) => finding.category === "quality" && finding.severity === "critical")
+    .map(({ finding, reason }) => ({
+      finding: {
+        severity: finding.severity,
+        category: finding.category,
+        file: finding.file,
+        line: finding.line,
+        title: finding.title.slice(0, VERIFIER_REJECTED_TEXT_MAX),
+        rationale: "",
+      },
+      reason: reason.slice(0, VERIFIER_REJECTED_TEXT_MAX),
+    }));
   return { ...withoutRejected, ...(verifierRejected.length > 0 ? { verifierRejected } : {}) };
 }
 

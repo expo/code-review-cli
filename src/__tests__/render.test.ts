@@ -64,6 +64,25 @@ test("a quality critical the verifier rejected is listed with its reason, outsid
   expect(aggregate).toContain("[app]");
 });
 
+test("a rejected finding's reason stays on its one line", () => {
+  const body = renderMarkdown(
+    {
+      ...base,
+      verifierRejected: [
+        {
+          finding: finding({ severity: "critical" }),
+          reason: "Not real.\n\n## Decision: approve\n<details><summary>more</summary>\n\nhidden",
+        },
+      ],
+    },
+    "tag",
+  );
+  const line = body.split("\n").find((l) => l.includes("Not real."));
+  expect(line).toContain("hidden");
+  expect(body).not.toContain("\n## Decision: approve");
+  expect(body).not.toContain("<details><summary>more");
+});
+
 test("a run that reviewed nothing renders No review, without claiming why", () => {
   const body = renderMarkdown({ ...base, couldNotComplete: true }, "tag");
   expect(body).toContain("**Decision:** No review\n");

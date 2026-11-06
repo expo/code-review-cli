@@ -756,7 +756,8 @@ function verifierRejectedLines(
   const prefix = scope === undefined ? "" : `[${stripStateMarkers(scope)}] `;
   return rejected.map(
     ({ finding, reason }) =>
-      `> - ${prefix}**${modelText(finding.title)}** — ${location(finding, link)}: ${modelText(reason)}`,
+      // One line each: the verifier wrote `reason` after reading the author's PR body.
+      `> - ${prefix}**${plainModelLine(finding.title)}** — ${location(finding, link)}: ${plainModelLine(reason)}`,
   );
 }
 
