@@ -155,6 +155,8 @@ export interface OpencodeHandle {
   claude?: ClaudeCodeHandle;
   /** Per-agent engine router; undefined ⇒ single-engine run keyed by `engine`. */
   engineOf?: (agent: string) => Engine;
+  /** Each configured MCP server tool set to false, merged into every no-tools request. */
+  mcpToolsOff?: Record<string, boolean>;
 }
 
 /** Token usage as reported on an OpenCode assistant message's `info.tokens`. */
@@ -461,7 +463,10 @@ export async function resolveOpencodeCli(): Promise<string | null> {
 
 // @ref LLP 0003#opencode-server-lifecycle [constrained-by] — port 0 avoids clobbering a dev's already-running opencode session; the SDK's own bare launch("opencode") spawn is a knowingly accepted POSIX-only residual, not to be silently "fixed" into an absolute-path reimplementation
 /** Start an in-process OpenCode server with the given inline config. */
-export async function startOpencode(config: unknown): Promise<OpencodeHandle> {
+export async function startOpencode(
+  config: unknown,
+  mcpToolsOff: Record<string, boolean> = {},
+): Promise<OpencodeHandle> {
   // Make our pinned CLI win over any global install (see bundledOpencodeBinDir).
   // The SDK takes no `env`, so PATH is the only lever; it spreads `process.env` at
   // spawn time, so setting it here reaches the child.
@@ -491,7 +496,13 @@ export async function startOpencode(config: unknown): Promise<OpencodeHandle> {
   });
   // Watch THIS server's log for provider throttle evidence (prepareAuth has already
   // pointed XDG_DATA_HOME at the run's isolated dir when auth is injected).
-  return { client, url: server.url, close: () => server.close(), rateLimit: new RateLimitWatch() };
+  return {
+    client,
+    url: server.url,
+    close: () => server.close(),
+    rateLimit: new RateLimitWatch(),
+    ...(Object.keys(mcpToolsOff).length > 0 ? { mcpToolsOff } : {}),
+  };
 }
 
 /**
@@ -964,7 +975,7 @@ export async function promptAgent(
       agent: args.agent,
       system: args.system,
       text: FINALIZE_PROMPT,
-      tools: NO_TOOLS,
+      tools: { ...NO_TOOLS, ...handle.mcpToolsOff },
     });
     try {
       const result = await pollForCompletion(handle, sessionID, {
@@ -1004,6 +1015,8 @@ export async function promptAgent(
       agent: args.agent,
       system: args.system,
       text: args.text,
+      // A pass with no tool budget must not reach a remote MCP server either.
+      ...(args.maxToolCalls === 0 && handle.mcpToolsOff ? { tools: handle.mcpToolsOff } : {}),
     });
 
     try {
@@ -1216,7 +1229,7 @@ export async function promptAndParse<T>(
         text: CORRECTIVE,
         // Re-emit only: the investigation is done, so no tools are needed and
         // disabling them keeps the corrective from turning into a second wander.
-        tools: NO_TOOLS,
+        tools: { ...NO_TOOLS, ...handle.mcpToolsOff },
       });
       const retry = await pollForCompletion(handle, first.sessionID, {
         agent: args.agent,
