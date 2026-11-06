@@ -80,6 +80,15 @@ test("refuses a plain http URL unless it points at this machine", async () => {
     mcpServers: { sandbox: { ...SANDBOX, url: "http://127.0.0.1:8787/mcp" } },
   });
   expect((await loadReviewConfig(root)).mcpServers?.sandbox?.url).toBe("http://127.0.0.1:8787/mcp");
+
+  // A malformed url is a config error with its path, not a bare URL TypeError.
+  await writeRootConfig({ mcpServers: { sandbox: { ...SANDBOX, url: "not a url" } } });
+  await expect(loadReviewConfig(root)).rejects.toThrow(/mcpServers/);
+});
+
+test("refuses the research server's name, which a server would replace", async () => {
+  await writeRootConfig({ mcpServers: { platform_docs: SANDBOX } });
+  await expect(loadReviewConfig(root)).rejects.toThrow(/platform_docs/);
 });
 
 test("refuses a url that the engine would expand into an env var or a file", async () => {

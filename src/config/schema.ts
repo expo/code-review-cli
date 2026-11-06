@@ -17,7 +17,13 @@ export const DEFAULT_MIN_SEVERITY: Severity = "design";
 // Plain http only reaches this machine, for local testing. Everywhere else a bearer
 // token would cross the network in clear text.
 function isHttpsOrLoopback(url: string): boolean {
-  const parsed = new URL(url);
+  // Zod still runs this refine after `z.url()` fails, so a malformed url gets here.
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
   return (
     parsed.protocol === "https:" ||
     (parsed.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname))
@@ -131,7 +137,19 @@ export const ReviewConfigSchema = z.object({
       timeoutMs: 30_000,
     }),
   // Root-only: a server receives a bearer token from the runner's environment.
-  mcpServers: z.record(z.string().regex(/^[a-z][a-z0-9_]*$/), McpServerConfigSchema).optional(),
+  mcpServers: z
+    .record(
+      z
+        .string()
+        .regex(/^[a-z][a-z0-9_]*$/)
+        // RESEARCH_MCP_SERVER_NAME: a server by that name would replace the bundled
+        // documentation server, and every research pass would call it.
+        .refine((name) => name !== "platform_docs", {
+          error: "mcpServers cannot use the name platform_docs, which the research server uses",
+        }),
+      McpServerConfigSchema,
+    )
+    .optional(),
   breakGlass: z
     .object({ marker: z.string().default("/skip-review") })
     .default({ marker: "/skip-review" }),
