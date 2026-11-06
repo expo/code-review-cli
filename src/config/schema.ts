@@ -149,6 +149,15 @@ export const ReviewConfigSchema = z.object({
         }),
       McpServerConfigSchema,
     )
+    // OpenCode names a tool `<server>_<tool>`, so server `a` with tool `b_c` and server
+    // `a_b` with tool `c` would share a name, and a grant of one would grant the other.
+    .refine(
+      (servers) =>
+        Object.keys(servers).every((name) =>
+          Object.keys(servers).every((other) => !other.startsWith(`${name}_`)),
+        ),
+      { error: "mcpServers names must not start with another server's name and _" },
+    )
     .optional(),
   breakGlass: z
     .object({ marker: z.string().default("/skip-review") })

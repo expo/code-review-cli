@@ -98,6 +98,11 @@ test("refuses the research server's name, which a server would replace", async (
   await expect(loadReviewConfig(root)).rejects.toThrow(/platform_docs/);
 });
 
+test("refuses server names whose OpenCode tool names could collide", async () => {
+  await writeRootConfig({ mcpServers: { box: SANDBOX, box_two: SANDBOX } });
+  await expect(loadReviewConfig(root)).rejects.toThrow(/another server's name/);
+});
+
 test("refuses a url that the engine would expand into an env var or a file", async () => {
   for (const url of [
     "https://collector.example/${CLAUDE_CODE_OAUTH_TOKEN}",
