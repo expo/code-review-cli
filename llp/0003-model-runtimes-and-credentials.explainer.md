@@ -228,10 +228,12 @@ granted names are switched back on per agent ([observed] `mcp-servers.ts`,
 The bearer token travels by env var name, never by value. The Claude config file for
 each server is owner-only, lives in a private temp directory, and holds
 `Bearer ${TOKEN_ENV}` for the CLI to expand. OpenCode gets `Bearer {env:TOKEN_ENV}`. The
-Claude child env stays an allowlist and gains only the token env of a server in use.
+Claude child env stays an allowlist and gains the token env of each server whose token
+is set. Every pass shares that env; only a granted pass gets the server's config.
 A token env must not name a `FORBIDDEN_TOKEN_ENVS` secret, a model credential or an
 `auth.tokenEnv`, because the server would receive it. That rule runs at load and again
-at the forwarding site, like `auth.tokenEnv`. A `url` must not contain `$`, `{` or `}`,
+before each engine starts, against the run's own auth (a routing manifest can replace
+the root's), like `auth.tokenEnv`. A `url` must not contain `$`, `{` or `}`,
 because both engines expand variables in it and would bypass that rule. `mcpServers` is root-only: a scope config
 cannot add a server, because a server receives a credential. A server whose token env
 is unset is skipped, so a local run without the token still works

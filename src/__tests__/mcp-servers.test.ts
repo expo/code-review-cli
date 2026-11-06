@@ -6,7 +6,14 @@ import path from "node:path";
 import { CONFIG_DIRNAME, loadReviewConfig } from "../config/load.js";
 import { ScopeReviewConfigSchema } from "../config/schema.js";
 import type { McpServerConfig } from "../config/schema.js";
-import { mcpServerGrants, writeClaudeMcpServerConfigs } from "../core/mcp-servers.js";
+import {
+  mcpServerGrants,
+  opencodeMcpToolsOff,
+  writeClaudeMcpServerConfigs,
+} from "../core/mcp-servers.js";
+import { promptAgent } from "../core/opencode.js";
+import type { OpencodeHandle } from "../core/opencode.js";
+import { RateLimitWatch } from "../core/throttle.js";
 
 const SANDBOX: McpServerConfig = {
   url: "https://sandbox.example/mcp",
@@ -122,4 +129,42 @@ test("a scope config cannot add an MCP server", () => {
   const result = ScopeReviewConfigSchema.safeParse({ mcpServers: { sandbox: SANDBOX } });
   expect(result.success).toBe(false);
   expect(JSON.stringify(result.error?.issues)).toContain("root config");
+});
+
+test("an OpenCode pass with no tool budget cannot call a configured MCP tool", async () => {
+  const off = opencodeMcpToolsOff({ sandbox: SANDBOX });
+  expect(off).toEqual({ sandbox_create_sandbox: false, sandbox_sandbox_exec: false });
+
+  const sent: Array<Record<string, unknown>> = [];
+  const handle = (mcpToolsOff?: Record<string, boolean>): OpencodeHandle => ({
+    url: "",
+    close: () => {},
+    rateLimit: new RateLimitWatch(),
+    ...(mcpToolsOff ? { mcpToolsOff } : {}),
+    client: {
+      session: {
+        create: async () => ({ data: { id: "s" } }),
+        promptAsync: async ({ body }: { body: Record<string, unknown> }) => {
+          sent.push(body);
+          return { data: {} };
+        },
+        messages: async () => ({
+          data: [
+            {
+              info: { role: "assistant", time: { completed: 1 } },
+              parts: [{ type: "text", text: "{}" }],
+            },
+          ],
+        }),
+      },
+    },
+  });
+  const args = { agent: "deep", system: "s", text: "t", title: "t" };
+
+  await promptAgent(handle(off), { ...args, maxToolCalls: 0 });
+  expect(sent[0]!.tools).toEqual(off);
+  // A pass with a budget keeps its grant, and a run without servers sends no override.
+  await promptAgent(handle(off), args);
+  await promptAgent(handle(), { ...args, maxToolCalls: 0 });
+  expect(sent.slice(1).map((body) => "tools" in body)).toEqual([false, false]);
 });
