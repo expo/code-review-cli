@@ -392,11 +392,25 @@ test("a setup dir nested inside .expo-agents, such as a routed scope config, is 
   const root = await makeRepo({
     ".expo-agents/code-review/agents/security.md": "# Security\n",
     ".expo-agents/autonomous-code-review/.expo-agents/code-review/agents/deep.md": `<!-- ${REF} src/gone.ts -->\n`,
+    // Dot dirs and node_modules under .expo-agents stay skipped, as at the root.
+    ".expo-agents/.claude/worktrees/other/.expo-agents/code-review/agents/x.md": `<!-- ${REF} src/gone.ts -->\n`,
+    ".expo-agents/node_modules/pkg/.expo-code-review/agents/y.md": `<!-- ${REF} src/gone.ts -->\n`,
   });
   const dirs = await discoverSetupDirs(root);
   expect(dirs.map((d) => path.relative(root, d)).sort()).toEqual([
     path.join(".expo-agents", "autonomous-code-review", ".expo-agents", "code-review"),
     path.join(".expo-agents", "code-review"),
+  ]);
+  const report = await checkConfigRefs({ root });
+  expect(report.problems.map((problem) => problem.file)).toEqual([
+    path.join(
+      ".expo-agents",
+      "autonomous-code-review",
+      ".expo-agents",
+      "code-review",
+      "agents",
+      "deep.md",
+    ),
   ]);
 });
 

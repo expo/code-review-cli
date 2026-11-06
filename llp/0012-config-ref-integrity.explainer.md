@@ -153,8 +153,9 @@ manifest ([LLP 0007][verify]). Inside a setup dir the scan covers prompts and co
 (`.md`, `.json`, `.jsonc`, `.txt`) and skips dot entries, so `.runs/` artifacts are never
 scanned. Dot directories elsewhere are skipped too, which keeps `.claude/worktrees/`
 checkouts of the same repo from being swept as if they were scopes. `.expo-agents/` is the
-exception: besides its `code-review/` child, the walk enters its other children, so a scope
-that keeps its config at `.expo-agents/<scope>/.expo-agents/code-review/` is swept
+exception: besides its `code-review/` child, the walk enters its other children with the same
+skips, so a scope that keeps its config at `.expo-agents/<scope>/.expo-agents/code-review/` is
+swept, while `.expo-agents/.claude/` and `.expo-agents/node_modules/` are not
 [observed: `discoverSetupDirs`].
 
 ## Run Points: Command and Review

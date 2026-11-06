@@ -537,7 +537,7 @@ async function listRepoFiles(root: string): Promise<string[]> {
  */
 export async function discoverSetupDirs(root: string): Promise<string[]> {
   const found: string[] = [];
-  async function walk(dir: string): Promise<void> {
+  async function walk(dir: string, setupInside?: string): Promise<void> {
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -549,6 +549,9 @@ export async function discoverSetupDirs(root: string): Promise<string[]> {
         continue;
       }
       const child = path.join(dir, entry.name);
+      if (child === setupInside) {
+        continue; // already found, and a setup dir never nests another
+      }
       if (entry.name === LEGACY_CONFIG_DIRNAME) {
         found.push(child);
         continue; // a setup dir never nests another
@@ -561,12 +564,7 @@ export async function discoverSetupDirs(root: string): Promise<string[]> {
         }
         // A routing scope may keep its config in another child, such as
         // .expo-agents/<scope>/.expo-agents/code-review, so walk the other children too.
-        const tools = await readdir(child, { withFileTypes: true }).catch(() => []);
-        for (const tool of tools) {
-          if (tool.isDirectory() && path.join(child, tool.name) !== setup) {
-            await walk(path.join(child, tool.name));
-          }
-        }
+        await walk(child, setup);
         continue;
       }
       // Other dot dirs are skipped wholesale: `.claude/worktrees/` holds checkouts of
