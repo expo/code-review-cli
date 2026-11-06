@@ -736,10 +736,9 @@ export async function runReview(
     // outlast a small per-scope slice — and the job timeout keeps a wide margin over
     // the budget for it. Dropping the pass instead would silently cost the coverage no
     // other pass provides.
-    const crossCuttingWaitMs = Math.max(
-      CHUNK_TIMEOUT_MS,
-      passesDeadline - Date.now() - CROSS_CUTTING_RESERVE_MS,
-    );
+    const crossCuttingWindowMs = (): number =>
+      Math.max(CHUNK_TIMEOUT_MS, passesDeadline - Date.now() - CROSS_CUTTING_RESERVE_MS);
+    const crossCuttingWaitMs = crossCuttingWindowMs();
     // Tool calls are for TRACING (opening the caller a changed signature affects) —
     // the changed files' diffs are inlined, so they are not spent fetching the diff.
     // Scale with the diff's file count instead of fixing the ceiling: under a large
@@ -1043,21 +1042,44 @@ export async function runReview(
     const preCheck = await runWithPreCheck(
       tasks,
       config.preCheckAgents ?? [],
-      (wave) => runGrowableQueue(wave, concurrency, runTask),
+      (wave, secondWave) =>
+        runGrowableQueue(
+          // The cross-file pass's window was planned before the pre-check wave ran.
+          secondWave
+            ? wave.map((task) =>
+                task.kind === "cross-cutting"
+                  ? { ...task, maxWaitMs: crossCuttingWindowMs() }
+                  : task,
+              )
+            : wave,
+          concurrency,
+          runTask,
+        ),
       async (agents) => {
-        const criticals = agents.flatMap((id) =>
-          (agentFindings[id] ?? []).filter((finding) => finding.severity === "critical"),
+        const owners = agents.flatMap((id) =>
+          (agentFindings[id] ?? [])
+            .filter((finding) => finding.severity === "critical")
+            .map((finding) => ({ id, finding })),
         );
-        if (criticals.length === 0) {
-          return false;
+        if (owners.length === 0) {
+          return [];
         }
-        progress(`Pre-check: verifying ${criticals.length} critical finding(s)…`);
+        // Judged with the same audited documentation the final verify gets.
+        const evidence = researchRuntime
+          ? ((await researchProvenanceFromAudit(researchRuntime.auditPath).catch(() => null))
+              ?.evidence ?? [])
+          : [];
+        progress(`Pre-check: verifying ${owners.length} critical finding(s)…`);
+        const criticals = groundResearchSources(
+          owners.map(({ finding }) => finding),
+          evidence,
+        );
         const check = await verifyFindings(
           handle,
           criticals,
           process.cwd(),
           progress,
-          [],
+          evidence,
           verifierMcpServers,
           pullRequestText,
         );
@@ -1065,13 +1087,17 @@ export async function runReview(
         trackTokens("verifier", check.tokens);
         // Only a real verdict may stop the review. A verify call that failed keeps the
         // finding (fail-open), and that must not skip every other reviewer.
-        return check.confirmed.length > 0;
+        const confirmed = new Set(check.confirmed.map(fingerprintFinding));
+        return [
+          ...new Set(
+            owners
+              .filter((_, index) => confirmed.has(fingerprintFinding(criticals[index]!)))
+              .map(({ id }) => id),
+          ),
+        ];
       },
     );
-    const skippedByPreCheck =
-      preCheck.stoppedBy.length > 0
-        ? selectedAgents.map((agent) => agent.id).filter((id) => !preCheck.stoppedBy.includes(id))
-        : [];
+    const skippedByPreCheck = preCheck.skipped;
     const preCheckStop = { stoppedBy: preCheck.stoppedBy, skipped: skippedByPreCheck };
     if (preCheck.stoppedBy.length > 0) {
       const note = preCheckStopNote(preCheckStop);
@@ -1571,7 +1597,9 @@ export async function runReview(
     const agentSummaries = buildAgentSummaries({
       ran: [
         ...selectedAgents.map((agent) => agent.id).filter((id) => !skippedByPreCheck.includes(id)),
-        ...(chunked && preCheck.stoppedBy.length === 0 ? [CROSS_CUTTING_AGENT] : []),
+        ...(chunked && !skippedByPreCheck.includes(CROSS_CUTTING_AGENT)
+          ? [CROSS_CUTTING_AGENT]
+          : []),
       ],
       summaries: agentSummaryParts,
       skippedByPaths: pathsSelection.skipped,
@@ -1799,29 +1827,31 @@ export function attachPreCheckStop(
 
 // @ref LLP 0002#pre-check-agents [implements] — a verifier-confirmed pre-check critical stops the other passes
 /**
- * Run the tasks of the pre-check agents first. When `confirmsCritical` reports a critical
- * finding the verifier kept, the other tasks never run.
+ * Run the tasks of the pre-check agents first. When `confirmedBy` names an agent whose
+ * critical finding the verifier confirmed, the other tasks never run. `run` is told
+ * when it runs the second wave, which starts later than the tasks were planned.
  */
 export async function runWithPreCheck<T extends { bucket: string }>(
   tasks: T[],
   preCheckAgents: readonly string[],
-  run: (tasks: T[]) => Promise<void>,
-  confirmsCritical: (agents: string[]) => Promise<boolean>,
-): Promise<{ stoppedBy: string[] }> {
+  run: (tasks: T[], secondWave: boolean) => Promise<void>,
+  confirmedBy: (agents: string[]) => Promise<string[]>,
+): Promise<{ stoppedBy: string[]; skipped: string[] }> {
   const preCheck = new Set(preCheckAgents);
   const first = tasks.filter((task) => preCheck.has(task.bucket));
   const rest = tasks.filter((task) => !preCheck.has(task.bucket));
-  if (first.length === 0) {
-    await run(rest);
-    return { stoppedBy: [] };
+  // With nothing to skip, a stop would only add a verify call and a coverage note.
+  if (first.length === 0 || rest.length === 0) {
+    await run(tasks, false);
+    return { stoppedBy: [], skipped: [] };
   }
-  await run(first);
-  const ran = [...new Set(first.map((task) => task.bucket))];
-  if (await confirmsCritical(ran)) {
-    return { stoppedBy: ran };
+  await run(first, false);
+  const stoppedBy = await confirmedBy([...new Set(first.map((task) => task.bucket))]);
+  if (stoppedBy.length > 0) {
+    return { stoppedBy, skipped: [...new Set(rest.map((task) => task.bucket))] };
   }
-  await run(rest);
-  return { stoppedBy: [] };
+  await run(rest, true);
+  return { stoppedBy: [], skipped: [] };
 }
 
 const VERIFIER_REJECTED_TEXT_MAX = 500;

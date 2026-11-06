@@ -300,7 +300,7 @@ export type ReviewTrace = z.infer<typeof ReviewTraceSchema>;
 
 /**
  * Why a roster agent did not review the change: no changed file matches its `paths`,
- * or the router did not select it.
+ * the router did not select it, or a pre-check agent stopped the review.
  */
 export const AGENT_NOT_RUN_REASONS = ["paths", "router", "preCheck"] as const;
 
