@@ -36,23 +36,26 @@ test("runWithPreCheck runs every task in one wave when no agent is a pre-check",
     async (tasks) => {
       waves.push(tasks.map((t) => t.bucket));
     },
-    async () => true,
+    async () => ["shape"],
   );
   expect(waves).toEqual([["shape", "deep"]]);
   expect(result.stoppedBy).toEqual([]);
 });
 
 test("runWithPreCheck runs the pre-check first, then the rest when it confirms no critical", async () => {
-  const waves: string[][] = [];
+  const waves: Array<[string[], boolean]> = [];
   const result = await runWithPreCheck(
     [task("deep"), task("shape"), task("cross-cutting")],
     ["shape"],
-    async (tasks) => {
-      waves.push(tasks.map((t) => t.bucket));
+    async (tasks, secondWave) => {
+      waves.push([tasks.map((t) => t.bucket), secondWave]);
     },
-    async () => false,
+    async () => [],
   );
-  expect(waves).toEqual([["shape"], ["deep", "cross-cutting"]]);
+  expect(waves).toEqual([
+    [["shape"], false],
+    [["deep", "cross-cutting"], true],
+  ]);
   expect(result.stoppedBy).toEqual([]);
 });
 
@@ -60,19 +63,35 @@ test("runWithPreCheck skips the rest when the pre-check confirms a critical", as
   const waves: string[][] = [];
   let checked: string[] = [];
   const result = await runWithPreCheck(
-    [task("deep"), task("shape")],
-    ["shape"],
+    [task("deep"), task("shape"), task("lint"), task("cross-cutting")],
+    ["shape", "lint"],
     async (tasks) => {
       waves.push(tasks.map((t) => t.bucket));
     },
     async (agents) => {
       checked = agents;
-      return true;
+      return ["shape"];
     },
   );
-  expect(waves).toEqual([["shape"]]);
-  expect(checked).toEqual(["shape"]);
-  expect(result.stoppedBy).toEqual(["shape"]);
+  expect(waves).toEqual([["shape", "lint"]]);
+  expect(checked).toEqual(["shape", "lint"]);
+  // Only the agent whose critical was confirmed is named, and the cross-file pass counts.
+  expect(result).toEqual({ stoppedBy: ["shape"], skipped: ["deep", "cross-cutting"] });
+});
+
+test("runWithPreCheck does not verify or stop when nothing would be skipped", async () => {
+  let verified = false;
+  const result = await runWithPreCheck(
+    [task("shape")],
+    ["shape"],
+    async () => {},
+    async () => {
+      verified = true;
+      return ["shape"];
+    },
+  );
+  expect(verified).toBe(false);
+  expect(result).toEqual({ stoppedBy: [], skipped: [] });
 });
 
 test("buildAgentSummaries marks the agents a pre-check stopped as not run", () => {
