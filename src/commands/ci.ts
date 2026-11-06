@@ -224,7 +224,8 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
   if (unsafeConfigFromHead) {
     process.stderr.write(
       "CI reviewer: ⚠ SECURITY — --unsafe-config-from-head is set: reviewer configuration " +
-        "(policy, prompts, models, auth mapping) is being loaded from the current checkout, so " +
+        "(policy, prompts, models, auth mapping, MCP servers and their token envs) is being " +
+        "loaded from the current checkout, so " +
         "a same-repository PR can change the reviewer that evaluates it. This escape hatch will " +
         "be removed in a future minor release.\n",
     );

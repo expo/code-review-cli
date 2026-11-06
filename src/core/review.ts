@@ -84,7 +84,12 @@ import { sortFindings } from "./render.js";
 import { appendStepSummary } from "./step-summary.js";
 import { errorMessage, sleep } from "./util.js";
 import { reviewSetupRefNotes } from "./config-refs.js";
-import { availableMcpServers, mcpServerGrants } from "./mcp-servers.js";
+import {
+  assertMcpServerTokenEnvs,
+  availableMcpServers,
+  mcpServerGrants,
+  opencodeMcpToolsOff,
+} from "./mcp-servers.js";
 import { verifyFindings } from "./verify.js";
 import { applyInlineIgnores } from "./suppress.js";
 import {
@@ -458,11 +463,16 @@ export async function runReview(
   let claudeHandle: ClaudeCodeHandle | null = null;
   try {
     if (usesOpencode) {
+      // Against this run's auth: a routing manifest can replace the root's, which the
+      // load-time check saw. startClaudeCode re-checks for its own engine.
+      assertMcpServerTokenEnvs(
+        config.mcpServers,
+        config.auth.flatMap((entry) => (entry.tokenEnv ? [entry.tokenEnv] : [])),
+      );
+      const mcpServers = availableMcpServers(config.mcpServers, process.env);
       opencodeHandle = await startOpencode(
-        buildOpencodeConfig(
-          { ...config, mcpServers: availableMcpServers(config.mcpServers, process.env) },
-          researchRuntime,
-        ),
+        buildOpencodeConfig({ ...config, mcpServers }, researchRuntime),
+        opencodeMcpToolsOff(mcpServers),
       );
     }
   } catch (error) {

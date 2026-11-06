@@ -101,6 +101,21 @@ export function opencodeMcpServers(
   );
 }
 
+/**
+ * Every configured tool switched off, for a per-request override. OpenCode matches
+ * request overrides by exact name and keeps the agent's grant for a name left out, so
+ * the `<server>_*` wildcard in the config cannot do this.
+ */
+export function opencodeMcpToolsOff(
+  servers: Record<string, McpServerConfig> | undefined,
+): Record<string, boolean> {
+  return Object.fromEntries(
+    Object.entries(servers ?? {}).flatMap(([name, server]) =>
+      server.tools.map((tool) => [`${name}_${tool}`, false]),
+    ),
+  );
+}
+
 /** OpenCode tool switches for one pass: only its granted tools are turned on. */
 export function opencodeGrantedTools(
   servers: Record<string, McpServerConfig> | undefined,
