@@ -712,6 +712,43 @@ test("buildClaudeArgs: explicit research MCP replaces safe mode without loading 
   expect(args).not.toContain("--safe-mode");
 });
 
+test("buildClaudeArgs: a configured MCP server adds its config and only its granted tools", () => {
+  const args = buildClaudeArgs({
+    model: "claude-opus-5",
+    system: "SYS",
+    cwd: "/work/repo",
+    tools: ["read"],
+    researchMcpConfigPath: "/private/research.json",
+    mcpServerConfigPaths: ["/private/sandbox.json"],
+    mcpServerTools: ["mcp__sandbox__sandbox_exec"],
+  });
+  expect(args.slice(args.indexOf("--mcp-config"), args.indexOf("--mcp-config") + 3)).toEqual([
+    "--mcp-config",
+    "/private/research.json",
+    "/private/sandbox.json",
+  ]);
+  const allowed = args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools"));
+  expect(allowed).toContain("mcp__sandbox__sandbox_exec");
+  expect(allowed).not.toContain("mcp__sandbox__destroy_sandbox");
+  expect(args).not.toContain("--safe-mode");
+});
+
+test("buildClaudeArgs: a session with only a configured MCP server still skips repo settings", () => {
+  const args = buildClaudeArgs({
+    model: "claude-opus-5",
+    system: "SYS",
+    cwd: "/work/repo",
+    tools: ["read"],
+    mcpServerConfigPaths: ["/private/sandbox.json"],
+    mcpServerTools: ["mcp__sandbox__create_sandbox"],
+  });
+  const joined = args.join(" ");
+  expect(joined).toContain("--mcp-config /private/sandbox.json");
+  expect(joined).toContain("--setting-sources  --disable-slash-commands");
+  expect(joined).not.toContain("platform_docs");
+  expect(args).not.toContain("--safe-mode");
+});
+
 test("usageLimitMessage: non-transient so the pass fails fast, carrying the reset time", () => {
   const msg = usageLimitMessage("Claude AI usage limit reached|1728000000");
   // The old wording contained "rate limit" and matched isTransientApiError, burning

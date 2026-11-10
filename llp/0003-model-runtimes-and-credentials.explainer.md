@@ -213,6 +213,39 @@ checkout (local diffs) skip the sweep — the user is the trust principal for th
 tree ([observed] `claude-code.ts:265-273`; see [LLP 0001](0001-trust-model.principles.md)
 and the read-root materialization in `github-pr.ts`).
 
+## Configured MCP Servers
+
+A root config can grant remote MCP servers to named passes with `mcpServers`, for
+example a code sandbox in which a reviewer or the verifier checks how a tool behaves.
+The grant is per pass and per tool. A reviewer id, `verifier` or `cross-cutting` gets a
+server only when its `agents` list names it, and only the `tools` listed are callable.
+On the Claude engine each granted tool is an `mcp__<server>__<tool>` entry in
+`--allowedTools`, and under `dontAsk` every other tool of that server is refused. On
+OpenCode a `<server>_*: false` switch turns the server off for every agent, and the
+granted names are switched back on per agent ([observed] `mcp-servers.ts`,
+`claude-code.ts` `buildClaudeArgs`, `opencode.ts` `buildOpencodeConfig`).
+
+The bearer token travels by env var name, never by value. The Claude config file for
+each server is owner-only, lives in a private temp directory, and holds
+`Bearer ${TOKEN_ENV}` for the CLI to expand. OpenCode gets `Bearer {env:TOKEN_ENV}`. The
+Claude child env stays an allowlist and gains the token env of each server whose token
+is set. Every pass shares that env; only a granted pass gets the server's config.
+A token env must not name a `FORBIDDEN_TOKEN_ENVS` secret, a model credential or an
+`auth.tokenEnv`, because the server would receive it. That rule runs at load and again
+before each engine starts, against the run's own auth (a routing manifest can replace
+the root's), like `auth.tokenEnv`. A `url` must not contain `$`, `{` or `}`,
+because both engines expand variables in it and would bypass that rule. `mcpServers` is root-only: a scope config
+cannot add a server, because a server receives a credential. A server whose token env
+is unset is skipped, so a local run without the token still works
+([observed] `mcp-servers.ts` `assertMcpServerTokenEnvs`/`availableMcpServers`,
+`schema.ts` `McpServerConfigSchema`/`ScopeReviewConfigSchema`).
+
+The server, not ECR, bounds what a granted tool can do. A code sandbox must hold no
+credentials and must be able to refuse work beyond its budget: a pass that reads
+untrusted PR content can be steered into calling the tools it was granted. The verifier
+prompt names the granted servers and tells it to check tool behavior on inputs it writes
+itself, never the pull request's own code ([observed] `prompts.ts` `buildVerifierSystem`).
+
 ## Credential Resolution and Forwarding
 
 `auth.ts` decides whether every in-use provider has a usable credential and stages the

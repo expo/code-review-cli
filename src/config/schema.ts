@@ -14,6 +14,46 @@ import type { Category, Severity } from "../core/schema.js";
  */
 export const DEFAULT_MIN_SEVERITY: Severity = "design";
 
+// Plain http only reaches this machine, for local testing. Everywhere else a bearer
+// token would cross the network in clear text.
+function isHttpsOrLoopback(url: string): boolean {
+  // Zod still runs this refine after `z.url()` fails, so a malformed url gets here.
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return (
+    parsed.protocol === "https:" ||
+    (parsed.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname))
+  );
+}
+
+/** A remote MCP server that named review passes may call, such as a code sandbox. */
+export const McpServerConfigSchema = z.object({
+  url: z
+    .url()
+    .refine(isHttpsOrLoopback, {
+      error: "mcpServers url must use https (plain http is allowed only for localhost)",
+    })
+    // Claude Code expands `${VAR}` and OpenCode expands `{env:…}` and `{file:…}` in a
+    // url, which would send an env var or a file to the server outside tokenEnv's checks.
+    .refine((url) => !/[${}]/.test(url), {
+      error: "mcpServers url must not contain $, { or }; pass a credential with tokenEnv",
+    }),
+  /** Env var whose value is sent as `Authorization: Bearer <value>`. */
+  tokenEnv: z
+    .string()
+    .regex(/^[A-Z_][A-Z0-9_]*$/)
+    .optional(),
+  /** The server's tool names the granted passes may call. Any other tool is denied. */
+  tools: z.array(z.string().regex(/^[A-Za-z0-9_-]+$/)).min(1),
+  /** Reviewer agent ids, plus "verifier" and "cross-cutting" for those passes. */
+  agents: z.array(z.string().min(1)).min(1),
+});
+export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
+
 export const ReviewConfigSchema = z.object({
   /** Default model for every agent + the coordinator. Override per-agent via
    * frontmatter in the agent's markdown, or globally via REVIEWER_MODEL. */
@@ -96,6 +136,29 @@ export const ReviewConfigSchema = z.object({
       resultsPerQuery: 2,
       timeoutMs: 30_000,
     }),
+  // Root-only: a server receives a bearer token from the runner's environment.
+  mcpServers: z
+    .record(
+      z
+        .string()
+        .regex(/^[a-z][a-z0-9_]*$/)
+        // RESEARCH_MCP_SERVER_NAME: a server by that name would replace the bundled
+        // documentation server, and every research pass would call it.
+        .refine((name) => name !== "platform_docs", {
+          error: "mcpServers cannot use the name platform_docs, which the research server uses",
+        }),
+      McpServerConfigSchema,
+    )
+    // OpenCode names a tool `<server>_<tool>`, so server `a` with tool `b_c` and server
+    // `a_b` with tool `c` would share a name, and a grant of one would grant the other.
+    .refine(
+      (servers) =>
+        Object.keys(servers).every((name) =>
+          Object.keys(servers).every((other) => !other.startsWith(`${name}_`)),
+        ),
+      { error: "mcpServers names must not start with another server's name and _" },
+    )
+    .optional(),
   breakGlass: z
     .object({ marker: z.string().default("/skip-review") })
     .default({ marker: "/skip-review" }),
@@ -384,6 +447,7 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
   feedback: true,
   research: true,
   inline: true,
+  mcpServers: true,
 }).extend({
   auth: z
     .never({ error: "auth is locked to the root config; remove it from this scope config" })
@@ -417,6 +481,12 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
     .never({
       error:
         "inline is locked to the root config (the comment lifecycle is global); remove it from this scope config",
+    })
+    .optional(),
+  mcpServers: z
+    .never({
+      error:
+        "mcpServers is locked to the root config because a server receives a credential; remove it from this scope config",
     })
     .optional(),
 });
@@ -523,6 +593,8 @@ export interface LoadedConfig {
     additionalIgnores: string[];
     additionalMarkers: string[];
   };
+  /** Root-only remote MCP servers, by name. Absent when none are configured. */
+  mcpServers?: Record<string, McpServerConfig>;
   /** Root-only configuration for the bundled, bounded documentation MCP. */
   research: {
     enabled: boolean;
