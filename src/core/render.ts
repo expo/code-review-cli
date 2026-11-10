@@ -606,6 +606,7 @@ export function inlineStubBody(tag: string, fp: string): string {
 export const AGENT_NOT_RUN_TEXT: Record<NonNullable<AgentSummary["notRun"]>, string> = {
   paths: "not run: no changed file matches its `paths`",
   router: "not run: the router did not select it",
+  preCheck: "not run: a pre-check agent found a blocking problem",
 };
 
 /** The valid handles a set of mentions names. */

@@ -21,6 +21,11 @@ const MIN_EVIDENCE_LEN = 12;
 
 export interface VerificationResult {
   kept: Finding[];
+  /**
+   * Kept findings the verifier model judged real. Unlike `kept`, it leaves out a
+   * finding kept only because its verify call failed, or kept with no model call.
+   */
+  confirmed: Finding[];
   dropped: Array<{ finding: Finding; reason: string }>;
   /**
    * Kept findings whose cited documentation the verifier judged unsupportive,
@@ -168,6 +173,7 @@ export async function verifyFindings(
   // confirm an external-behavior claim, and the verifier must judge whether the
   // cited passages support it rather than fall back to model memory.
   const verdicts = new Map<Finding, "keep" | "drop">();
+  const confirmedByModel = new Set<Finding>();
   const toVerify: Array<{
     finding: Finding;
     presence: "present" | "absent" | "unknown";
@@ -213,6 +219,7 @@ export async function verifyFindings(
         model = verifyModel ?? model;
         if (value.verified) {
           verdicts.set(finding, "keep");
+          confirmedByModel.add(finding);
           // An explicit false strips the citation; the finding itself stands.
           // Absent or true leaves the grounded sources untouched (fail open).
           if (citedSources && value.citationSupported === false) {
@@ -247,5 +254,8 @@ export async function verifyFindings(
   const kept = findings
     .filter((finding) => verdicts.get(finding) === "keep")
     .map((finding) => replacements.get(finding) ?? finding);
-  return { kept, dropped, citationStripped, cost, tokens, model };
+  const confirmed = findings
+    .filter((finding) => confirmedByModel.has(finding))
+    .map((finding) => replacements.get(finding) ?? finding);
+  return { kept, confirmed, dropped, citationStripped, cost, tokens, model };
 }

@@ -68,6 +68,11 @@
   //   }
   // },
 
+  // Optional agent ids that run before the others, such as a cheap check that the PR
+  // is ready for review. If the verifier confirms a critical finding from one of them,
+  // the other agents do not run and the review shows only the pre-check findings.
+  // "preCheckAgents": ["shape"],
+
   // Large diffs are split into focused chunks by changed-line count, plus a
   // cross-cutting pass for multi-file issues. Diffs under maxChangedLines are one
   // full-context pass. Defaults shown; raise/lower per your model + PR sizes.
