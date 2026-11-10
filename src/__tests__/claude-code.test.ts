@@ -391,6 +391,29 @@ test("parseClaudeResult: an error ignores stale structured_output", () => {
   expect(result.structuredOutputFailure).toBe(true);
 });
 
+test("claudeActivities: reports a granted MCP tool call by server and tool name only", () => {
+  const granted = new Map([["mcp__sandbox__sandbox_exec", "sandbox.sandbox_exec"]]);
+  const call = (name: string) =>
+    claudeActivities(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: name, name, input: { command: "echo DO_NOT_LOG_THIS" } },
+          ],
+        },
+      },
+      "/repo",
+      granted,
+    );
+  expect(call("mcp__sandbox__sandbox_exec")).toEqual([
+    { key: "mcp__sandbox__sandbox_exec", line: "MCP sandbox.sandbox_exec" },
+  ]);
+  // The CLI denies an ungranted call, so the log must not claim it ran.
+  expect(call("mcp__sandbox__destroy_sandbox")).toEqual([]);
+  expect(call("mcp__sandbox__sandbox_exec\nforged log line")).toEqual([]);
+});
+
 test("claudeActivities: reports lifecycle and safe tool targets, never raw text/results/patterns", () => {
   expect(
     claudeActivities({ type: "system", subtype: "init", model: "claude-opus-5" }, "/repo"),
