@@ -147,6 +147,8 @@ export async function verifyFindings(
   researchEvidence: ResearchEvidence[] = [],
   /** Configured MCP servers granted to the verifier pass. */
   mcpServerNames: readonly string[] = [],
+  /** The PR title and body, for a quality finding that judges the change as a whole. */
+  pullRequest?: { title?: string; body?: string },
 ): Promise<VerificationResult> {
   const dropped: Array<{ finding: Finding; reason: string }> = [];
   const citationStripped: Array<{ finding: Finding; reason: string }> = [];
@@ -197,6 +199,7 @@ export async function verifyFindings(
             text: buildVerifierTask(finding, {
               evidenceUngrounded: presence === "absent",
               ...(citedSources ? { citedSources } : {}),
+              ...(pullRequest ? { pullRequest } : {}),
             }),
             title: `verify-${index}`,
             maxWaitMs: VERIFY_TIMEOUT_MS,

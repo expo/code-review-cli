@@ -59,3 +59,21 @@ test("terminal reporter: design and nit groups get their own label and color, in
   expect(out).toContain("\x1b[35m1 design");
   expect(out).toContain("\x1b[90m1 nit");
 });
+
+test("terminal reporter: shows the quality criticals the verifier rejected", async () => {
+  const review: CoordinatorOutput = {
+    decision: "approve",
+    findings: [],
+    summary: "s",
+    incomplete: [],
+    verifierRejected: [
+      {
+        finding: finding({ severity: "critical", title: "Missed sibling", file: "b.ts", line: 7 }),
+        reason: "The sibling already handles the cwd.",
+      },
+    ],
+  };
+  const out = await captureTty(() => new TerminalReporter().report(review));
+  expect(out).toContain("Rejected by the verifier");
+  expect(out).toContain("Missed sibling (b.ts:7): The sibling already handles the cwd.");
+});

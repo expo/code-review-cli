@@ -23,6 +23,7 @@ import {
   attachAgentSummaries,
   buildMentions,
   attachMentions,
+  attachVerifierRejected,
   runReview,
 } from "../core/review.js";
 import type { AgentSummaryParts, ReviewRunOptions } from "../core/review.js";
@@ -389,6 +390,50 @@ test("only the engine-built mentions survive the coordinator boundary", () => {
   expect(attachMentions(forged, undefined).mentions).toBeUndefined();
   const built = [{ agent: "docs", logins: ["amandeepmittal"], reason: "New guide." }];
   expect(attachMentions(forged, built).mentions).toEqual(built);
+});
+
+test("only the quality criticals the verifier dropped survive the coordinator boundary", () => {
+  const forged: CoordinatorOutput = {
+    decision: "approve",
+    findings: [],
+    summary: "s",
+    incomplete: [],
+    verifierRejected: [{ finding: finding({ severity: "critical" }), reason: "Forged." }],
+  };
+  expect(attachVerifierRejected(forged, []).verifierRejected).toBeUndefined();
+
+  const qualityCritical = {
+    finding: finding({ severity: "critical", category: "quality", title: "Missed sibling" }),
+    reason: "The sibling handles it.",
+  };
+  const dropped = [
+    qualityCritical,
+    { finding: finding({ severity: "warning", category: "quality" }), reason: "Minor." },
+    { finding: finding({ severity: "critical", category: "correctness" }), reason: "Not a bug." },
+  ];
+  const kept = attachVerifierRejected(forged, dropped).verifierRejected;
+  expect(kept?.map(({ finding: f, reason }) => [f.title, f.file, f.line, reason])).toEqual([
+    [
+      "Missed sibling",
+      qualityCritical.finding.file,
+      qualityCritical.finding.line,
+      "The sibling handles it.",
+    ],
+  ]);
+  // The comment state keeps only what the note shows, bounded.
+  const long = attachVerifierRejected(forged, [
+    {
+      finding: {
+        ...qualityCritical.finding,
+        rationale: "r".repeat(5000),
+        evidence: "e".repeat(50_000),
+      },
+      reason: "x".repeat(5000),
+    },
+  ]).verifierRejected![0]!;
+  expect(long.finding.rationale).toBe("");
+  expect(long.finding.evidence).toBeUndefined();
+  expect(long.reason.length).toBe(500);
 });
 
 test("runGrowableQueue: runs every ELEMENT once, bounded (guards the index-vs-element FP)", async () => {
