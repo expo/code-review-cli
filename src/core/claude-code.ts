@@ -478,7 +478,12 @@ interface ClaudeActivity {
  * untrusted and may contain secrets or terminal-control/log-injection payloads.
  */
 // @ref LLP 0003#claude-code-cli-containment [implements] — stream only bounded lifecycle/tool metadata; raw model text and tool results never become progress logs
-export function claudeActivities(eventValue: unknown, cwd: string): ClaudeActivity[] {
+export function claudeActivities(
+  eventValue: unknown,
+  cwd: string,
+  /** Each `mcp__<server>__<tool>` name this pass may call, mapped to `<server>.<tool>`. */
+  grantedMcpTools: ReadonlyMap<string, string> = new Map(),
+): ClaudeActivity[] {
   const event = jsonRecord(eventValue);
   if (!event) {
     return [];
@@ -521,6 +526,12 @@ export function claudeActivities(eventValue: unknown, cwd: string): ClaudeActivi
     } else if (block.name === "Glob") {
       const target = activityPath(input.path, cwd);
       activities.push({ key, line: target && target !== "." ? `Glob ${target}` : "Glob" });
+    } else {
+      // Names only, never inputs. The CLI denies an ungranted name, so it is not logged.
+      const mcpTool = grantedMcpTools.get(block.name);
+      if (mcpTool) {
+        activities.push({ key, line: `MCP ${mcpTool}` });
+      }
     }
   }
   return activities;
@@ -530,6 +541,7 @@ export function claudeActivities(eventValue: unknown, cwd: string): ClaudeActivi
 export function createClaudeActivityStream(
   cwd: string,
   onActivity: (line: string) => void,
+  grantedMcpTools: ReadonlyMap<string, string> = new Map(),
 ): { push: (chunk: string) => void; finish: () => void } {
   let buffered = "";
   const reported = new Set<string>();
@@ -538,7 +550,7 @@ export function createClaudeActivityStream(
       return;
     }
     try {
-      for (const activity of claudeActivities(JSON.parse(line), cwd)) {
+      for (const activity of claudeActivities(JSON.parse(line), cwd, grantedMcpTools)) {
         if (activity.key && reported.has(activity.key)) {
           continue;
         }
@@ -811,6 +823,11 @@ export async function runClaudePrompt(
       ? handle.researchMcpConfigPath
       : undefined;
   const mcpGrants = args.maxToolCalls === 0 ? [] : mcpServerGrants(handle.mcpServers, args.agent);
+  const mcpServerTools = new Map(
+    mcpGrants.flatMap((grant) =>
+      grant.tools.map((tool) => [`mcp__${grant.name}__${tool}`, `${grant.name}.${tool}`] as const),
+    ),
+  );
   // A soft tool-call ceiling doubles as the CLI's per-pass turn bound (the closest
   // stateless analogue of OpenCode's mid-run tool-call cap).
   const maxTurns =
@@ -824,7 +841,7 @@ export async function runClaudePrompt(
     args.onActivity?.(line);
   };
   const activityStream = args.onActivity
-    ? createClaudeActivityStream(process.cwd(), emitActivity)
+    ? createClaudeActivityStream(process.cwd(), emitActivity, mcpServerTools)
     : undefined;
   const heartbeat = args.onActivity
     ? setInterval(() => {
@@ -852,9 +869,7 @@ export async function runClaudePrompt(
           const file = handle.mcpServerConfigPaths?.get(grant.name);
           return file ? [file] : [];
         }),
-        mcpServerTools: mcpGrants.flatMap((grant) =>
-          grant.tools.map((tool) => `mcp__${grant.name}__${tool}`),
-        ),
+        mcpServerTools: [...mcpServerTools.keys()],
         maxTurns,
         jsonSchema: args.jsonSchema,
       }),
