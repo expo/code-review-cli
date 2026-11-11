@@ -1,8 +1,13 @@
 // @ref LLP 0003#configured-mcp-servers [implements] — root-only remote MCP servers, granted per pass, token by env var name
-import { writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { McpServerConfig } from "../config/schema.js";
+import type { McpServerUsage } from "../mcp-proxy/audit.js";
+import type { McpProxySettings } from "../mcp-proxy/server.js";
 import { FORBIDDEN_TOKEN_ENVS, MODEL_CREDENTIAL_ENVS } from "./auth.js";
 
 /** One server a pass may call, with the tool names it may call there. */
@@ -56,47 +61,101 @@ export function availableMcpServers(
   );
 }
 
+/** Drop the servers a fork pull request must not get. Local runs never call this. */
+export function mcpServersForPullRequest(
+  servers: Record<string, McpServerConfig> | undefined,
+  pullRequest: { fork: boolean; labels: readonly string[] },
+): Record<string, McpServerConfig> {
+  return Object.fromEntries(
+    Object.entries(servers ?? {}).filter(
+      ([, server]) =>
+        !pullRequest.fork ||
+        (server.forkLabel !== undefined && pullRequest.labels.includes(server.forkLabel)),
+    ),
+  );
+}
+
+/** The engines start this proxy. Only the proxy talks to the remote server. */
+export function bundledMcpProxy(): { command: string; args: string[] } {
+  const builtEntry = fileURLToPath(new URL("../mcp-proxy/cli.js", import.meta.url));
+  const sourceEntry = fileURLToPath(new URL("../mcp-proxy/cli.ts", import.meta.url));
+  return {
+    command: process.execPath,
+    args: [existsSync(builtEntry) ? builtEntry : sourceEntry],
+  };
+}
+
+export interface McpProxyRuntime {
+  /** The servers this run serves: configured, token set. */
+  servers: Record<string, McpServerConfig>;
+  auditPath: string;
+  /** One Claude `--mcp-config` file per server. */
+  claudeConfigPaths: ReadonlyMap<string, string>;
+  /** The proxy command line per server, for OpenCode. */
+  commands: ReadonlyMap<string, string[]>;
+  cleanup(): Promise<void>;
+}
+
 /**
- * One owner-only Claude config per server. The header names the env var and Claude
- * Code expands it, so the token is never written to disk.
+ * One owner-only directory per run: a settings file and a Claude config per server,
+ * and the audit all proxies share.
+ * No file holds the token. The proxy reads it from the env var the settings name.
  */
-export async function writeClaudeMcpServerConfigs(
+export async function createMcpProxyRuntime(
   servers: Record<string, McpServerConfig>,
-  dir: string,
-): Promise<Map<string, string>> {
-  const paths = new Map<string, string>();
+): Promise<McpProxyRuntime | undefined> {
+  if (Object.keys(servers).length === 0) {
+    return undefined;
+  }
+  const directory = await mkdtemp(path.join(tmpdir(), "ecr-mcp-"));
+  const auditPath = path.join(directory, "audit.jsonl");
+  const proxy = bundledMcpProxy();
+  const claudeConfigPaths = new Map<string, string>();
+  const commands = new Map<string, string[]>();
   for (const [name, server] of Object.entries(servers)) {
-    const file = path.join(dir, `${name}.json`);
-    const entry = {
-      type: "http",
+    const settingsPath = path.join(directory, `${name}.settings.json`);
+    const settings: McpProxySettings = {
+      name,
       url: server.url,
-      ...(server.tokenEnv ? { headers: { Authorization: `Bearer \${${server.tokenEnv}}` } } : {}),
+      ...(server.tokenEnv ? { tokenEnv: server.tokenEnv } : {}),
+      ...(server.tokenInfoUrl ? { tokenInfoUrl: server.tokenInfoUrl } : {}),
+      tools: server.tools,
+      extraTokenTools: server.extraTokenTools,
+      maxCalls: server.maxCalls,
+      timeoutMs: server.timeoutMs,
+      maxOutputBytes: server.maxOutputBytes,
+      auditPath,
     };
-    await writeFile(file, `${JSON.stringify({ mcpServers: { [name]: entry } })}\n`, {
+    await writeFile(settingsPath, `${JSON.stringify(settings)}\n`, {
       encoding: "utf8",
       mode: 0o600,
     });
-    paths.set(name, file);
+    const args = [...proxy.args, settingsPath];
+    commands.set(name, [proxy.command, ...args]);
+    const configPath = path.join(directory, `${name}.json`);
+    await writeFile(
+      configPath,
+      `${JSON.stringify({ mcpServers: { [name]: { type: "stdio", command: proxy.command, args } } })}\n`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+    claudeConfigPaths.set(name, configPath);
   }
-  return paths;
+  return {
+    servers,
+    auditPath,
+    claudeConfigPaths,
+    commands,
+    cleanup: () => rm(directory, { recursive: true, force: true }),
+  };
 }
 
-/** OpenCode's `mcp` entries for the servers, with `{env:…}` resolved by OpenCode. */
-export function opencodeMcpServers(
-  servers: Record<string, McpServerConfig> | undefined,
-): Record<string, unknown> {
+/** OpenCode's `mcp` entries: each server is the local proxy. */
+export function opencodeMcpServers(runtime: McpProxyRuntime | undefined): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(servers ?? {}).map(([name, server]) => [
+    [...(runtime?.commands ?? [])].map(([name, command]) => [
       name,
-      {
-        type: "remote",
-        url: server.url,
-        ...(server.tokenEnv
-          ? { headers: { Authorization: `Bearer {env:${server.tokenEnv}}` } }
-          : {}),
-        oauth: false,
-        enabled: true,
-      },
+      // `timeout` bounds tool discovery, which waits for the proxy to reach the server.
+      { type: "local", command, enabled: true, timeout: 30_000 },
     ]),
   );
 }
@@ -114,6 +173,23 @@ export function opencodeMcpToolsOff(
       server.tools.map((tool) => [`${name}_${tool}`, false]),
     ),
   );
+}
+
+/** Progress lines for the run's server usage. A refused server names its fix. */
+export function formatMcpServerUsage(usage: readonly McpServerUsage[]): string[] {
+  return usage.map((entry) => {
+    if (entry.refused === "token-too-broad") {
+      return `  MCP server "${entry.server}" refused: it offers tools the config does not name, so its token is not scoped to this review. Mint a scoped token, or list the tools in extraTokenTools.`;
+    }
+    if (entry.refused === "token-not-scoped") {
+      return `  MCP server "${entry.server}" refused: its token is not a scoped token that expires. Mint a scoped token for each review run.`;
+    }
+    if (entry.refused === "unavailable") {
+      return `  MCP server "${entry.server}" was not reachable; the review ran without it.`;
+    }
+    const rejected = entry.rejected > 0 ? `, ${entry.rejected} refused` : "";
+    return `  MCP server "${entry.server}": ${entry.calls} call(s), ${entry.errors} error(s)${rejected}.`;
+  });
 }
 
 /** OpenCode tool switches for one pass: only its granted tools are turned on. */

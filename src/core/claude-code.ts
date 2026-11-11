@@ -1,19 +1,13 @@
 // @ref LLP 0003#claude-code-cli-containment [implements] — argv/env hardening for the claude -p subprocess
 // @ref LLP 0003#two-engines-per-agent-dispatch [implements] — anthropic/* routing and the per-agent engine map
-import { rmSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import type { LoadedConfig, McpServerConfig } from "../config/schema.js";
 import { checkAuthEntry } from "./auth.js";
 import { pathInside, resolveOnPath, run } from "./exec.js";
-import {
-  assertMcpServerTokenEnvs,
-  availableMcpServers,
-  mcpServerGrants,
-  writeClaudeMcpServerConfigs,
-} from "./mcp-servers.js";
+import { assertMcpServerTokenEnvs, mcpServerGrants } from "./mcp-servers.js";
+import type { McpProxyRuntime } from "./mcp-servers.js";
 import {
   addTokenUsage,
   AgentTimeoutError,
@@ -1147,6 +1141,7 @@ export async function startClaudeCode(
   config: LoadedConfig,
   research?: ResearchMcpRuntime,
   patchDir?: string,
+  mcpProxy?: McpProxyRuntime,
 ): Promise<ClaudeCodeHandle> {
   const cliPath = await resolveOnPath("claude");
   if (!cliPath) {
@@ -1249,27 +1244,17 @@ export async function startClaudeCode(
     config.mcpServers,
     config.auth.flatMap((auth) => (auth.tokenEnv ? [auth.tokenEnv] : [])),
   );
-  const mcpServers = availableMcpServers(config.mcpServers, process.env);
-  let mcpDir: string | undefined;
-  let mcpServerConfigPaths: Map<string, string> | undefined;
-  if (Object.keys(mcpServers).length > 0) {
-    mcpDir = await mkdtemp(path.join(tmpdir(), "ecr-mcp-"));
-    mcpServerConfigPaths = await writeClaudeMcpServerConfigs(mcpServers, mcpDir);
-    for (const server of Object.values(mcpServers)) {
-      if (server.tokenEnv) {
-        childEnv[server.tokenEnv] = process.env[server.tokenEnv];
-      }
+  // The proxy reads the token from its own env, so the child env must carry it.
+  for (const server of Object.values(mcpProxy?.servers ?? {})) {
+    if (server.tokenEnv) {
+      childEnv[server.tokenEnv] = process.env[server.tokenEnv];
     }
   }
 
   return {
     client: undefined,
     url: "",
-    close: () => {
-      if (mcpDir) {
-        rmSync(mcpDir, { recursive: true, force: true });
-      }
-    },
+    close: () => {},
     // NOT the default watch file: that is the host's real OpenCode log, which this
     // engine never writes — stale 429s from unrelated OpenCode use would be counted
     // as evidence for this run. A nonexistent path keeps check() at zero; evidence
@@ -1283,7 +1268,9 @@ export async function startClaudeCode(
     childEnv,
     ...(research ? { researchMcpConfigPath: research.claudeConfigPath } : {}),
     researchAgents,
-    ...(mcpServerConfigPaths ? { mcpServers, mcpServerConfigPaths } : {}),
+    ...(mcpProxy
+      ? { mcpServers: mcpProxy.servers, mcpServerConfigPaths: mcpProxy.claudeConfigPaths }
+      : {}),
     ...(patchDir ? { patchDir } : {}),
   };
 }

@@ -87,9 +87,14 @@ import { reviewSetupRefNotes } from "./config-refs.js";
 import {
   assertMcpServerTokenEnvs,
   availableMcpServers,
+  createMcpProxyRuntime,
+  formatMcpServerUsage,
   mcpServerGrants,
   opencodeMcpToolsOff,
 } from "./mcp-servers.js";
+import type { McpProxyRuntime } from "./mcp-servers.js";
+import { readMcpServerUsage } from "../mcp-proxy/audit.js";
+import type { McpServerUsage } from "../mcp-proxy/audit.js";
 import { verifyFindings } from "./verify.js";
 import { applyInlineIgnores } from "./suppress.js";
 import {
@@ -449,6 +454,39 @@ export async function runReview(
     throw new Error(`Failed to prepare the documentation MCP: ${errorMessage(error)}`);
   }
 
+  // The engines never reach a configured server. They start the local proxy, which
+  // holds the call budget, the deadline, the output limit and the audit.
+  let mcpProxy: McpProxyRuntime | undefined;
+  try {
+    mcpProxy = await createMcpProxyRuntime(availableMcpServers(config.mcpServers, process.env));
+    for (const [name, server] of Object.entries(mcpProxy?.servers ?? {})) {
+      progress(
+        `MCP server "${name}" enabled for ${server.agents.join(", ")} (${server.maxCalls} calls max; calls will be reported).`,
+      );
+    }
+  } catch (error) {
+    await auth.cleanup();
+    await researchRuntime?.cleanup();
+    await restoreCwd();
+    throw new Error(`Failed to prepare the MCP server proxy: ${errorMessage(error)}`);
+  }
+  // Read when the log is written, not earlier: the verifier calls these servers too.
+  const mcpServerUsageLog = async (): Promise<{ mcpServers?: McpServerUsage[] }> => {
+    if (!mcpProxy) {
+      return {};
+    }
+    try {
+      const usage = await readMcpServerUsage(mcpProxy.auditPath);
+      for (const line of formatMcpServerUsage(usage)) {
+        progress(line);
+      }
+      return usage.length > 0 ? { mcpServers: usage } : {};
+    } catch (error) {
+      progress(`  MCP server audit unavailable: ${errorMessage(error)}`);
+      return {};
+    }
+  };
+
   const starting = [
     usesClaude ? "Claude Code engine" : null,
     usesOpencode ? "OpenCode server" : null,
@@ -469,15 +507,15 @@ export async function runReview(
         config.mcpServers,
         config.auth.flatMap((entry) => (entry.tokenEnv ? [entry.tokenEnv] : [])),
       );
-      const mcpServers = availableMcpServers(config.mcpServers, process.env);
       opencodeHandle = await startOpencode(
-        buildOpencodeConfig({ ...config, mcpServers }, researchRuntime),
-        opencodeMcpToolsOff(mcpServers),
+        buildOpencodeConfig(config, researchRuntime, mcpProxy),
+        opencodeMcpToolsOff(mcpProxy?.servers),
       );
     }
   } catch (error) {
     await auth.cleanup();
     await researchRuntime?.cleanup();
+    await mcpProxy?.cleanup();
     await restoreCwd();
     throw new Error(
       `Failed to start the OpenCode server. Ensure the \`opencode\` CLI is installed and ` +
@@ -486,12 +524,13 @@ export async function runReview(
   }
   try {
     if (usesClaude) {
-      claudeHandle = await startClaudeCode(config, researchRuntime, patchDirFor(runDir));
+      claudeHandle = await startClaudeCode(config, researchRuntime, patchDirFor(runDir), mcpProxy);
     }
   } catch (error) {
     opencodeHandle?.close();
     await auth.cleanup();
     await researchRuntime?.cleanup();
+    await mcpProxy?.cleanup();
     await restoreCwd();
     throw new Error(
       `Failed to start the Claude Code engine. Ensure the \`claude\` CLI is installed and ` +
@@ -559,6 +598,7 @@ export async function runReview(
     handle.close();
     await auth.cleanup();
     await researchRuntime?.cleanup();
+    await mcpProxy?.cleanup();
     await restoreCwd();
     throw error;
   }
@@ -1208,9 +1248,7 @@ export async function runReview(
         process.cwd(),
         progress,
         researchEvidence,
-        mcpServerGrants(availableMcpServers(config.mcpServers, process.env), VERIFIER_AGENT).map(
-          (grant) => grant.name,
-        ),
+        mcpServerGrants(mcpProxy?.servers, VERIFIER_AGENT).map((grant) => grant.name),
       );
       agentCosts["verifier"] = verification.cost;
       trackTokens("verifier", verification.tokens);
@@ -1493,6 +1531,7 @@ export async function runReview(
       ...baseRecord,
       ...pathsLog(),
       ...(researchRecord ? { research: researchRecord } : {}),
+      ...(await mcpServerUsageLog()),
       agentCosts,
       totalCost: sum(agentCosts),
       tokens: tokenTotals,
@@ -1542,6 +1581,7 @@ export async function runReview(
       ...baseRecord,
       ...pathsLog(),
       ...(researchRecord ? { research: researchRecord } : {}),
+      ...(await mcpServerUsageLog()),
       agentCosts,
       totalCost: sum(agentCosts),
       tokens: tokenTotals,
@@ -1559,6 +1599,7 @@ export async function runReview(
     handle.close();
     await auth.cleanup();
     await researchRuntime?.cleanup();
+    await mcpProxy?.cleanup();
     await restoreCwd();
   }
 }

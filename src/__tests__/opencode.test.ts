@@ -485,19 +485,33 @@ test("buildOpencodeConfig turns a configured MCP server off, then on for granted
         agents: ["deep", "verifier"],
       },
     },
-  } as LoadedConfig;
-  const opencode = buildOpencodeConfig(config) as {
+  } as unknown as LoadedConfig;
+  const proxy = {
+    servers: config.mcpServers!,
+    auditPath: "/private/audit.jsonl",
+    claudeConfigPaths: new Map(),
+    commands: new Map([["sandbox", ["/node", "/proxy/cli.js", "/private/sandbox.settings.json"]]]),
+    cleanup: async () => {},
+  };
+  const opencode = buildOpencodeConfig(config, undefined, proxy) as {
     tools: Record<string, boolean>;
     agent: Record<string, { tools: Record<string, boolean> }>;
     mcp: Record<string, unknown>;
   };
+  // The engine starts the local proxy. It never gets the url or the token.
   expect(opencode.mcp.sandbox).toEqual({
-    type: "remote",
-    url: "https://sandbox.example/mcp",
-    headers: { Authorization: "Bearer {env:REVIEW_SANDBOX_TOKEN}" },
-    oauth: false,
+    type: "local",
+    command: ["/node", "/proxy/cli.js", "/private/sandbox.settings.json"],
     enabled: true,
+    timeout: 30_000,
   });
+  expect(JSON.stringify(opencode)).not.toContain("REVIEW_SANDBOX_TOKEN");
+  const withoutProxy = buildOpencodeConfig(config) as {
+    mcp?: Record<string, unknown>;
+    agent: Record<string, { tools: Record<string, boolean> }>;
+  };
+  expect(withoutProxy.mcp).toBeUndefined();
+  expect(withoutProxy.agent.deep!.tools.sandbox_sandbox_exec).toBeUndefined();
   expect(opencode.tools["sandbox_*"]).toBe(false);
   expect(opencode.agent.deep!.tools.sandbox_sandbox_exec).toBe(true);
   expect(opencode.agent.verifier!.tools.sandbox_sandbox_exec).toBe(true);

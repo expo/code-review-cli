@@ -31,27 +31,57 @@ function isHttpsOrLoopback(url: string): boolean {
 }
 
 /** A remote MCP server that named review passes may call, such as a code sandbox. */
-export const McpServerConfigSchema = z.object({
-  url: z
-    .url()
-    .refine(isHttpsOrLoopback, {
+export const McpServerConfigSchema = z
+  .object({
+    url: z.url().refine(isHttpsOrLoopback, {
       error: "mcpServers url must use https (plain http is allowed only for localhost)",
-    })
-    // Claude Code expands `${VAR}` and OpenCode expands `{env:…}` and `{file:…}` in a
-    // url, which would send an env var or a file to the server outside tokenEnv's checks.
-    .refine((url) => !/[${}]/.test(url), {
-      error: "mcpServers url must not contain $, { or }; pass a credential with tokenEnv",
     }),
-  /** Env var whose value is sent as `Authorization: Bearer <value>`. */
-  tokenEnv: z
-    .string()
-    .regex(/^[A-Z_][A-Z0-9_]*$/)
-    .optional(),
-  /** The server's tool names the granted passes may call. Any other tool is denied. */
-  tools: z.array(z.string().regex(/^[A-Za-z0-9_-]+$/)).min(1),
-  /** Reviewer agent ids, plus "verifier" and "cross-cutting" for those passes. */
-  agents: z.array(z.string().min(1)).min(1),
-});
+    /** Env var whose value is sent as `Authorization: Bearer <value>`. */
+    tokenEnv: z
+      .string()
+      .regex(/^[A-Z_][A-Z0-9_]*$/)
+      .optional(),
+    /** The server's tool names the granted passes may call. Any other tool is denied. */
+    tools: z.array(z.string().regex(/^[A-Za-z0-9_-]+$/)).min(1),
+    /** Reviewer agent ids, plus "verifier" and "cross-cutting" for those passes. */
+    agents: z.array(z.string().min(1)).min(1),
+    /**
+     * Tools the token may hold that no pass may call, such as a destroy tool that a
+     * workflow step calls.
+     * A server that offers any other tool is refused: its token is not scoped.
+     */
+    extraTokenTools: z.array(z.string().regex(/^[A-Za-z0-9_-]+$/)).default([]),
+    /** Calls to this server in one review run, summed over every pass. */
+    maxCalls: z.number().int().min(1).max(200).default(20),
+    /** Deadline of one call. */
+    timeoutMs: z.number().int().min(1_000).max(600_000).default(120_000),
+    /** Output of one call, cut at this size before a pass reads it. */
+    maxOutputBytes: z.number().int().min(1_024).max(262_144).default(16_384),
+    /**
+     * `ecr ci` gives this server to a fork pull request only when the pull request has
+     * this label.
+     * Without it, a fork pull request never gets the server.
+     */
+    forkLabel: z.string().min(1).optional(),
+    /**
+     * A GET endpoint of the same server that describes the bearer token as JSON:
+     * `{ "scoped": boolean, "expiresAt": <epoch ms> | null }`.
+     * When set, the server is used only with a scoped token that expires.
+     */
+    tokenInfoUrl: z
+      .url()
+      .refine(isHttpsOrLoopback, {
+        error: "mcpServers tokenInfoUrl must use https (plain http is allowed only for localhost)",
+      })
+      .optional(),
+  })
+  // The token goes to this url, so it must be the server the token was minted for.
+  .refine(
+    (server) =>
+      server.tokenInfoUrl === undefined ||
+      new URL(server.tokenInfoUrl).origin === new URL(server.url).origin,
+    { error: "mcpServers tokenInfoUrl must have the same origin as url" },
+  );
 export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 
 export const ReviewConfigSchema = z.object({

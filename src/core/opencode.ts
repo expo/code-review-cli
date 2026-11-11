@@ -15,6 +15,7 @@ import { RateLimitWatch } from "./throttle.js";
 import { OPENCODE_RESEARCH_TOOLS, toolMap } from "./tools.js";
 import { errorMessage, sleep } from "./util.js";
 import { opencodeGrantedTools, opencodeMcpServers } from "./mcp-servers.js";
+import type { McpProxyRuntime } from "./mcp-servers.js";
 import type { ResearchMcpRuntime } from "./research.js";
 
 /** Discriminant for the Claude Code CLI engine (see core/claude-code.ts). */
@@ -236,6 +237,7 @@ export const STACK_VERIFIER_AGENT = "stack-verifier";
 export function buildOpencodeConfig(
   config: LoadedConfig,
   research?: ResearchMcpRuntime,
+  mcpProxy?: McpProxyRuntime,
 ): Record<string, unknown> {
   const agent: Record<string, unknown> = {};
   for (const reviewer of config.agents) {
@@ -248,7 +250,7 @@ export function buildOpencodeConfig(
       tools: {
         ...reviewer.tools,
         ...Object.fromEntries(OPENCODE_RESEARCH_TOOLS.map((name) => [name, Boolean(research)])),
-        ...opencodeGrantedTools(config.mcpServers, reviewer.id),
+        ...opencodeGrantedTools(mcpProxy?.servers, reviewer.id),
       },
     };
   }
@@ -263,7 +265,7 @@ export function buildOpencodeConfig(
     tools: {
       ...CROSS_CUTTING_TOOLS,
       ...Object.fromEntries(OPENCODE_RESEARCH_TOOLS.map((name) => [name, Boolean(research)])),
-      ...opencodeGrantedTools(config.mcpServers, CROSS_CUTTING_AGENT),
+      ...opencodeGrantedTools(mcpProxy?.servers, CROSS_CUTTING_AGENT),
     },
   };
   agent[VERIFIER_AGENT] = {
@@ -273,7 +275,7 @@ export function buildOpencodeConfig(
     temperature: config.agents[0]?.temperature ?? 0.1,
     prompt:
       "You verify code-review findings against the actual source. Follow the user message exactly and return only the requested JSON.",
-    tools: { ...VERIFIER_TOOLS, ...opencodeGrantedTools(config.mcpServers, VERIFIER_AGENT) },
+    tools: { ...VERIFIER_TOOLS, ...opencodeGrantedTools(mcpProxy?.servers, VERIFIER_AGENT) },
   };
   agent[STACK_VERIFIER_AGENT] = {
     description: "Confirms a requalification against the addressing PR's inlined patch.",
@@ -362,7 +364,7 @@ export function buildOpencodeConfig(
     };
   }
 
-  const mcpServers = opencodeMcpServers(config.mcpServers);
+  const mcpServers = opencodeMcpServers(mcpProxy);
   const mcp = {
     ...(research
       ? {

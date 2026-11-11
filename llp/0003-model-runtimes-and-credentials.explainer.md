@@ -217,34 +217,75 @@ and the read-root materialization in `github-pr.ts`).
 
 A root config can grant remote MCP servers to named passes with `mcpServers`, for
 example a code sandbox in which a reviewer or the verifier checks how a tool behaves.
-The grant is per pass and per tool. A reviewer id, `verifier` or `cross-cutting` gets a
-server only when its `agents` list names it, and only the `tools` listed are callable.
-On the Claude engine each granted tool is an `mcp__<server>__<tool>` entry in
-`--allowedTools`, and under `dontAsk` every other tool of that server is refused. On
-OpenCode a `<server>_*: false` switch turns the server off for every agent, and the
-granted names are switched back on per agent ([observed] `mcp-servers.ts`,
-`claude-code.ts` `buildClaudeArgs`, `opencode.ts` `buildOpencodeConfig`).
 
-The bearer token travels by env var name, never by value. The Claude config file for
-each server is owner-only, lives in a private temp directory, and holds
-`Bearer ${TOKEN_ENV}` for the CLI to expand. OpenCode gets `Bearer {env:TOKEN_ENV}`. The
-Claude child env stays an allowlist and gains the token env of each server whose token
-is set. Every pass shares that env; only a granted pass gets the server's config.
-A token env must not name a `FORBIDDEN_TOKEN_ENVS` secret, a model credential or an
-`auth.tokenEnv`, because the server would receive it. That rule runs at load and again
-before each engine starts, against the run's own auth (a routing manifest can replace
-the root's), like `auth.tokenEnv`. A `url` must not contain `$`, `{` or `}`,
-because both engines expand variables in it and would bypass that rule. `mcpServers` is root-only: a scope config
-cannot add a server, because a server receives a credential. A server whose token env
-is unset is skipped, so a local run without the token still works
-([observed] `mcp-servers.ts` `assertMcpServerTokenEnvs`/`availableMcpServers`,
-`schema.ts` `McpServerConfigSchema`/`ScopeReviewConfigSchema`).
+**The server's scoped token is the boundary.** A pass that reads untrusted PR content
+can be steered into calling the tools it was granted, with input the PR author wrote.
+No rule in ECR can stop that. So the token must be one minted for this review run: a
+child token with a short lifetime, a small budget and only the tools the config names,
+revoked when the run ends. The workflow mints and revokes it, and the parent token
+never reaches the review step. A tricked pass then gets one throwaway sandbox for a
+short time and nothing else. A code sandbox must also hold no credentials. If it has
+open network access, the code a pass runs there can send out what the pass read, so
+decide that on the server. Everything below is a second layer.
 
-The server, not ECR, bounds what a granted tool can do. A code sandbox must hold no
-credentials and must be able to refuse work beyond its budget: a pass that reads
-untrusted PR content can be steered into calling the tools it was granted. The verifier
-prompt names the granted servers and tells it to check tool behavior on inputs it writes
-itself, never the pull request's own code ([observed] `prompts.ts` `buildVerifierSystem`).
+**The engines start a local proxy, never the remote server.** Like the documentation
+MCP ([LLP 0013](0013-platform-research.explainer.md)), the proxy is a process that ECR
+ships and the config cannot replace. Each engine gets a stdio entry that starts it with
+one owner-only settings file. The engine config holds no url and no token. The proxy
+reads the token from the env var the settings name. It does six things the engines
+cannot do ([observed] `mcp-proxy/server.ts`, `mcp-proxy/audit.ts`, `mcp-servers.ts`
+`createMcpProxyRuntime`):
+
+- **Scope check.** ECR cannot read the scope of an opaque bearer token, but a server
+  that scopes tokens lists only the tools a token may call. The proxy lists the
+  server's tools first and refuses the server when it offers a tool outside `tools`
+  and `extraTokenTools`. A full token fails this check. The check proves the tool
+  scope only, not the lifetime or the budget.
+- **Token check.** When the config sets `tokenInfoUrl`, the proxy first asks that
+  endpoint what the token is, and uses the server only when the answer is
+  `scoped: true` with an `expiresAt` still ahead. The url must have the same origin as
+  the server, and a redirect is refused, so the token goes nowhere else.
+- **Call budget.** `maxCalls` bounds the calls of one run, summed over every pass. The
+  count lives in the run's audit file because each Claude pass starts its own proxy.
+- **Deadline.** `timeoutMs` ends one call.
+- **Bounded, labeled output.** A result keeps its text parts only, is cut at
+  `maxOutputBytes`, and starts with a notice that it is untrusted data. Sandbox output
+  is PR-influenced, like the diff.
+- **Audit.** Each call records the tool, the size and hash of its arguments, its
+  duration and its output size. Arguments and output are model and PR content, so
+  their text is never written. The run log gets one summary per server.
+
+**Grants.** The grant is per pass and per tool. A reviewer id, `verifier` or
+`cross-cutting` gets a server only when its `agents` list names it, and only the
+`tools` listed are callable. On the Claude engine each granted tool is an
+`mcp__<server>__<tool>` entry in `--allowedTools`, and under `dontAsk` every other tool
+of that server is refused. On OpenCode a `<server>_*: false` switch turns the server
+off for every agent, and the granted names are switched back on per agent ([observed]
+`mcp-servers.ts`, `claude-code.ts` `buildClaudeArgs`, `opencode.ts`
+`buildOpencodeConfig`).
+
+**Token env.** The Claude child env stays an allowlist and gains the token env of each
+server whose token is set, so the proxy can read it. A token env must not name a
+`FORBIDDEN_TOKEN_ENVS` secret, a model credential or an `auth.tokenEnv`, because the
+server would receive it. That rule runs at load and again before each engine
+starts, against the run's own auth (a routing manifest can replace the root's), like
+`auth.tokenEnv`. `mcpServers` is root-only: a scope config cannot add a server, because
+a server receives a credential. A server whose token env is unset is skipped, so a
+local run without the token still works ([observed] `mcp-servers.ts`
+`assertMcpServerTokenEnvs`/`availableMcpServers`, `schema.ts`
+`McpServerConfigSchema`/`ScopeReviewConfigSchema`).
+
+**Fork pull requests.** In `ecr ci` a fork pull request gets a server only when the
+server sets `forkLabel` and the pull request has that label. Without `forkLabel` a
+fork never gets the server. A failed lookup counts as a fork. Local runs skip this
+gate: the person at the terminal is the trust principal ([observed] `ci.ts`
+`gateMcpServers`, `mcp-servers.ts` `mcpServersForPullRequest`).
+
+**The prompt is guidance, not a control.** The verifier prompt names the granted
+servers and tells it to check tool behavior on inputs it writes itself, not on the
+pull request's own code, and to treat tool output as data. An injected pass can ignore
+all of that. The prompt improves review quality. It is not part of the boundary
+([observed] `prompts.ts` `buildVerifierSystem`).
 
 ## Credential Resolution and Forwarding
 

@@ -7,9 +7,10 @@ import { CONFIG_DIRNAME, loadReviewConfig } from "../config/load.js";
 import { ScopeReviewConfigSchema } from "../config/schema.js";
 import type { McpServerConfig } from "../config/schema.js";
 import {
+  createMcpProxyRuntime,
   mcpServerGrants,
+  mcpServersForPullRequest,
   opencodeMcpToolsOff,
-  writeClaudeMcpServerConfigs,
 } from "../core/mcp-servers.js";
 import { promptAgent } from "../core/opencode.js";
 import type { OpencodeHandle } from "../core/opencode.js";
@@ -20,6 +21,10 @@ const SANDBOX: McpServerConfig = {
   tokenEnv: "REVIEW_SANDBOX_TOKEN",
   tools: ["create_sandbox", "sandbox_exec"],
   agents: ["deep", "verifier"],
+  extraTokenTools: [],
+  maxCalls: 20,
+  timeoutMs: 120_000,
+  maxOutputBytes: 16_384,
 };
 
 let root: string;
@@ -50,26 +55,67 @@ test("grants a server only to the agents it names, including the verifier", () =
   expect(mcpServerGrants(undefined, "deep")).toEqual([]);
 });
 
-test("writes an owner-only Claude config whose header names the token variable, not its value", async () => {
+test("points each engine at the local proxy and writes no token to disk", async () => {
   process.env.REVIEW_SANDBOX_TOKEN = "secret-value-that-must-not-be-written";
+  const runtime = (await createMcpProxyRuntime({ sandbox: SANDBOX }))!;
   try {
-    const paths = await writeClaudeMcpServerConfigs({ sandbox: SANDBOX }, root);
-    const file = paths.get("sandbox")!;
+    const file = runtime.claudeConfigPaths.get("sandbox")!;
     const text = await readFile(file, "utf8");
-    expect(JSON.parse(text)).toEqual({
-      mcpServers: {
-        sandbox: {
-          type: "http",
-          url: "https://sandbox.example/mcp",
-          headers: { Authorization: "Bearer ${REVIEW_SANDBOX_TOKEN}" },
-        },
-      },
+    const entry = JSON.parse(text).mcpServers.sandbox;
+    expect(entry.type).toBe("stdio");
+    expect([entry.command, ...entry.args]).toEqual(runtime.commands.get("sandbox")!);
+    // The engine config holds no url and no token: only the proxy reaches the server.
+    expect(text).not.toContain("sandbox.example");
+    const settingsPath = entry.args.at(-1) as string;
+    const settings = await readFile(settingsPath, "utf8");
+    expect(JSON.parse(settings)).toMatchObject({
+      name: "sandbox",
+      url: "https://sandbox.example/mcp",
+      tokenEnv: "REVIEW_SANDBOX_TOKEN",
+      tools: ["create_sandbox", "sandbox_exec"],
+      maxCalls: 20,
+      auditPath: runtime.auditPath,
     });
-    expect(text).not.toContain("secret-value");
+    for (const written of [text, settings]) {
+      expect(written).not.toContain("secret-value");
+    }
     expect((await stat(file)).mode & 0o777).toBe(0o600);
+    expect((await stat(settingsPath)).mode & 0o777).toBe(0o600);
   } finally {
     delete process.env.REVIEW_SANDBOX_TOKEN;
+    await runtime.cleanup();
   }
+});
+
+test("creates no proxy runtime when no server is available", async () => {
+  expect(await createMcpProxyRuntime({})).toBeUndefined();
+});
+
+test("keeps every server for a pull request from the same repository", () => {
+  const servers = { sandbox: SANDBOX };
+  expect(mcpServersForPullRequest(servers, { fork: false, labels: [] })).toEqual(servers);
+});
+
+test("gives a fork pull request a server only with that server's fork label", () => {
+  const labeled = { ...SANDBOX, forkLabel: "ai-review" };
+  expect(
+    mcpServersForPullRequest({ sandbox: labeled }, { fork: true, labels: ["ai-review"] }),
+  ).toEqual({ sandbox: labeled });
+  expect(mcpServersForPullRequest({ sandbox: labeled }, { fork: true, labels: ["bug"] })).toEqual(
+    {},
+  );
+});
+
+test("refuses a fork pull request when the server names no fork label", () => {
+  expect(
+    mcpServersForPullRequest({ sandbox: SANDBOX }, { fork: true, labels: ["ai-review"] }),
+  ).toEqual({});
+});
+
+test("fills the call limits of a server that sets none", async () => {
+  const { url, tokenEnv, tools, agents } = SANDBOX;
+  await writeRootConfig({ mcpServers: { sandbox: { url, tokenEnv, tools, agents } } });
+  expect((await loadReviewConfig(root)).mcpServers).toEqual({ sandbox: SANDBOX });
 });
 
 test("loads mcpServers from the root config", async () => {
@@ -103,15 +149,19 @@ test("refuses server names whose OpenCode tool names could collide", async () =>
   await expect(loadReviewConfig(root)).rejects.toThrow(/another server's name/);
 });
 
-test("refuses a url that the engine would expand into an env var or a file", async () => {
-  for (const url of [
-    "https://collector.example/${CLAUDE_CODE_OAUTH_TOKEN}",
-    "https://collector.example/{env:GH_TOKEN}",
-    "https://collector.example/{file:/etc/passwd}",
-  ]) {
-    await writeRootConfig({ mcpServers: { sandbox: { ...SANDBOX, url } } });
-    await expect(loadReviewConfig(root)).rejects.toThrow(/tokenEnv/);
-  }
+test("refuses a token info url on another origin than the server", async () => {
+  await writeRootConfig({
+    mcpServers: {
+      sandbox: { ...SANDBOX, tokenInfoUrl: "https://collector.example/tokens/info" },
+    },
+  });
+  await expect(loadReviewConfig(root)).rejects.toThrow(/same origin/);
+  await writeRootConfig({
+    mcpServers: { sandbox: { ...SANDBOX, tokenInfoUrl: "https://sandbox.example/tokens/info" } },
+  });
+  expect((await loadReviewConfig(root)).mcpServers?.sandbox?.tokenInfoUrl).toBe(
+    "https://sandbox.example/tokens/info",
+  );
 });
 
 test("refuses a token env that holds another secret or the model credential", async () => {
