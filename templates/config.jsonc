@@ -65,8 +65,9 @@
   // server that offers a tool outside `tools` and `extraTokenTools`, because such a
   // token is not scoped. With `tokenInfoUrl` (same origin as `url`; it must answer
   // `{ "scoped": boolean, "expiresAt": <epoch ms> | null }` for the bearer), ecr also
-  // refuses a token that is not scoped or does not expire. A code sandbox must hold no credentials. Turn its network
-  // access off if the server can.
+  // refuses a token that is not scoped or does not expire. With `requireNoNetwork`,
+  // the info must also say `"network": false`: the sandbox cannot reach the internet. A code sandbox must hold no credentials and needs no
+  // network access.
   //
   // ecr calls the server through its own local proxy, which enforces `maxCalls` (per
   // run), `timeoutMs` (per call) and `maxOutputBytes` (per call), and records every
@@ -83,7 +84,8 @@
   //     "timeoutMs": 120000,
   //     "maxOutputBytes": 16384,
   //     "forkLabel": "ai-review",
-  //     "tokenInfoUrl": "https://example.convex.site/tokens/info"
+  //     "tokenInfoUrl": "https://example.convex.site/tokens/info",
+  //     "requireNoNetwork": true
   //   }
   // },
 

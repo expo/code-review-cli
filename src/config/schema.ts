@@ -74,6 +74,15 @@ export const McpServerConfigSchema = z
         error: "mcpServers tokenInfoUrl must use https (plain http is allowed only for localhost)",
       })
       .optional(),
+    /**
+     * Use the server only when its token info says `"network": false`: code a pass runs
+     * there cannot reach the internet.
+     * Needs `tokenInfoUrl`.
+     */
+    requireNoNetwork: z.boolean().default(false),
+  })
+  .refine((server) => !server.requireNoNetwork || server.tokenInfoUrl !== undefined, {
+    error: "mcpServers requireNoNetwork needs tokenInfoUrl",
   })
   // The token goes to this url, so it must be the server the token was minted for.
   .refine(

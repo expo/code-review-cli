@@ -224,9 +224,16 @@ No rule in ECR can stop that. So the token must be one minted for this review ru
 child token with a short lifetime, a small budget and only the tools the config names,
 revoked when the run ends. The workflow mints and revokes it, and the parent token
 never reaches the review step. A tricked pass then gets one throwaway sandbox for a
-short time and nothing else. A code sandbox must also hold no credentials. If it has
-open network access, the code a pass runs there can send out what the pass read, so
-decide that on the server. Everything below is a second layer.
+short time and nothing else. A code sandbox must also hold no credentials.
+
+**Decision: a review sandbox has no network access.** Before this feature a prompt
+injection could only change the comment. With open egress, code a tricked pass runs in
+the sandbox could send out what the pass read, or fetch more instructions. With egress
+off it can only return output to the pass, so that property holds again. A review does
+not need the network there: documentation comes from the research MCP on the runner.
+The cost is that a pass cannot install a package or clone a repository in the sandbox.
+The server enforces this on the token; `requireNoNetwork` makes ECR refuse a token
+whose info does not say `"network": false`. Everything below is a second layer.
 
 **The engines start a local proxy, never the remote server.** Like the documentation
 MCP ([LLP 0013](0013-platform-research.explainer.md)), the proxy is a process that ECR
@@ -243,7 +250,8 @@ cannot do ([observed] `mcp-proxy/server.ts`, `mcp-proxy/audit.ts`, `mcp-servers.
   scope only, not the lifetime or the budget.
 - **Token check.** When the config sets `tokenInfoUrl`, the proxy first asks that
   endpoint what the token is, and uses the server only when the answer is
-  `scoped: true` with an `expiresAt` still ahead. The url must have the same origin as
+  `scoped: true` with an `expiresAt` still ahead, and with `requireNoNetwork`,
+  `network: false`. The url must have the same origin as
   the server, and a redirect is refused, so the token goes nowhere else.
 - **Call budget.** `maxCalls` bounds the calls of one run, summed over every pass. The
   count lives in the run's audit file because each Claude pass starts its own proxy.

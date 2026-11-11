@@ -25,6 +25,7 @@ const SANDBOX: McpServerConfig = {
   maxCalls: 20,
   timeoutMs: 120_000,
   maxOutputBytes: 16_384,
+  requireNoNetwork: false,
 };
 
 let root: string;
@@ -222,4 +223,9 @@ test("an OpenCode pass with no tool budget cannot call a configured MCP tool", a
   await promptAgent(handle(off), args);
   await promptAgent(handle(), { ...args, maxToolCalls: 0 });
   expect(sent.slice(1).map((body) => "tools" in body)).toEqual([false, false]);
+});
+
+test("refuses requireNoNetwork without a token info url to check it against", async () => {
+  await writeRootConfig({ mcpServers: { sandbox: { ...SANDBOX, requireNoNetwork: true } } });
+  await expect(loadReviewConfig(root)).rejects.toThrow(/tokenInfoUrl/);
 });

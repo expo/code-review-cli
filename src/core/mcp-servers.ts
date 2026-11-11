@@ -119,6 +119,7 @@ export async function createMcpProxyRuntime(
       url: server.url,
       ...(server.tokenEnv ? { tokenEnv: server.tokenEnv } : {}),
       ...(server.tokenInfoUrl ? { tokenInfoUrl: server.tokenInfoUrl } : {}),
+      ...(server.requireNoNetwork ? { requireNoNetwork: true } : {}),
       tools: server.tools,
       extraTokenTools: server.extraTokenTools,
       maxCalls: server.maxCalls,
@@ -182,7 +183,7 @@ export function formatMcpServerUsage(usage: readonly McpServerUsage[]): string[]
       return `  MCP server "${entry.server}" refused: it offers tools the config does not name, so its token is not scoped to this review. Mint a scoped token, or list the tools in extraTokenTools.`;
     }
     if (entry.refused === "token-not-scoped") {
-      return `  MCP server "${entry.server}" refused: its token is not a scoped token that expires. Mint a scoped token for each review run.`;
+      return `  MCP server "${entry.server}" refused: its token is not a scoped token that expires, or it permits network access where requireNoNetwork is set. Mint a scoped token for each review run.`;
     }
     if (entry.refused === "unavailable") {
       return `  MCP server "${entry.server}" was not reachable; the review ran without it.`;

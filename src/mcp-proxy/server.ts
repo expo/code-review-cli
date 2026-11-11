@@ -15,6 +15,7 @@ export const McpProxySettingsSchema = z.object({
   url: z.url(),
   tokenEnv: z.string().optional(),
   tokenInfoUrl: z.url().optional(),
+  requireNoNetwork: z.boolean().optional(),
   tools: z.array(z.string()).min(1),
   extraTokenTools: z.array(z.string()),
   maxCalls: z.number().int().min(1),
@@ -52,9 +53,16 @@ const TOKEN_INFO_TIMEOUT_MS = 10_000;
 export type TokenVerdict = "scoped" | "not-scoped" | "unavailable";
 
 /** Accept only a token the server calls scoped, with an expiry still ahead. */
-export function tokenInfoVerdict(info: unknown, now: number): TokenVerdict {
-  const record = info as { scoped?: unknown; expiresAt?: unknown } | null;
-  return record?.scoped === true && typeof record.expiresAt === "number" && record.expiresAt > now
+export function tokenInfoVerdict(
+  info: unknown,
+  now: number,
+  requireNoNetwork = false,
+): TokenVerdict {
+  const record = info as { scoped?: unknown; expiresAt?: unknown; network?: unknown } | null;
+  return record?.scoped === true &&
+    typeof record.expiresAt === "number" &&
+    record.expiresAt > now &&
+    (!requireNoNetwork || record.network === false)
     ? "scoped"
     : "not-scoped";
 }
@@ -64,6 +72,7 @@ export async function fetchTokenVerdict(
   tokenInfoUrl: string,
   token: string | undefined,
   fetchImplementation: typeof fetch = fetch,
+  requireNoNetwork = false,
 ): Promise<TokenVerdict> {
   if (!token) {
     return "not-scoped";
@@ -78,7 +87,7 @@ export async function fetchTokenVerdict(
     if (!response.ok) {
       return "unavailable";
     }
-    return tokenInfoVerdict(await response.json(), Date.now());
+    return tokenInfoVerdict(await response.json(), Date.now(), requireNoNetwork);
   } catch {
     return "unavailable";
   }
@@ -301,7 +310,9 @@ export async function runStdioProxy(
   const server = createMcpProxyServer(
     settings,
     () => connectUpstream(settings, token),
-    tokenInfoUrl ? () => fetchTokenVerdict(tokenInfoUrl, token) : undefined,
+    tokenInfoUrl
+      ? () => fetchTokenVerdict(tokenInfoUrl, token, fetch, settings.requireNoNetwork === true)
+      : undefined,
   );
   await server.connect(new StdioServerTransport());
 }

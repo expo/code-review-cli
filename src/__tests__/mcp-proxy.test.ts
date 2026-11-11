@@ -242,3 +242,11 @@ test("should not connect to the server when its token is not scoped", async () =
   expect(connected).toBe(0);
   expect((await readMcpServerUsage(settings.auditPath))[0]!.refused).toBe("token-not-scoped");
 });
+
+test("should refuse a token that permits network access when the config forbids it", () => {
+  const info = { scoped: true, expiresAt: 2_000 };
+  expect(tokenInfoVerdict({ ...info, network: false }, 1_000, true)).toBe("scoped");
+  expect(tokenInfoVerdict({ ...info, network: true }, 1_000, true)).toBe("not-scoped");
+  expect(tokenInfoVerdict(info, 1_000, true)).toBe("not-scoped");
+  expect(tokenInfoVerdict(info, 1_000)).toBe("scoped");
+});
