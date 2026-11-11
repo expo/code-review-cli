@@ -37,6 +37,12 @@ const ANTHROPIC_TOKEN_ENVS: Record<string, string> = {
   CLAUDE_CODE_REVIEW_SHARED_API_TOKEN: "anthropic",
 };
 
+/** Every env var that can hold a model provider credential. */
+export const MODEL_CREDENTIAL_ENVS: ReadonlySet<string> = new Set([
+  ...Object.values(PROVIDER_KEY_ENV),
+  ...Object.keys(ANTHROPIC_TOKEN_ENVS),
+]);
+
 /**
  * Env vars that must NEVER be forwarded to a model provider. `auth.tokenEnv` names
  * the env var whose value becomes the provider credential — but that config is

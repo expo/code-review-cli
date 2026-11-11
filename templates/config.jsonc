@@ -52,6 +52,43 @@
   //   "timeoutMs": 30000
   // },
 
+  // Optional remote MCP servers (ROOT-ONLY), such as a code sandbox where a pass can
+  // check how a tool behaves. Each server is granted to the passes in `agents`
+  // (reviewer ids, plus "verifier" or "cross-cutting"), and only the `tools` listed
+  // are callable. A server whose token env is unset is skipped. The url must be https
+  // (http only for localhost).
+  //
+  // SECURITY: `tokenEnv` must hold a token minted for THIS review run, never a
+  // long-lived one. A pass reads untrusted PR content and can be steered into any
+  // call its token permits. Mint a child token in the workflow (short TTL, small
+  // budget, only the tools below), and revoke it after the review. ecr refuses a
+  // server that offers a tool outside `tools` and `extraTokenTools`, because such a
+  // token is not scoped. With `tokenInfoUrl` (same origin as `url`; it must answer
+  // `{ "scoped": boolean, "expiresAt": <epoch ms> | null }` for the bearer), ecr also
+  // refuses a token that is not scoped or does not expire. With `requireNoNetwork`,
+  // the info must also say `"network": false`: the sandbox cannot reach the internet. A code sandbox must hold no credentials and needs no
+  // network access.
+  //
+  // ecr calls the server through its own local proxy, which enforces `maxCalls` (per
+  // run), `timeoutMs` (per call) and `maxOutputBytes` (per call), and records every
+  // call. A fork pull request gets the server only when it has `forkLabel`; without
+  // `forkLabel`, never.
+  // "mcpServers": {
+  //   "sandbox": {
+  //     "url": "https://example.convex.site/mcp",
+  //     "tokenEnv": "REVIEW_SANDBOX_TOKEN",
+  //     "tools": ["list_sandboxes", "create_sandbox", "sandbox_write_file", "sandbox_exec"],
+  //     "agents": ["deep", "correctness", "verifier"],
+  //     "extraTokenTools": ["destroy_sandbox"],
+  //     "maxCalls": 20,
+  //     "timeoutMs": 120000,
+  //     "maxOutputBytes": 16384,
+  //     "forkLabel": "ai-review",
+  //     "tokenInfoUrl": "https://example.convex.site/tokens/info",
+  //     "requireNoNetwork": true
+  //   }
+  // },
+
   // Large diffs are split into focused chunks by changed-line count, plus a
   // cross-cutting pass for multi-file issues. Diffs under maxChangedLines are one
   // full-context pass. Defaults shown; raise/lower per your model + PR sizes.

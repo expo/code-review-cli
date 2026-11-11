@@ -20,6 +20,7 @@ import {
 } from "../config/routing.js";
 import type { LoadedConfig, RoutingManifest } from "../config/schema.js";
 import { repoRoot, resolveTrustedTool, run } from "../core/exec.js";
+import { mcpServersForPullRequest } from "../core/mcp-servers.js";
 import { errorMessage, publicFailureReason } from "../core/util.js";
 import { readContextFile } from "../core/context-file.js";
 import { buildDiffLineIndex } from "../core/render.js";
@@ -224,7 +225,8 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
   if (unsafeConfigFromHead) {
     process.stderr.write(
       "CI reviewer: ⚠ SECURITY — --unsafe-config-from-head is set: reviewer configuration " +
-        "(policy, prompts, models, auth mapping) is being loaded from the current checkout, so " +
+        "(policy, prompts, models, auth mapping, MCP servers and their token envs) is being " +
+        "loaded from the current checkout, so " +
         "a same-repository PR can change the reviewer that evaluates it. This escape hatch will " +
         "be removed in a future minor release.\n",
     );
@@ -586,6 +588,7 @@ async function runLegacyCi(
     process.stderr.write(`CI reviewer: ${errorMessage(error)}\n`);
     return;
   }
+  config = await gateMcpServers(config, repo, prNumber, cwd);
 
   // @ref LLP 0007#verify-config-the-config-guard [implements] — runtime auth lock; the workflow bash sweep is only layer 2
   // Layer-1 auth lock (mirrors doctor): when the workflow pins the expected token
@@ -817,7 +820,12 @@ async function runRoutedCi(
   // The root config + manifest follow the override; scope configs stay
   // relative to the TRUSTED root (loadScopeConfig reads
   // <configRoot>/<scope.config>/.expo-code-review).
-  const rootConfig = await loadReviewConfig(configRoot, { configDir });
+  const rootConfig = await gateMcpServers(
+    await loadReviewConfig(configRoot, { configDir }),
+    repo,
+    prNumber,
+    cwd,
+  );
   // The root/aggregate marker is the ACTUAL root-owned comment tag so the
   // pre-routing comment and its dismissal state upsert in place, not stranded
   // under a new marker (risk 8/9). manifest.defaults.commentTag is the
@@ -1323,6 +1331,53 @@ export function mergePartialAggregate(
   return manifestScopeNames
     .map((name) => byName.get(name))
     .filter((entry): entry is ScopeReviewResult => entry != null);
+}
+
+/**
+ * A fork pull request gets a configured MCP server only with that server's
+ * `forkLabel`.
+ * A failed lookup counts as a fork without labels: the gate fails closed.
+ */
+// @ref LLP 0003#configured-mcp-servers [implements] — fork pull requests are refused by default
+async function gateMcpServers(
+  config: LoadedConfig,
+  repo: string,
+  prNumber: number,
+  cwd: string,
+): Promise<LoadedConfig> {
+  if (!config.mcpServers) {
+    return config;
+  }
+  let pullRequest = { fork: true, labels: [] as string[] };
+  try {
+    const gh = await resolveTrustedTool("gh");
+    const { stdout } = await run(
+      gh,
+      ["pr", "view", String(prNumber), "--repo", repo, "--json", "isCrossRepository,labels"],
+      { cwd },
+    );
+    const raw = JSON.parse(stdout) as {
+      isCrossRepository?: boolean;
+      labels?: { name?: string }[];
+    };
+    pullRequest = {
+      fork: raw.isCrossRepository !== false,
+      labels: (raw.labels ?? []).flatMap((label) => (label.name ? [label.name] : [])),
+    };
+  } catch (error) {
+    process.stderr.write(
+      `CI reviewer: could not read the PR's fork status; MCP servers are off for this run: ${errorMessage(error)}\n`,
+    );
+  }
+  const allowed = mcpServersForPullRequest(config.mcpServers, pullRequest);
+  const refused = Object.keys(config.mcpServers).filter((name) => !(name in allowed));
+  if (refused.length > 0) {
+    process.stderr.write(
+      `CI reviewer: fork pull request; MCP server(s) off for this run: ${refused.join(", ")}.\n`,
+    );
+  }
+  const { mcpServers: _all, ...rest } = config;
+  return Object.keys(allowed).length > 0 ? { ...rest, mcpServers: allowed } : rest;
 }
 
 /**

@@ -17,6 +17,7 @@ import type {
 } from "./schema.js";
 import { MENTION_TARGET_RE } from "../core/schema.js";
 import { readPullRequestTemplateComments } from "../core/pr-template.js";
+import { assertMcpServerTokenEnvs } from "../core/mcp-servers.js";
 import { toolMap } from "../core/tools.js";
 
 /**
@@ -143,6 +144,10 @@ export async function loadReviewConfig(
 ): Promise<LoadedConfig> {
   const dir = resolveConfigDir(repoRoot, options.configDir);
   const { config } = await loadConfigDir(dir, ReviewConfigSchema);
+  assertMcpServerTokenEnvs(
+    config.mcpServers,
+    config.auth.flatMap((entry) => (entry.tokenEnv ? [entry.tokenEnv] : [])),
+  );
   // From the same trusted root as the config, never from the PR head.
   const prTemplateComments = await readPullRequestTemplateComments(repoRoot);
   // Only when there are any, so a setup without a template keeps its review-cache key.
@@ -277,6 +282,10 @@ async function loadConfigDir(
     // Root-only: scope schemas reject research configuration, so an untrusted
     // subtree cannot select the index or alter the network-facing runtime.
     research: parsed.research ?? RESEARCH_CONFIG_DEFAULTS,
+    // Only when there are any, so a setup without servers keeps its review-cache key.
+    ...(parsed.mcpServers && Object.keys(parsed.mcpServers).length > 0
+      ? { mcpServers: parsed.mcpServers }
+      : {}),
     // parsed.breakGlass/auth are always present for the root schema (defaults) and
     // absent for the scope schema; loadScopeConfig overrides both afterwards.
     breakGlassMarker: parsed.breakGlass?.marker ?? "/skip-review",
@@ -465,6 +474,7 @@ export async function loadScopeConfig(
     inline: rootConfig.inline,
     research: rootConfig.research,
     ...(rootConfig.prTemplateComments ? { prTemplateComments: rootConfig.prTemplateComments } : {}),
+    ...(rootConfig.mcpServers ? { mcpServers: rootConfig.mcpServers } : {}),
     scopeName: scope.name,
   };
 }

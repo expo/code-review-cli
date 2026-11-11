@@ -14,6 +14,8 @@ import { pathInside, resolveOnPath } from "./exec.js";
 import { RateLimitWatch } from "./throttle.js";
 import { OPENCODE_RESEARCH_TOOLS, toolMap } from "./tools.js";
 import { errorMessage, sleep } from "./util.js";
+import { opencodeGrantedTools, opencodeMcpServers } from "./mcp-servers.js";
+import type { McpProxyRuntime } from "./mcp-servers.js";
 import type { ResearchMcpRuntime } from "./research.js";
 
 /** Discriminant for the Claude Code CLI engine (see core/claude-code.ts). */
@@ -154,6 +156,8 @@ export interface OpencodeHandle {
   claude?: ClaudeCodeHandle;
   /** Per-agent engine router; undefined ⇒ single-engine run keyed by `engine`. */
   engineOf?: (agent: string) => Engine;
+  /** Each configured MCP server tool set to false, merged into every no-tools request. */
+  mcpToolsOff?: Record<string, boolean>;
 }
 
 /** Token usage as reported on an OpenCode assistant message's `info.tokens`. */
@@ -233,6 +237,7 @@ export const STACK_VERIFIER_AGENT = "stack-verifier";
 export function buildOpencodeConfig(
   config: LoadedConfig,
   research?: ResearchMcpRuntime,
+  mcpProxy?: McpProxyRuntime,
 ): Record<string, unknown> {
   const agent: Record<string, unknown> = {};
   for (const reviewer of config.agents) {
@@ -245,6 +250,7 @@ export function buildOpencodeConfig(
       tools: {
         ...reviewer.tools,
         ...Object.fromEntries(OPENCODE_RESEARCH_TOOLS.map((name) => [name, Boolean(research)])),
+        ...opencodeGrantedTools(mcpProxy?.servers, reviewer.id),
       },
     };
   }
@@ -259,6 +265,7 @@ export function buildOpencodeConfig(
     tools: {
       ...CROSS_CUTTING_TOOLS,
       ...Object.fromEntries(OPENCODE_RESEARCH_TOOLS.map((name) => [name, Boolean(research)])),
+      ...opencodeGrantedTools(mcpProxy?.servers, CROSS_CUTTING_AGENT),
     },
   };
   agent[VERIFIER_AGENT] = {
@@ -268,7 +275,7 @@ export function buildOpencodeConfig(
     temperature: config.agents[0]?.temperature ?? 0.1,
     prompt:
       "You verify code-review findings against the actual source. Follow the user message exactly and return only the requested JSON.",
-    tools: VERIFIER_TOOLS,
+    tools: { ...VERIFIER_TOOLS, ...opencodeGrantedTools(mcpProxy?.servers, VERIFIER_AGENT) },
   };
   agent[STACK_VERIFIER_AGENT] = {
     description: "Confirms a requalification against the addressing PR's inlined patch.",
@@ -357,22 +364,29 @@ export function buildOpencodeConfig(
     };
   }
 
-  return {
-    $schema: "https://opencode.ai/config.json",
-    agent,
+  const mcpServers = opencodeMcpServers(mcpProxy);
+  const mcp = {
     ...(research
       ? {
-          mcp: {
-            platform_docs: {
-              type: "local",
-              command: [research.command, ...research.args],
-              environment: research.environment,
-              enabled: true,
-              timeout: config.research.timeoutMs,
-            },
+          platform_docs: {
+            type: "local",
+            command: [research.command, ...research.args],
+            environment: research.environment,
+            enabled: true,
+            timeout: config.research.timeoutMs,
           },
         }
       : {}),
+    ...mcpServers,
+  };
+  return {
+    $schema: "https://opencode.ai/config.json",
+    agent,
+    // A configured server's tools are off everywhere, then on per granted pass.
+    ...(Object.keys(mcpServers).length > 0
+      ? { tools: Object.fromEntries(Object.keys(mcpServers).map((name) => [`${name}_*`, false])) }
+      : {}),
+    ...(Object.keys(mcp).length > 0 ? { mcp } : {}),
     ...(Object.keys(provider).length > 0 ? { provider } : {}),
   };
 }
@@ -451,7 +465,10 @@ export async function resolveOpencodeCli(): Promise<string | null> {
 
 // @ref LLP 0003#opencode-server-lifecycle [constrained-by] — port 0 avoids clobbering a dev's already-running opencode session; the SDK's own bare launch("opencode") spawn is a knowingly accepted POSIX-only residual, not to be silently "fixed" into an absolute-path reimplementation
 /** Start an in-process OpenCode server with the given inline config. */
-export async function startOpencode(config: unknown): Promise<OpencodeHandle> {
+export async function startOpencode(
+  config: unknown,
+  mcpToolsOff: Record<string, boolean> = {},
+): Promise<OpencodeHandle> {
   // Make our pinned CLI win over any global install (see bundledOpencodeBinDir).
   // The SDK takes no `env`, so PATH is the only lever; it spreads `process.env` at
   // spawn time, so setting it here reaches the child.
@@ -481,7 +498,13 @@ export async function startOpencode(config: unknown): Promise<OpencodeHandle> {
   });
   // Watch THIS server's log for provider throttle evidence (prepareAuth has already
   // pointed XDG_DATA_HOME at the run's isolated dir when auth is injected).
-  return { client, url: server.url, close: () => server.close(), rateLimit: new RateLimitWatch() };
+  return {
+    client,
+    url: server.url,
+    close: () => server.close(),
+    rateLimit: new RateLimitWatch(),
+    ...(Object.keys(mcpToolsOff).length > 0 ? { mcpToolsOff } : {}),
+  };
 }
 
 /**
@@ -954,7 +977,7 @@ export async function promptAgent(
       agent: args.agent,
       system: args.system,
       text: FINALIZE_PROMPT,
-      tools: NO_TOOLS,
+      tools: { ...NO_TOOLS, ...handle.mcpToolsOff },
     });
     try {
       const result = await pollForCompletion(handle, sessionID, {
@@ -994,6 +1017,8 @@ export async function promptAgent(
       agent: args.agent,
       system: args.system,
       text: args.text,
+      // A pass with no tool budget must not reach a remote MCP server either.
+      ...(args.maxToolCalls === 0 && handle.mcpToolsOff ? { tools: handle.mcpToolsOff } : {}),
     });
 
     try {
@@ -1206,7 +1231,7 @@ export async function promptAndParse<T>(
         text: CORRECTIVE,
         // Re-emit only: the investigation is done, so no tools are needed and
         // disabling them keeps the corrective from turning into a second wander.
-        tools: NO_TOOLS,
+        tools: { ...NO_TOOLS, ...handle.mcpToolsOff },
       });
       const retry = await pollForCompletion(handle, first.sessionID, {
         agent: args.agent,
