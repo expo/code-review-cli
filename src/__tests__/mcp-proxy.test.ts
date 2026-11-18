@@ -11,7 +11,9 @@ import {
   boundedOutput,
   createMcpProxyServer,
   fetchTokenVerdict,
+  McpProxySettingsSchema,
   tokenInfoVerdict,
+  tokenRequirements,
 } from "../mcp-proxy/server.js";
 import type { McpProxySettings, McpProxyUpstream, UpstreamResult } from "../mcp-proxy/server.js";
 
@@ -245,8 +247,57 @@ test("should not connect to the server when its token is not scoped", async () =
 
 test("should refuse a token that permits network access when the config forbids it", () => {
   const info = { scoped: true, expiresAt: 2_000 };
-  expect(tokenInfoVerdict({ ...info, network: false }, 1_000, true)).toBe("scoped");
-  expect(tokenInfoVerdict({ ...info, network: true }, 1_000, true)).toBe("not-scoped");
-  expect(tokenInfoVerdict(info, 1_000, true)).toBe("not-scoped");
+  const required = { noNetwork: true };
+  expect(tokenInfoVerdict({ ...info, network: false }, 1_000, required)).toBe("scoped");
+  expect(tokenInfoVerdict({ ...info, network: true }, 1_000, required)).toBe("not-scoped");
+  expect(tokenInfoVerdict(info, 1_000, required)).toBe("not-scoped");
   expect(tokenInfoVerdict(info, 1_000)).toBe("scoped");
+});
+
+test("should refuse a token that keeps sudo when the config forbids it", () => {
+  const info = { scoped: true, expiresAt: 2_000 };
+  const required = { noSudo: true };
+  expect(tokenInfoVerdict({ ...info, sudo: false }, 1_000, required)).toBe("scoped");
+  expect(tokenInfoVerdict({ ...info, sudo: true }, 1_000, required)).toBe("not-scoped");
+  // A server that does not know the limit leaves the field out.
+  expect(tokenInfoVerdict(info, 1_000, required)).toBe("not-scoped");
+  expect(tokenInfoVerdict({ ...info, sudo: "false" }, 1_000, required)).toBe("not-scoped");
+  expect(tokenInfoVerdict(info, 1_000)).toBe("scoped");
+});
+
+test("should need each limit that the config asks for", () => {
+  const info = { scoped: true, expiresAt: 2_000 };
+  const required = { noNetwork: true, noSudo: true };
+  expect(tokenInfoVerdict({ ...info, network: false, sudo: false }, 1_000, required)).toBe(
+    "scoped",
+  );
+  expect(tokenInfoVerdict({ ...info, network: false }, 1_000, required)).toBe("not-scoped");
+  expect(tokenInfoVerdict({ ...info, sudo: false }, 1_000, required)).toBe("not-scoped");
+});
+
+test("should read the limits from a settings file as the proxy parses it", () => {
+  const parse = (extra: object) => McpProxySettingsSchema.parse({ ...settings, ...extra });
+  expect(tokenRequirements(parse({ requireNoNetwork: true, requireNoSudo: true }))).toEqual({
+    noNetwork: true,
+    noSudo: true,
+  });
+  expect(tokenRequirements(parse({}))).toEqual({ noNetwork: false, noSudo: false });
+});
+
+test("should check the fetched token info against the limits", async () => {
+  const answer = (info: object) =>
+    (async () =>
+      Response.json({
+        scoped: true,
+        expiresAt: Date.now() + 60_000,
+        ...info,
+      })) as unknown as typeof fetch;
+  const url = "https://sandbox.example/tokens/info";
+  const required = { noNetwork: true, noSudo: true };
+  expect(
+    await fetchTokenVerdict(url, "child", answer({ network: false, sudo: false }), required),
+  ).toBe("scoped");
+  expect(await fetchTokenVerdict(url, "child", answer({ network: false }), required)).toBe(
+    "not-scoped",
+  );
 });

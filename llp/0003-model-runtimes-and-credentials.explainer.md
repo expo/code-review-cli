@@ -235,6 +235,12 @@ The cost is that a pass cannot install a package or clone a repository in the sa
 The server enforces this on the token; `requireNoNetwork` makes ECR refuse a token
 whose info does not say `"network": false`. Everything below is a second layer.
 
+The same server can also take `sudo` from the sandbox user (expo/expo-sandbox-mcp#10).
+Its sandboxes give that user passwordless `sudo`, so code a tricked pass runs could
+become root in the sandbox. `requireNoSudo` makes ECR refuse a token whose info does
+not say `"sudo": false`. A server that does not know the limit leaves the field out,
+and ECR refuses that token too.
+
 **The engines start a local proxy, never the remote server.** Like the documentation
 MCP ([LLP 0013](0013-platform-research.explainer.md)), the proxy is a process that ECR
 ships and the config cannot replace. Each engine gets a stdio entry that starts it with
@@ -251,8 +257,8 @@ cannot do ([observed] `mcp-proxy/server.ts`, `mcp-proxy/audit.ts`, `mcp-servers.
 - **Token check.** When the config sets `tokenInfoUrl`, the proxy first asks that
   endpoint what the token is, and uses the server only when the answer is
   `scoped: true` with an `expiresAt` still ahead, and with `requireNoNetwork`,
-  `network: false`. The url must have the same origin as
-  the server, and a redirect is refused, so the token goes nowhere else.
+  `network: false`, and with `requireNoSudo`, `sudo: false`. The url must have the
+  same origin as the server, and a redirect is refused, so the token goes nowhere else.
 - **Call budget.** `maxCalls` bounds the calls of one run, summed over every pass. The
   count lives in the run's audit file because each Claude pass starts its own proxy.
 - **Deadline.** `timeoutMs` ends one call.

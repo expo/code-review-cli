@@ -16,6 +16,7 @@ export const McpProxySettingsSchema = z.object({
   tokenEnv: z.string().optional(),
   tokenInfoUrl: z.url().optional(),
   requireNoNetwork: z.boolean().optional(),
+  requireNoSudo: z.boolean().optional(),
   tools: z.array(z.string()).min(1),
   extraTokenTools: z.array(z.string()),
   maxCalls: z.number().int().min(1),
@@ -52,17 +53,39 @@ const TOKEN_INFO_TIMEOUT_MS = 10_000;
 
 export type TokenVerdict = "scoped" | "not-scoped" | "unavailable";
 
+/** Limits the token info must report, beyond a scoped token that expires. */
+export interface TokenRequirements {
+  noNetwork?: boolean;
+  noSudo?: boolean;
+}
+
+/** The limits a settings file asks of the token. */
+export function tokenRequirements(settings: McpProxySettings): TokenRequirements {
+  return {
+    noNetwork: settings.requireNoNetwork === true,
+    noSudo: settings.requireNoSudo === true,
+  };
+}
+
 /** Accept only a token the server calls scoped, with an expiry still ahead. */
 export function tokenInfoVerdict(
   info: unknown,
   now: number,
-  requireNoNetwork = false,
+  required: TokenRequirements = {},
 ): TokenVerdict {
-  const record = info as { scoped?: unknown; expiresAt?: unknown; network?: unknown } | null;
+  const record = info as {
+    scoped?: unknown;
+    expiresAt?: unknown;
+    network?: unknown;
+    sudo?: unknown;
+  } | null;
+  // A limit counts only when the server says `false`.
+  // A server that does not know the field leaves it out, and that must not pass.
   return record?.scoped === true &&
     typeof record.expiresAt === "number" &&
     record.expiresAt > now &&
-    (!requireNoNetwork || record.network === false)
+    (!required.noNetwork || record.network === false) &&
+    (!required.noSudo || record.sudo === false)
     ? "scoped"
     : "not-scoped";
 }
@@ -72,7 +95,7 @@ export async function fetchTokenVerdict(
   tokenInfoUrl: string,
   token: string | undefined,
   fetchImplementation: typeof fetch = fetch,
-  requireNoNetwork = false,
+  required: TokenRequirements = {},
 ): Promise<TokenVerdict> {
   if (!token) {
     return "not-scoped";
@@ -87,7 +110,7 @@ export async function fetchTokenVerdict(
     if (!response.ok) {
       return "unavailable";
     }
-    return tokenInfoVerdict(await response.json(), Date.now(), requireNoNetwork);
+    return tokenInfoVerdict(await response.json(), Date.now(), required);
   } catch {
     return "unavailable";
   }
@@ -311,7 +334,7 @@ export async function runStdioProxy(
     settings,
     () => connectUpstream(settings, token),
     tokenInfoUrl
-      ? () => fetchTokenVerdict(tokenInfoUrl, token, fetch, settings.requireNoNetwork === true)
+      ? () => fetchTokenVerdict(tokenInfoUrl, token, fetch, tokenRequirements(settings))
       : undefined,
   );
   await server.connect(new StdioServerTransport());

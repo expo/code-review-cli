@@ -80,9 +80,18 @@ export const McpServerConfigSchema = z
      * Needs `tokenInfoUrl`.
      */
     requireNoNetwork: z.boolean().default(false),
+    /**
+     * Use the server only when its token info says `"sudo": false`: code a pass runs
+     * there cannot become root.
+     * Needs `tokenInfoUrl`.
+     */
+    requireNoSudo: z.boolean().default(false),
   })
   .refine((server) => !server.requireNoNetwork || server.tokenInfoUrl !== undefined, {
     error: "mcpServers requireNoNetwork needs tokenInfoUrl",
+  })
+  .refine((server) => !server.requireNoSudo || server.tokenInfoUrl !== undefined, {
+    error: "mcpServers requireNoSudo needs tokenInfoUrl",
   })
   // The token goes to this url, so it must be the server the token was minted for.
   .refine(

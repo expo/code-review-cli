@@ -26,6 +26,7 @@ const SANDBOX: McpServerConfig = {
   timeoutMs: 120_000,
   maxOutputBytes: 16_384,
   requireNoNetwork: false,
+  requireNoSudo: false,
 };
 
 let root: string;
@@ -86,6 +87,25 @@ test("points each engine at the local proxy and writes no token to disk", async 
     delete process.env.REVIEW_SANDBOX_TOKEN;
     await runtime.cleanup();
   }
+});
+
+test("should pass the limits the token must have to the proxy", async () => {
+  const read = async (server: McpServerConfig) => {
+    const runtime = (await createMcpProxyRuntime({ sandbox: server }))!;
+    try {
+      const settingsPath = runtime.commands.get("sandbox")!.at(-1)!;
+      return JSON.parse(await readFile(settingsPath, "utf8")) as Record<string, unknown>;
+    } finally {
+      await runtime.cleanup();
+    }
+  };
+  const tokenInfoUrl = "https://sandbox.example/tokens/info";
+  expect(
+    await read({ ...SANDBOX, tokenInfoUrl, requireNoNetwork: true, requireNoSudo: true }),
+  ).toMatchObject({ tokenInfoUrl, requireNoNetwork: true, requireNoSudo: true });
+  const plain = await read(SANDBOX);
+  expect(plain).not.toHaveProperty("requireNoNetwork");
+  expect(plain).not.toHaveProperty("requireNoSudo");
 });
 
 test("creates no proxy runtime when no server is available", async () => {
@@ -228,4 +248,20 @@ test("an OpenCode pass with no tool budget cannot call a configured MCP tool", a
 test("refuses requireNoNetwork without a token info url to check it against", async () => {
   await writeRootConfig({ mcpServers: { sandbox: { ...SANDBOX, requireNoNetwork: true } } });
   await expect(loadReviewConfig(root)).rejects.toThrow(/tokenInfoUrl/);
+});
+
+test("should refuse requireNoSudo without a token info url to check it against", async () => {
+  await writeRootConfig({ mcpServers: { sandbox: { ...SANDBOX, requireNoSudo: true } } });
+  await expect(loadReviewConfig(root)).rejects.toThrow(/requireNoSudo needs tokenInfoUrl/);
+});
+
+test("should load requireNoSudo with a token info url, and leave it off by default", async () => {
+  const tokenInfoUrl = "https://sandbox.example/tokens/info";
+  await writeRootConfig({
+    mcpServers: { sandbox: { ...SANDBOX, tokenInfoUrl, requireNoSudo: true } },
+  });
+  expect((await loadReviewConfig(root)).mcpServers?.sandbox?.requireNoSudo).toBe(true);
+  const { requireNoSudo: _omitted, ...withoutKey } = SANDBOX;
+  await writeRootConfig({ mcpServers: { sandbox: withoutKey } });
+  expect((await loadReviewConfig(root)).mcpServers?.sandbox?.requireNoSudo).toBe(false);
 });
