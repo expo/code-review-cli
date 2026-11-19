@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -366,4 +366,62 @@ test("should share one audit between routed runs and tag each run's events", asy
     await shared.cleanup();
   }
   expect(existsSync(path.dirname(shared.auditPath))).toBe(false);
+});
+
+describe("Logging MCP tool calls on OpenCode", () => {
+  const runWithParts = async (agent: string, parts: unknown[]): Promise<string[]> => {
+    const handle: OpencodeHandle = {
+      url: "",
+      close: () => {},
+      rateLimit: new RateLimitWatch(),
+      mcpServers: { sandbox: SANDBOX },
+      client: {
+        session: {
+          create: async () => ({ data: { id: "s" } }),
+          promptAsync: async () => ({ data: {} }),
+          messages: async () => ({
+            data: [{ info: { role: "assistant", time: { completed: 1 } }, parts }],
+          }),
+        },
+      },
+    };
+    const activity: string[] = [];
+    await promptAgent(handle, {
+      agent,
+      system: "s",
+      text: "t",
+      title: "t",
+      onActivity: (line) => activity.push(line),
+    });
+    return activity;
+  };
+  const toolPart = (callID: string, tool: string, title: string) => ({
+    type: "tool",
+    callID,
+    tool,
+    state: { status: "running", title },
+  });
+
+  it("should log a granted mcp call by name only and leave other tool lines unchanged", async () => {
+    const activity = await runWithParts("deep", [
+      toolPart("c1", "sandbox_sandbox_exec", "echo DO_NOT_LOG_THIS"),
+      toolPart("c2", "read", "src/a.ts"),
+      toolPart("c3", "platform_docs_search_platform_docs", "expo-sqlite"),
+      { type: "text", text: "{}" },
+    ]);
+    expect(activity).toEqual([
+      "MCP sandbox.sandbox_exec",
+      "read: src/a.ts",
+      "platform_docs_search_platform_docs: expo-sqlite",
+    ]);
+  });
+
+  it("should log nothing for an mcp tool the pass was not granted", async () => {
+    const parts = [
+      toolPart("c1", "sandbox_destroy_sandbox", "DO_NOT_LOG_THIS"),
+      toolPart("c2", "sandbox_sandbox_exec", "DO_NOT_LOG_THIS"),
+    ];
+    expect(await runWithParts("deep", parts)).toEqual(["MCP sandbox.sandbox_exec"]);
+    expect(await runWithParts("security", parts)).toEqual([]);
+  });
 });

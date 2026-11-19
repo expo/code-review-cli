@@ -274,3 +274,27 @@ export function opencodeGrantedTools(
     ),
   );
 }
+
+/**
+ * The OpenCode progress line for a tool named `<server>_<tool>`: `MCP <server>.<tool>`
+ * when this pass may call it, "" (log nothing) when it may not, and undefined for a
+ * tool of no configured server. Never the part's title, which can hold the tool input.
+ */
+export function opencodeMcpActivity(
+  servers: Record<string, McpServerConfig> | undefined,
+  agentId: string,
+  opencodeTool: string,
+): string | undefined {
+  // The schema refuses a server name that starts with another's name and `_`, so at
+  // most one server matches.
+  for (const [name, server] of Object.entries(servers ?? {})) {
+    if (!opencodeTool.startsWith(`${name}_`)) {
+      continue;
+    }
+    const tool = opencodeTool.slice(name.length + 1);
+    return server.agents.includes(agentId) && server.tools.includes(tool)
+      ? `MCP ${name}.${tool}`
+      : "";
+  }
+  return undefined;
+}

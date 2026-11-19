@@ -3,7 +3,7 @@ import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { test, expect } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
 
 import {
   assertClaudeModels,
@@ -392,6 +392,29 @@ test("parseClaudeResult: an error ignores stale structured_output", () => {
   expect(result.errorText).toBe("Could not produce valid structured output");
   expect(result.errorText).not.toContain("PR_SECRET");
   expect(result.structuredOutputFailure).toBe(true);
+});
+
+test("claudeActivities: reports a granted MCP tool call by server and tool name only", () => {
+  const granted = new Map([["mcp__sandbox__sandbox_exec", "sandbox.sandbox_exec"]]);
+  const call = (name: string) =>
+    claudeActivities(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: name, name, input: { command: "echo DO_NOT_LOG_THIS" } },
+          ],
+        },
+      },
+      "/repo",
+      granted,
+    );
+  expect(call("mcp__sandbox__sandbox_exec")).toEqual([
+    { key: "mcp__sandbox__sandbox_exec", line: "MCP sandbox.sandbox_exec" },
+  ]);
+  // The CLI denies an ungranted call, so the log must not claim it ran.
+  expect(call("mcp__sandbox__destroy_sandbox")).toEqual([]);
+  expect(call("mcp__sandbox__sandbox_exec\nforged log line")).toEqual([]);
 });
 
 test("claudeActivities: reports lifecycle and safe tool targets, never raw text/results/patterns", () => {
@@ -1261,6 +1284,72 @@ test("runClaudePrompt: streams safe tool activity while preserving the final res
   } finally {
     await cleanup();
   }
+});
+
+describe("Logging MCP tool calls on Claude Code", () => {
+  it("should log one name-only line per granted MCP call and none for other MCP tools", async () => {
+    const toolUse = (id: string, name: string) =>
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", id, name, input: { command: "echo DO_NOT_LOG_THIS" } }],
+        },
+      });
+    const body = [
+      JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5" }),
+      toolUse("call-1", "mcp__sandbox__sandbox_exec"),
+      // A repeated tool_use id is the same call, so it must log once.
+      toolUse("call-1", "mcp__sandbox__sandbox_exec"),
+      toolUse("call-2", "mcp__sandbox__destroy_sandbox"),
+      toolUse("call-3", "mcp__platform_docs__search_platform_docs"),
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "the findings",
+        duration_ms: 2500,
+        num_turns: 2,
+        total_cost_usd: 0.01,
+      }),
+    ].join("\n");
+    const { bin, cleanup } = await fakeClaude(
+      `#!/bin/sh\ncat > /dev/null\nprintf '%s' '${body}'\n`,
+    );
+    try {
+      const handle = testHandle(bin, {
+        mcpServers: {
+          sandbox: {
+            url: "https://sandbox.example/mcp",
+            tokenEnv: "REVIEW_SANDBOX_TOKEN",
+            tools: ["sandbox_exec"],
+            agents: ["reviewer"],
+            extraTokenTools: [],
+            maxCalls: 20,
+            timeoutMs: 120_000,
+            maxOutputBytes: 16_384,
+            requireNoNetwork: false,
+            requireNoSudo: false,
+          },
+        },
+        mcpServerConfigPaths: new Map([["sandbox", "/private/sandbox.json"]]),
+      });
+      const activity: string[] = [];
+      await runClaudePrompt(handle, {
+        agent: "reviewer",
+        system: "SYS",
+        text: "hi",
+        title: "t",
+        onActivity: (line) => activity.push(line),
+      });
+      expect(activity).toEqual([
+        "started claude-opus-5",
+        "MCP sandbox.sandbox_exec",
+        "completed (3s, 2 turn(s))",
+      ]);
+    } finally {
+      await cleanup();
+    }
+  });
 });
 
 test("claudeCodePromptAndParse: a parseable first reply returns immediately with truncated:false", async () => {
