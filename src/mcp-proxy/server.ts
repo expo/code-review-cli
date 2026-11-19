@@ -23,6 +23,8 @@ export const McpProxySettingsSchema = z.object({
   timeoutMs: z.number().int().min(1),
   maxOutputBytes: z.number().int().min(1),
   auditPath: z.string().min(1),
+  /** Tags this run's audit events when several runs share one audit and its budget. */
+  run: z.string().min(1).optional(),
 });
 export type McpProxySettings = z.infer<typeof McpProxySettingsSchema>;
 
@@ -49,7 +51,13 @@ export interface McpProxyUpstream {
 }
 
 const CONNECT_TIMEOUT_MS = 20_000;
+const LIST_TOOLS_TIMEOUT_MS = 20_000;
 const TOKEN_INFO_TIMEOUT_MS = 10_000;
+export const MAX_TOOL_LIST_PAGES = 20;
+
+/** The longest tool discovery can take: token info, connect, then every list page. */
+export const MCP_PROXY_DISCOVERY_MS =
+  TOKEN_INFO_TIMEOUT_MS + CONNECT_TIMEOUT_MS + LIST_TOOLS_TIMEOUT_MS;
 
 export type TokenVerdict = "scoped" | "not-scoped" | "unavailable";
 
@@ -142,11 +150,44 @@ export function boundedOutput(
   if (buffer.byteLength <= maxBytes) {
     return { text, bytes: buffer.byteLength, truncated: false };
   }
+  // Step back off UTF-8 continuation bytes, so the cut never splits a character.
+  let end = maxBytes;
+  while (end > 0 && (buffer[end]! & 0xc0) === 0x80) {
+    end--;
+  }
   return {
-    text: `${buffer.subarray(0, maxBytes).toString("utf8")}\n[output cut at ${maxBytes} bytes]`,
+    text: `${buffer.subarray(0, end).toString("utf8")}\n[output cut at ${maxBytes} bytes]`,
     bytes: buffer.byteLength,
     truncated: true,
   };
+}
+
+/**
+ * Read every `tools/list` page.
+ * The scope check must see the whole list, so a list it cannot read to the end throws.
+ * A repeated cursor or more than MAX_TOOL_LIST_PAGES pages counts as a broken server.
+ */
+export async function listAllTools(
+  fetchPage: (
+    cursor: string | undefined,
+  ) => Promise<{ tools: UpstreamTool[]; nextCursor?: string }>,
+): Promise<UpstreamTool[]> {
+  const tools: UpstreamTool[] = [];
+  const seen = new Set<string>();
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_TOOL_LIST_PAGES; page++) {
+    const result = await fetchPage(cursor);
+    tools.push(...result.tools);
+    if (result.nextCursor === undefined) {
+      return tools;
+    }
+    if (seen.has(result.nextCursor)) {
+      throw new Error("tools/list repeated a cursor");
+    }
+    seen.add(result.nextCursor);
+    cursor = result.nextCursor;
+  }
+  throw new Error(`tools/list has more than ${MAX_TOOL_LIST_PAGES} pages`);
 }
 
 /** Connect to the remote server over streamable HTTP with the server's own token. */
@@ -162,12 +203,20 @@ export async function connectUpstream(
   await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS });
   return {
     async listTools() {
-      const { tools } = await client.listTools(undefined, { timeout: CONNECT_TIMEOUT_MS });
-      return tools.map((tool) => ({
-        name: tool.name,
-        ...(tool.description ? { description: tool.description } : {}),
-        inputSchema: tool.inputSchema as Record<string, unknown>,
-      }));
+      const deadline = Date.now() + LIST_TOOLS_TIMEOUT_MS;
+      return listAllTools(async (cursor) => {
+        const page = await client.listTools(cursor === undefined ? undefined : { cursor }, {
+          timeout: Math.max(1, deadline - Date.now()),
+        });
+        return {
+          tools: page.tools.map((tool) => ({
+            name: tool.name,
+            ...(tool.description ? { description: tool.description } : {}),
+            inputSchema: tool.inputSchema as Record<string, unknown>,
+          })),
+          ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
+        };
+      });
     },
     async callTool(name, args, options) {
       return (await client.callTool({ name, arguments: args }, undefined, {
@@ -193,7 +242,12 @@ export function createMcpProxyServer(
   connect: () => Promise<McpProxyUpstream>,
   tokenVerdict?: () => Promise<TokenVerdict>,
 ): Server {
-  const audit = new McpProxyAudit(settings.auditPath, settings.name, settings.maxCalls);
+  const audit = new McpProxyAudit(
+    settings.auditPath,
+    settings.name,
+    settings.maxCalls,
+    settings.run,
+  );
   const granted = new Set(settings.tools);
   const expected = new Set([...settings.tools, ...settings.extraTokenTools]);
 
@@ -249,7 +303,7 @@ export function createMcpProxyServer(
     return { tools: state?.tools ?? [] };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const tool = request.params.name;
     const args = request.params.arguments ?? {};
     const state = await upstreamReady();
@@ -275,7 +329,18 @@ export function createMcpProxyServer(
 
     const startedAt = Date.now();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, settings.timeoutMs);
+    // The engine cancels a call when its pass ends, so stop the remote call too.
+    const cancel = () => controller.abort();
+    if (extra.signal.aborted) {
+      cancel();
+    } else {
+      extra.signal.addEventListener("abort", cancel, { once: true });
+    }
     let result: UpstreamResult;
     try {
       result = await state.upstream.callTool(tool, args, {
@@ -293,12 +358,15 @@ export function createMcpProxyServer(
         isError: true,
       });
       return errorResult(
-        controller.signal.aborted
+        timedOut
           ? `The call to "${tool}" passed its ${settings.timeoutMs} ms deadline.`
-          : `The call to "${tool}" failed.`,
+          : controller.signal.aborted
+            ? `The call to "${tool}" was cancelled.`
+            : `The call to "${tool}" failed.`,
       );
     } finally {
       clearTimeout(timer);
+      extra.signal.removeEventListener("abort", cancel);
     }
 
     const output = boundedOutput(result.content, settings.maxOutputBytes);

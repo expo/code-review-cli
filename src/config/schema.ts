@@ -8,6 +8,7 @@ import { z } from "zod";
 
 import { CATEGORIES, SEVERITIES } from "../core/schema.js";
 import type { Category, Severity } from "../core/schema.js";
+import { OPENCODE_RESEARCH_TOOLS } from "../core/tools.js";
 
 /**
  * The severity floor when a config sets none: `critical`, `warning` and `design` are kept.
@@ -30,6 +31,22 @@ function isHttpsOrLoopback(url: string): boolean {
   );
 }
 
+/**
+ * Passes that never get an MCP server.
+ * The coordinator and the stack verifier run with no tools, and the adjudicator reads
+ * the PR author's replies.
+ */
+export const MCP_UNGRANTABLE_AGENTS = ["coordinator", "stack-verifier", "adjudicator"] as const;
+
+function sameOrigin(first: string, second: string): boolean {
+  try {
+    return new URL(first).origin === new URL(second).origin;
+  } catch {
+    // A bad url already has its own issue from `z.url()`.
+    return true;
+  }
+}
+
 /** A remote MCP server that named review passes may call, such as a code sandbox. */
 export const McpServerConfigSchema = z
   .object({
@@ -44,14 +61,26 @@ export const McpServerConfigSchema = z
     /** The server's tool names the granted passes may call. Any other tool is denied. */
     tools: z.array(z.string().regex(/^[A-Za-z0-9_-]+$/)).min(1),
     /** Reviewer agent ids, plus "verifier" and "cross-cutting" for those passes. */
-    agents: z.array(z.string().min(1)).min(1),
+    agents: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .refine((agent) => !(MCP_UNGRANTABLE_AGENTS as readonly string[]).includes(agent), {
+            error: `mcpServers agents cannot name ${MCP_UNGRANTABLE_AGENTS.join(", ")}: those passes never get an MCP server`,
+          }),
+      )
+      .min(1),
     /**
      * Tools the token may hold that no pass may call, such as a destroy tool that a
      * workflow step calls.
      * A server that offers any other tool is refused: its token is not scoped.
      */
     extraTokenTools: z.array(z.string().regex(/^[A-Za-z0-9_-]+$/)).default([]),
-    /** Calls to this server in one review run, summed over every pass. */
+    /**
+     * Calls to this server in one `ecr review` or `ecr ci` run, summed over every pass
+     * and every routed scope.
+     */
     maxCalls: z.number().int().min(1).max(200).default(20),
     /** Deadline of one call. */
     timeoutMs: z.number().int().min(1_000).max(600_000).default(120_000),
@@ -95,9 +124,7 @@ export const McpServerConfigSchema = z
   })
   // The token goes to this url, so it must be the server the token was minted for.
   .refine(
-    (server) =>
-      server.tokenInfoUrl === undefined ||
-      new URL(server.tokenInfoUrl).origin === new URL(server.url).origin,
+    (server) => server.tokenInfoUrl === undefined || sameOrigin(server.tokenInfoUrl, server.url),
     { error: "mcpServers tokenInfoUrl must have the same origin as url" },
   );
 export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
@@ -205,6 +232,18 @@ export const ReviewConfigSchema = z.object({
           Object.keys(servers).every((other) => !other.startsWith(`${name}_`)),
         ),
       { error: "mcpServers names must not start with another server's name and _" },
+    )
+    // The research tools share the same `<server>_<tool>` namespace on OpenCode.
+    .refine(
+      (servers) =>
+        Object.entries(servers).every(([name, server]) =>
+          server.tools.every(
+            (tool) => !(OPENCODE_RESEARCH_TOOLS as readonly string[]).includes(`${name}_${tool}`),
+          ),
+        ),
+      {
+        error: `mcpServers tool names must not form a research tool name (${OPENCODE_RESEARCH_TOOLS.join(", ")})`,
+      },
     )
     .optional(),
   breakGlass: z

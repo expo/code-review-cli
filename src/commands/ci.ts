@@ -20,7 +20,7 @@ import {
 } from "../config/routing.js";
 import type { LoadedConfig, RoutingManifest } from "../config/schema.js";
 import { repoRoot, resolveTrustedTool, run } from "../core/exec.js";
-import { mcpServersForPullRequest } from "../core/mcp-servers.js";
+import { createSharedMcpAudit, mcpServersForPullRequest } from "../core/mcp-servers.js";
 import { errorMessage, publicFailureReason } from "../core/util.js";
 import { readContextFile } from "../core/context-file.js";
 import { buildDiffLineIndex } from "../core/render.js";
@@ -1080,6 +1080,9 @@ async function runRoutedCi(
   }
 
   const results: ScopeReviewResult[] = [];
+  // @ref LLP 0003#configured-mcp-servers [implements] — every routed scope spends one MCP call budget, not one each
+  // Each scope catches its own errors, so the cleanup after the loop always runs.
+  const mcpAudit = rootConfig.mcpServers ? await createSharedMcpAudit() : undefined;
   for (const scope of active) {
     const scopeDef = manifest.scopes.find((entry) => entry.name === scope.name)!;
     const isDefault = scope.configDir === ".";
@@ -1199,6 +1202,7 @@ async function runRoutedCi(
           passesBudgetMs: budget,
           runsDir: workspaceRunsDir(cwd),
           feedback: feedbackSeam,
+          ...(mcpAudit ? { mcpAuditPath: mcpAudit.auditPath } : {}),
           onProgress: (message) => process.stderr.write(`[${scope.name}] ${message}\n`),
         });
       }
@@ -1216,6 +1220,7 @@ async function runRoutedCi(
       ...(inputHash && reviewCanBeReused(review) ? { inputHash } : {}),
     });
   }
+  await mcpAudit?.cleanup();
 
   if (mode === "single") {
     const aggregate = singleModeReporter!;

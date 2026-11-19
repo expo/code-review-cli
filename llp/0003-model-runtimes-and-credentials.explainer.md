@@ -245,15 +245,22 @@ and ECR refuses that token too.
 MCP ([LLP 0013](0013-platform-research.explainer.md)), the proxy is a process that ECR
 ships and the config cannot replace. Each engine gets a stdio entry that starts it with
 one owner-only settings file. The engine config holds no url and no token. The proxy
-reads the token from the env var the settings name. It does six things the engines
-cannot do ([observed] `mcp-proxy/server.ts`, `mcp-proxy/audit.ts`, `mcp-servers.ts`
-`createMcpProxyRuntime`):
+reads the token from the env var the settings name. The entry starts a small wrapper,
+not the proxy itself: both engines merge their own environment into an MCP child, so
+the wrapper starts the proxy with a built environment (locale, network proxy settings
+and that one server's token). The model key, `GH_TOKEN` and other servers' tokens stop
+at the wrapper ([observed] `mcp-proxy/wrapper.ts`, `mcp-proxy/child-env.ts`). The proxy
+does six things the engines cannot do ([observed] `mcp-proxy/server.ts`,
+`mcp-proxy/audit.ts`, `mcp-servers.ts` `createMcpProxyRuntime`):
 
 - **Scope check.** ECR cannot read the scope of an opaque bearer token, but a server
   that scopes tokens lists only the tools a token may call. The proxy lists the
   server's tools first and refuses the server when it offers a tool outside `tools`
   and `extraTokenTools`. A full token fails this check. The check proves the tool
-  scope only, not the lifetime or the budget.
+  scope only, not the lifetime or the budget. The proxy follows `nextCursor` through
+  every page of the list, up to 20 pages. A list it cannot read to the end, because a
+  cursor repeats or the cap is passed, makes the server unavailable for the run: an
+  unread page could hold an extra tool.
 - **Token check.** When the config sets `tokenInfoUrl`, the proxy first asks that
   endpoint what the token is, and uses the server only when the answer is
   `scoped: true` with an `expiresAt` still ahead, and with `requireNoNetwork`,
@@ -261,9 +268,17 @@ cannot do ([observed] `mcp-proxy/server.ts`, `mcp-proxy/audit.ts`, `mcp-servers.
   same origin as the server, and a redirect is refused, so the token goes nowhere else.
 - **Call budget.** `maxCalls` bounds the calls of one run, summed over every pass. The
   count lives in the run's audit file because each Claude pass starts its own proxy.
-- **Deadline.** `timeoutMs` ends one call.
+  A routed `ecr ci` run reviews each scope with its own `runReview`, so `ci.ts` makes
+  one audit for the whole invocation and every scope spends from it. Each scope tags
+  its events, so its run log reports its own calls. The audit lock is a directory. A
+  lock older than two seconds belongs to a proxy that died while it held it, and the
+  next waiter renames it away, so a killed proxy cannot block the server for the run.
+- **Deadline.** `timeoutMs` ends one call. When the engine cancels a call, the proxy
+  aborts the remote call too. OpenCode applies its `mcp` entry `timeout` to discovery
+  and to every tool call, so ECR sets it to `timeoutMs` plus a margin, and never below
+  what discovery needs. The proxy's own deadline then fires first.
 - **Bounded, labeled output.** A result keeps its text parts only, is cut at
-  `maxOutputBytes`, and starts with a notice that it is untrusted data. Sandbox output
+  `maxOutputBytes` on a character boundary, and starts with a notice that it is untrusted data. Sandbox output
   is PR-influenced, like the diff.
 - **Audit.** Each call records the tool, the size and hash of its arguments, its
   duration and its output size. Arguments and output are model and PR content, so
@@ -271,17 +286,25 @@ cannot do ([observed] `mcp-proxy/server.ts`, `mcp-proxy/audit.ts`, `mcp-servers.
 
 **Grants.** The grant is per pass and per tool. A reviewer id, `verifier` or
 `cross-cutting` gets a server only when its `agents` list names it, and only the
-`tools` listed are callable. On the Claude engine each granted tool is an
+`tools` listed are callable. `coordinator`, `stack-verifier` and `adjudicator` never
+get a server, and the schema refuses an `agents` list that names one. The feedback
+adjudicator reads the PR author's replies, so it runs under its own `adjudicator` id
+with the verifier's read-only tools and model, and never inherits the verifier's grant
+([observed] `adjudicate.ts`, `opencode.ts` `ADJUDICATOR_AGENT`). On the Claude engine each granted tool is an
 `mcp__<server>__<tool>` entry in `--allowedTools`, and under `dontAsk` every other tool
 of that server is refused. On OpenCode a `<server>_*: false` switch turns the server
 off for every agent, and the granted names are switched back on per agent ([observed]
 `mcp-servers.ts`, `claude-code.ts` `buildClaudeArgs`, `opencode.ts`
-`buildOpencodeConfig`).
+`buildOpencodeConfig`). OpenCode names a tool `<server>_<tool>`, so the schema refuses
+a server and tool whose name is a research tool name, such as server `platform` with
+tool `docs_search_platform_docs`.
 
-**Token env.** The Claude child env stays an allowlist and gains the token env of each
-server whose token is set, so the proxy can read it. A token env must not name a
-`FORBIDDEN_TOKEN_ENVS` secret, a model credential or an `auth.tokenEnv`, because the
-server would receive it. That rule runs at load and again before each engine
+**Token env.** The shared Claude child env stays an allowlist. Only the `claude`
+process of a pass granted a server gets that server's token env, so the proxy it
+starts can read it. Other passes never hold the token. A token env must not name a
+`FORBIDDEN_TOKEN_ENVS` secret, a model credential (including the Codex subscription
+tokens `ecr setup-auth` exports) or an `auth.tokenEnv`, because the server would
+receive it. That rule runs at load and again before each engine
 starts, against the run's own auth (a routing manifest can replace the root's), like
 `auth.tokenEnv`. `mcpServers` is root-only: a scope config cannot add a server, because
 a server receives a credential. A server whose token env is unset is skipped, so a
@@ -291,8 +314,10 @@ local run without the token still works ([observed] `mcp-servers.ts`
 
 **Fork pull requests.** In `ecr ci` a fork pull request gets a server only when the
 server sets `forkLabel` and the pull request has that label. Without `forkLabel` a
-fork never gets the server. A failed lookup counts as a fork. Local runs skip this
-gate: the person at the terminal is the trust principal ([observed] `ci.ts`
+fork never gets the server. A failed lookup counts as a fork. The label is not tied to
+a commit and stays on through later pushes, so it must be a label of its own, and a
+maintainer removes it when new commits arrive. Local runs skip this gate: the person
+at the terminal is the trust principal ([observed] `ci.ts`
 `gateMcpServers`, `mcp-servers.ts` `mcpServersForPullRequest`).
 
 **The prompt is guidance, not a control.** The verifier prompt names the granted

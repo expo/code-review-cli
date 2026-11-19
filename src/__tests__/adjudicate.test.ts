@@ -364,3 +364,38 @@ test("adjudicateFeedback: a config-protected (not floored) finding is still judg
   expect(out.skipped).toBe(1);
   expect(out.records[0]!.applied).toBe(false);
 });
+
+test("adjudicateFeedback: should judge a reply as the adjudicator, never as the verifier", async () => {
+  const agents: unknown[] = [];
+  const handle = {
+    url: "",
+    close: () => {},
+    rateLimit: { check: () => 0, note: () => {} },
+    client: {
+      session: {
+        create: async () => ({ data: { id: "s" } }),
+        promptAsync: async ({ body }: { body: { agent?: unknown } }) => {
+          agents.push(body.agent);
+          return { data: {} };
+        },
+        messages: async () => ({
+          data: [
+            {
+              info: { role: "assistant", time: { completed: 1 } },
+              parts: [{ type: "text", text: '{"verdict":"accepted","reason":"fixed"}' }],
+            },
+          ],
+        }),
+      },
+    },
+  } as unknown as OpencodeHandle;
+  const outcome = await adjudicateFeedback(
+    handle,
+    [{ finding: finding(), record: record({ author: true, citedId: true }), replyText: "Fixed." }],
+    config(),
+  );
+  expect(outcome.failed).toBe(0);
+  expect(outcome.adjudicated).toBe(1);
+  // The verifier may hold an MCP grant. The adjudicator reads the PR author's text.
+  expect(agents).toEqual(["adjudicator"]);
+});

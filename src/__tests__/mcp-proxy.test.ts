@@ -1,21 +1,29 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import { readMcpServerUsage } from "../mcp-proxy/audit.js";
+import { McpProxyAudit, readMcpServerUsage, STALE_LOCK_MS } from "../mcp-proxy/audit.js";
+import { mcpProxyChildEnvironment, settingsTokenEnv } from "../mcp-proxy/child-env.js";
 import {
   boundedOutput,
   createMcpProxyServer,
   fetchTokenVerdict,
+  listAllTools,
+  MAX_TOOL_LIST_PAGES,
   McpProxySettingsSchema,
   tokenInfoVerdict,
   tokenRequirements,
 } from "../mcp-proxy/server.js";
-import type { McpProxySettings, McpProxyUpstream, UpstreamResult } from "../mcp-proxy/server.js";
+import type {
+  McpProxySettings,
+  McpProxyUpstream,
+  UpstreamResult,
+  UpstreamTool,
+} from "../mcp-proxy/server.js";
 
 let root: string;
 let settings: McpProxySettings;
@@ -300,4 +308,160 @@ test("should check the fetched token info against the limits", async () => {
   expect(await fetchTokenVerdict(url, "child", answer({ network: false }), required)).toBe(
     "not-scoped",
   );
+});
+
+test("should cut output at a character boundary, never past the byte limit", () => {
+  // "é" is two bytes, so a cut at 5 bytes falls inside the third one.
+  const output = boundedOutput([{ type: "text", text: "éééé" }], 5);
+  expect(output.truncated).toBe(true);
+  expect(output.text).toBe("éé\n[output cut at 5 bytes]");
+  expect(output.text).not.toContain("\uFFFD");
+  const emoji = boundedOutput([{ type: "text", text: "😀😀" }], 6).text.split("\n")[0]!;
+  expect(emoji).toBe("😀");
+  expect(Buffer.byteLength(emoji, "utf8")).toBeLessThanOrEqual(6);
+});
+
+const tool = (name: string): UpstreamTool => ({ name, inputSchema: { type: "object" } });
+
+test("should read every page of the tool list", async () => {
+  const pages: Record<string, { tools: UpstreamTool[]; nextCursor?: string }> = {
+    start: { tools: [tool("a")], nextCursor: "p2" },
+    p2: { tools: [tool("b")], nextCursor: "p3" },
+    p3: { tools: [tool("c")] },
+  };
+  const cursors: (string | undefined)[] = [];
+  const tools = await listAllTools(async (cursor) => {
+    cursors.push(cursor);
+    return pages[cursor ?? "start"]!;
+  });
+  expect(tools.map((entry) => entry.name)).toEqual(["a", "b", "c"]);
+  expect(cursors).toEqual([undefined, "p2", "p3"]);
+});
+
+test("should throw when the tool list repeats a cursor or has too many pages", async () => {
+  await expect(
+    listAllTools(async () => ({ tools: [tool("a")], nextCursor: "same" })),
+  ).rejects.toThrow("repeated a cursor");
+  let page = 0;
+  await expect(
+    listAllTools(async () => ({ tools: [tool("a")], nextCursor: `p${++page}` })),
+  ).rejects.toThrow(`more than ${MAX_TOOL_LIST_PAGES} pages`);
+  expect(page).toBe(MAX_TOOL_LIST_PAGES);
+});
+
+test("should refuse a server whose extra tool is on a later page of the list", async () => {
+  const pages: Record<string, { tools: UpstreamTool[]; nextCursor?: string }> = {
+    start: { tools: [tool("sandbox_exec")], nextCursor: "p2" },
+    p2: { tools: [tool("github_create_pr")] },
+  };
+  const upstream: McpProxyUpstream = {
+    listTools: () => listAllTools(async (cursor) => pages[cursor ?? "start"]!),
+    callTool: async () => ({}),
+    close: async () => {},
+  };
+  const client = await connect(upstream);
+  expect((await client.listTools()).tools).toEqual([]);
+  expect((await readMcpServerUsage(settings.auditPath))[0]!.refused).toBe("token-too-broad");
+});
+
+test("should serve no tools when the tool list never ends", async () => {
+  const upstream: McpProxyUpstream = {
+    listTools: () => listAllTools(async () => ({ tools: [tool("sandbox_exec")], nextCursor: "x" })),
+    callTool: async () => ({}),
+    close: async () => {},
+  };
+  const client = await connect(upstream);
+  expect((await client.listTools()).tools).toEqual([]);
+  expect((await readMcpServerUsage(settings.auditPath))[0]!.refused).toBe("unavailable");
+});
+
+test("should stop the remote call when the engine cancels it", async () => {
+  let resolveSeen: (aborted: boolean) => void = () => {};
+  const seen = new Promise<boolean>((resolve) => {
+    resolveSeen = resolve;
+  });
+  let started: () => void = () => {};
+  const callStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const client = await connect(
+    upstreamWith(
+      ["sandbox_exec"],
+      (_name, _args, options) =>
+        new Promise((_resolve, reject) => {
+          started();
+          options.signal.addEventListener("abort", () => {
+            resolveSeen(true);
+            reject(new Error("aborted"));
+          });
+        }),
+    ),
+    { timeoutMs: 60_000 },
+  );
+  const controller = new AbortController();
+  const pending = client.callTool({ name: "sandbox_exec", arguments: {} }, undefined, {
+    signal: controller.signal,
+  });
+  await callStarted;
+  controller.abort();
+  await expect(pending).rejects.toThrow();
+  expect(await seen).toBe(true);
+});
+
+test("should break an audit lock left by a killed proxy", async () => {
+  const lockPath = `${settings.auditPath}.lock`;
+  await mkdir(lockPath);
+  const old = (Date.now() - STALE_LOCK_MS * 2) / 1000;
+  await utimes(lockPath, old, old);
+  const audit = new McpProxyAudit(settings.auditPath, "sandbox", 2);
+  expect(await audit.reserve("sandbox_exec", 2, "hash")).toBe(true);
+  expect((await readMcpServerUsage(settings.auditPath))[0]!.calls).toBe(1);
+});
+
+test("should share one budget between runs, and report each run's own calls", async () => {
+  const first = new McpProxyAudit(settings.auditPath, "sandbox", 2, "scope-a");
+  const second = new McpProxyAudit(settings.auditPath, "sandbox", 2, "scope-b");
+  expect(await first.reserve("sandbox_exec", 2, "hash")).toBe(true);
+  expect(await second.reserve("sandbox_exec", 2, "hash")).toBe(true);
+  expect(await second.reserve("sandbox_exec", 2, "hash")).toBe(false);
+  expect((await readMcpServerUsage(settings.auditPath, "scope-a"))[0]).toMatchObject({
+    calls: 1,
+    rejected: 0,
+  });
+  expect((await readMcpServerUsage(settings.auditPath, "scope-b"))[0]).toMatchObject({
+    calls: 1,
+    rejected: 1,
+  });
+  expect((await readMcpServerUsage(settings.auditPath))[0]!.calls).toBe(2);
+});
+
+test("should give the proxy only locale, network proxy and its own token", () => {
+  const env = mcpProxyChildEnvironment(
+    {
+      PATH: "/usr/bin",
+      GH_TOKEN: "gh",
+      ANTHROPIC_API_KEY: "model",
+      OTHER_SERVER_TOKEN: "other",
+      REVIEW_SANDBOX_TOKEN: "sandbox",
+      HTTPS_PROXY: "http://proxy:3128",
+      NODE_OPTIONS: "--require evil.js",
+    },
+    "REVIEW_SANDBOX_TOKEN",
+  );
+  expect(env).toEqual({
+    LANG: "C.UTF-8",
+    LC_ALL: "C.UTF-8",
+    HTTPS_PROXY: "http://proxy:3128",
+    REVIEW_SANDBOX_TOKEN: "sandbox",
+  });
+  expect(mcpProxyChildEnvironment({ GH_TOKEN: "gh" }, undefined)).not.toHaveProperty("GH_TOKEN");
+});
+
+test("should read the token env name from the settings file, and nothing malformed", () => {
+  expect(settingsTokenEnv(JSON.stringify({ tokenEnv: "REVIEW_SANDBOX_TOKEN" }))).toBe(
+    "REVIEW_SANDBOX_TOKEN",
+  );
+  expect(settingsTokenEnv(JSON.stringify({ tokenEnv: "bad name" }))).toBeUndefined();
+  expect(settingsTokenEnv("{not json")).toBeUndefined();
+  expect(settingsTokenEnv("null")).toBeUndefined();
 });

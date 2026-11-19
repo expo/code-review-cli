@@ -226,6 +226,11 @@ const CROSS_CUTTING_TOOLS = toolMap(["read", "grep"]);
 export const VERIFIER_AGENT = "verifier";
 const VERIFIER_TOOLS = toolMap(["read", "grep"]);
 
+// @ref LLP 0003#configured-mcp-servers [implements] — the adjudicator never gets an MCP grant
+// Judges a PR author's reply against the source. It has the verifier's tools and model,
+// but its own id, so it never inherits the verifier's MCP grant.
+export const ADJUDICATOR_AGENT = "adjudicator";
+
 // @ref LLP 0010#patch-level-confirmation-v2 [implements] — no-tools agent: the addressing PR's patch is INLINED, never read from disk, so there is no pathInside surface at all
 // Confirms a requalification by reading the addressing PR's INLINED patch (v2). It
 // gets NO tools: the patch is inlined into the task, so it must never read the disk
@@ -276,6 +281,15 @@ export function buildOpencodeConfig(
     prompt:
       "You verify code-review findings against the actual source. Follow the user message exactly and return only the requested JSON.",
     tools: { ...VERIFIER_TOOLS, ...opencodeGrantedTools(mcpProxy?.servers, VERIFIER_AGENT) },
+  };
+  agent[ADJUDICATOR_AGENT] = {
+    description: "Judges a reply to a finding against the real file.",
+    mode: "all",
+    model: config.agents[0]?.model ?? config.coordinator.model,
+    temperature: config.agents[0]?.temperature ?? 0.1,
+    prompt:
+      "You verify code-review findings against the actual source. Follow the user message exactly and return only the requested JSON.",
+    tools: VERIFIER_TOOLS,
   };
   agent[STACK_VERIFIER_AGENT] = {
     description: "Confirms a requalification against the addressing PR's inlined patch.",

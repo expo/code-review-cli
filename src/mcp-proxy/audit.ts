@@ -1,9 +1,13 @@
 // @ref LLP 0003#configured-mcp-servers [implements] — one append-only audit per run holds the call budget and the call record
-import { appendFile, mkdir, readFile, rmdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { appendFile, mkdir, readFile, rename, rmdir, stat } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
 const LOCK_RETRIES = 200;
 const LOCK_DELAY_MS = 25;
+// A holder keeps the lock for one file read and one append.
+// A lock this old belongs to a proxy that was killed while it held it.
+export const STALE_LOCK_MS = 2_000;
 
 export type McpProxyAuditEvent =
   | { type: "reserved"; server: string; tool: string; argsBytes: number; argsSha256: string }
@@ -38,7 +42,9 @@ export interface McpServerUsage {
   tools: Record<string, number>;
 }
 
-async function readEvents(path: string): Promise<McpProxyAuditEvent[]> {
+type StoredEvent = McpProxyAuditEvent & { run?: string };
+
+async function readEvents(path: string): Promise<StoredEvent[]> {
   let contents = "";
   try {
     contents = await readFile(path, "utf8");
@@ -48,11 +54,32 @@ async function readEvents(path: string): Promise<McpProxyAuditEvent[]> {
   return contents.split("\n").flatMap((line) => {
     if (!line) return [];
     try {
-      return [JSON.parse(line) as McpProxyAuditEvent];
+      return [JSON.parse(line) as StoredEvent];
     } catch {
       return [];
     }
   });
+}
+
+/**
+ * Remove a lock left by a killed proxy.
+ * The rename is atomic, so when several waiters see the same stale lock only one of
+ * them takes it away.
+ */
+async function breakStaleLock(lockPath: string): Promise<boolean> {
+  try {
+    const { mtimeMs } = await stat(lockPath);
+    if (Date.now() - mtimeMs < STALE_LOCK_MS) {
+      return false;
+    }
+    const stale = `${lockPath}.stale-${randomUUID()}`;
+    await rename(lockPath, stale);
+    await rmdir(stale).catch(() => {});
+    return true;
+  } catch {
+    // Another waiter broke it first, or the holder let it go.
+    return false;
+  }
 }
 
 /**
@@ -65,12 +92,14 @@ export class McpProxyAudit {
     private readonly path: string,
     private readonly server: string,
     private readonly maxCalls: number,
+    private readonly run?: string,
   ) {}
 
   async append(event: McpProxyAuditEvent): Promise<void> {
+    const stored = this.run === undefined ? event : { ...event, run: this.run };
     await appendFile(
       this.path,
-      `${JSON.stringify({ ...event, timestamp: new Date().toISOString() })}\n`,
+      `${JSON.stringify({ ...stored, timestamp: new Date().toISOString() })}\n`,
       { encoding: "utf8", mode: 0o600 },
     );
   }
@@ -82,6 +111,7 @@ export class McpProxyAudit {
         await mkdir(lockPath, { mode: 0o700 });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (await breakStaleLock(lockPath)) continue;
         await delay(LOCK_DELAY_MS);
         continue;
       }
@@ -115,11 +145,15 @@ export class McpProxyAudit {
   }
 }
 
-/** Sum the run's audit into one record per server, in first-seen order. */
-export async function readMcpServerUsage(path: string): Promise<McpServerUsage[]> {
+/**
+ * Sum the run's audit into one record per server, in first-seen order.
+ * With `run`, only that run's events count, for an audit that several runs share.
+ */
+export async function readMcpServerUsage(path: string, run?: string): Promise<McpServerUsage[]> {
   const usage = new Map<string, McpServerUsage>();
   for (const event of await readEvents(path)) {
     if (typeof event.server !== "string") continue;
+    if (run !== undefined && event.run !== run) continue;
     const entry = usage.get(event.server) ?? {
       server: event.server,
       calls: 0,

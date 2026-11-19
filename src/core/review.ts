@@ -174,6 +174,11 @@ export interface ReviewRunOptions {
     config: LoadedConfig["feedback"];
     match: (review: CoordinatorOutput) => Promise<AdjudicationItem[]>;
   };
+  /**
+   * An MCP audit shared with other runs of the same `ecr ci` invocation, so routed
+   * scopes spend one `maxCalls` budget instead of one each.
+   */
+  mcpAuditPath?: string;
 }
 
 /**
@@ -458,7 +463,10 @@ export async function runReview(
   // holds the call budget, the deadline, the output limit and the audit.
   let mcpProxy: McpProxyRuntime | undefined;
   try {
-    mcpProxy = await createMcpProxyRuntime(availableMcpServers(config.mcpServers, process.env));
+    mcpProxy = await createMcpProxyRuntime(
+      availableMcpServers(config.mcpServers, process.env),
+      options.mcpAuditPath ? { auditPath: options.mcpAuditPath, run: runId } : {},
+    );
     for (const [name, server] of Object.entries(mcpProxy?.servers ?? {})) {
       progress(
         `MCP server "${name}" enabled for ${server.agents.join(", ")} (${server.maxCalls} calls max; calls will be reported).`,
@@ -476,7 +484,10 @@ export async function runReview(
       return {};
     }
     try {
-      const usage = await readMcpServerUsage(mcpProxy.auditPath);
+      const usage = await readMcpServerUsage(
+        mcpProxy.auditPath,
+        options.mcpAuditPath ? runId : undefined,
+      );
       for (const line of formatMcpServerUsage(usage)) {
         progress(line);
       }

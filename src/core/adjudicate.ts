@@ -1,6 +1,6 @@
 // @ref LLP 0011#the-rebuttal-is-a-hypothesis [implements] — a reply is judged against the SOURCE (via the adjudicator prompt), capped and fail-open; the decision floors live here in code, never in the prompt
 import type { LoadedConfig } from "../config/schema.js";
-import { addTokenUsage, promptAndParse, VERIFIER_AGENT } from "./opencode.js";
+import { ADJUDICATOR_AGENT, addTokenUsage, promptAndParse } from "./opencode.js";
 import type { OpencodeHandle, TokenUsage } from "./opencode.js";
 import { buildAdjudicatorSystem, buildAdjudicatorTask } from "./prompts.js";
 import { parseAdjudication } from "./schema.js";
@@ -234,11 +234,9 @@ export async function adjudicateFeedback(
         } = await promptAndParse(
           handle,
           {
-            // Reuse the verifier's OpenCode agent: it carries exactly the read+grep tool
-            // set the adjudicator needs (open the cited file, trace the path) and the
-            // reviewing model, and its distrust posture matches. The system prompt below
-            // is what makes this an adjudication rather than a verification.
-            agent: VERIFIER_AGENT,
+            // The verifier's read+grep tools and model, under its own id so it never
+            // gets the verifier's MCP grant. The system prompt makes it an adjudication.
+            agent: ADJUDICATOR_AGENT,
             system: buildAdjudicatorSystem(),
             text: buildAdjudicatorTask(item.finding, item.replyText),
             title: `adjudicate-${index}`,

@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { MCP_UNGRANTABLE_AGENTS } from "../config/schema.js";
 import type { McpServerConfig } from "../config/schema.js";
 import type { McpServerUsage } from "../mcp-proxy/audit.js";
+import { MCP_PROXY_DISCOVERY_MS } from "../mcp-proxy/server.js";
 import type { McpProxySettings } from "../mcp-proxy/server.js";
 import { FORBIDDEN_TOKEN_ENVS, MODEL_CREDENTIAL_ENVS } from "./auth.js";
 
@@ -22,9 +24,27 @@ export function mcpServerGrants(
   servers: Record<string, McpServerConfig> | undefined,
   agentId: string,
 ): McpServerGrant[] {
+  // The schema already refuses these ids. This keeps a hand-built config from granting them.
+  if ((MCP_UNGRANTABLE_AGENTS as readonly string[]).includes(agentId)) {
+    return [];
+  }
   return Object.entries(servers ?? {})
     .filter(([, server]) => server.agents.includes(agentId))
     .map(([name, server]) => ({ name, server, tools: [...server.tools] }));
+}
+
+/** The token env of each granted server, for the env of that one pass only. */
+export function mcpGrantEnvironment(
+  grants: readonly McpServerGrant[],
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  return Object.fromEntries(
+    grants.flatMap((grant) => {
+      const name = grant.server.tokenEnv;
+      const value = name ? env[name] : undefined;
+      return name && value ? [[name, value]] : [];
+    }),
+  );
 }
 
 /**
@@ -75,10 +95,14 @@ export function mcpServersForPullRequest(
   );
 }
 
-/** The engines start this proxy. Only the proxy talks to the remote server. */
+/**
+ * The engines start the proxy's wrapper. Only the proxy talks to the remote server.
+ * The wrapper gives the proxy a built environment, because both engines merge their
+ * own environment into an MCP child.
+ */
 export function bundledMcpProxy(): { command: string; args: string[] } {
-  const builtEntry = fileURLToPath(new URL("../mcp-proxy/cli.js", import.meta.url));
-  const sourceEntry = fileURLToPath(new URL("../mcp-proxy/cli.ts", import.meta.url));
+  const builtEntry = fileURLToPath(new URL("../mcp-proxy/wrapper.js", import.meta.url));
+  const sourceEntry = fileURLToPath(new URL("../mcp-proxy/wrapper.ts", import.meta.url));
   return {
     command: process.execPath,
     args: [existsSync(builtEntry) ? builtEntry : sourceEntry],
@@ -96,6 +120,31 @@ export interface McpProxyRuntime {
   cleanup(): Promise<void>;
 }
 
+/** An audit, and so a call budget, that several runs share. */
+export interface SharedMcpAudit {
+  auditPath: string;
+  cleanup(): Promise<void>;
+}
+
+/**
+ * One budget for every routed scope of an `ecr ci` run.
+ * Without it each scope gets its own audit and `maxCalls` multiplies by the scope count.
+ */
+export async function createSharedMcpAudit(): Promise<SharedMcpAudit> {
+  const directory = await mkdtemp(path.join(tmpdir(), "ecr-mcp-budget-"));
+  return {
+    auditPath: path.join(directory, "audit.jsonl"),
+    cleanup: () => rm(directory, { recursive: true, force: true }),
+  };
+}
+
+export interface McpProxyRuntimeOptions {
+  /** A shared audit to use instead of a new one. The runtime never removes it. */
+  auditPath?: string;
+  /** Tags this run's events in a shared audit, so its usage report shows its own calls. */
+  run?: string;
+}
+
 /**
  * One owner-only directory per run: a settings file and a Claude config per server,
  * and the audit all proxies share.
@@ -103,12 +152,13 @@ export interface McpProxyRuntime {
  */
 export async function createMcpProxyRuntime(
   servers: Record<string, McpServerConfig>,
+  options: McpProxyRuntimeOptions = {},
 ): Promise<McpProxyRuntime | undefined> {
   if (Object.keys(servers).length === 0) {
     return undefined;
   }
   const directory = await mkdtemp(path.join(tmpdir(), "ecr-mcp-"));
-  const auditPath = path.join(directory, "audit.jsonl");
+  const auditPath = options.auditPath ?? path.join(directory, "audit.jsonl");
   const proxy = bundledMcpProxy();
   const claudeConfigPaths = new Map<string, string>();
   const commands = new Map<string, string[]>();
@@ -127,6 +177,7 @@ export async function createMcpProxyRuntime(
       timeoutMs: server.timeoutMs,
       maxOutputBytes: server.maxOutputBytes,
       auditPath,
+      ...(options.run !== undefined ? { run: options.run } : {}),
     };
     await writeFile(settingsPath, `${JSON.stringify(settings)}\n`, {
       encoding: "utf8",
@@ -151,13 +202,31 @@ export async function createMcpProxyRuntime(
   };
 }
 
+// Room for the proxy to end a call at its own deadline and send back its error.
+const MCP_CALL_TIMEOUT_MARGIN_MS = 15_000;
+// Discovery waits for the proxy's token check, connect and tool list.
+const MCP_DISCOVERY_TIMEOUT_MS = MCP_PROXY_DISCOVERY_MS + 10_000;
+
+/** OpenCode's `mcp` timeout for a server: it bounds discovery and every call. */
+export function opencodeMcpTimeoutMs(
+  server: Pick<McpServerConfig, "timeoutMs"> | undefined,
+): number {
+  return Math.max(MCP_DISCOVERY_TIMEOUT_MS, (server?.timeoutMs ?? 0) + MCP_CALL_TIMEOUT_MARGIN_MS);
+}
+
 /** OpenCode's `mcp` entries: each server is the local proxy. */
 export function opencodeMcpServers(runtime: McpProxyRuntime | undefined): Record<string, unknown> {
   return Object.fromEntries(
     [...(runtime?.commands ?? [])].map(([name, command]) => [
       name,
-      // `timeout` bounds tool discovery, which waits for the proxy to reach the server.
-      { type: "local", command, enabled: true, timeout: 30_000 },
+      // OpenCode applies `timeout` to discovery and to each tool call.
+      // So it must outlast the proxy's own call deadline, or OpenCode cuts the call first.
+      {
+        type: "local",
+        command,
+        enabled: true,
+        timeout: opencodeMcpTimeoutMs(runtime?.servers[name]),
+      },
     ]),
   );
 }

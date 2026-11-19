@@ -54,8 +54,8 @@
 
   // Optional remote MCP servers (ROOT-ONLY), such as a code sandbox where a pass can
   // check how a tool behaves. Each server is granted to the passes in `agents`
-  // (reviewer ids, plus "verifier" or "cross-cutting"), and only the `tools` listed
-  // are callable. A server whose token env is unset is skipped. The url must be https
+  // (reviewer ids, plus "verifier" or "cross-cutting"; never "coordinator" or
+  // "adjudicator"), and only the `tools` listed are callable. A server whose token env is unset is skipped. The url must be https
   // (http only for localhost).
   //
   // SECURITY: `tokenEnv` must hold a token minted for THIS review run, never a
@@ -71,9 +71,12 @@
   // become root. A code sandbox must hold no credentials and needs no network access.
   //
   // ecr calls the server through its own local proxy, which enforces `maxCalls` (per
-  // run), `timeoutMs` (per call) and `maxOutputBytes` (per call), and records every
-  // call. A fork pull request gets the server only when it has `forkLabel`; without
-  // `forkLabel`, never.
+  // run, shared by every routed scope), `timeoutMs` (per call) and `maxOutputBytes`
+  // (per call), and records every call. A fork pull request gets the server only when
+  // it has `forkLabel`; without `forkLabel`, never. Use a label of its own, not the
+  // review label or a `<review label>:` name. A label stays on through later pushes
+  // and is not tied to a commit, so remove it when new commits arrive and add it
+  // again after you read them.
   // "mcpServers": {
   //   "sandbox": {
   //     "url": "https://example.convex.site/mcp",
@@ -84,7 +87,7 @@
   //     "maxCalls": 20,
   //     "timeoutMs": 120000,
   //     "maxOutputBytes": 16384,
-  //     "forkLabel": "ai-review",
+  //     "forkLabel": "ai-sandbox",
   //     "tokenInfoUrl": "https://example.convex.site/tokens/info",
   //     "requireNoNetwork": true,
   //     "requireNoSudo": true

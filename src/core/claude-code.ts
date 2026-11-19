@@ -6,9 +6,10 @@ import path from "node:path";
 import type { LoadedConfig, McpServerConfig } from "../config/schema.js";
 import { checkAuthEntry } from "./auth.js";
 import { pathInside, resolveOnPath, run } from "./exec.js";
-import { assertMcpServerTokenEnvs, mcpServerGrants } from "./mcp-servers.js";
+import { assertMcpServerTokenEnvs, mcpGrantEnvironment, mcpServerGrants } from "./mcp-servers.js";
 import type { McpProxyRuntime } from "./mcp-servers.js";
 import {
+  ADJUDICATOR_AGENT,
   addTokenUsage,
   AgentTimeoutError,
   CLAUDE_CODE_ENGINE,
@@ -222,6 +223,7 @@ export function buildEngineMap(
   const shared = config.agents[0]?.model ?? config.coordinator.model;
   modelOf[CROSS_CUTTING_AGENT] = shared;
   modelOf[VERIFIER_AGENT] = shared;
+  modelOf[ADJUDICATOR_AGENT] = shared;
   // @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — the id MUST live in modelOf/engineOf or a claude-routed run dispatches against an undefined handle and crashes
   modelOf[STACK_VERIFIER_AGENT] = shared;
   modelOf["coordinator"] = config.coordinator.model;
@@ -860,7 +862,8 @@ export async function runClaudePrompt(
       }),
       {
         input: args.text,
-        env: handle.childEnv,
+        // A server's token goes only to a pass granted that server.
+        env: { ...handle.childEnv, ...mcpGrantEnvironment(mcpGrants) },
         cwd: process.cwd(),
         timeout: maxWaitMs,
         check: false,
@@ -1231,6 +1234,7 @@ export async function startClaudeCode(
   // consolidates findings and needs no repo tools.
   tools[CROSS_CUTTING_AGENT] = ["read", "grep"];
   tools[VERIFIER_AGENT] = ["read", "grep"];
+  tools[ADJUDICATOR_AGENT] = ["read", "grep"];
   // No tools: the addressing PR's patch is inlined into the task, so the stack
   // verifier never reads the disk (mirrors the coordinator's empty list).
   tools[STACK_VERIFIER_AGENT] = [];
@@ -1244,12 +1248,6 @@ export async function startClaudeCode(
     config.mcpServers,
     config.auth.flatMap((auth) => (auth.tokenEnv ? [auth.tokenEnv] : [])),
   );
-  // The proxy reads the token from its own env, so the child env must carry it.
-  for (const server of Object.values(mcpProxy?.servers ?? {})) {
-    if (server.tokenEnv) {
-      childEnv[server.tokenEnv] = process.env[server.tokenEnv];
-    }
-  }
 
   return {
     client: undefined,

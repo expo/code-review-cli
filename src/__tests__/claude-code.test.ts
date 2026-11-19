@@ -201,6 +201,9 @@ test("buildEngineMap: the always-run verifier/cross-cutting keep the full roster
   expect(map.usesClaude).toBe(true);
   expect(map.engineOf["verifier"]).toBe("claude-code");
   expect(map.engineOf["cross-cutting"]).toBe("claude-code");
+  // The adjudicator runs on the verifier's model, under its own id.
+  expect(map.engineOf["adjudicator"]).toBe("claude-code");
+  expect(map.modelOf["adjudicator"]).toBe(map.modelOf["verifier"]);
 });
 
 test("claudeModelId: strips a leading provider segment; bare ids pass through", () => {
@@ -1496,5 +1499,64 @@ test("claudeCodePromptAndParse: both attempts unparseable throws naming both fai
     ).rejects.toThrow(/did not return parseable JSON after retries/);
   } finally {
     await cleanup();
+  }
+});
+
+test("runClaudePrompt: should give a server's token only to a pass granted that server", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ecr-claude-code-test-"));
+  const bin = path.join(dir, "claude");
+  const body = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "ok",
+  });
+  await writeFile(path.join(dir, "out"), body, "utf8");
+  await writeFile(
+    bin,
+    `#!/bin/sh\ncat > /dev/null\nenv > "${dir}/env.$$"\necho "$$" >> "${dir}/pids"\ncat "${dir}/out"\n`,
+    "utf8",
+  );
+  await chmod(bin, 0o755);
+  const saved = process.env.REVIEW_SANDBOX_TOKEN;
+  process.env.REVIEW_SANDBOX_TOKEN = "sandbox-secret";
+  const sandbox = {
+    url: "https://sandbox.example/mcp",
+    tokenEnv: "REVIEW_SANDBOX_TOKEN",
+    tools: ["sandbox_exec"],
+    // The schema refuses the last two. A hand-built config still must not grant them.
+    agents: ["reviewer", "verifier", "adjudicator", "coordinator"],
+    extraTokenTools: [],
+    maxCalls: 20,
+    timeoutMs: 120_000,
+    maxOutputBytes: 16_384,
+    requireNoNetwork: false,
+    requireNoSudo: false,
+  };
+  const handle = testHandle(bin, {
+    models: { reviewer: "anthropic/claude-opus-5", other: "anthropic/claude-opus-5" },
+    tools: { reviewer: ["read"], other: ["read"], adjudicator: ["read", "grep"] },
+    mcpServers: { sandbox },
+    mcpServerConfigPaths: new Map([["sandbox", path.join(dir, "sandbox.json")]]),
+  });
+  const envOf = async (agent: string): Promise<string> => {
+    await runClaudePrompt(handle, { agent, system: "SYS", text: "hi", title: "t" });
+    const pids = (await readFile(path.join(dir, "pids"), "utf8")).trim().split("\n");
+    return readFile(path.join(dir, `env.${pids.at(-1)}`), "utf8");
+  };
+  try {
+    expect(await envOf("reviewer")).toContain("REVIEW_SANDBOX_TOKEN=sandbox-secret");
+    expect(await envOf("other")).not.toContain("REVIEW_SANDBOX_TOKEN");
+    expect(await envOf("adjudicator")).not.toContain("REVIEW_SANDBOX_TOKEN");
+    expect(await envOf("coordinator")).not.toContain("REVIEW_SANDBOX_TOKEN");
+    // The shared env never holds the token, so no later pass can pick it up.
+    expect(handle.childEnv.REVIEW_SANDBOX_TOKEN).toBeUndefined();
+  } finally {
+    if (saved === undefined) {
+      delete process.env.REVIEW_SANDBOX_TOKEN;
+    } else {
+      process.env.REVIEW_SANDBOX_TOKEN = saved;
+    }
+    await rm(dir, { recursive: true, force: true });
   }
 });

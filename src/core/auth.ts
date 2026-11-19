@@ -37,10 +37,17 @@ const ANTHROPIC_TOKEN_ENVS: Record<string, string> = {
   CLAUDE_CODE_REVIEW_SHARED_API_TOKEN: "anthropic",
 };
 
-/** Every env var that can hold a model provider credential. */
+/** The env vars `ecr setup-auth` exports for a Codex (ChatGPT) subscription login. */
+const CODEX_OAUTH_TOKEN_ENVS = ["CODEX_OAUTH_ACCESS_TOKEN", "CODEX_OAUTH_REFRESH_TOKEN"];
+
+/**
+ * Every env var that can hold a model provider credential.
+ * An MCP server token env may not name one. `auth.tokenEnv` still can.
+ */
 export const MODEL_CREDENTIAL_ENVS: ReadonlySet<string> = new Set([
   ...Object.values(PROVIDER_KEY_ENV),
   ...Object.keys(ANTHROPIC_TOKEN_ENVS),
+  ...CODEX_OAUTH_TOKEN_ENVS,
 ]);
 
 /**

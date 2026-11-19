@@ -1,15 +1,19 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { CONFIG_DIRNAME, loadReviewConfig } from "../config/load.js";
-import { ScopeReviewConfigSchema } from "../config/schema.js";
+import { McpServerConfigSchema, ScopeReviewConfigSchema } from "../config/schema.js";
 import type { McpServerConfig } from "../config/schema.js";
 import {
   createMcpProxyRuntime,
+  createSharedMcpAudit,
+  mcpGrantEnvironment,
   mcpServerGrants,
   mcpServersForPullRequest,
+  opencodeMcpTimeoutMs,
   opencodeMcpToolsOff,
 } from "../core/mcp-servers.js";
 import { promptAgent } from "../core/opencode.js";
@@ -192,6 +196,8 @@ test("refuses a token env that holds another secret or the model credential", as
     "GOOGLE_GENERATIVE_AI_API_KEY",
     "META_API_KEY",
     "MODEL_TOKEN",
+    "CODEX_OAUTH_ACCESS_TOKEN",
+    "CODEX_OAUTH_REFRESH_TOKEN",
   ]) {
     await writeRootConfig({
       auth: { mode: "api-key", provider: "anthropic", tokenEnv: "MODEL_TOKEN" },
@@ -264,4 +270,100 @@ test("should load requireNoSudo with a token info url, and leave it off by defau
   const { requireNoSudo: _omitted, ...withoutKey } = SANDBOX;
   await writeRootConfig({ mcpServers: { sandbox: withoutKey } });
   expect((await loadReviewConfig(root)).mcpServers?.sandbox?.requireNoSudo).toBe(false);
+});
+
+test("should let auth.tokenEnv still name a Codex subscription token", async () => {
+  await writeRootConfig({
+    auth: { mode: "oauth", provider: "openai", tokenEnv: "CODEX_OAUTH_ACCESS_TOKEN" },
+    mcpServers: { sandbox: SANDBOX },
+  });
+  expect((await loadReviewConfig(root)).mcpServers?.sandbox).toEqual(SANDBOX);
+});
+
+test("should report a bad url next to a token info url as a config issue, not a crash", () => {
+  const tokenInfoUrl = "https://sandbox.example/tokens/info";
+  const badUrl = McpServerConfigSchema.safeParse({ ...SANDBOX, url: "not a url", tokenInfoUrl });
+  expect(badUrl.success).toBe(false);
+  expect(JSON.stringify(badUrl.error?.issues)).toContain("url");
+  const badInfo = McpServerConfigSchema.safeParse({ ...SANDBOX, tokenInfoUrl: "not a url" });
+  expect(badInfo.success).toBe(false);
+});
+
+test("should refuse a server whose tool name would form a research tool name", async () => {
+  await writeRootConfig({
+    mcpServers: { platform: { ...SANDBOX, tools: ["docs_search_platform_docs"] } },
+  });
+  await expect(loadReviewConfig(root)).rejects.toThrow(/research tool name/);
+  await writeRootConfig({ mcpServers: { platform: SANDBOX } });
+  expect((await loadReviewConfig(root)).mcpServers?.platform).toEqual(SANDBOX);
+});
+
+test("should refuse to grant a server to the adjudicator, coordinator or stack verifier", async () => {
+  for (const agent of ["adjudicator", "coordinator", "stack-verifier"]) {
+    await writeRootConfig({ mcpServers: { sandbox: { ...SANDBOX, agents: ["deep", agent] } } });
+    await expect(loadReviewConfig(root)).rejects.toThrow(/never get an MCP server/);
+    expect(mcpServerGrants({ sandbox: { ...SANDBOX, agents: [agent] } }, agent)).toEqual([]);
+  }
+});
+
+test("should give a pass the token env of its granted servers only", () => {
+  const other: McpServerConfig = { ...SANDBOX, tokenEnv: "OTHER_TOKEN", agents: ["security"] };
+  const env = { REVIEW_SANDBOX_TOKEN: "sandbox", OTHER_TOKEN: "other" };
+  const servers = { sandbox: SANDBOX, other };
+  expect(mcpGrantEnvironment(mcpServerGrants(servers, "deep"), env)).toEqual({
+    REVIEW_SANDBOX_TOKEN: "sandbox",
+  });
+  expect(mcpGrantEnvironment(mcpServerGrants(servers, "coordinator"), env)).toEqual({});
+  expect(mcpGrantEnvironment(mcpServerGrants(servers, "deep"), {})).toEqual({});
+});
+
+test("should give OpenCode a timeout past the proxy's call deadline and discovery", () => {
+  expect(opencodeMcpTimeoutMs({ timeoutMs: 120_000 })).toBe(135_000);
+  expect(opencodeMcpTimeoutMs({ timeoutMs: 600_000 })).toBe(615_000);
+  // A short call deadline still leaves room for the proxy to reach the server.
+  expect(opencodeMcpTimeoutMs({ timeoutMs: 1_000 })).toBe(60_000);
+  expect(opencodeMcpTimeoutMs(undefined)).toBe(60_000);
+});
+
+test("should start the proxy through its env wrapper", async () => {
+  const runtime = (await createMcpProxyRuntime({ sandbox: SANDBOX }))!;
+  try {
+    const [command, entry] = runtime.commands.get("sandbox")!;
+    expect(command).toBe(process.execPath);
+    expect(path.basename(entry!)).toMatch(/^wrapper\.(js|ts)$/);
+    expect(existsSync(entry!)).toBe(true);
+  } finally {
+    await runtime.cleanup();
+  }
+});
+
+test("should share one audit between routed runs and tag each run's events", async () => {
+  const shared = await createSharedMcpAudit();
+  const first = (await createMcpProxyRuntime(
+    { sandbox: SANDBOX },
+    { auditPath: shared.auditPath, run: "run-a" },
+  ))!;
+  const second = (await createMcpProxyRuntime(
+    { sandbox: SANDBOX },
+    { auditPath: shared.auditPath, run: "run-b" },
+  ))!;
+  try {
+    expect(first.auditPath).toBe(shared.auditPath);
+    expect(second.auditPath).toBe(shared.auditPath);
+    const settingsOf = async (runtime: typeof first) =>
+      JSON.parse(await readFile(runtime.commands.get("sandbox")!.at(-1)!, "utf8")) as {
+        run?: string;
+        auditPath: string;
+      };
+    expect(await settingsOf(first)).toMatchObject({ run: "run-a", auditPath: shared.auditPath });
+    expect(await settingsOf(second)).toMatchObject({ run: "run-b", auditPath: shared.auditPath });
+    // A run's cleanup leaves the shared audit for the next scope.
+    await writeFile(shared.auditPath, "");
+    await first.cleanup();
+    expect(existsSync(shared.auditPath)).toBe(true);
+  } finally {
+    await second.cleanup();
+    await shared.cleanup();
+  }
+  expect(existsSync(path.dirname(shared.auditPath))).toBe(false);
 });

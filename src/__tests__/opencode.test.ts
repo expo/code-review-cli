@@ -483,6 +483,7 @@ test("buildOpencodeConfig turns a configured MCP server off, then on for granted
         tokenEnv: "REVIEW_SANDBOX_TOKEN",
         tools: ["sandbox_exec"],
         agents: ["deep", "verifier"],
+        timeoutMs: 120_000,
       },
     },
   } as unknown as LoadedConfig;
@@ -503,7 +504,8 @@ test("buildOpencodeConfig turns a configured MCP server off, then on for granted
     type: "local",
     command: ["/node", "/proxy/cli.js", "/private/sandbox.settings.json"],
     enabled: true,
-    timeout: 30_000,
+    // OpenCode applies this to each call, so it outlasts the proxy's own deadline.
+    timeout: 135_000,
   });
   expect(JSON.stringify(opencode)).not.toContain("REVIEW_SANDBOX_TOKEN");
   const withoutProxy = buildOpencodeConfig(config) as {
@@ -515,6 +517,11 @@ test("buildOpencodeConfig turns a configured MCP server off, then on for granted
   expect(opencode.tools["sandbox_*"]).toBe(false);
   expect(opencode.agent.deep!.tools.sandbox_sandbox_exec).toBe(true);
   expect(opencode.agent.verifier!.tools.sandbox_sandbox_exec).toBe(true);
+  expect(opencode.agent.adjudicator!.tools.sandbox_sandbox_exec).toBeUndefined();
+  // The adjudicator keeps the verifier's read-only tools, without its MCP grant.
+  const { sandbox_sandbox_exec: _granted, ...verifierRepoTools } = opencode.agent.verifier!.tools;
+  expect(opencode.agent.adjudicator!.tools).toEqual(verifierRepoTools);
+  expect(verifierRepoTools.read).toBe(true);
   expect(opencode.agent.security!.tools.sandbox_sandbox_exec).toBeUndefined();
   expect(opencode.agent.deep!.tools.sandbox_destroy_sandbox).toBeUndefined();
 });
