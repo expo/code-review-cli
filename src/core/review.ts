@@ -1259,6 +1259,7 @@ export async function runReview(
         progress,
         researchEvidence,
         mcpServerGrants(mcpProxy?.servers, VERIFIER_AGENT).map((grant) => grant.name),
+        { title: metadata.title, body: metadata.body },
       );
       agentCosts["verifier"] = verification.cost;
       trackTokens("verifier", verification.tokens);
@@ -1577,14 +1578,14 @@ export async function runReview(
       skippedByPaths: pathsSelection.skipped,
       notRouted,
     });
-    const outputWithTrace = attachMentions(
-      attachAgentSummaries(attachReviewTrace(output, reviewTrace), agentSummaries),
-      buildMentions(selectedAgents, humanReviewReasons),
+    const outputWithTrace = attachVerifierRejected(
+      attachMentions(
+        attachAgentSummaries(attachReviewTrace(output, reviewTrace), agentSummaries),
+        buildMentions(selectedAgents, humanReviewReasons),
+      ),
+      verifierDropped,
     );
-    const reviewed = {
-      ...outputWithTrace,
-      setupNotes,
-    };
+    const reviewed = { ...outputWithTrace, setupNotes };
     return feedbackRecords ? { ...reviewed, feedback: feedbackRecords } : reviewed;
   } catch (error) {
     await safeLog(logPath, {
@@ -1769,6 +1770,58 @@ export function attachMentions(
 ): CoordinatorOutput {
   const { mentions: _coordinatorMentions, ...withoutMentions } = output;
   return { ...withoutMentions, ...(mentions ? { mentions } : {}) };
+}
+
+const VERIFIER_REJECTED_TEXT_MAX = 500;
+export const VERIFIER_REJECTED_MAX = 10;
+
+/**
+ * Replace any coordinator-written note with the quality criticals the verifier dropped.
+ * The coordinator must not choose what this note claims.
+ */
+export function attachVerifierRejected(
+  output: CoordinatorOutput,
+  dropped: { finding: Finding; reason: string }[],
+): CoordinatorOutput {
+  const {
+    verifierRejected: _coordinatorRejected,
+    verifierRejectedOmitted: _coordinatorOmitted,
+    ...withoutRejected
+  } = output;
+  // A duplicate the verifier kept once is not rejected, and one dropped twice is one entry.
+  const seen = new Set(output.findings.map(fingerprintFinding));
+  const rejected = dropped.flatMap(({ finding, reason }) => {
+    const fp = fingerprintFinding(finding);
+    if (finding.category !== "quality" || finding.severity !== "critical" || seen.has(fp)) {
+      return [];
+    }
+    seen.add(fp);
+    // Only what the note shows: the comment embeds this list in its state, so the
+    // rationale and evidence of a dropped finding stay in the run log.
+    return [
+      {
+        finding: {
+          severity: finding.severity,
+          category: finding.category,
+          file: finding.file,
+          line: finding.line,
+          title: finding.title.slice(0, VERIFIER_REJECTED_TEXT_MAX),
+          rationale: "",
+        },
+        reason: reason.slice(0, VERIFIER_REJECTED_TEXT_MAX),
+        fp,
+      },
+    ];
+  });
+  if (rejected.length === 0) {
+    return withoutRejected;
+  }
+  const omitted = rejected.length - VERIFIER_REJECTED_MAX;
+  return {
+    ...withoutRejected,
+    verifierRejected: rejected.slice(0, VERIFIER_REJECTED_MAX),
+    ...(omitted > 0 ? { verifierRejectedOmitted: omitted } : {}),
+  };
 }
 
 /**

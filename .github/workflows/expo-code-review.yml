@@ -2,7 +2,8 @@ name: AI code review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    # `edited`: the verifier reads the PR title and body, so editing them can change the review.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 # Comment-only: read the repo, write PR comments (issue comments API).
 permissions:

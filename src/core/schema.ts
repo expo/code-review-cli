@@ -397,6 +397,17 @@ export const CoordinatorOutputSchema = CoordinatorModelOutputSchema.extend({
    * agent's trusted config, never from model text.
    */
   mentions: z.array(AgentMentionSchema).optional().catch(undefined),
+  /**
+   * Quality criticals the verifier rejected, with its reason. Engine-owned and rendered
+   * outside the findings, so a maintainer sees what PR text or code dismissed them.
+   * `fp` is the fingerprint of the full finding, which the stored copy no longer has.
+   */
+  verifierRejected: z
+    .array(z.object({ finding: FindingSchema, reason: z.string(), fp: z.string().optional() }))
+    .optional()
+    .catch(undefined),
+  /** How many more rejected quality criticals the run had than `verifierRejected` keeps. */
+  verifierRejectedOmitted: z.number().int().nonnegative().optional().catch(undefined),
 });
 export type CoordinatorOutput = z.infer<typeof CoordinatorOutputSchema>;
 
@@ -614,7 +625,11 @@ export function fingerprintFinding(finding: Finding): string {
  * sanitizes to (dismiss.ts strips /[^a-f0-9]/), at the same length.
  */
 export function scopedFingerprint(scopeName: string | null, finding: Finding): string {
-  const fp = fingerprintFinding(finding);
+  return scopeFingerprint(scopeName, fingerprintFinding(finding));
+}
+
+/** scopedFingerprint for a fingerprint already computed. */
+export function scopeFingerprint(scopeName: string | null, fp: string): string {
   if (!scopeName) {
     return fp;
   }

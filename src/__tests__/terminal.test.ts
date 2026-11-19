@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { describe, it, test, expect } from "bun:test";
 
 import type { CoordinatorOutput, Finding } from "../core/schema.js";
 import { TerminalReporter } from "../reporters/terminal.js";
@@ -58,4 +58,50 @@ test("terminal reporter: design and nit groups get their own label and color, in
   expect(nit).toBeGreaterThan(design);
   expect(out).toContain("\x1b[35m1 design");
   expect(out).toContain("\x1b[90m1 nit");
+});
+
+test("terminal reporter: shows the quality criticals the verifier rejected", async () => {
+  const review: CoordinatorOutput = {
+    decision: "approve",
+    findings: [],
+    summary: "s",
+    incomplete: [],
+    verifierRejected: [
+      {
+        finding: finding({ severity: "critical", title: "Missed sibling", file: "b.ts", line: 7 }),
+        reason: "The sibling already handles the cwd.",
+      },
+    ],
+  };
+  const out = await captureTty(() => new TerminalReporter().report(review));
+  expect(out).toContain("Rejected by the verifier");
+  expect(out).toContain("Missed sibling (b.ts:7): The sibling already handles the cwd.");
+});
+
+describe("Printing the verifier's rejected findings", () => {
+  it("should print each entry on one line without escape sequences", async () => {
+    const review: CoordinatorOutput = {
+      decision: "approve",
+      findings: [],
+      summary: "s",
+      incomplete: [],
+      verifierRejected: [
+        {
+          finding: finding({
+            severity: "critical",
+            title: "Missed\x1b[2J\x1b]8;;https://evil.example\x07 sibling",
+            file: "b.ts\n\rfake.ts",
+            line: 7,
+          }),
+          reason: "Already\u202e handled.\nDone\x00.",
+        },
+      ],
+      verifierRejectedOmitted: 2,
+    };
+    const out = await captureTty(() => new TerminalReporter().report(review));
+    expect(out).toContain("  - Missed sibling (b.ts fake.ts:7): Already handled. Done.");
+    expect(out).not.toContain("\x1b[2J");
+    expect(out).not.toContain("evil.example");
+    expect(out).toContain("  - …and 2 more. The run log lists them.");
+  });
 });
