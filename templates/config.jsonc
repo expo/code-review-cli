@@ -95,8 +95,10 @@
   // },
 
   // Optional agent ids that run before the others, such as a cheap check that the PR
-  // is ready for review. If the verifier confirms a critical finding from one of them,
-  // the other agents do not run and the review shows only the pre-check findings.
+  // is ready for review. They also get the PR title and body. If the verifier confirms
+  // a critical finding from one of them and judges it blocking, the other agents do not
+  // run (root-enforced agents still do). An id with no agent file is ignored with a
+  // setup warning.
   // "preCheckAgents": ["shape"],
 
   // Large diffs are split into focused chunks by changed-line count, plus a

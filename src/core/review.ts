@@ -873,6 +873,8 @@ export async function runReview(
         ? (config.agents[0]?.model ?? config.coordinator.model)
         : (selectedAgents.find((agent) => agent.id === task.bucket)?.model ?? "");
 
+    const pullRequestText = { title: metadata.title, body: metadata.body };
+    const preCheckAgents = config.preCheckAgents ?? [];
     // Build the task prompt on demand (so a subdivided task rebuilds over its
     // smaller file set); a fallback task forbids tools and reviews the inlined diff.
     const buildTaskText = (task: ReviewTask): string => {
@@ -894,6 +896,7 @@ export async function runReview(
               options.contextText,
               Boolean(researchRuntime) && !task.fallback,
               options.priorReview,
+              preCheckPullRequest(task.bucket, preCheckAgents, pullRequestText),
             );
       return task.fallback ? `${base}\n\n${NO_TOOLS_INSTRUCTION}` : base;
     };
@@ -934,7 +937,6 @@ export async function runReview(
     const verifierMcpServers = mcpServerGrants(mcpProxy?.servers, VERIFIER_AGENT).map(
       (grant) => grant.name,
     );
-    const pullRequestText = { title: metadata.title, body: metadata.body };
     const runTask = async (
       task: ReviewTask,
       enqueue: (next: ReviewTask) => void,
@@ -1088,66 +1090,77 @@ export async function runReview(
         }
       }
     };
+    // Second-wave passes start after the pre-check, so they get only what is left of
+    // the passes budget.
+    const secondWave = (wave: ReviewTask[]): ReviewTask[] => {
+      const plan = planSecondWave(wave, passesDeadline - Date.now(), crossCuttingWindowMs());
+      for (const task of plan.notStarted) {
+        failedPasses++;
+        taskProgress(task, "not started: the run's time budget is spent");
+        incomplete.push(
+          `${capitalize(task.coverageLabel)} did not start: the pre-check used up the review's time budget; those changes were not reviewed.`,
+        );
+      }
+      return plan.start;
+    };
+    // The fingerprints of the criticals that stopped the review, to check that the
+    // final review still holds one.
+    let stoppingFingerprints: string[] = [];
     const preCheck = await runWithPreCheck(
       tasks,
-      config.preCheckAgents ?? [],
-      (wave, secondWave) =>
-        runGrowableQueue(
-          // The cross-file pass's window was planned before the pre-check wave ran.
-          secondWave
-            ? wave.map((task) =>
-                task.kind === "cross-cutting"
-                  ? { ...task, maxWaitMs: crossCuttingWindowMs() }
-                  : task,
-              )
-            : wave,
-          concurrency,
-          runTask,
-        ),
+      preCheckAgents,
+      (wave, isSecondWave) =>
+        runGrowableQueue(isSecondWave ? secondWave(wave) : wave, concurrency, runTask),
       async (agents) => {
-        const owners = agents.flatMap((id) =>
-          (agentFindings[id] ?? [])
-            .filter((finding) => finding.severity === "critical")
-            .map((finding) => ({ id, finding })),
-        );
-        if (owners.length === 0) {
+        try {
+          const owners = preCheckCriticals(agents, agentFindings);
+          if (owners.length === 0) {
+            return [];
+          }
+          const remaining = passesDeadline - Date.now();
+          if (remaining < PRE_CHECK_VERIFY_MIN_MS) {
+            progress("Pre-check: no time left to verify its critical findings; not stopping.");
+            return [];
+          }
+          // Judged with the same audited documentation the final verify gets.
+          const evidence = researchRuntime
+            ? ((await researchProvenanceFromAudit(researchRuntime.auditPath).catch(() => null))
+                ?.evidence ?? [])
+            : [];
+          progress(`Pre-check: verifying ${owners.length} critical finding(s)…`);
+          const check = await verifyFindings(
+            handle,
+            groundResearchSources(
+              owners.map(({ finding }) => finding),
+              evidence,
+            ),
+            process.cwd(),
+            progress,
+            evidence,
+            verifierMcpServers,
+            pullRequestText,
+            { askBlocking: true, maxWaitMs: remaining, concurrency },
+          );
+          agentCosts["verifier"] = (agentCosts["verifier"] ?? 0) + check.cost;
+          trackTokens("verifier", check.tokens);
+          stoppingFingerprints = check.blockingIndices.map((index) =>
+            fingerprintFinding(owners[index]!.finding),
+          );
+          return stoppingAgents(owners, check.blockingIndices);
+        } catch (error) {
+          // Fail open: a broken stop check must never skip the other reviewers.
+          progress(`Pre-check: could not verify (${errorMessage(error)}); not stopping.`);
           return [];
         }
-        // Judged with the same audited documentation the final verify gets.
-        const evidence = researchRuntime
-          ? ((await researchProvenanceFromAudit(researchRuntime.auditPath).catch(() => null))
-              ?.evidence ?? [])
-          : [];
-        progress(`Pre-check: verifying ${owners.length} critical finding(s)…`);
-        const criticals = groundResearchSources(
-          owners.map(({ finding }) => finding),
-          evidence,
-        );
-        const check = await verifyFindings(
-          handle,
-          criticals,
-          process.cwd(),
-          progress,
-          evidence,
-          verifierMcpServers,
-          pullRequestText,
-        );
-        agentCosts["verifier"] = (agentCosts["verifier"] ?? 0) + check.cost;
-        trackTokens("verifier", check.tokens);
-        // Only a real verdict may stop the review. A verify call that failed keeps the
-        // finding (fail-open), and that must not skip every other reviewer.
-        const confirmed = new Set(check.confirmed.map(fingerprintFinding));
-        return [
-          ...new Set(
-            owners
-              .filter((_, index) => confirmed.has(fingerprintFinding(criticals[index]!)))
-              .map(({ id }) => id),
-          ),
-        ];
       },
+      config.enforcedAgents ?? [],
     );
     const skippedByPreCheck = preCheck.skipped;
-    const preCheckStop = { stoppedBy: preCheck.stoppedBy, skipped: skippedByPreCheck };
+    const preCheckStop = {
+      stoppedBy: preCheck.stoppedBy,
+      skipped: skippedByPreCheck,
+      fingerprints: stoppingFingerprints,
+    };
     if (preCheck.stoppedBy.length > 0) {
       const note = preCheckStopNote(preCheckStop);
       progress(note);
@@ -1609,6 +1622,9 @@ export async function runReview(
       renderUsageMarkdown(agentTokens, agentCosts, tokenTotals, sum(agentCosts), agentModels),
     );
 
+    // Before the log, so reviews.jsonl records the decision the comment shows.
+    output = attachPreCheckStop(output, preCheckStop);
+
     const reviewTrace = buildReviewTrace(agentTrace);
     await safeLog(logPath, {
       ...baseRecord,
@@ -1645,26 +1661,22 @@ export async function runReview(
     // value and attach only the trace assembled from reviewer pass outputs. The agent
     // summaries and mentions follow the same rule.
     const agentSummaries = buildAgentSummaries({
-      ran: [
-        ...selectedAgents.map((agent) => agent.id).filter((id) => !skippedByPreCheck.includes(id)),
-        ...(chunked && !skippedByPreCheck.includes(CROSS_CUTTING_AGENT)
-          ? [CROSS_CUTTING_AGENT]
-          : []),
-      ],
+      ran: agentsThatRan(
+        selectedAgents.map((agent) => agent.id),
+        chunked,
+        skippedByPreCheck,
+      ),
       summaries: agentSummaryParts,
       skippedByPaths: pathsSelection.skipped,
       notRouted,
       skippedByPreCheck,
     });
-    const outputWithTrace = attachPreCheckStop(
-      attachVerifierRejected(
-        attachMentions(
-          attachAgentSummaries(attachReviewTrace(output, reviewTrace), agentSummaries),
-          buildMentions(selectedAgents, humanReviewReasons),
-        ),
-        verifierDropped,
+    const outputWithTrace = attachVerifierRejected(
+      attachMentions(
+        attachAgentSummaries(attachReviewTrace(output, reviewTrace), agentSummaries),
+        buildMentions(selectedAgents, humanReviewReasons),
       ),
-      preCheckStop,
+      verifierDropped,
     );
     const reviewed = { ...outputWithTrace, setupNotes };
     return feedbackRecords ? { ...reviewed, feedback: feedbackRecords } : reviewed;
@@ -1855,32 +1867,133 @@ export function attachMentions(
   return { ...withoutMentions, ...(mentions ? { mentions } : {}) };
 }
 
+// Less time than a no-tools fallback pass gets is too little for a pass to finish.
+const SECOND_WAVE_MIN_MS = 4 * 60 * 1000;
+// Below this, a stop verify would only return a cut-short answer, which cannot stop.
+const PRE_CHECK_VERIFY_MIN_MS = 60 * 1000;
+
+interface PreCheckStop {
+  stoppedBy: string[];
+  skipped: string[];
+  /** Fingerprints of the criticals that stopped the review. */
+  fingerprints: string[];
+}
+
 function preCheckStopNote(stop: { stoppedBy: string[]; skipped: string[] }): string {
   return `A pre-check (${stop.stoppedBy.join(", ")}) found a blocking problem, so these reviewers did not run: ${stop.skipped.join(", ")}.`;
 }
 
+// @ref LLP 0002#pre-check-agents [implements] — a stop whose critical the review later dropped reads as "No review", never as a reviewed approval
 /**
- * A stopped review must never read as a clean approve: the coordinator or the final
- * verifier can still drop the critical that stopped it, and no other reviewer ran.
+ * A stopped review must never read as a clean approve. When the coordinator or the
+ * final verifier dropped the critical that stopped it, the skipped reviewers ran for
+ * nothing, so the review is marked as not complete.
  */
 export function attachPreCheckStop(
   output: CoordinatorOutput,
-  stop: { stoppedBy: string[]; skipped: string[] },
+  stop: PreCheckStop,
 ): CoordinatorOutput {
   if (stop.stoppedBy.length === 0) {
     return output;
   }
+  const decision = output.decision === "approve" ? "approve_with_comments" : output.decision;
+  const incomplete = [...new Set([...output.incomplete, preCheckStopNote(stop)])];
+  const stopping = new Set(stop.fingerprints);
+  const held = output.findings.some(
+    (finding) => finding.severity === "critical" && stopping.has(fingerprintFinding(finding)),
+  );
+  if (held) {
+    return { ...output, decision, incomplete };
+  }
   return {
     ...output,
-    decision: output.decision === "approve" ? "approve_with_comments" : output.decision,
-    incomplete: [...new Set([...output.incomplete, preCheckStopNote(stop)])],
+    decision,
+    incomplete: [
+      ...incomplete,
+      `The pre-check critical that stopped the review was later dropped or changed, so ${stop.skipped.join(", ")} never reviewed this change. Treat this as no review, not an approval.`,
+    ],
+    // A blocking review from another critical still blocks; anything else is not a review.
+    ...(decision === "request_changes" ? {} : { couldNotComplete: true }),
   };
 }
 
-// @ref LLP 0002#pre-check-agents [implements] — a verifier-confirmed pre-check critical stops the other passes
+/**
+ * The critical findings of the pre-check agents, one per fingerprint, so the stop
+ * verifies each problem once.
+ */
+export function preCheckCriticals(
+  agents: readonly string[],
+  agentFindings: Record<string, Finding[]>,
+): Array<{ id: string; finding: Finding }> {
+  const seen = new Set<string>();
+  return agents.flatMap((id) =>
+    (agentFindings[id] ?? []).flatMap((finding) => {
+      if (finding.severity !== "critical") return [];
+      const fp = fingerprintFinding(finding);
+      if (seen.has(fp)) return [];
+      seen.add(fp);
+      return [{ id, finding }];
+    }),
+  );
+}
+
+/** The agents whose own critical the verifier judged blocking, by input index. */
+export function stoppingAgents(
+  owners: ReadonlyArray<{ id: string }>,
+  blockingIndices: readonly number[],
+): string[] {
+  return [...new Set(blockingIndices.flatMap((index) => owners[index]?.id ?? []))];
+}
+
+/** The roster agents (and the cross-file pass) that actually ran. */
+export function agentsThatRan(
+  selected: readonly string[],
+  chunked: boolean,
+  skippedByPreCheck: readonly string[],
+): string[] {
+  const skipped = new Set(skippedByPreCheck);
+  return [...selected, ...(chunked ? [CROSS_CUTTING_AGENT] : [])].filter((id) => !skipped.has(id));
+}
+
+/**
+ * Bound a second wave by the passes budget left: each pass gets at most that long, and
+ * none starts with less than a no-tools fallback would need.
+ */
+export function planSecondWave<T extends { kind: string; maxWaitMs: number }>(
+  tasks: T[],
+  remainingMs: number,
+  crossCuttingWindowMs: number,
+): { start: T[]; notStarted: T[] } {
+  if (remainingMs < SECOND_WAVE_MIN_MS) {
+    return { start: [], notStarted: tasks };
+  }
+  return {
+    start: tasks.map((task) => ({
+      ...task,
+      // The cross-file pass's window was planned before the pre-check wave ran.
+      maxWaitMs: Math.min(
+        task.kind === "cross-cutting" ? crossCuttingWindowMs : task.maxWaitMs,
+        remainingMs,
+      ),
+    })),
+    notStarted: [],
+  };
+}
+
+/** The PR title and body for a pre-check agent's task; other agents get none. */
+export function preCheckPullRequest(
+  bucket: string,
+  preCheckAgents: readonly string[],
+  pullRequest: { title?: string; body?: string },
+): { title?: string; body?: string } | undefined {
+  return preCheckAgents.includes(bucket) ? pullRequest : undefined;
+}
+
+// @ref LLP 0002#pre-check-agents [implements] — a verifier-confirmed blocking pre-check critical stops the other passes, except enforced agents
 /**
  * Run the tasks of the pre-check agents first. When `confirmedBy` names an agent whose
- * critical finding the verifier confirmed, the other tasks never run. `run` is told
+ * critical finding the verifier judged blocking, the other tasks never run, except
+ * those of `enforcedAgents`, which the root requires in every review. `run` is told
  * when it runs the second wave, which starts later than the tasks were planned.
  */
 export async function runWithPreCheck<T extends { bucket: string }>(
@@ -1888,19 +2001,26 @@ export async function runWithPreCheck<T extends { bucket: string }>(
   preCheckAgents: readonly string[],
   run: (tasks: T[], secondWave: boolean) => Promise<void>,
   confirmedBy: (agents: string[]) => Promise<string[]>,
+  enforcedAgents: readonly string[] = [],
 ): Promise<{ stoppedBy: string[]; skipped: string[] }> {
   const preCheck = new Set(preCheckAgents);
+  const enforced = new Set(enforcedAgents);
   const first = tasks.filter((task) => preCheck.has(task.bucket));
   const rest = tasks.filter((task) => !preCheck.has(task.bucket));
+  const skippable = rest.filter((task) => !enforced.has(task.bucket));
   // With nothing to skip, a stop would only add a verify call and a coverage note.
-  if (first.length === 0 || rest.length === 0) {
+  if (first.length === 0 || skippable.length === 0) {
     await run(tasks, false);
     return { stoppedBy: [], skipped: [] };
   }
   await run(first, false);
   const stoppedBy = await confirmedBy([...new Set(first.map((task) => task.bucket))]);
   if (stoppedBy.length > 0) {
-    return { stoppedBy, skipped: [...new Set(rest.map((task) => task.bucket))] };
+    const kept = rest.filter((task) => enforced.has(task.bucket));
+    if (kept.length > 0) {
+      await run(kept, true);
+    }
+    return { stoppedBy, skipped: [...new Set(skippable.map((task) => task.bucket))] };
   }
   await run(rest, true);
   return { stoppedBy: [], skipped: [] };

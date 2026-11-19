@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { pathInside } from "./exec.js";
 import type { ResearchEvidence } from "./research.js";
-import type { Finding } from "./schema.js";
+import type { Finding, Verdict } from "./schema.js";
 import { parseVerdict } from "./schema.js";
 import { addTokenUsage, promptAndParse, VERIFIER_AGENT } from "./opencode.js";
 import type { OpencodeHandle, TokenUsage } from "./opencode.js";
@@ -26,6 +26,13 @@ export interface VerificationResult {
    * finding kept only because its verify call failed, or kept with no model call.
    */
   confirmed: Finding[];
+  /** Indices into the input `findings` of the `confirmed` ones. */
+  confirmedIndices: number[];
+  /**
+   * Indices of confirmed findings the verifier also judged blocking. Empty unless
+   * `askBlocking` was set.
+   */
+  blockingIndices: number[];
   dropped: Array<{ finding: Finding; reason: string }>;
   /**
    * Kept findings whose cited documentation the verifier judged unsupportive,
@@ -123,6 +130,27 @@ async function evidencePresence(
   return matchEvidence(finding.evidence ?? "", content);
 }
 
+/**
+ * What a verdict proves. A truncated answer was forced out at the time limit, so it
+ * keeps the finding (fail-open) but confirms nothing.
+ */
+export function verdictOutcome(
+  verdict: Verdict,
+  truncated: boolean,
+): { confirmed: boolean; blocking: boolean } {
+  const confirmed = verdict.verified && !truncated;
+  return { confirmed, blocking: confirmed && verdict.blocking === true };
+}
+
+export interface VerifyOptions {
+  /** Also ask whether each finding should block the PR (the pre-check stop). */
+  askBlocking?: boolean;
+  /** Cap on each verify call, inside the caller's own time budget. */
+  maxWaitMs?: number;
+  /** How many verify calls run at once. Unbounded when absent. */
+  concurrency?: number;
+}
+
 // @ref LLP 0005#verifier-confinement-and-fail-open [constrained-by] — fails open: a verify error/timeout keeps the finding, never drops it
 /**
  * Guard against hallucinated findings before they're surfaced, WITHOUT silently
@@ -154,6 +182,7 @@ export async function verifyFindings(
   mcpServerNames: readonly string[] = [],
   /** The PR title and body, for a quality finding that judges the change as a whole. */
   pullRequest?: { title?: string; body?: string },
+  options: VerifyOptions = {},
 ): Promise<VerificationResult> {
   const dropped: Array<{ finding: Finding; reason: string }> = [];
   const citationStripped: Array<{ finding: Finding; reason: string }> = [];
@@ -174,6 +203,7 @@ export async function verifyFindings(
   // cited passages support it rather than fall back to model memory.
   const verdicts = new Map<Finding, "keep" | "drop">();
   const confirmedByModel = new Set<Finding>();
+  const blockingByModel = new Set<Finding>();
   const toVerify: Array<{
     finding: Finding;
     presence: "present" | "absent" | "unknown";
@@ -189,12 +219,16 @@ export async function verifyFindings(
   }
 
   // Phase 2 — LLM verify (parallel). Refuted → drop; verified or errored → keep.
-  await Promise.all(
-    toVerify.map(async ({ finding, presence, citedSources }, index) => {
+  const maxWaitMs = Math.min(VERIFY_TIMEOUT_MS, options.maxWaitMs ?? VERIFY_TIMEOUT_MS);
+  await mapWithLimit(
+    toVerify,
+    options.concurrency ?? toVerify.length,
+    async ({ finding, presence, citedSources }, index) => {
       try {
         const {
           value,
           cost: verifyCost,
+          truncated,
           tokens: verifyTokens,
           model: verifyModel,
         } = await promptAndParse(
@@ -206,9 +240,10 @@ export async function verifyFindings(
               evidenceUngrounded: presence === "absent",
               ...(citedSources ? { citedSources } : {}),
               ...(pullRequest ? { pullRequest } : {}),
+              ...(options.askBlocking ? { askBlocking: true } : {}),
             }),
             title: `verify-${index}`,
-            maxWaitMs: VERIFY_TIMEOUT_MS,
+            maxWaitMs,
             finalizeOnTimeout: true,
             onActivity: (line) => onProgress?.(`  [verifier] #${index + 1}: ${line}`),
           },
@@ -219,7 +254,9 @@ export async function verifyFindings(
         model = verifyModel ?? model;
         if (value.verified) {
           verdicts.set(finding, "keep");
-          confirmedByModel.add(finding);
+          const outcome = verdictOutcome(value, truncated);
+          if (outcome.confirmed) confirmedByModel.add(finding);
+          if (outcome.blocking) blockingByModel.add(finding);
           // An explicit false strips the citation; the finding itself stands.
           // Absent or true leaves the grounded sources untouched (fail open).
           if (citedSources && value.citationSupported === false) {
@@ -247,15 +284,44 @@ export async function verifyFindings(
           `  verify: could not verify "${finding.title}" (${errorMessage(error)}); keeping it`,
         );
       }
-    }),
+    },
   );
 
   // Preserve original order.
   const kept = findings
     .filter((finding) => verdicts.get(finding) === "keep")
     .map((finding) => replacements.get(finding) ?? finding);
-  const confirmed = findings
-    .filter((finding) => confirmedByModel.has(finding))
-    .map((finding) => replacements.get(finding) ?? finding);
-  return { kept, confirmed, dropped, citationStripped, cost, tokens, model };
+  const indicesOf = (set: Set<Finding>): number[] =>
+    findings.flatMap((finding, index) => (set.has(finding) ? [index] : []));
+  const confirmedIndices = indicesOf(confirmedByModel);
+  const confirmed = confirmedIndices.map((index) => {
+    const finding = findings[index]!;
+    return replacements.get(finding) ?? finding;
+  });
+  return {
+    kept,
+    confirmed,
+    confirmedIndices,
+    blockingIndices: indicesOf(blockingByModel),
+    dropped,
+    citationStripped,
+    cost,
+    tokens,
+    model,
+  };
+}
+
+async function mapWithLimit<T>(
+  items: T[],
+  limit: number,
+  run: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next++;
+      await run(items[index]!, index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, worker));
 }

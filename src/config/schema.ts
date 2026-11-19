@@ -654,6 +654,11 @@ export interface LoadedConfig {
   /** Agent ids that run first and can stop the rest of the review. */
   preCheckAgents?: string[];
   /**
+   * Root `defaults.enforceAgents` injected into this scope. A pre-check stop never
+   * skips them. Absent when none.
+   */
+  enforcedAgents?: string[];
+  /**
    * Prompt-file frontmatter problems found at load time (an invalid `paths`, a
    * frontmatter block below the first line, a trailing comment in a value). Each
    * names its file and the fix. Reviews show them as setup notes; absent when none.
