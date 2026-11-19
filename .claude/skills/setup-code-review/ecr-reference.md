@@ -149,7 +149,7 @@ Anthropic subscription/bearer envs (locked to provider `anthropic`): `CLAUDE_COD
 | **OpenCode + OpenAI API key** (default) | `{mode:"api-key", provider:"openai"}` (or omit auth) | `OPENAI_API_KEY` | `openai/gpt-5.5`, `openai/gpt-5.5-pro`, … |
 | **Codex/ChatGPT OAuth** (subscription) | `{providers:{openai:{mode:"oauth", tokenEnv:"CODEX_OAUTH_ACCESS_TOKEN"}}}` | `CODEX_OAUTH_ACCESS_TOKEN` | `openai/…` |
 | **Mixed** (subscription + metered pro key) | `{providers:{ openai:{mode:"oauth",tokenEnv:"CODEX_OAUTH_ACCESS_TOKEN"}, "openai-api":{mode:"api-key",tokenEnv:"OPENAI_API_KEY",upstream:"openai"} }}` | both `CODEX_OAUTH_ACCESS_TOKEN` + `OPENAI_API_KEY` | subscription for `openai/…`; alias `openai-api/gpt-5.5-pro` for pro tier |
-| **Claude Code CLI on Max/Team** | `{providers:{anthropic:{tokenEnv:"CLAUDE_CODE_OAUTH_TOKEN"}}}` (auth optional) | `CLAUDE_CODE_OAUTH_TOKEN` | `anthropic/claude-sonnet-5`, … |
+| **Claude Code CLI on Max/Team** | `{providers:{anthropic:{tokenEnv:"CLAUDE_CODE_OAUTH_TOKEN"}}}` (auth optional) | `CLAUDE_CODE_OAUTH_TOKEN` | `anthropic/claude-sonnet-5-5`, … |
 | **Other OpenCode provider** | omit auth | run `opencode auth login` + `REVIEWER_MODEL=<provider>/<model>` | e.g. `google/gemini-3-pro` |
 
 OAuth `openai` tokenEnv: an opaque value = refresh token (codex plugin mints access);
