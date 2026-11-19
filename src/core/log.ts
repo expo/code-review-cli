@@ -6,6 +6,7 @@ import type { CoordinatorOutput, Finding, ReviewMetadata, ReviewTrace } from "./
 import type { FilteredFile } from "./noise.js";
 import type { TokenUsage } from "./opencode.js";
 import type { ResearchProvenance } from "./research.js";
+import type { McpServerUsage } from "../mcp-proxy/audit.js";
 import type { PathsSkips } from "./agent-paths.js";
 
 export interface RunLogRecord {
@@ -24,6 +25,8 @@ export interface RunLogRecord {
   pathsSkipped?: PathsSkips;
   /** Bounded queries/results plus grounded research decisions and final usefulness metrics. */
   research?: ResearchProvenance;
+  /** Calls each configured MCP server took this run, from the proxy audit. */
+  mcpServers?: McpServerUsage[];
   agentCosts: Record<string, number>;
   totalCost: number;
   // Aggregate token usage across all agent + coordinator requests, for cache

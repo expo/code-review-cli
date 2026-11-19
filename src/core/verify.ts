@@ -145,6 +145,8 @@ export async function verifyFindings(
   onProgress?: (message: string) => void,
   /** This run's audited research evidence, for findings that cite documentation. */
   researchEvidence: ResearchEvidence[] = [],
+  /** Configured MCP servers granted to the verifier pass. */
+  mcpServerNames: readonly string[] = [],
 ): Promise<VerificationResult> {
   const dropped: Array<{ finding: Finding; reason: string }> = [];
   const citationStripped: Array<{ finding: Finding; reason: string }> = [];
@@ -191,7 +193,7 @@ export async function verifyFindings(
           handle,
           {
             agent: VERIFIER_AGENT,
-            system: buildVerifierSystem(),
+            system: buildVerifierSystem(mcpServerNames),
             text: buildVerifierTask(finding, {
               evidenceUngrounded: presence === "absent",
               ...(citedSources ? { citedSources } : {}),

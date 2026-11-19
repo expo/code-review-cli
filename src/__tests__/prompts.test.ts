@@ -464,3 +464,10 @@ test("buildCrossCuttingTask includes context section when supplied", () => {
   const out = buildCrossCuttingTask(files, AGENTS, [], {}, "terraform plan output");
   expect(out).toContain("BEGIN CONTEXT FILE");
 });
+
+test("verifier is told to check tool behavior with its MCP tools only when it has them", () => {
+  expect(buildVerifierSystem()).not.toContain("sandbox");
+  const system = buildVerifierSystem(["sandbox"]);
+  expect(system).toContain("sandbox");
+  expect(system).toMatch(/how a tool or runtime\s+behaves/);
+});

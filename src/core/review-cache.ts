@@ -7,6 +7,7 @@ import path from "node:path";
 
 import type { LoadedConfig } from "../config/schema.js";
 import { pathInside } from "./exec.js";
+import { availableMcpServers } from "./mcp-servers.js";
 import type { CoordinatorOutput, DiffEntry, ReviewMetadata } from "./schema.js";
 
 const packageVersion = (createRequire(import.meta.url)("../../package.json") as { version: string })
@@ -133,6 +134,15 @@ export async function reviewInputHash(options: ReviewInputHashOptions): Promise<
     agents: options.agents ? [...options.agents].sort() : null,
     route: options.route === true,
     contextText: options.contextText ?? null,
+    // A server whose token env is unset is skipped, so the review differs when it is set.
+    // Names only, never token values; absent without servers, so other keys keep their hash.
+    ...(options.config.mcpServers
+      ? {
+          mcpServersAvailable: Object.keys(
+            availableMcpServers(options.config.mcpServers, process.env),
+          ).sort(),
+        }
+      : {}),
   };
   return createHash("sha256").update(canonicalJson(input)).digest("hex");
 }

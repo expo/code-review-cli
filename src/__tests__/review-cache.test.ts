@@ -218,3 +218,31 @@ test("agent `paths` are part of the key, and an agent without them hashes as bef
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("review input hash changes when a configured MCP server's token is set", async () => {
+  const root = await fixtureRoot();
+  const env = "ECR_TEST_SANDBOX_TOKEN";
+  const withServer = config({
+    mcpServers: {
+      sandbox: {
+        url: "https://sandbox.example/mcp",
+        tokenEnv: env,
+        tools: ["x"],
+        agents: ["deep"],
+      },
+    },
+  });
+  try {
+    delete process.env[env];
+    const skipped = await hash(root, { config: withServer });
+    process.env[env] = "secret-value";
+    const available = await hash(root, { config: withServer });
+    process.env[env] = "another-value";
+    expect(available).not.toBe(skipped);
+    // The token's value is never part of the key.
+    expect(await hash(root, { config: withServer })).toBe(available);
+  } finally {
+    delete process.env[env];
+    await rm(root, { recursive: true, force: true });
+  }
+});

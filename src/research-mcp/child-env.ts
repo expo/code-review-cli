@@ -19,7 +19,7 @@
  * the one process that still holds the engine's credentials.
  */
 
-const PROXY_ENV_KEYS = [
+export const PROXY_ENV_KEYS = [
   "HTTP_PROXY",
   "HTTPS_PROXY",
   "NO_PROXY",

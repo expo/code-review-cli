@@ -3,10 +3,13 @@
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { LoadedConfig } from "../config/schema.js";
+import type { LoadedConfig, McpServerConfig } from "../config/schema.js";
 import { checkAuthEntry } from "./auth.js";
 import { pathInside, resolveOnPath, run } from "./exec.js";
+import { assertMcpServerTokenEnvs, mcpGrantEnvironment, mcpServerGrants } from "./mcp-servers.js";
+import type { McpProxyRuntime } from "./mcp-servers.js";
 import {
+  ADJUDICATOR_AGENT,
   addTokenUsage,
   AgentTimeoutError,
   CLAUDE_CODE_ENGINE,
@@ -53,6 +56,9 @@ export interface ClaudeCodeHandle extends OpencodeHandle {
   researchMcpConfigPath?: string;
   /** Only reviewer and cross-cutting roles may receive the documentation tools. */
   researchAgents?: ReadonlySet<string>;
+  /** Configured MCP servers whose token is set, and their config files by name. */
+  mcpServers?: Record<string, McpServerConfig>;
+  mcpServerConfigPaths?: ReadonlyMap<string, string>;
   /** The run's patch directory, readable by every pass that has read tools. */
   patchDir?: string;
 }
@@ -217,6 +223,7 @@ export function buildEngineMap(
   const shared = config.agents[0]?.model ?? config.coordinator.model;
   modelOf[CROSS_CUTTING_AGENT] = shared;
   modelOf[VERIFIER_AGENT] = shared;
+  modelOf[ADJUDICATOR_AGENT] = shared;
   // @ref LLP 0010#patch-level-confirmation-v2 [constrained-by] — the id MUST live in modelOf/engineOf or a claude-routed run dispatches against an undefined handle and crashes
   modelOf[STACK_VERIFIER_AGENT] = shared;
   modelOf["coordinator"] = config.coordinator.model;
@@ -317,6 +324,10 @@ export function buildClaudeArgs(opts: {
    */
   extraReadRoots?: readonly string[];
   researchMcpConfigPath?: string;
+  /** Config files of the configured MCP servers granted to this pass. */
+  mcpServerConfigPaths?: readonly string[];
+  /** `mcp__<server>__<tool>` names this pass may call. Every other MCP tool is denied. */
+  mcpServerTools?: readonly string[];
   maxTurns?: number;
   jsonSchema?: Record<string, unknown>;
 }): string[] {
@@ -335,7 +346,15 @@ export function buildClaudeArgs(opts: {
   // scoped allow rules alone don't deny them when the allow list is empty.
   const deniedReadTools = ALL_READ_TOOLS.filter((tool) => !enabled.includes(tool));
   const researchTools = opts.researchMcpConfigPath ? [...CLAUDE_RESEARCH_TOOLS] : [];
-  const allowedTools = [...enabled.flatMap(scope), ...researchTools];
+  const allowedTools = [
+    ...enabled.flatMap(scope),
+    ...researchTools,
+    ...(opts.mcpServerTools ?? []),
+  ];
+  const mcpConfigPaths = [
+    ...(opts.researchMcpConfigPath ? [opts.researchMcpConfigPath] : []),
+    ...(opts.mcpServerConfigPaths ?? []),
+  ];
   return [
     "-p",
     "--output-format",
@@ -356,14 +375,8 @@ export function buildClaudeArgs(opts: {
     "--permission-mode",
     "dontAsk",
     "--strict-mcp-config",
-    ...(opts.researchMcpConfigPath
-      ? [
-          "--mcp-config",
-          opts.researchMcpConfigPath,
-          "--setting-sources",
-          "",
-          "--disable-slash-commands",
-        ]
+    ...(mcpConfigPaths.length > 0
+      ? ["--mcp-config", ...mcpConfigPaths, "--setting-sources", "", "--disable-slash-commands"]
       : ["--safe-mode"]),
     "--no-session-persistence",
     "--max-turns",
@@ -799,6 +812,7 @@ export async function runClaudePrompt(
     args.maxToolCalls !== 0 && handle.researchAgents?.has(args.agent)
       ? handle.researchMcpConfigPath
       : undefined;
+  const mcpGrants = args.maxToolCalls === 0 ? [] : mcpServerGrants(handle.mcpServers, args.agent);
   // A soft tool-call ceiling doubles as the CLI's per-pass turn bound (the closest
   // stateless analogue of OpenCode's mid-run tool-call cap).
   const maxTurns =
@@ -836,12 +850,20 @@ export async function runClaudePrompt(
         tools,
         ...(handle.patchDir ? { extraReadRoots: [handle.patchDir] } : {}),
         researchMcpConfigPath,
+        mcpServerConfigPaths: mcpGrants.flatMap((grant) => {
+          const file = handle.mcpServerConfigPaths?.get(grant.name);
+          return file ? [file] : [];
+        }),
+        mcpServerTools: mcpGrants.flatMap((grant) =>
+          grant.tools.map((tool) => `mcp__${grant.name}__${tool}`),
+        ),
         maxTurns,
         jsonSchema: args.jsonSchema,
       }),
       {
         input: args.text,
-        env: handle.childEnv,
+        // A server's token goes only to a pass granted that server.
+        env: { ...handle.childEnv, ...mcpGrantEnvironment(mcpGrants) },
         cwd: process.cwd(),
         timeout: maxWaitMs,
         check: false,
@@ -1122,6 +1144,7 @@ export async function startClaudeCode(
   config: LoadedConfig,
   research?: ResearchMcpRuntime,
   patchDir?: string,
+  mcpProxy?: McpProxyRuntime,
 ): Promise<ClaudeCodeHandle> {
   const cliPath = await resolveOnPath("claude");
   if (!cliPath) {
@@ -1211,6 +1234,7 @@ export async function startClaudeCode(
   // consolidates findings and needs no repo tools.
   tools[CROSS_CUTTING_AGENT] = ["read", "grep"];
   tools[VERIFIER_AGENT] = ["read", "grep"];
+  tools[ADJUDICATOR_AGENT] = ["read", "grep"];
   // No tools: the addressing PR's patch is inlined into the task, so the stack
   // verifier never reads the disk (mirrors the coordinator's empty list).
   tools[STACK_VERIFIER_AGENT] = [];
@@ -1218,6 +1242,12 @@ export async function startClaudeCode(
   const defaultModel = config.agents[0]?.model ?? config.coordinator.model;
   const researchAgents = new Set(config.agents.map((agent) => agent.id));
   researchAgents.add(CROSS_CUTTING_AGENT);
+
+  // Re-run the token deny-list at the forwarding site, as for auth.tokenEnv above.
+  assertMcpServerTokenEnvs(
+    config.mcpServers,
+    config.auth.flatMap((auth) => (auth.tokenEnv ? [auth.tokenEnv] : [])),
+  );
 
   return {
     client: undefined,
@@ -1236,6 +1266,9 @@ export async function startClaudeCode(
     childEnv,
     ...(research ? { researchMcpConfigPath: research.claudeConfigPath } : {}),
     researchAgents,
+    ...(mcpProxy
+      ? { mcpServers: mcpProxy.servers, mcpServerConfigPaths: mcpProxy.claudeConfigPaths }
+      : {}),
     ...(patchDir ? { patchDir } : {}),
   };
 }
