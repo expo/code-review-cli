@@ -126,12 +126,10 @@ The Claude Code engine runs each review pass as a single stateless
 The JSONL stream makes tool activity observable while the pass runs instead of leaving
 only a periodic heartbeat until the final result. The incremental decoder emits only
 bounded lifecycle metadata, read-tool names with confined repo-relative targets, and
-each request for one of the pass's granted `mcpServers` tools as an
-`MCP <server>.<tool>` name without its inputs (a denied name and a research tool call
-are not logged, and the line does not say whether the call succeeded);
-raw assistant text, tool results, grep patterns, and attempted host paths never reach
-the progress or error logs because model output is untrusted and may contain source
-secrets or terminal/log-injection payloads. If a stream ends without a final result,
+an `MCP <server>.<tool>` line for a granted `mcpServers` tool (see "Progress line"
+under Configured MCP Servers); raw assistant text, tool results, grep patterns, and
+attempted host paths never reach the progress or error logs because model output is
+untrusted and may contain source secrets or terminal/log-injection payloads. If a stream ends without a final result,
 or its error result has no explicit message, parsing returns a fixed diagnostic rather
 than falling back to the raw JSONL transcript. The fixed diagnostic carries the child
 exit code and may derive an actionable, fixed category from stderr only when no stream
@@ -314,6 +312,16 @@ a server receives a credential. A server whose token env is unset is skipped, so
 local run without the token still works ([observed] `mcp-servers.ts`
 `assertMcpServerTokenEnvs`/`availableMcpServers`, `schema.ts`
 `McpServerConfigSchema`/`ScopeReviewConfigSchema`).
+
+**Progress line.** Both engines log a granted tool call as `MCP <server>.<tool>`, with
+the pass's agent and label in front. The line is written when the model asks for the
+tool, so it shows a request, not a finished command. It does not say whether the call
+ran, failed or was refused. The proxy audit records that, and the run log gets its
+per-server summary. The line never holds the tool's input. On OpenCode that means
+the part's `title` is dropped for these tools, since it can echo the input. A call to a
+tool the pass was not granted gets no line, and research tool calls are not logged
+this way ([observed] `claude-code.ts` `claudeActivities`, `opencode.ts` `pollForCompletion`,
+`mcp-servers.ts` `opencodeMcpActivity`).
 
 **Fork pull requests.** In `ecr ci` a fork pull request gets a server only when the
 server sets `forkLabel` and the pull request has that label. Without `forkLabel` a

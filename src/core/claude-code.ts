@@ -529,7 +529,8 @@ export function claudeActivities(
       const target = activityPath(input.path, cwd);
       activities.push({ key, line: target && target !== "." ? `Glob ${target}` : "Glob" });
     } else {
-      // Names only, never inputs. The CLI denies an ungranted name, so it is not logged.
+      // Names only, never inputs. The line marks the model's request; the proxy audit
+      // records completion. The CLI denies an ungranted name, so it is not logged.
       const mcpTool = grantedMcpTools.get(block.name);
       if (mcpTool) {
         activities.push({ key, line: `MCP ${mcpTool}` });

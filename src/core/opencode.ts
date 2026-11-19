@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { createOpencode } from "@opencode-ai/sdk";
 
-import type { LoadedConfig } from "../config/schema.js";
+import type { LoadedConfig, McpServerConfig } from "../config/schema.js";
 // Type-only: erased at compile time, so it creates NO runtime import cycle. The
 // Claude engine is reached at runtime via dynamic import() in the dispatch
 // branches below; claude-code.ts statically imports the shared helpers here.
@@ -14,7 +14,12 @@ import { pathInside, resolveOnPath } from "./exec.js";
 import { RateLimitWatch } from "./throttle.js";
 import { OPENCODE_RESEARCH_TOOLS, toolMap } from "./tools.js";
 import { errorMessage, sleep } from "./util.js";
-import { opencodeGrantedTools, opencodeMcpServers } from "./mcp-servers.js";
+import {
+  opencodeGrantedTools,
+  opencodeMcpActivity,
+  opencodeMcpServers,
+  opencodeMcpToolsOff,
+} from "./mcp-servers.js";
 import type { McpProxyRuntime } from "./mcp-servers.js";
 import type { ResearchMcpRuntime } from "./research.js";
 
@@ -158,6 +163,8 @@ export interface OpencodeHandle {
   engineOf?: (agent: string) => Engine;
   /** Each configured MCP server tool set to false, merged into every no-tools request. */
   mcpToolsOff?: Record<string, boolean>;
+  /** The configured MCP servers, so progress lines log only granted calls, by name. */
+  mcpServers?: Record<string, McpServerConfig>;
 }
 
 /** Token usage as reported on an OpenCode assistant message's `info.tokens`. */
@@ -481,8 +488,9 @@ export async function resolveOpencodeCli(): Promise<string | null> {
 /** Start an in-process OpenCode server with the given inline config. */
 export async function startOpencode(
   config: unknown,
-  mcpToolsOff: Record<string, boolean> = {},
+  mcpServers?: Record<string, McpServerConfig>,
 ): Promise<OpencodeHandle> {
+  const mcpToolsOff = opencodeMcpToolsOff(mcpServers);
   // Make our pinned CLI win over any global install (see bundledOpencodeBinDir).
   // The SDK takes no `env`, so PATH is the only lever; it spreads `process.env` at
   // spawn time, so setting it here reaches the child.
@@ -517,7 +525,7 @@ export async function startOpencode(
     url: server.url,
     close: () => server.close(),
     rateLimit: new RateLimitWatch(),
-    ...(Object.keys(mcpToolsOff).length > 0 ? { mcpToolsOff } : {}),
+    ...(Object.keys(mcpToolsOff).length > 0 ? { mcpToolsOff, mcpServers } : {}),
   };
 }
 
@@ -1430,8 +1438,16 @@ async function pollForCompletion(
         opts.reportedTools.add(key);
         if (opts.onActivity) {
           const tool = part.tool ?? "tool";
+          // @ref LLP 0003#configured-mcp-servers [implements] — a granted MCP call logs the same name-only request line on both engines
+          const mcpLine = opencodeMcpActivity(handle.mcpServers, opts.agent, tool);
           const title = part.state?.title;
-          emit(title ? `${tool}: ${title}` : tool);
+          if (mcpLine !== undefined) {
+            if (mcpLine) {
+              emit(mcpLine);
+            }
+          } else {
+            emit(title ? `${tool}: ${title}` : tool);
+          }
         }
       }
     }

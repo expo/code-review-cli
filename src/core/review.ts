@@ -90,7 +90,6 @@ import {
   createMcpProxyRuntime,
   formatMcpServerUsage,
   mcpServerGrants,
-  opencodeMcpToolsOff,
 } from "./mcp-servers.js";
 import type { McpProxyRuntime } from "./mcp-servers.js";
 import { readMcpServerUsage } from "../mcp-proxy/audit.js";
@@ -520,7 +519,7 @@ export async function runReview(
       );
       opencodeHandle = await startOpencode(
         buildOpencodeConfig(config, researchRuntime, mcpProxy),
-        opencodeMcpToolsOff(mcpProxy?.servers),
+        mcpProxy?.servers,
       );
     }
   } catch (error) {
