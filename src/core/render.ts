@@ -11,6 +11,7 @@ import {
   MENTION_TARGET_RE,
   MentionStateSchema,
   scopedFingerprint,
+  scopeFingerprint,
   SEVERITIES,
   SEVERITY_RANK,
 } from "./schema.js";
@@ -206,10 +207,25 @@ function replyLink(text: string, record: FeedbackRecord): string {
 }
 
 function locationText(finding: Finding): string {
-  // A git path may legally hold anything, including a forged state marker.
-  const file = stripStateMarkers(finding.file);
+  // A git path may legally hold anything, including a forged state marker, a newline
+  // or a backtick that would end the code span and leave the rest as live markdown.
+  const file = stripStateMarkers(finding.file).replace(/\s+/g, " ").replace(/`/g, "'");
   return finding.line != null ? `${file}:${finding.line}` : file;
 }
+
+/** A path for a URL, with `)`, spaces and the like percent-encoded so the link stays one link. */
+function urlPath(path: string): string {
+  return path.replace(/[^A-Za-z0-9\-._~/!$&'*+,;=:@]/gu, (char) => {
+    try {
+      return encodeURIComponent(char).replace("(", "%28").replace(")", "%29");
+    } catch {
+      return "";
+    }
+  });
+}
+
+/** A path GitHub names in a diff the usual way: relative, no `..`, no odd characters. */
+const PLAIN_RELATIVE_PATH_RE = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[\w.@+-]+(?:\/[\w.@+-]+)*$/;
 
 // @ref LLP 0005#comment-rendering [implements] — diff anchor only if the line is in the diff; else base-SHA blob (f9fecd5)
 /**
@@ -232,17 +248,34 @@ function location(finding: Finding, link?: LinkContext): string {
   // in-diff as long as the file appears in the diff.
   const inDiff = fileLines != null && (finding.line == null || fileLines.has(finding.line));
   if (inDiff) {
-    const fileHash = createHash("sha256").update(finding.file).digest("hex");
-    const anchor = finding.line != null ? `diff-${fileHash}R${finding.line}` : `diff-${fileHash}`;
-    const url = `https://github.com/${link.repo}/pull/${link.prNumber}/files#${anchor}`;
-    return `[\`${text}\`](${url})`;
+    return `[\`${text}\`](${diffUrl(link, finding.file, finding.line)})`;
   }
   if (link.baseSha) {
     const lineAnchor = finding.line != null ? `#L${finding.line}` : "";
-    const url = `https://github.com/${link.repo}/blob/${link.baseSha}/${stripStateMarkers(finding.file)}${lineAnchor}`;
+    const url = `https://github.com/${link.repo}/blob/${link.baseSha}/${urlPath(finding.file)}${lineAnchor}`;
     return `[\`${text}\`](${url})`;
   }
   return `\`${text}\``;
+}
+
+function diffUrl(link: LinkContext, file: string, line?: number | null): string {
+  const fileHash = createHash("sha256").update(file).digest("hex");
+  const anchor = line != null ? `diff-${fileHash}R${line}` : `diff-${fileHash}`;
+  return `https://github.com/${link.repo}/pull/${link.prNumber}/files#${anchor}`;
+}
+
+/**
+ * The location of a finding the verifier dropped. Its path was never checked, so it
+ * links only when it is a plain path in this PR's diff, and never to a base blob.
+ */
+function rejectedLocation(finding: Finding, link?: LinkContext): string {
+  const text = `\`${locationText(finding)}\``;
+  const fileLines = link?.diffLines?.get(finding.file);
+  if (!link || !fileLines || !PLAIN_RELATIVE_PATH_RE.test(finding.file)) {
+    return text;
+  }
+  const line = finding.line != null && fileLines.has(finding.line) ? finding.line : null;
+  return `[${text}](${diffUrl(link, finding.file, line)})`;
 }
 
 /** GitHub's comment body limit is ~65k chars; keep a margin. */
@@ -265,26 +298,32 @@ export function renderMarkdown(
   inputHash?: string,
   mentioned?: MentionState,
 ): string {
-  // @ref LLP 0005#truncation-and-aggregate-state [implements] — over the size limit, the single comment leaves out the agent summaries, as the aggregate does first
-  const body = renderReviewBody(review, tag, dismissed, link, feedback, pins, inputHash, mentioned);
-  if (body.length <= MAX_COMMENT_CHARS || !review.agentSummaries?.length) {
-    return body;
-  }
+  // @ref LLP 0005#truncation-and-aggregate-state [implements] — over the size limit, the single comment leaves out the agent summaries, then the verifier's rejected list, as the aggregate does first
+  const leftOut = { summaries: false, rejected: false };
+  const render = (current: CoordinatorOutput): string =>
+    renderReviewBody(current, tag, dismissed, link, feedback, pins, inputHash, mentioned, leftOut);
+  let current = review;
+  let body = render(current);
   // Escaping and the base64 state copy make the summaries several times their byte
   // budget, and a body over GitHub's limit fails to post: the review would be lost to
   // the failure notice. The summaries never affect the decision, so they go.
-  const { agentSummaries: _leftOut, ...withoutSummaries } = review;
-  return renderReviewBody(
-    withoutSummaries,
-    tag,
-    dismissed,
-    link,
-    feedback,
-    pins,
-    inputHash,
-    mentioned,
-    true,
-  );
+  if (body.length > MAX_COMMENT_CHARS && current.agentSummaries?.length) {
+    const { agentSummaries: _leftOut, ...withoutSummaries } = current;
+    current = withoutSummaries;
+    leftOut.summaries = true;
+    body = render(current);
+  }
+  if (body.length > MAX_COMMENT_CHARS && current.verifierRejected?.length) {
+    current = withoutVerifierRejected(current);
+    leftOut.rejected = true;
+    body = render(current);
+  }
+  return body;
+}
+
+function withoutVerifierRejected(review: CoordinatorOutput): CoordinatorOutput {
+  const { verifierRejected: _rejected, verifierRejectedOmitted: _omitted, ...rest } = review;
+  return rest;
 }
 
 function renderReviewBody(
@@ -296,7 +335,7 @@ function renderReviewBody(
   pins: FeedbackPin[],
   inputHash: string | undefined,
   mentioned: MentionState | undefined,
-  summariesLeftOut = false,
+  leftOut: { summaries: boolean; rejected: boolean },
 ): string {
   const dismissedByFp = new Map(dismissed.map((record) => [record.fp, record]));
   const withFp = review.findings.map((finding) => ({ finding, fp: fingerprintFinding(finding) }));
@@ -322,7 +361,7 @@ function renderReviewBody(
   const mentionState = nextMentionState(mentionHandles(review.mentions), mentioned);
   lines.push(...mentionLines(review.mentions, mentionState.live));
   lines.push(
-    ...(summariesLeftOut
+    ...(leftOut.summaries
       ? [AGENT_SUMMARIES_LEFT_OUT, ""]
       : agentSummariesSection(review.agentSummaries)),
   );
@@ -337,7 +376,11 @@ function renderReviewBody(
   }
 
   lines.push(...setupNote(review.setupNotes));
-  lines.push(...verifierRejectedNote(verifierRejectedLines(review.verifierRejected, link)));
+  lines.push(
+    ...(leftOut.rejected
+      ? [VERIFIER_REJECTED_LEFT_OUT, ""]
+      : verifierRejectedNote([verifierRejectedLines(review, link, (fp) => dismissedByFp.has(fp))])),
+  );
   lines.push(...requalificationAuditNote(requalified.map((entry) => entry.finding)));
   lines.push(...feedbackAuditNote([...feedbackByFp.values()]));
 
@@ -748,26 +791,54 @@ function modelText(text: string): string {
   return breakMentions(stripStateMarkers(text));
 }
 
-function verifierRejectedLines(
-  rejected: CoordinatorOutput["verifierRejected"] = [],
-  link: LinkContext | undefined,
-  scope?: string,
-): string[] {
-  const prefix = scope === undefined ? "" : `[${stripStateMarkers(scope)}] `;
-  return rejected.map(
-    ({ finding, reason }) =>
-      // One line each: the verifier wrote `reason` after reading the author's PR body.
-      `> - ${prefix}**${plainModelLine(finding.title)}** — ${location(finding, link)}: ${plainModelLine(reason)}`,
-  );
+/** plainModelLine that also leaves no markdown link or image live. */
+function inertModelLine(text: string): string {
+  return plainModelLine(text).replace(/[\\[\]!]/g, "\\$&");
 }
 
-function verifierRejectedNote(lines: string[]): string[] {
+const VERIFIER_REJECTED_SHOWN_MAX = 10;
+
+const VERIFIER_REJECTED_LEFT_OUT =
+  "> 🔎 The quality criticals the verifier rejected were left out to fit the comment size limit. The workflow log lists them.";
+
+/**
+ * One scope's rejected entries, without those a maintainer dismissed (`isDismissed`
+ * gets the fingerprint) or the review kept, and how many more the run had.
+ */
+function verifierRejectedLines(
+  review: CoordinatorOutput,
+  link: LinkContext | undefined,
+  isDismissed: (fp: string) => boolean,
+  scope?: string,
+): { lines: string[]; omitted: number } {
+  const prefix = scope === undefined ? "" : `[${stripStateMarkers(scope)}] `;
+  const kept = new Set(review.findings.map(fingerprintFinding));
+  const lines = (review.verifierRejected ?? [])
+    .filter(({ finding, fp }) => {
+      const id = fp ?? fingerprintFinding(finding);
+      return !kept.has(id) && !isDismissed(id);
+    })
+    .map(
+      ({ finding, reason }) =>
+        // One line each: the verifier wrote `reason` after reading the author's PR body.
+        `> - ${prefix}**${inertModelLine(finding.title)}** — ${rejectedLocation(finding, link)}: ${inertModelLine(reason)}`,
+    );
+  return { lines, omitted: review.verifierRejectedOmitted ?? 0 };
+}
+
+function verifierRejectedNote(scopes: { lines: string[]; omitted: number }[]): string[] {
+  const lines = scopes.flatMap((scope) => scope.lines);
   if (lines.length === 0) {
     return [];
   }
+  const more =
+    lines.length -
+    VERIFIER_REJECTED_SHOWN_MAX +
+    scopes.reduce((sum, scope) => sum + scope.omitted, 0);
   return [
     "> 🔎 **Rejected by the verifier:** these blocking quality findings were checked and dropped.",
-    ...lines,
+    ...lines.slice(0, VERIFIER_REJECTED_SHOWN_MAX),
+    ...(more > 0 ? [`> - …and ${more} more. The workflow log lists them.`] : []),
     "",
   ];
 }
@@ -1009,12 +1080,14 @@ export function renderAggregateMarkdown(
   });
 
   const worst = worstDecision(results.map((result) => result.review.decision));
+  const anyRejected = results.some((result) => result.review.verifierRejected?.length);
   const unmatched = opts?.unmatchedFiles ?? [];
 
   const buildBody = (
     limitPerScope: number,
     inlinedLimit: number,
     withSummaries: boolean,
+    withRejected: boolean,
   ): string => {
     const lines: string[] = [
       commentMarker(tag),
@@ -1060,11 +1133,21 @@ export function renderAggregateMarkdown(
       lines.push("> 🔗 **Review setup:**", ...setupLines, "");
     }
     lines.push(
-      ...verifierRejectedNote(
-        results.flatMap((result) =>
-          verifierRejectedLines(result.review.verifierRejected, link, result.scope),
-        ),
-      ),
+      ...(withRejected
+        ? verifierRejectedNote(
+            results.map((result) =>
+              verifierRejectedLines(
+                result.review,
+                link,
+                (fp) =>
+                  dismissedByFp.has(scopeFingerprint(result.isDefault ? null : result.scope, fp)),
+                result.scope,
+              ),
+            ),
+          )
+        : anyRejected
+          ? [VERIFIER_REJECTED_LEFT_OUT, ""]
+          : []),
     );
 
     // @ref LLP 0008#inline-threads [implements] — the size cap trims inlined findings before listed ones
@@ -1219,9 +1302,10 @@ export function renderAggregateMarkdown(
         } = result.review as CoordinatorOutput & {
           feedback?: unknown;
         };
-        // State bytes count toward the comment size, so left-out summaries leave the
-        // state too.
-        const review = withSummaries && agentSummaries ? { ...rest, agentSummaries } : rest;
+        // State bytes count toward the comment size, so left-out summaries and rejected
+        // findings leave the state too.
+        const kept = withRejected ? rest : withoutVerifierRejected(rest);
+        const review = withSummaries && agentSummaries ? { ...kept, agentSummaries } : kept;
         return {
           scope: result.scope,
           isDefault: result.isDefault,
@@ -1279,12 +1363,18 @@ export function renderAggregateMarkdown(
   let limit = Number.POSITIVE_INFINITY;
   let inlinedLimit = Number.POSITIVE_INFINITY;
   let withSummaries = true;
-  let body = buildBody(limit, inlinedLimit, withSummaries);
+  let withRejected = true;
+  let body = buildBody(limit, inlinedLimit, withSummaries, withRejected);
   // Agent summaries go before any finding: they never affect the decision, and each
   // scope's summary budget does not bound the sum across scopes.
   if (body.length > MAX_COMMENT_CHARS) {
     withSummaries = false;
-    body = buildBody(limit, inlinedLimit, withSummaries);
+    body = buildBody(limit, inlinedLimit, withSummaries, withRejected);
+  }
+  // The verifier's rejected list goes next: those findings are already out of the review.
+  if (body.length > MAX_COMMENT_CHARS && anyRejected) {
+    withRejected = false;
+    body = buildBody(limit, inlinedLimit, withSummaries, withRejected);
   }
   // Inlined findings go next, all of them before any listed one: each trimmed one
   // keeps its thread on the PR.
@@ -1299,7 +1389,7 @@ export function renderAggregateMarkdown(
     inlinedLimit = Math.floor(
       (inlinedLimit === Number.POSITIVE_INFINITY ? largestInlined : inlinedLimit) / 2,
     );
-    body = buildBody(limit, inlinedLimit, withSummaries);
+    body = buildBody(limit, inlinedLimit, withSummaries, withRejected);
   }
   // Seed from the largest per-scope section the limit applies to — kept OR
   // requalified — so the halving loop shrinks whichever one is oversized.
@@ -1312,23 +1402,25 @@ export function renderAggregateMarkdown(
       limit === Number.POSITIVE_INFINITY
         ? Math.max(3, Math.floor(largestScope / 2))
         : Math.max(3, Math.floor(limit / 2));
-    body = buildBody(limit, inlinedLimit, withSummaries);
+    body = buildBody(limit, inlinedLimit, withSummaries, withRejected);
   }
   // Both limits are shared by every scope and halving overshoots, so give back what
   // still fits, inlined findings first: when another scope's listed findings caused
   // the overflow, a scope that fits keeps all of its findings and its input hash.
   if (body.length <= MAX_COMMENT_CHARS) {
     inlinedLimit = largestFitting(inlinedLimit, largestInlined, (n) =>
-      buildBody(limit, n, withSummaries),
+      buildBody(limit, n, withSummaries, withRejected),
     );
-    limit = largestFitting(limit, largestScope, (n) => buildBody(n, inlinedLimit, withSummaries));
-    body = buildBody(limit, inlinedLimit, withSummaries);
+    limit = largestFitting(limit, largestScope, (n) =>
+      buildBody(n, inlinedLimit, withSummaries, withRejected),
+    );
+    body = buildBody(limit, inlinedLimit, withSummaries, withRejected);
   }
   // At the floor of 3 the body can still be too long when those findings are large.
   // A body over GitHub's limit is not posted at all, so go below the floor.
   while (body.length > MAX_COMMENT_CHARS && limit > 0) {
     limit = Math.floor(limit / 2);
-    body = buildBody(limit, inlinedLimit, withSummaries);
+    body = buildBody(limit, inlinedLimit, withSummaries, withRejected);
   }
   return body;
 }

@@ -43,6 +43,8 @@ The three workflows share a posture built entirely around one fact: a reviewer j
 
 **The coarse `if:` label gate only saves runner spin-up.** `workflow.yml` skips the job when the PR carries `ai-review:skip`, using the array form of `contains()` for an *exact* match so `ai-review:skip` is never confused with `ai-review` [observed: `templates/workflow.yml:26-34`]. Its own comment insists this is not the source of truth: real trigger policy lives in `config.jsonc`'s `review.trigger`, which `ecr ci` self-gates on. "Fixing" this gate to mirror the config would be redundant and wrong — deleting it just spins up a runner that then no-ops (LLP 0007).
 
+**`edited` is a trigger because the PR text is review input.** `workflow.yml` runs on `opened`, `synchronize`, `reopened`, `edited`, `labeled` and `unlabeled` [observed: `templates/workflow.yml` `on.pull_request.types`]. The coordinator reads the PR title and body, and the verifier reads them for a `quality` finding (LLP 0005), so an edit to either can change the review. An `edited` run is not new commits, so `ecr ci` leaves the ready label alone until the review syncs it. The review cache key hashes the title and body, so an edit misses the cache and a re-run of the same text hits it [observed: `src/commands/ci.ts` `isNewCommitsEvent`; `src/core/review-cache.ts`]. `cancel-in-progress` lets a later edit or push replace a run still in progress.
+
 **`/dismiss` runs with no model secret at all.** `dismiss.yml` only rewrites the reviewer's embedded comment state, so it carries `GH_TOKEN` but no `OPENAI_API_KEY` or model credential [observed: `templates/dismiss.yml:103-117`]. Credential exposure is scoped to the one workflow that actually calls the model.
 
 ## Config and Prompt Templates

@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { describe, it, test, expect } from "bun:test";
 
 import {
   renderAggregateMarkdown,
@@ -8,7 +8,7 @@ import {
   parseReviewState,
   buildDiffLineIndex,
 } from "../core/render.js";
-import { fingerprintFinding } from "../core/schema.js";
+import { fingerprintFinding, scopeFingerprint } from "../core/schema.js";
 import type { CoordinatorOutput, Finding } from "../core/schema.js";
 
 const base: CoordinatorOutput = {
@@ -624,4 +624,155 @@ test("multi-line rationales stay indented inside their list item", () => {
   // stay exactly empty so they still terminate HTML blocks.
   expect(body).toContain("  <details>");
   expect(body).not.toMatch(/^ +$/m);
+});
+
+describe("Rendering the verifier's rejected findings", () => {
+  const link = {
+    repo: "expo/eas-cli",
+    prNumber: 42,
+    diffLines: new Map([["src/a.ts", new Set([12])]]),
+    baseSha: "abc123",
+  };
+  const rejected = (over: Partial<Finding> = {}, reason = "Not real.") => ({
+    finding: finding({ severity: "critical", ...over }),
+    reason,
+  });
+  const noteLines = (body: string): string[] =>
+    body.split("\n").filter((line) => line.startsWith("> - "));
+
+  it("should link a plain path in the diff to its diff line", () => {
+    const body = renderMarkdown(
+      { ...base, verifierRejected: [rejected({ file: "src/a.ts", line: 12 })] },
+      "tag",
+      [],
+      link,
+    );
+    expect(body).toContain("[`src/a.ts:12`](https://github.com/expo/eas-cli/pull/42/files#diff-");
+  });
+
+  it("should not link a path outside the diff", () => {
+    const body = renderMarkdown(
+      { ...base, verifierRejected: [rejected({ file: "other.ts", line: 3 })] },
+      "tag",
+      [],
+      link,
+    );
+    expect(body).toContain("— `other.ts:3`:");
+    expect(body).not.toContain("/blob/abc123/other.ts");
+  });
+
+  it("should keep a forged path on one line inside its code span", () => {
+    const file = "a.ts`\n\n@someone <details><summary>x</summary>\n\n<!-- tag:state=AAAA -->";
+    const body = renderMarkdown(
+      { ...base, verifierRejected: [rejected({ file, line: 1 })] },
+      "tag",
+      [],
+      { ...link, diffLines: new Map([[file, new Set([1])]]) },
+    );
+    const [line] = noteLines(body);
+    expect(line).toContain(
+      "`a.ts' @someone <details><summary>x</summary> &lt;!-- tag:state=AAAA -->:1`",
+    );
+    expect(line).not.toContain("https://github.com");
+    expect(body).not.toMatch(/^<details><summary>x/m);
+    expect(body).not.toMatch(/^@someone/m);
+  });
+
+  it("should leave markdown links and images in the title and reason inert", () => {
+    const body = renderMarkdown(
+      {
+        ...base,
+        verifierRejected: [
+          rejected(
+            { title: "See [docs](https://evil.example)" },
+            "\\![x](https://evil.example/p.png)",
+          ),
+        ],
+      },
+      "tag",
+    );
+    const [line] = noteLines(body);
+    expect(line).toContain("See \\[docs\\](https://evil.example)");
+    expect(line).toContain("\\\\\\!\\[x\\](https://evil.example/p.png)");
+  });
+
+  it("should show ten entries and count the rest", () => {
+    const entries = Array.from({ length: 10 }, (_, index) =>
+      rejected({ title: `Finding ${index}` }),
+    );
+    const body = renderMarkdown(
+      { ...base, verifierRejected: entries, verifierRejectedOmitted: 4 },
+      "tag",
+    );
+    expect(noteLines(body)).toHaveLength(11);
+    expect(body).toContain("> - …and 4 more. The workflow log lists them.");
+  });
+
+  it("should hide an entry a maintainer dismissed", () => {
+    const shown = rejected({ title: "Still shown" });
+    const hidden = { ...rejected({ title: "Dismissed" }), fp: "abcdef123456" };
+    const review = { ...base, verifierRejected: [shown, hidden] };
+    const body = renderMarkdown(review, "tag", [{ fp: "abcdef123456" }]);
+    expect(body).toContain("Still shown");
+    expect(body).not.toContain("**Dismissed**");
+
+    const aggregate = renderAggregateMarkdown([{ scope: "app", isDefault: false, review }], "tag", [
+      { fp: scopeFingerprint("app", "abcdef123456") },
+    ]);
+    expect(aggregate).toContain("Still shown");
+    expect(aggregate).not.toContain("**Dismissed**");
+  });
+
+  it("should leave out an entry the review also kept", () => {
+    const kept = finding({ severity: "critical", title: "Kept copy" });
+    const body = renderMarkdown(
+      { ...base, findings: [kept], verifierRejected: [{ finding: kept, reason: "Dropped copy." }] },
+      "tag",
+    );
+    expect(body).not.toContain("Dropped copy.");
+  });
+
+  it("should leave the list out when the comment is over the size limit", () => {
+    const entries = Array.from({ length: 10 }, (_, index) =>
+      rejected({ title: `Finding ${index} ${"t".repeat(450)}` }, "r".repeat(500)),
+    );
+    const big = finding({ severity: "critical", rationale: "x".repeat(19_000) });
+    const review: CoordinatorOutput = {
+      ...base,
+      findings: [big],
+      verifierRejected: entries,
+    };
+    const body = renderMarkdown(review, "tag");
+    expect(body.length).toBeLessThanOrEqual(60_000);
+    expect(body).toContain("were left out to fit the comment size limit");
+    expect(body).not.toContain("Rejected by the verifier:");
+    expect(parseReviewState(body, "tag")?.review.verifierRejected).toBeUndefined();
+
+    // The aggregate state holds each finding twice, so a smaller one fills it.
+    const scoped = {
+      ...review,
+      findings: [finding({ severity: "critical", rationale: "y".repeat(12_000) })],
+    };
+    const aggregate = renderAggregateMarkdown(
+      [{ scope: "app", isDefault: false, review: scoped }],
+      "tag",
+      [],
+    );
+    expect(aggregate.length).toBeLessThanOrEqual(60_000);
+    expect(aggregate).toContain("were left out to fit the comment size limit");
+    expect(aggregate).toContain("y".repeat(12_000));
+  });
+
+  it("should keep a kept finding's forged path inside its code span and its link", () => {
+    const file = "a) @x`\n<details>.ts";
+    const body = renderMarkdown(
+      { ...base, findings: [finding({ file, line: 3 })] },
+      "tag",
+      [],
+      link,
+    );
+    expect(body).toContain(
+      "[`a) @x' <details>.ts:3`](https://github.com/expo/eas-cli/blob/abc123/a%29%20@x%60%0A%3Cdetails%3E.ts#L3)",
+    );
+  });
 });

@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { describe, it, test, expect } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -32,6 +32,7 @@ import {
   AGENT_SUMMARIES_BYTES_LIMIT,
   AGENT_SUMMARY_CHARS,
   REVIEW_TRACE_BYTES_LIMIT,
+  fingerprintFinding,
 } from "../core/schema.js";
 import type { LoadedConfig } from "../config/schema.js";
 import type { PatchWorkspaceFile } from "../core/noise.js";
@@ -797,4 +798,56 @@ test("runReview: setup warnings ride on the result as setup notes, early returns
   expect(deprecated.lines).toContain(`  setup: ${deprecation}`);
   const clean = await runPathsReview(["src/a.ts"], [pathsAgent("docs", ["docs/**"])]);
   expect("setupNotes" in (clean.result as object)).toBe(false);
+});
+
+describe("Collecting the verifier's rejected findings", () => {
+  const output: CoordinatorOutput = {
+    decision: "approve",
+    findings: [],
+    summary: "s",
+    incomplete: [],
+  };
+  const critical = (over: Partial<Finding> = {}): Finding =>
+    finding({ severity: "critical", category: "quality", ...over });
+
+  it("should keep the fingerprint of the full finding", () => {
+    const dropped = critical({ evidence: "const value = computeTheThing(input);" });
+    const [entry] = attachVerifierRejected(output, [
+      { finding: dropped, reason: "No." },
+    ]).verifierRejected!;
+    expect(entry!.fp).toBe(fingerprintFinding(dropped));
+    expect(entry!.fp).not.toBe(fingerprintFinding(entry!.finding));
+  });
+
+  it("should leave out a copy of a finding the verifier kept", () => {
+    const copy = critical({ title: "Missed sibling" });
+    const result = attachVerifierRejected({ ...output, findings: [copy] }, [
+      { finding: { ...copy }, reason: "Dropped copy." },
+    ]);
+    expect(result.verifierRejected).toBeUndefined();
+  });
+
+  it("should list a finding dropped twice once", () => {
+    const copy = critical({ title: "Missed sibling" });
+    const result = attachVerifierRejected(output, [
+      { finding: copy, reason: "First." },
+      { finding: { ...copy }, reason: "Second." },
+    ]);
+    expect(result.verifierRejected?.map((entry) => entry.reason)).toEqual(["First."]);
+  });
+
+  it("should keep ten entries and count the rest", () => {
+    const dropped = Array.from({ length: 13 }, (_, index) => ({
+      finding: critical({ title: `Finding ${index}` }),
+      reason: "No.",
+    }));
+    const result = attachVerifierRejected(output, dropped);
+    expect(result.verifierRejected).toHaveLength(10);
+    expect(result.verifierRejectedOmitted).toBe(3);
+  });
+
+  it("should drop a coordinator-written omitted count", () => {
+    const result = attachVerifierRejected({ ...output, verifierRejectedOmitted: 99 }, []);
+    expect(result.verifierRejectedOmitted).toBeUndefined();
+  });
 });

@@ -35,6 +35,24 @@ const SEVERITY_LABEL: Record<Severity, string> = {
   nit: "NIT",
 };
 
+// CSI (`ESC [ … m`), OSC (`ESC ] … BEL`, which can carry a hyperlink) and two-byte escapes.
+const ANSI_SEQUENCE = new RegExp(
+  String.raw`\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[@-Z\\-_])`,
+  "g",
+);
+
+/**
+ * Model text as one terminal line: no escape sequence can move the cursor or recolor
+ * the report, and no bidi control can reorder what is shown.
+ */
+function terminalLine(text: string): string {
+  return text
+    .replace(ANSI_SEQUENCE, "")
+    .replace(/\s+/g, " ")
+    .replace(/[\p{Cc}\u202a-\u202e\u2066-\u2069]/gu, "")
+    .trim();
+}
+
 /**
  * Prints a human-readable summary grouped by severity; honors --json; never
  * contacts GitHub. Maps the decision to a process exit code so it works as a
@@ -103,7 +121,16 @@ export class TerminalReporter implements Reporter {
       out.push(this.paint(BOLD, "🔎 Rejected by the verifier (blocking quality findings):"));
       for (const { finding, reason } of verifierRejected) {
         const loc = finding.line != null ? `${finding.file}:${finding.line}` : finding.file;
-        out.push(this.paint(DIM, `  - ${finding.title} (${loc}): ${reason}`));
+        out.push(
+          this.paint(
+            DIM,
+            `  - ${terminalLine(finding.title)} (${terminalLine(loc)}): ${terminalLine(reason)}`,
+          ),
+        );
+      }
+      const omitted = review.verifierRejectedOmitted ?? 0;
+      if (omitted > 0) {
+        out.push(this.paint(DIM, `  - …and ${omitted} more. The run log lists them.`));
       }
       out.push("");
     }

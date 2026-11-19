@@ -244,10 +244,18 @@ I/O. The whole file exists to keep PR content as data.
 
 `sanitizeUntrusted` strips triple-backtick fences, role/boundary tags
 (`<system>`, `<user>`, `<instructions>`, `<prompt>`, `<tool>`, …), the
-coordinator's own `PR_TITLE`/`PR_BODY` boundary tokens (with 0–3 leading `<`),
-and control characters [observed] (`src/core/prompts.ts:52-68`). Stripping the
+coordinator's own `PR_TITLE`/`PR_BODY` boundary lines, and control characters
+[observed] (`src/core/prompts.ts` `sanitizeUntrusted`). Stripping the
 coordinator's tokens is what stops a PR title/body from forging a section
-boundary and escaping its fence.
+boundary and escaping its fence. A model can read a line that only looks like
+the token as the token, so `blankBoundaryLines` matches loosely: it folds a copy
+of each line with NFKC, uppercases it, maps Greek and Cyrillic capitals that look
+Latin, and drops everything but `A-Z0-9`. `<<<<PR_BODY`, `> PR_BODY` and
+`PR_ΒODY` (Greek Beta) all match [observed] (`boundaryKey`). NEL, U+2028 and
+U+2029 become plain newlines first, so they cannot hide a boundary inside what
+looks like one line. The verifier task uses the same matcher for its own
+`EVIDENCE` and `DOC_PASSAGE` fences; there it blanks only the matching lines of
+the finding's evidence, because the rest must still match the code.
 
 Before those steps, `sanitizeUntrusted` runs `stripHiddenText`, which removes
 what GitHub does not render: HTML comments (an unclosed one hides the rest of the
@@ -305,11 +313,11 @@ distrust everything.
 
 The coordinator wraps PR title/body in explicit `<<<PR_TITLE … PR_TITLE` /
 `<<<PR_BODY … PR_BODY` sections labeled UNTRUSTED [observed]
-(`src/core/prompts.ts:437-446`). This is coupled by **exact string** to
-`sanitizeUntrusted`'s token regex — the two-layer defense (fence + token
-stripping) only holds if the literal fence text in `buildCoordinatorTask` matches
-the regex at `src/core/prompts.ts:62`. Change the fence syntax without
-updating the regex and the boundary-forging injection silently reopens.
+(`src/core/prompts.ts` `buildCoordinatorTask`). This is coupled to
+`sanitizeUntrusted`'s `PR_BOUNDARY_TOKENS` — the two-layer defense (fence + token
+stripping) only holds if the fence text in `buildCoordinatorTask` and
+`buildVerifierTask` folds to one of those tokens. Change the fence syntax without
+updating the tokens and the boundary-forging injection silently reopens.
 
 ## Prompt Layout for Cache and Coverage
 

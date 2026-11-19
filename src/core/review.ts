@@ -1773,6 +1773,7 @@ export function attachMentions(
 }
 
 const VERIFIER_REJECTED_TEXT_MAX = 500;
+export const VERIFIER_REJECTED_MAX = 10;
 
 /**
  * Replace any coordinator-written note with the quality criticals the verifier dropped.
@@ -1782,23 +1783,45 @@ export function attachVerifierRejected(
   output: CoordinatorOutput,
   dropped: { finding: Finding; reason: string }[],
 ): CoordinatorOutput {
-  const { verifierRejected: _coordinatorRejected, ...withoutRejected } = output;
-  // Only what the note shows: the comment embeds this list in its state, outside the
-  // size cap, so the rationale and evidence of a dropped finding stay in the run log.
-  const verifierRejected = dropped
-    .filter(({ finding }) => finding.category === "quality" && finding.severity === "critical")
-    .map(({ finding, reason }) => ({
-      finding: {
-        severity: finding.severity,
-        category: finding.category,
-        file: finding.file,
-        line: finding.line,
-        title: finding.title.slice(0, VERIFIER_REJECTED_TEXT_MAX),
-        rationale: "",
+  const {
+    verifierRejected: _coordinatorRejected,
+    verifierRejectedOmitted: _coordinatorOmitted,
+    ...withoutRejected
+  } = output;
+  // A duplicate the verifier kept once is not rejected, and one dropped twice is one entry.
+  const seen = new Set(output.findings.map(fingerprintFinding));
+  const rejected = dropped.flatMap(({ finding, reason }) => {
+    const fp = fingerprintFinding(finding);
+    if (finding.category !== "quality" || finding.severity !== "critical" || seen.has(fp)) {
+      return [];
+    }
+    seen.add(fp);
+    // Only what the note shows: the comment embeds this list in its state, so the
+    // rationale and evidence of a dropped finding stay in the run log.
+    return [
+      {
+        finding: {
+          severity: finding.severity,
+          category: finding.category,
+          file: finding.file,
+          line: finding.line,
+          title: finding.title.slice(0, VERIFIER_REJECTED_TEXT_MAX),
+          rationale: "",
+        },
+        reason: reason.slice(0, VERIFIER_REJECTED_TEXT_MAX),
+        fp,
       },
-      reason: reason.slice(0, VERIFIER_REJECTED_TEXT_MAX),
-    }));
-  return { ...withoutRejected, ...(verifierRejected.length > 0 ? { verifierRejected } : {}) };
+    ];
+  });
+  if (rejected.length === 0) {
+    return withoutRejected;
+  }
+  const omitted = rejected.length - VERIFIER_REJECTED_MAX;
+  return {
+    ...withoutRejected,
+    verifierRejected: rejected.slice(0, VERIFIER_REJECTED_MAX),
+    ...(omitted > 0 ? { verifierRejectedOmitted: omitted } : {}),
+  };
 }
 
 /**
