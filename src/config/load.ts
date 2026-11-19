@@ -143,7 +143,8 @@ export async function loadReviewConfig(
   options: LoadConfigOptions = {},
 ): Promise<LoadedConfig> {
   const dir = resolveConfigDir(repoRoot, options.configDir);
-  const { config } = await loadConfigDir(dir, ReviewConfigSchema);
+  const { config: loaded } = await loadConfigDir(dir, ReviewConfigSchema);
+  const config = resolvePreCheckAgents(loaded);
   assertMcpServerTokenEnvs(
     config.mcpServers,
     config.auth.flatMap((entry) => (entry.tokenEnv ? [entry.tokenEnv] : [])),
@@ -152,6 +153,32 @@ export async function loadReviewConfig(
   const prTemplateComments = await readPullRequestTemplateComments(repoRoot);
   // Only when there are any, so a setup without a template keeps its review-cache key.
   return prTemplateComments.length > 0 ? { ...config, prTemplateComments } : config;
+}
+
+// @ref LLP 0002#pre-check-agents [implements] — checked against the final roster; an unknown id is a setup warning, not a load error
+/**
+ * Drop each `preCheckAgents` id that is not in the final roster, with a setup warning.
+ * Runs after a scope's enforced agents are injected, so a scope may name one.
+ */
+export function resolvePreCheckAgents(config: LoadedConfig): LoadedConfig {
+  const { preCheckAgents: listed, ...rest } = config;
+  if (!listed) {
+    return config;
+  }
+  const label = setupDirLabel(config.configDir);
+  const known = listed.filter((id) => config.agents.some((agent) => agent.id === id));
+  const warnings = listed
+    .filter((id) => !known.includes(id))
+    .map(
+      (id) =>
+        `preCheckAgents lists "${id}", but ${label}/agents/ has no ${id}.md, so it is ignored. Add the agent, or remove the id.`,
+    );
+  const setupWarnings = [...(config.setupWarnings ?? []), ...warnings];
+  return {
+    ...rest,
+    ...(known.length > 0 ? { preCheckAgents: known } : {}),
+    ...(setupWarnings.length > 0 ? { setupWarnings } : {}),
+  };
 }
 
 /**
@@ -268,6 +295,10 @@ async function loadConfigDir(
     configDir: dir,
     sharedPromptText,
     agents,
+    // Only when there are any, so a setup without pre-checks keeps its review-cache key.
+    ...(parsed.preCheckAgents && parsed.preCheckAgents.length > 0
+      ? { preCheckAgents: parsed.preCheckAgents }
+      : {}),
     // Only when there are any, so a clean setup keeps its review-cache key.
     ...(setupWarnings.length > 0 ? { setupWarnings } : {}),
     ...(deprecation ? { deprecations: [deprecation] } : {}),
@@ -460,8 +491,11 @@ export async function loadScopeConfig(
   }
 
   return {
-    ...base,
-    agents,
+    ...resolvePreCheckAgents({ ...base, agents }),
+    // Only when there are any, so a scope without them keeps its review-cache key.
+    ...(manifest.defaults.enforceAgents.length > 0
+      ? { enforcedAgents: [...manifest.defaults.enforceAgents] }
+      : {}),
     auth: loadAuthFromRoot(rootConfig, manifest),
     breakGlassMarker: rootConfig.breakGlassMarker,
     commentTag,

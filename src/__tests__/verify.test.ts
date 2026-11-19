@@ -1,9 +1,15 @@
-import { test, expect, beforeAll, afterAll } from "bun:test";
+import { test, expect, beforeAll, afterAll, describe, it } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { verifyFindings, matchEvidence, evidenceFragments } from "../core/verify.js";
+import {
+  verifyFindings,
+  matchEvidence,
+  evidenceFragments,
+  verdictOutcome,
+} from "../core/verify.js";
+import { buildVerifierTask } from "../core/prompts.js";
 import type { Finding } from "../core/schema.js";
 import type { OpencodeHandle } from "../core/opencode.js";
 
@@ -102,6 +108,18 @@ test("absent evidence is ESCALATED, not hard-dropped (fail-open keeps it here)",
   );
   expect(res.kept.map((f) => f.title)).toEqual(["absent-but-maybe-real"]);
   expect(res.dropped).toEqual([]);
+});
+
+test("a critical whose verify call fails is kept but not confirmed", async () => {
+  // The dummy handle throws, so the verifier never judged it. Fail-open keeps it,
+  // but a caller that must act only on a real verdict reads `confirmed`.
+  const res = await verifyFindings(
+    handle,
+    [finding({ severity: "critical", title: "unjudged", evidence: "return items[next++]!;" })],
+    "/",
+  );
+  expect(res.kept.map((f) => f.title)).toEqual(["unjudged"]);
+  expect(res.confirmed).toEqual([]);
 });
 
 test("too-short evidence is unknown, kept without an LLM call", async () => {
@@ -238,4 +256,35 @@ test("finding.file with a `..` escape is confined (unknown, no LLM escalation)",
   );
   expect(res.kept.map((f) => f.title)).toEqual(["dotdot"]);
   expect(escalations.some((m) => /verify:/.test(m))).toBe(false);
+});
+
+describe("Judging what a verdict proves", () => {
+  it("should confirm a verified verdict that was not cut short", () => {
+    expect(verdictOutcome({ verified: true, reason: "" }, false)).toEqual({
+      confirmed: true,
+      blocking: false,
+    });
+  });
+
+  it("should confirm nothing from a verdict forced out at the time limit", () => {
+    expect(verdictOutcome({ verified: true, reason: "", blocking: true }, true)).toEqual({
+      confirmed: false,
+      blocking: false,
+    });
+  });
+
+  it("should count as blocking only an explicit true", () => {
+    expect(verdictOutcome({ verified: true, reason: "", blocking: true }, false).blocking).toBe(
+      true,
+    );
+    expect(verdictOutcome({ verified: false, reason: "", blocking: true }, false).blocking).toBe(
+      false,
+    );
+  });
+
+  it("should ask for blocking only when the caller asks", () => {
+    const critical = finding({ severity: "critical" });
+    expect(buildVerifierTask(critical)).not.toContain('"blocking"');
+    expect(buildVerifierTask(critical, { askBlocking: true })).toContain('"blocking": true|false');
+  });
 });

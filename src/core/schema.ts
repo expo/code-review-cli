@@ -167,6 +167,11 @@ export const VerdictSchema = z.object({
    * citation while the finding itself stands or falls on `verified`.
    */
   citationSupported: z.boolean().optional(),
+  /**
+   * Only requested when a pre-check critical may stop the review: whether the problem
+   * should block the PR. Anything but `true` lets the other reviewers run.
+   */
+  blocking: z.boolean().optional(),
 });
 export type Verdict = z.infer<typeof VerdictSchema>;
 
@@ -300,9 +305,9 @@ export type ReviewTrace = z.infer<typeof ReviewTraceSchema>;
 
 /**
  * Why a roster agent did not review the change: no changed file matches its `paths`,
- * or the router did not select it.
+ * the router did not select it, or a pre-check agent stopped the review.
  */
-export const AGENT_NOT_RUN_REASONS = ["paths", "router"] as const;
+export const AGENT_NOT_RUN_REASONS = ["paths", "router", "preCheck"] as const;
 
 /**
  * One roster agent in the review: its own summary when it ran, or why it did not run.
@@ -361,8 +366,9 @@ export const CoordinatorOutputSchema = CoordinatorModelOutputSchema.extend({
    */
   incomplete: z.array(z.string()).default([]),
   /**
-   * True when nothing was actually reviewed: every pass failed, or the CI run
-   * failed or stopped before any pass. Set by the engine, never the model. Reporters must not render an approving decision
+   * True when nothing was actually reviewed: every pass failed, the CI run failed or
+   * stopped before any pass, or a pre-check stopped the other reviewers on a critical
+   * that the review later dropped. Set by the engine, never the model. Reporters must not render an approving decision
    * label for such a run (the decision enum has no "no review" member, and
    * widening it would ripple through dismiss state and exit codes — this flag
    * overrides the presentation instead).

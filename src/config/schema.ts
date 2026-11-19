@@ -180,6 +180,11 @@ export const ReviewConfigSchema = z.object({
       concurrency: z.number().int().positive().optional(),
     })
     .default({ maxChangedLines: 1000, maxFiles: 20 }),
+  /**
+   * Agent ids that run before the others. When the verifier confirms a critical finding
+   * from one of them, the other agents do not run.
+   */
+  preCheckAgents: z.array(z.string().min(1)).optional(),
   noise: z
     .object({
       additionalIgnores: z.array(z.string()).default([]),
@@ -646,6 +651,13 @@ export interface LoadedConfig {
    */
   prTemplateComments?: string[];
   agents: LoadedAgent[];
+  /** Agent ids that run first and can stop the rest of the review. */
+  preCheckAgents?: string[];
+  /**
+   * Root `defaults.enforceAgents` injected into this scope. A pre-check stop never
+   * skips them. Absent when none.
+   */
+  enforcedAgents?: string[];
   /**
    * Prompt-file frontmatter problems found at load time (an invalid `paths`, a
    * frontmatter block below the first line, a trailing comment in a value). Each
