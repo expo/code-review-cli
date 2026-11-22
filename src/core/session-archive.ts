@@ -100,6 +100,8 @@ export interface SessionCapture {
     /** Limit for one export. Defaults to 30 seconds. */
     timeoutMs?: number;
   }): Promise<void>;
+  /** Forget the passes filed under this capture's scope. */
+  discard(): void;
   /** Reviewer ids first, in config order, then everything else. */
   orderedPasses(): RecordedPass[];
   readonly count: number;
@@ -164,7 +166,16 @@ function scopedCapture(
       if (!input.sessionId || input.title === "route") {
         return;
       }
-      passes.push({ ...input, ...(scope ? { scope } : {}), order: passes.length });
+      const order = (passes.at(-1)?.order ?? -1) + 1;
+      passes.push({ ...input, ...(scope ? { scope } : {}), order });
+    },
+    discard(): void {
+      // Every scope shares this array, so it is changed in place.
+      for (let index = passes.length - 1; index >= 0; index -= 1) {
+        if (passes[index]!.scope === scope) {
+          passes.splice(index, 1);
+        }
+      }
     },
     async exportOpencode(input): Promise<void> {
       // A pass that another scope could not export stays failed.

@@ -272,6 +272,33 @@ describe("Session archive", () => {
     ]);
   });
 
+  test("should forget the passes of one scope", () => {
+    const capture = createSessionCapture();
+    const note = (scope: string, title: string): void =>
+      capture.withScope(scope).note({
+        agent: "correctness",
+        title,
+        source: "claude",
+        sessionId: `ses_${scope}_${title}`,
+        exportJson: "{}",
+      });
+    const stored = (): (string | undefined)[][] =>
+      capture.orderedPasses().map((item) => [item.scope, item.title]);
+    note("web", "review-correctness-c0");
+    note("web", "review-correctness-c1");
+    note("api", "review-correctness-c0");
+    capture.withScope("web").discard();
+    expect(stored()).toEqual([["api", "review-correctness-c0"]]);
+    note("docs", "review-correctness-c0");
+    expect(stored()).toEqual([
+      ["api", "review-correctness-c0"],
+      ["docs", "review-correctness-c0"],
+    ]);
+    capture.withScope("api").discard();
+    capture.withScope("docs").discard();
+    expect(buildSessionIndex(capture, { repo: "expo/expo", pr: 1, headSha: SHA_A })).toBeNull();
+  });
+
   test("should stop waiting for an export that stalls", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "ecr-session-stall-"));
     const bin = path.join(dir, "opencode");
