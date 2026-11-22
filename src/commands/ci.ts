@@ -1234,6 +1234,8 @@ async function runRoutedCi(
       );
       review = failureReview(scope.name, publicFailureReason(error));
       inputHash = undefined;
+      // The comment shows a failure for this scope, so its finished passes are not stored.
+      options.sessionCapture?.withScope(scope.name).discard();
     }
     results.push({
       scope: scope.name,
