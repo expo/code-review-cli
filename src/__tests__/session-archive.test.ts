@@ -16,7 +16,9 @@ import {
   parseSessionIndex,
   pinnedOpencodeVersion,
   recordedShaBlocksAttach,
+  releasesForHead,
   sessionIdOf,
+  sessionTagPrefix,
   SESSION_ZIP_LIMIT_BYTES,
   unzipEntries,
   zipEntries,
@@ -98,6 +100,25 @@ describe("Session archive", () => {
         JSON.stringify({ info: { id: "ses_ok", version: pinnedOpencodeVersion() } }),
       ),
     ).not.toThrow();
+  });
+
+  test("should put the newest upload for a head first", () => {
+    const prefix = sessionTagPrefix("expo/expo", 7, SHA_A);
+    const other = sessionTagPrefix("expo/expo", 7, SHA_B);
+    const matches = releasesForHead(
+      [
+        { tag: `${prefix}100`, publishedAt: "2026-01-01T10:00:00Z" },
+        { tag: `${prefix}100-2`, publishedAt: "2026-01-01T12:00:00Z" },
+        { tag: `${other}300`, publishedAt: "2026-01-01T13:00:00Z" },
+        { tag: `${prefix}200`, publishedAt: "2026-01-01T11:00:00Z" },
+      ],
+      prefix,
+    );
+    expect(matches.map((release) => release.tag)).toEqual([
+      `${prefix}100-2`,
+      `${prefix}200`,
+      `${prefix}100`,
+    ]);
   });
 
   test("should treat an archive over 80 MB as too large", () => {

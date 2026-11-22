@@ -353,7 +353,11 @@ export function workflowRunUrl(): string | undefined {
 
 export interface ListedRelease {
   tag: string;
-  createdAt: string;
+  /**
+   * When the archive was uploaded.
+   * A release's `createdAt` is the date of the commit under its tag, the same for every archive.
+   */
+  publishedAt: string;
 }
 
 /** Newest first. The run id is the only segment after the prefix. */
@@ -366,7 +370,7 @@ export function releasesForHead(releases: ListedRelease[], prefix: string): List
       const rest = release.tag.slice(prefix.length);
       return rest.length > 0 && !rest.includes("/");
     })
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+    .sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : a.publishedAt > b.publishedAt ? -1 : 0));
 }
 
 function safeAgentFile(agent: string, used: Set<string>): string {
