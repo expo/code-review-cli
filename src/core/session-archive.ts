@@ -307,6 +307,12 @@ function assertRepo(repo: string): [string, string] {
     throw new Error(`Repository must look like owner/name, got ${JSON.stringify(repo)}.`);
   }
   const [owner, name] = repo.split("/");
+  for (const part of [owner!, name!]) {
+    // Git refuses these in a tag, and the names are path parts of the release tag.
+    if (part.startsWith(".") || part.endsWith(".lock") || part.includes("..")) {
+      throw new Error(`No session can be stored for ${repo}. A git tag cannot contain "${part}".`);
+    }
+  }
   return [owner!, name!];
 }
 

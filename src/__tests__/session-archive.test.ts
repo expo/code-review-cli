@@ -15,6 +15,7 @@ import {
   opencodeChildEnv,
   parseSessionIndex,
   pinnedOpencodeVersion,
+  publishSessionArchive,
   recordedShaBlocksAttach,
   releasesForHead,
   sessionIdOf,
@@ -118,6 +119,48 @@ describe("Session archive", () => {
       `${prefix}100-2`,
       `${prefix}200`,
       `${prefix}100`,
+    ]);
+  });
+
+  test("should refuse a repository name that git cannot put in a tag", () => {
+    expect(sessionTagPrefix("expo/expo.dev", 7, SHA_A)).toBe(
+      `session/expo/expo.dev/7/${SHA_A.slice(0, 12)}/`,
+    );
+    for (const repo of ["expo/.github", "expo/app.lock", "expo/a..b", ".expo/app"]) {
+      expect(() => sessionTagPrefix(repo, 7, SHA_A)).toThrow(/A git tag cannot contain/);
+    }
+  });
+
+  test("should say why a repository with such a name is not uploaded", async () => {
+    const capture = createSessionCapture();
+    capture.note({
+      agent: "correctness",
+      title: "review-correctness-c0",
+      source: "claude",
+      sessionId: "ses_claude",
+      exportJson: "{}",
+    });
+    const log: string[] = [];
+    const store = process.env.SESSION_STORE_REPO;
+    // `gh` refuses this store name before it uses the network.
+    process.env.SESSION_STORE_REPO = "not-a-store";
+    try {
+      await publishSessionArchive({
+        capture,
+        repo: "expo/.github",
+        pr: 7,
+        headSha: SHA_A,
+        log: (line) => log.push(line),
+      });
+    } finally {
+      if (store === undefined) {
+        delete process.env.SESSION_STORE_REPO;
+      } else {
+        process.env.SESSION_STORE_REPO = store;
+      }
+    }
+    expect(log).toEqual([
+      'session store: upload failed: No session can be stored for expo/.github. A git tag cannot contain ".github".',
     ]);
   });
 
