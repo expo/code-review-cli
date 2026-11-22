@@ -1,4 +1,5 @@
 // @ref LLP 0007#session-archive [implements] — import with the pinned OpenCode, then attach --fork; never switch branches
+import { randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -186,9 +187,14 @@ export function pickPass(
  * The environment for the OpenCode children.
  * The checkout is the PR head, so its opencode.json and .opencode are PR content.
  * An MCP server defined there would run on this machine.
+ * The server can run shell commands, so it gets a password that only this attach knows.
  */
 export function attachEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return { ...opencodeChildEnv(base), OPENCODE_DISABLE_PROJECT_CONFIG: "1" };
+  return {
+    ...opencodeChildEnv(base),
+    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+    OPENCODE_SERVER_PASSWORD: randomBytes(24).toString("base64url"),
+  };
 }
 
 export async function waitForServer(child: ReturnType<typeof spawnPiped>): Promise<string> {
