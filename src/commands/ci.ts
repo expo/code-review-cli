@@ -1223,7 +1223,7 @@ async function runRoutedCi(
           passesBudgetMs: budget,
           runsDir: workspaceRunsDir(cwd),
           feedback: feedbackSeam,
-          sessionCapture: options.sessionCapture,
+          sessionCapture: options.sessionCapture?.withScope(scope.name),
           ...(mcpAudit ? { mcpAuditPath: mcpAudit.auditPath } : {}),
           onProgress: (message) => process.stderr.write(`[${scope.name}] ${message}\n`),
         });
