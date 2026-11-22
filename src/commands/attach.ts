@@ -1,5 +1,6 @@
 // @ref LLP 0007#session-archive [implements] — import with the pinned OpenCode, then attach --fork; never switch branches
 import { randomBytes } from "node:crypto";
+import { rmSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +11,7 @@ import {
   resolveRepo,
   resolveTrustedTool,
   run,
+  runAtExit,
   spawnInherited,
   spawnPiped,
 } from "../core/exec.js";
@@ -348,6 +350,8 @@ async function openRelease(
     throw new Error("The pinned opencode CLI is not installed. Reinstall this package.");
   }
   const dir = await mkdtemp(path.join(tmpdir(), "ecr-attach-"));
+  // The directory holds a review transcript, and a signal skips the finally block.
+  const forgetDir = runAtExit(() => rmSync(dir, { recursive: true, force: true }));
   const server = { current: null as ReturnType<typeof spawnPiped> | null };
   try {
     const gh = await resolveTrustedTool("gh");
@@ -409,6 +413,7 @@ async function openRelease(
     }
   } finally {
     server.current?.kill("SIGTERM");
+    forgetDir();
     await rm(dir, { recursive: true, force: true });
   }
 }

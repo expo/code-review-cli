@@ -1,4 +1,5 @@
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -324,6 +325,41 @@ test("should stop the children of spawnPiped and spawnInherited when the parent 
         // Already gone.
       }
     }
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("should run each cleanup that was not cancelled when the process gets SIGTERM", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ecr-exec-test-"));
+  const script = join(dir, "parent.ts");
+  const removed = join(dir, "removed");
+  const kept = join(dir, "kept");
+  const execModule = fileURLToPath(new URL("../core/exec.ts", import.meta.url));
+  await mkdir(removed);
+  await mkdir(kept);
+  await writeFile(
+    script,
+    `import { rmSync } from "node:fs";\n` +
+      `import { runAtExit } from ${JSON.stringify(execModule)};\n` +
+      `runAtExit(() => { throw new Error("this cleanup fails"); });\n` +
+      `runAtExit(() => rmSync(${JSON.stringify(removed)}, { recursive: true }));\n` +
+      `runAtExit(() => rmSync(${JSON.stringify(kept)}, { recursive: true }))();\n` +
+      `console.log("ready");\n` +
+      `setInterval(() => {}, 1000);\n`,
+  );
+  const parent = spawnPiped(process.execPath, [script]);
+  try {
+    const exited = new Promise<number | null>((resolve) => parent.once("exit", resolve));
+    await Promise.race([
+      new Promise((resolve) => parent.stdout?.once("data", resolve)),
+      exited.then((code) => Promise.reject(new Error(`the parent exited early: ${code}`))),
+    ]);
+    parent.kill("SIGTERM");
+    expect(await exited).toBe(143);
+    expect(existsSync(removed)).toBe(false);
+    expect(existsSync(kept)).toBe(true);
+  } finally {
+    parent.kill("SIGKILL");
     await rm(dir, { recursive: true, force: true });
   }
 }, 20_000);

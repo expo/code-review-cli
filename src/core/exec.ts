@@ -291,19 +291,31 @@ function runWithInput(
 }
 
 /**
- * Stop `child` when this process is interrupted or exits.
- * A signal handler ends the process before the caller's `finally` can stop the child.
+ * Run `cleanup` when this process is interrupted or exits.
+ * A signal handler ends the process before a `finally` block runs, so `cleanup` must not be async.
+ * The result cancels it.
  */
-function stopWithParent(child: ChildProcess): void {
-  // SIGTERM lets the OpenCode TUI put the terminal back.
-  const stop = (): void => {
-    child.kill("SIGTERM");
-  };
-  const forget = (): void => {
-    liveChildKillers.delete(stop);
+export function runAtExit(cleanup: () => void): () => void {
+  const safe = (): void => {
+    try {
+      cleanup();
+    } catch {
+      // The process is ending. The other cleanups still have to run.
+    }
   };
   installChildCleanup();
-  liveChildKillers.add(stop);
+  liveChildKillers.add(safe);
+  return () => {
+    liveChildKillers.delete(safe);
+  };
+}
+
+/** Stop `child` when this process is interrupted or exits. */
+function stopWithParent(child: ChildProcess): void {
+  // SIGTERM lets the OpenCode TUI put the terminal back.
+  const forget = runAtExit(() => {
+    child.kill("SIGTERM");
+  });
   child.once("exit", forget);
   child.once("error", forget);
 }
