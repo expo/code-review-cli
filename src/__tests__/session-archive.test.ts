@@ -263,6 +263,49 @@ describe("Session archive", () => {
     expect(log).toEqual(["session store: could not export correctness (ses_stalled)"]);
   });
 
+  test("should not retry a pass that another scope could not export", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ecr-session-scope-"));
+    const bin = path.join(dir, "opencode");
+    const exported = JSON.stringify({ info: { id: "ses_api", version: pinnedOpencodeVersion() } });
+    // Only the session of the api scope can be exported.
+    await writeFile(bin, `#!/bin/sh\n[ "$2" = "ses_api" ] || exit 1\nprintf '%s' '${exported}'\n`, {
+      mode: 0o755,
+    });
+    const capture = createSessionCapture();
+    const log: string[] = [];
+    let closed = 0;
+    const exportScope = async (scope: string): Promise<void> => {
+      const scoped = capture.withScope(scope);
+      scoped.note({
+        agent: "correctness",
+        title: "review-correctness-c0",
+        source: "opencode",
+        sessionId: `ses_${scope}`,
+      });
+      await scoped.exportOpencode({
+        cwd: dir,
+        env: process.env,
+        bin,
+        log: (line) => log.push(line),
+        closeServer: () => {
+          closed++;
+        },
+      });
+    };
+    try {
+      await exportScope("web");
+      await exportScope("api");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+    expect(closed).toBe(1);
+    expect(log).toEqual(["session store: could not export correctness (ses_web)"]);
+    expect(capture.orderedPasses().map((item) => [item.scope, Boolean(item.exportJson)])).toEqual([
+      ["web", false],
+      ["api", true],
+    ]);
+  });
+
   test("should record the cost of a claude pass on one message", () => {
     const built = buildClaudeSessionExport({
       agent: "correctness",

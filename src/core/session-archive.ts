@@ -167,8 +167,12 @@ function scopedCapture(
       passes.push({ ...input, ...(scope ? { scope } : {}), order: passes.length });
     },
     async exportOpencode(input): Promise<void> {
+      // A pass that another scope could not export stays failed.
+      // Its scope already retried it and logged it.
       const pending = (): RecordedPass[] =>
-        passes.filter((pass) => pass.source === "opencode" && !pass.exportJson);
+        passes.filter(
+          (pass) => pass.source === "opencode" && !pass.exportJson && pass.scope === scope,
+        );
       if (pending().length === 0) {
         return;
       }
