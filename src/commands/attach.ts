@@ -22,6 +22,7 @@ import {
   parseSessionIndex,
   recordedShaBlocksAttach,
   releasesForHead,
+  sessionIdOf,
   sessionTag,
   sessionTagPrefix,
   unzipEntries,
@@ -32,7 +33,8 @@ import { errorMessage } from "../core/util.js";
 const USAGE = `ecr attach — reopen a finished review in OpenCode
 
 Usage:
-  ecr attach --pr <n> [--repo <owner/repo>] [--sha <head>] [--run <id>] [--agent <id>] [--list]
+  ecr attach --pr <n> [--repo <owner/repo>] [--sha <head>] [--run <id>]
+             [--agent <id> | --session <id>] [--list]
 
 Downloads the session archive for a pull request and opens one pass in the
 OpenCode shipped with this CLI. The store is SESSION_STORE_REPO, or
@@ -43,7 +45,11 @@ not download. With --run the tag is fetched directly. Otherwise the newest
 archive for the checkout's HEAD is used. If that archive recorded a different
 commit, attach stops and prints the SHA. It does not switch branches.
 
---agent picks a pass. The default is the first reviewer pass.
+--agent picks a pass. The default is the first reviewer pass. --session picks
+one pass by its session id, for a second chunk or the same agent in another
+scope. With --run, --list prints the session id of every pass.
+
+The checkout's own opencode.json and .opencode directory are not loaded.
 `;
 
 interface AttachArgs {
@@ -52,6 +58,7 @@ interface AttachArgs {
   sha?: string;
   run?: string;
   agent?: string;
+  session?: string;
   list: boolean;
 }
 
@@ -75,6 +82,9 @@ function parseArgs(argv: string[]): AttachArgs {
       case "--agent":
         args.agent = argv[++i];
         break;
+      case "--session":
+        args.session = argv[++i];
+        break;
       case "--list":
         args.list = true;
         break;
@@ -94,27 +104,62 @@ function fail(message: string): void {
   process.exitCode = 2;
 }
 
-async function listReleases(store: string, cwd: string): Promise<ListedRelease[]> {
+/**
+ * The archives stored for one head.
+ * Tags are found by prefix, so the answer does not depend on how many releases the store holds.
+ */
+async function listReleases(store: string, prefix: string, cwd: string): Promise<ListedRelease[]> {
   const gh = await resolveTrustedTool("gh");
   const { stdout } = await run(
     gh,
-    ["release", "list", "--repo", store, "--limit", "1000", "--json", "tagName,createdAt"],
+    ["api", "--paginate", `repos/${store}/git/matching-refs/tags/${prefix}`, "--jq", ".[].ref"],
     { cwd },
   );
-  const rows = JSON.parse(stdout) as { tagName?: string; createdAt?: string }[];
-  return rows.flatMap((row) =>
-    row.tagName ? [{ tag: row.tagName, createdAt: row.createdAt ?? "" }] : [],
-  );
+  const releases: ListedRelease[] = [];
+  for (const ref of stdout.split("\n")) {
+    const tag = ref.trim().replace(/^refs\/tags\//, "");
+    if (!tag) {
+      continue;
+    }
+    const viewed = await run(
+      gh,
+      ["release", "view", tag, "--repo", store, "--json", "publishedAt"],
+      { cwd, check: false },
+    );
+    // A tag can outlive its release.
+    if (viewed.code !== 0) {
+      continue;
+    }
+    const { publishedAt } = JSON.parse(viewed.stdout) as { publishedAt?: string };
+    releases.push({ tag, publishedAt: publishedAt ?? "" });
+  }
+  return releases;
 }
 
 function printRelease(release: ListedRelease, body?: string): void {
-  process.stdout.write(`${release.createdAt || "unknown date"}\t${release.tag}\n`);
+  process.stdout.write(`${release.publishedAt || "unknown date"}\t${release.tag}\n`);
   if (body?.trim()) {
     process.stdout.write(`${body.trim()}\n\n`);
   }
 }
 
-function pickPass(passes: SessionIndexPass[], agent: string | undefined): SessionIndexPass {
+function describePass(pass: SessionIndexPass): string {
+  return `  ${pass.sessionId}  ${pass.title}${pass.scope ? `  (scope ${pass.scope})` : ""}`;
+}
+
+export function pickPass(
+  passes: SessionIndexPass[],
+  agent: string | undefined,
+  session: string | undefined,
+): SessionIndexPass {
+  if (session) {
+    const chosen = passes.find((pass) => pass.sessionId === session);
+    if (!chosen) {
+      const known = passes.map(describePass).join("\n") || "  (none)";
+      throw new Error(`No pass with session ${session}. This archive has:\n${known}`);
+    }
+    return chosen;
+  }
   if (agent) {
     const matches = passes.filter((pass) => pass.agent === agent);
     const chosen = matches[0];
@@ -124,7 +169,8 @@ function pickPass(passes: SessionIndexPass[], agent: string | undefined): Sessio
     }
     if (matches.length > 1) {
       process.stderr.write(
-        `attach: ${matches.length} passes named ${agent}; opening the first (${chosen.sessionId}).\n`,
+        `attach: ${matches.length} passes named ${agent}; opening the first. ` +
+          `Pass --session to open another:\n${matches.map(describePass).join("\n")}\n`,
       );
     }
     return chosen;
@@ -136,7 +182,16 @@ function pickPass(passes: SessionIndexPass[], agent: string | undefined): Sessio
   return chosen;
 }
 
-async function waitForServer(child: ReturnType<typeof spawnPiped>): Promise<string> {
+/**
+ * The environment for the OpenCode children.
+ * The checkout is the PR head, so its opencode.json and .opencode are PR content.
+ * An MCP server defined there would run on this machine.
+ */
+export function attachEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...opencodeChildEnv(base), OPENCODE_DISABLE_PROJECT_CONFIG: "1" };
+}
+
+export async function waitForServer(child: ReturnType<typeof spawnPiped>): Promise<string> {
   return await new Promise((resolve, reject) => {
     let stdout = "";
     let stderr = "";
@@ -196,6 +251,10 @@ export async function attachCommand(argv: string[]): Promise<void> {
     fail("attach: --pr <number> is required.");
     return;
   }
+  if (args.agent && args.session) {
+    fail("attach: pass --agent or --session, not both.");
+    return;
+  }
 
   const root = await repoRoot();
   if (root && root !== process.cwd()) {
@@ -220,6 +279,11 @@ export async function attachCommand(argv: string[]): Promise<void> {
   }
   const headSha = (args.sha ?? checkoutSha).toLowerCase();
   const store = storeRepo();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(store)) {
+    fail(`attach: SESSION_STORE_REPO must look like owner/name, got ${JSON.stringify(store)}.`);
+    return;
+  }
+  const pick = { agent: args.agent, session: args.session };
 
   try {
     if (args.run) {
@@ -228,23 +292,23 @@ export async function attachCommand(argv: string[]): Promise<void> {
         const gh = await resolveTrustedTool("gh");
         const { stdout } = await run(
           gh,
-          ["release", "view", tag, "--repo", store, "--json", "tagName,createdAt,body"],
+          ["release", "view", tag, "--repo", store, "--json", "tagName,publishedAt,body"],
           { cwd },
         );
         const view = JSON.parse(stdout) as {
           tagName?: string;
-          createdAt?: string;
+          publishedAt?: string;
           body?: string;
         };
-        printRelease({ tag: view.tagName ?? tag, createdAt: view.createdAt ?? "" }, view.body);
+        printRelease({ tag: view.tagName ?? tag, publishedAt: view.publishedAt ?? "" }, view.body);
         return;
       }
-      await openRelease(tag, store, cwd, checkoutSha, args.agent);
+      await openRelease(tag, store, cwd, checkoutSha, pick);
       return;
     }
 
     const prefix = sessionTagPrefix(repo, args.pr, headSha);
-    const matches = releasesForHead(await listReleases(store, cwd), prefix);
+    const matches = releasesForHead(await listReleases(store, prefix, cwd), prefix);
     if (matches.length === 0) {
       fail(`attach: no session for ${repo}#${args.pr} at ${headSha.slice(0, 12)}.`);
       return;
@@ -260,7 +324,7 @@ export async function attachCommand(argv: string[]): Promise<void> {
       fail(`attach: no session for ${repo}#${args.pr} at ${headSha.slice(0, 12)}.`);
       return;
     }
-    await openRelease(newest.tag, store, cwd, checkoutSha, args.agent);
+    await openRelease(newest.tag, store, cwd, checkoutSha, pick);
   } catch (error) {
     fail(`attach: ${errorMessage(error)}`);
   }
@@ -271,7 +335,7 @@ async function openRelease(
   store: string,
   cwd: string,
   checkoutSha: string,
-  agent: string | undefined,
+  pick: { agent: string | undefined; session: string | undefined },
 ): Promise<void> {
   const bin = await resolveOpencodeCli();
   if (!bin) {
@@ -289,27 +353,32 @@ async function openRelease(
     const zipPath = path.join(dir, "sessions.zip");
     await assertArchiveSize(zipPath);
     const entries = unzipEntries(await readFile(zipPath));
-    const indexBytes = entries.get("index.json");
-    if (!indexBytes) {
+    const readIndex = entries.get("index.json");
+    if (!readIndex) {
       throw new Error("The session archive has no index.json.");
     }
-    const index = parseSessionIndex(indexBytes.toString("utf8"));
+    const index = parseSessionIndex(readIndex().toString("utf8"));
     if (recordedShaBlocksAttach(checkoutSha, index.headSha)) {
       throw new Error(
         `This checkout is ${checkoutSha}. The session recorded ${index.headSha}. ` +
           "Check out that commit yourself. Attach does not switch branches.",
       );
     }
-    const pass = pickPass(index.passes, agent);
-    const exportBytes = entries.get(pass.file);
-    if (!exportBytes) {
+    const pass = pickPass(index.passes, pick.agent, pick.session);
+    const readExport = entries.get(pass.file);
+    if (!readExport) {
       throw new Error(`The session archive is missing ${pass.file}.`);
     }
-    const exportJson = exportBytes.toString("utf8");
+    const exportJson = readExport().toString("utf8");
     assertReadableExport(exportJson);
+    // The import creates the session the export names, whatever the index says.
+    const sessionId = sessionIdOf(exportJson);
+    if (!sessionId) {
+      throw new Error(`${pass.file} has no session id.`);
+    }
     const exportPath = path.join(dir, "session.json");
     await writeFile(exportPath, exportJson);
-    const env = opencodeChildEnv(process.env);
+    const env = attachEnv(process.env);
     const imported = await run(bin, ["import", exportPath, "--pure"], {
       cwd,
       env,
@@ -326,7 +395,7 @@ async function openRelease(
     const url = await waitForServer(server.current);
     const code = await spawnInherited(
       bin,
-      ["attach", url, "--session", pass.sessionId, "--dir", cwd, "--fork", "--pure"],
+      ["attach", url, "--session", sessionId, "--dir", cwd, "--fork", "--pure"],
       { cwd, env },
     );
     if (code !== 0) {
