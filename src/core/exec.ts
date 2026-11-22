@@ -291,6 +291,42 @@ function runWithInput(
 }
 
 /**
+ * Run a command with the terminal attached. For the OpenCode TUI, which has to
+ * own stdin and stdout. Same argument-array rule as `run`. No shell.
+ */
+export function spawnInherited(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: "inherit",
+    });
+    child.on("error", reject);
+    child.on("close", (code) => resolve(code ?? 1));
+  });
+}
+
+/**
+ * Start a long-running command with stdout and stderr piped. The caller kills it.
+ * Used to start the OpenCode server `ecr attach` connects to.
+ */
+export function spawnPiped(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+): ChildProcess {
+  return spawn(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+/**
  * Memoized trusted resolutions for the host `git`/`gh` binaries, keyed by name so
  * git()'s many callers share ONE which/where lookup instead of each spawning their
  * own. See resolveTrustedTool.

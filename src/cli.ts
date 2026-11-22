@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // @ref LLP 0007#command-dispatch-and-conventions — argv dispatch only; no execution logic lives here
+import { attachCommand } from "./commands/attach.js";
 import { ciCommand } from "./commands/ci.js";
 import { dismissCommand } from "./commands/dismiss.js";
 import { doctorCommand } from "./commands/doctor.js";
@@ -17,6 +18,7 @@ Usage:
   ecr review [options]   Review local changes (default). See \`ecr review --help\`.
   ecr post-review --artifact <path> --repo <owner/repo> --pr <n>   Post an exact saved preview.
   ecr ci                 Review the current PR and post a comment (GitHub Actions).
+  ecr attach --pr <n>    Reopen a finished review session in OpenCode. See \`ecr attach --help\`.
   ecr dismiss --pr <n> <id...>     Hide a finding on a PR (see \`ecr dismiss --help\`).
   ecr undismiss --pr <n> <id...>   Restore a dismissed finding.
   ecr feedback [--repo <owner/repo>] [--limit <n>]   Report what humans pushed back on (see \`ecr feedback --help\`).
@@ -55,6 +57,9 @@ async function main(): Promise<void> {
       break;
     case "ci":
       await ciCommand(rest);
+      break;
+    case "attach":
+      await attachCommand(rest);
       break;
     case "dismiss":
       await dismissCommand(rest, "add");

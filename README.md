@@ -189,6 +189,7 @@ is a ready example to adapt.
 | `ecr review --scope <name>` | Review only one routing scope over just that scope's changed files. |
 | `ecr post-review --artifact <path> --repo <owner/repo> --pr <n>` | Post an exact saved PR preview without re-running models; refuses target, head, config, or break-glass drift. |
 | `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
+| `ecr attach --pr <n>` | Reopen a finished review session in the OpenCode shipped with this CLI. |
 | `ecr doctor [--list-scopes]` | Check environment, config, credentials, and (with a manifest) scopes. |
 | `ecr feedback [--repo <owner/repo>]` | Report which findings PR authors pushed back on, across history. See below. |
 | `ecr ref-check [--json]` | Fail when the review setup cites code that moved or vanished. See below. |
