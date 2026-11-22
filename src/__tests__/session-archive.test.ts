@@ -137,6 +137,40 @@ describe("Session archive", () => {
     ]);
   });
 
+  test("should stop waiting for an export that stalls", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ecr-session-stall-"));
+    const bin = path.join(dir, "opencode");
+    // The sleep is a grandchild, as it is behind a version-manager shim.
+    await writeFile(bin, "#!/bin/sh\nsleep 30 &\nwait\n", { mode: 0o755 });
+    const capture = createSessionCapture();
+    capture.note({
+      agent: "correctness",
+      title: "review-correctness-c0",
+      source: "opencode",
+      sessionId: "ses_stalled",
+    });
+    const log: string[] = [];
+    let closed = 0;
+    const started = Date.now();
+    try {
+      await capture.exportOpencode({
+        cwd: dir,
+        env: process.env,
+        bin,
+        log: (line) => log.push(line),
+        closeServer: () => {
+          closed++;
+        },
+        timeoutMs: 100,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(closed).toBe(1);
+    expect(log).toEqual(["session store: could not export correctness (ses_stalled)"]);
+  });
+
   test("should record the cost of a claude pass on one message", () => {
     const built = buildClaudeSessionExport({
       agent: "correctness",
@@ -233,20 +267,25 @@ describe("Session archive", () => {
         if (imported.code !== 0) {
           throw new Error(imported.stderr.trim() || `opencode import exited ${imported.code}`);
         }
-        const exported = await run(bin!, ["export", built.sessionId, "--pure"], {
+        const capture = createSessionCapture();
+        capture.note({
+          agent: "correctness",
+          title: "review-correctness-c0",
+          source: "opencode",
+          sessionId: built.sessionId,
+        });
+        await capture.exportOpencode({
           cwd,
           env,
-          check: false,
-          timeout: 120_000,
-          maxBuffer: 16 * 1024 * 1024,
+          bin: bin!,
+          log: () => {},
+          closeServer: () => {},
         });
-        if (exported.code !== 0) {
-          throw new Error(exported.stderr.trim() || `opencode export exited ${exported.code}`);
-        }
-        expect(sessionIdOf(exported.stdout)).toBe(built.sessionId);
-        expect(exported.stdout).not.toContain(outside);
+        const exported = capture.orderedPasses()[0]?.exportJson ?? "";
+        expect(sessionIdOf(exported)).toBe(built.sessionId);
+        expect(exported).not.toContain(outside);
         // OpenCode sorts by id, so this fails if the export's ids do not ascend.
-        const transcript = messagesOf(exported.stdout).map(
+        const transcript = messagesOf(exported).map(
           (message) =>
             `${message.info.role}: ${message.parts.map((part) => part.text ?? part.tool).join(", ")}`,
         );

@@ -16,6 +16,15 @@ export const DEFAULT_SESSION_STORE_REPO = "expo/code-review-sessions";
 /** Skip the upload past this size. One GitHub release asset may be far larger. */
 export const SESSION_ZIP_LIMIT_BYTES = 80 * 1024 * 1024;
 
+/**
+ * One `opencode export` takes under a second.
+ * The review comment waits for the exports, so a stalled one has to be cut short.
+ */
+const EXPORT_TIMEOUT_MS = 30_000;
+/** All exports of one review share this many timeouts. */
+const EXPORT_BUDGET_TIMEOUTS = 4;
+const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const ZIP_ENTRY = /^(?:index\.json|opencode\/[^/]+\.json)$/;
@@ -76,6 +85,8 @@ export interface SessionCapture {
     bin: string;
     log: (line: string) => void;
     closeServer: () => void;
+    /** Limit for one export. Defaults to 30 seconds. */
+    timeoutMs?: number;
   }): Promise<void>;
   /** Reviewer ids first, in config order, then everything else. */
   orderedPasses(): RecordedPass[];
@@ -144,14 +155,16 @@ export function createSessionCapture(): SessionCapture {
       if (pending().length === 0) {
         return;
       }
-      await exportPasses(pending(), input);
+      const timeoutMs = input.timeoutMs ?? EXPORT_TIMEOUT_MS;
+      const limits = { timeoutMs, deadline: Date.now() + timeoutMs * EXPORT_BUDGET_TIMEOUTS };
+      await exportPasses(pending(), input, limits);
       const failed = pending();
       if (failed.length === 0) {
         return;
       }
       // The server can hold the session database. Close it and read once more.
       input.closeServer();
-      await exportPasses(failed, input);
+      await exportPasses(failed, input, limits);
       for (const pass of pending()) {
         input.log(`session store: could not export ${pass.agent} (${pass.sessionId})`);
       }
@@ -166,11 +179,22 @@ export function createSessionCapture(): SessionCapture {
 async function exportPasses(
   pending: RecordedPass[],
   input: { cwd: string; env: NodeJS.ProcessEnv; bin: string },
+  limits: { timeoutMs: number; deadline: number },
 ): Promise<void> {
   const pinned = pinnedOpencodeVersion();
   for (const pass of pending) {
+    const left = limits.deadline - Date.now();
+    if (left <= 0) {
+      return;
+    }
     try {
-      const json = await exportOpencodeSession(input.bin, pass.sessionId, input.cwd, input.env);
+      const json = await exportOpencodeSession(
+        input.bin,
+        pass.sessionId,
+        input.cwd,
+        input.env,
+        Math.min(limits.timeoutMs, left),
+      );
       if (exportVersion(json) !== pinned) {
         continue;
       }
@@ -190,14 +214,18 @@ async function exportOpencodeSession(
   sessionId: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
+  timeout: number,
 ): Promise<string> {
   const result = await run(bin, ["export", sessionId, "--pure"], {
     cwd,
     env: opencodeChildEnv(env),
     check: false,
     maxBuffer: 96 * 1024 * 1024,
+    timeout,
+    // An empty stdin selects the spawn path. Its timeout stops the whole process group.
+    input: "",
   });
-  if (result.overflowed || result.code !== 0) {
+  if (result.timedOut || result.overflowed || result.code !== 0) {
     throw new Error("export failed");
   }
   const json = result.stdout.trim();
@@ -455,7 +483,7 @@ export async function publishSessionArchive(input: {
       await writeFile(zipPath, zip);
       await writeFile(notesPath, renderIndexMarkdown(built.index), "utf8");
       const gh = await resolveTrustedTool("gh");
-      await run(
+      const created = await run(
         gh,
         [
           "release",
@@ -469,8 +497,12 @@ export async function publishSessionArchive(input: {
           "--notes-file",
           notesPath,
         ],
-        { timeout: 5 * 60 * 1000 },
+        { timeout: UPLOAD_TIMEOUT_MS },
       );
+      // A timeout resolves instead of throwing, so it must not read as success.
+      if (created.timedOut) {
+        throw new Error("gh release create did not finish in 5 minutes");
+      }
       input.log(`session store: uploaded ${tag} to ${store}`);
     } finally {
       await rm(dir, { recursive: true, force: true });
