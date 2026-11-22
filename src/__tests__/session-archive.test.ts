@@ -9,6 +9,7 @@ import { resolveOpencodeCli } from "../core/opencode.js";
 import {
   assertReadableExport,
   buildClaudeSessionExport,
+  buildSessionIndex,
   createSessionCapture,
   defaultSessionPass,
   opencodeChildEnv,
@@ -62,6 +63,7 @@ function claudeSteps(count: number): string[] {
 function pass(agent: string): SessionIndexPass {
   return {
     agent,
+    title: `review-${agent}-c0`,
     sessionId: `ses_${agent}`,
     file: `opencode/${agent}.json`,
     source: "opencode",
@@ -134,6 +136,29 @@ describe("Session archive", () => {
       "ses_ok",
       "ses_sec",
       "ses_coord",
+    ]);
+  });
+
+  test("should list the title and the scope of each pass", () => {
+    const capture = createSessionCapture();
+    for (const [scope, title] of [
+      ["web", "review-correctness-c0"],
+      ["web", "review-correctness-c1"],
+      ["api", "review-correctness-c0"],
+    ] as const) {
+      capture.withScope(scope).note({
+        agent: "correctness",
+        title,
+        source: "claude",
+        sessionId: `ses_${scope}_${title}`,
+        exportJson: "{}",
+      });
+    }
+    const built = buildSessionIndex(capture, { repo: "expo/expo", pr: 1, headSha: SHA_A });
+    expect(built?.index.passes.map((item) => [item.scope, item.title, item.file])).toEqual([
+      ["web", "review-correctness-c0", "opencode/correctness.json"],
+      ["web", "review-correctness-c1", "opencode/correctness-2.json"],
+      ["api", "review-correctness-c0", "opencode/correctness-3.json"],
     ]);
   });
 

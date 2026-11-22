@@ -45,6 +45,10 @@ export type SessionEngine = "claude" | "opencode" | "codex" | "grok";
 
 export interface SessionIndexPass {
   agent: string;
+  /** The pass title, such as `review-correctness-c1`. It tells the chunks of one agent apart. */
+  title: string;
+  /** The routing scope that ran the pass. Absent in single-config mode. */
+  scope?: string;
   sessionId: string;
   file: string;
   source: SessionEngine;
@@ -64,6 +68,7 @@ export interface SessionIndex {
 interface RecordedPass {
   agent: string;
   title: string;
+  scope?: string;
   source: SessionEngine;
   sessionId: string;
   exportJson?: string;
@@ -71,6 +76,8 @@ interface RecordedPass {
 }
 
 export interface SessionCapture {
+  /** The same capture. Passes noted through the result are filed under `scope`. */
+  withScope(scope: string): SessionCapture;
   preferReviewerOrder(agentIds: string[]): void;
   note(input: {
     agent: string;
@@ -113,10 +120,14 @@ export function opencodeChildEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 export function createSessionCapture(): SessionCapture {
-  const passes: RecordedPass[] = [];
-  const reviewerOrder: string[] = [];
-  let nextOrder = 0;
+  return scopedCapture([], [], undefined);
+}
 
+function scopedCapture(
+  passes: RecordedPass[],
+  reviewerOrder: string[],
+  scope: string | undefined,
+): SessionCapture {
   const orderedPasses = (): RecordedPass[] => {
     const rank = new Map(reviewerOrder.map((id, index) => [id, index]));
     return [...passes].sort((a, b) => {
@@ -135,6 +146,7 @@ export function createSessionCapture(): SessionCapture {
   };
 
   return {
+    withScope: (name) => scopedCapture(passes, reviewerOrder, name),
     preferReviewerOrder(agentIds: string[]): void {
       for (const id of agentIds) {
         if (!reviewerOrder.includes(id)) {
@@ -147,7 +159,7 @@ export function createSessionCapture(): SessionCapture {
       if (!input.sessionId || input.title === "route") {
         return;
       }
-      passes.push({ ...input, order: nextOrder++ });
+      passes.push({ ...input, ...(scope ? { scope } : {}), order: passes.length });
     },
     async exportOpencode(input): Promise<void> {
       const pending = (): RecordedPass[] =>
@@ -379,6 +391,8 @@ export function buildSessionIndex(
     files.push({ name: file, data: Buffer.from(pass.exportJson, "utf8") });
     passes.push({
       agent: pass.agent,
+      title: pass.title,
+      ...(pass.scope ? { scope: pass.scope } : {}),
       sessionId: pass.sessionId,
       file,
       source: pass.source,
@@ -412,10 +426,11 @@ export function renderIndexMarkdown(index: SessionIndex): string {
     `- opencode: ${index.opencodeVersion}`,
     ...(index.runUrl ? [`- run: ${index.runUrl}`] : []),
     "",
-    "| agent | session | file | source |",
-    "| --- | --- | --- | --- |",
+    "| agent | title | scope | session | file | source |",
+    "| --- | --- | --- | --- | --- | --- |",
     ...index.passes.map(
-      (pass) => `| ${pass.agent} | ${pass.sessionId} | ${pass.file} | ${pass.source} |`,
+      (pass) =>
+        `| ${pass.agent} | ${pass.title} | ${pass.scope ?? ""} | ${pass.sessionId} | ${pass.file} | ${pass.source} |`,
     ),
     "",
   ];
