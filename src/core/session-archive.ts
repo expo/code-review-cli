@@ -23,7 +23,7 @@ export const SESSION_ZIP_LIMIT_BYTES = 80 * 1024 * 1024;
  * The review comment waits for the exports, so a stalled one has to be cut short.
  */
 const EXPORT_TIMEOUT_MS = 30_000;
-/** All exports of one review share this many timeouts. */
+/** All exports of one `runReview` call share this many timeouts. */
 const EXPORT_BUDGET_TIMEOUTS = 4;
 const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
