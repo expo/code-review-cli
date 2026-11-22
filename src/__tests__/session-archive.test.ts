@@ -23,6 +23,42 @@ import type { SessionIndexPass } from "../core/session-archive.js";
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 
+interface ExportedMessage {
+  info: { role: string; cost?: number };
+  parts: { text?: string; tool?: string }[];
+}
+
+function messagesOf(json: string): ExportedMessage[] {
+  return (JSON.parse(json) as { messages: ExportedMessage[] }).messages;
+}
+
+/** Stream lines for `count` assistant turns. Each turn says `step-N`, then reads a file. */
+function claudeSteps(count: number): string[] {
+  const lines: string[] = [];
+  for (let step = 1; step <= count; step++) {
+    lines.push(
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: `step-${step}` },
+            { type: "tool_use", id: `toolu_step_${step}`, name: "Read", input: {} },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: `toolu_step_${step}`, content: `body-${step}` },
+          ],
+        },
+      }),
+    );
+  }
+  return lines;
+}
+
 function pass(agent: string): SessionIndexPass {
   return {
     agent,
@@ -101,6 +137,23 @@ describe("Session archive", () => {
     ]);
   });
 
+  test("should record the cost of a claude pass on one message", () => {
+    const built = buildClaudeSessionExport({
+      agent: "correctness",
+      system: "",
+      text: "prompt",
+      model: "anthropic/claude-sonnet-4-5",
+      cwd: tmpdir(),
+      stdout: claudeSteps(3).join("\n"),
+      cost: 0.5,
+      tokens: { input: 10, output: 4 },
+    });
+    const costs = messagesOf(built.json)
+      .filter((message) => message.info.role === "assistant")
+      .map((message) => message.info.cost);
+    expect(costs).toEqual([0, 0, 0.5]);
+  });
+
   test(
     "should import a captured claude export with the pinned opencode",
     async () => {
@@ -139,6 +192,7 @@ describe("Session archive", () => {
               content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "file body" }],
             },
           }),
+          ...claudeSteps(5),
           JSON.stringify({
             type: "assistant",
             message: { content: [{ type: "text", text: "roundtrip-ok" }] },
@@ -190,8 +244,22 @@ describe("Session archive", () => {
           throw new Error(exported.stderr.trim() || `opencode export exited ${exported.code}`);
         }
         expect(sessionIdOf(exported.stdout)).toBe(built.sessionId);
-        expect(exported.stdout).toContain(prompt);
         expect(exported.stdout).not.toContain(outside);
+        // OpenCode sorts by id, so this fails if the export's ids do not ascend.
+        const transcript = messagesOf(exported.stdout).map(
+          (message) =>
+            `${message.info.role}: ${message.parts.map((part) => part.text ?? part.tool).join(", ")}`,
+        );
+        expect(transcript).toEqual([
+          `user: ${prompt}`,
+          "assistant: looking, read",
+          "assistant: step-1, read",
+          "assistant: step-2, read",
+          "assistant: step-3, read",
+          "assistant: step-4, read",
+          "assistant: step-5, read",
+          "assistant: roundtrip-ok",
+        ]);
       } finally {
         await rm(home, { recursive: true, force: true });
       }

@@ -597,13 +597,23 @@ export async function assertArchiveSize(file: string): Promise<void> {
 
 const ID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-function newId(prefix: "ses" | "msg" | "prt"): string {
-  const bytes = randomBytes(16);
-  let body = "";
-  for (const byte of bytes) {
-    body += ID_ALPHABET[byte % 62];
-  }
-  return `${prefix}_${body}`;
+type NewId = (prefix: "ses" | "msg" | "prt") => string;
+
+/**
+ * OpenCode sorts messages and parts by id, so each id must be greater than the last.
+ * Same shape as OpenCode's own ids: 12 hex digits of time, then 14 random characters.
+ */
+function ascendingIds(startMs: number): NewId {
+  let clock = BigInt(startMs) * 0x1000n;
+  return (prefix) => {
+    clock += 1n;
+    const time = (clock & 0xffffffffffffn).toString(16).padStart(12, "0");
+    let tail = "";
+    for (const byte of randomBytes(14)) {
+      tail += ID_ALPHABET[byte % 62];
+    }
+    return `${prefix}_${time}${tail}`;
+  };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -693,9 +703,10 @@ export function buildClaudeSessionExport(input: {
     cache?: { read?: number; write?: number };
   };
 }): { sessionId: string; json: string } {
+  const now = Date.now();
+  const newId = ascendingIds(now);
   const sessionId = newId("ses");
   const userId = newId("msg");
-  const now = Date.now();
   const { providerID, modelID } = modelParts(input.model);
   const toolResults = new Map<string, string>();
   const turns: ClaudeTurn[] = [];
@@ -794,8 +805,13 @@ export function buildClaudeSessionExport(input: {
       parts: [part(userId, { type: "text", text: input.text })],
     },
   ];
-  for (const turn of turns) {
+  const noTokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
+  for (const [index, turn] of turns.entries()) {
     const messageId = newId("msg");
+    const at = now + index + 1;
+    // The stream reports one total for the pass. Only the last turn carries it.
+    const last = index === turns.length - 1;
+    const spent = last ? tokens : noTokens;
     const parts: Record<string, unknown>[] = [];
     for (const text of turn.text) {
       parts.push(part(messageId, { type: "text", text }));
@@ -812,7 +828,7 @@ export function buildClaudeSessionExport(input: {
             output: toolResults.get(tool.id) ?? "",
             title: tool.name,
             metadata: {},
-            time: { start: now, end: now },
+            time: { start: at, end: at },
           },
         }),
       );
@@ -822,15 +838,15 @@ export function buildClaudeSessionExport(input: {
         id: messageId,
         sessionID: sessionId,
         role: "assistant",
-        time: { created: now, completed: now },
+        time: { created: at, completed: at },
         parentID: userId,
         modelID,
         providerID,
         mode: input.agent,
         agent: input.agent,
         path: { cwd: ".", root: "." },
-        cost: input.cost,
-        tokens: { ...tokens, total: tokens.input + tokens.output + tokens.reasoning },
+        cost: last ? input.cost : 0,
+        tokens: { ...spent, total: spent.input + spent.output + spent.reasoning },
       },
       parts,
     });
@@ -848,7 +864,7 @@ export function buildClaudeSessionExport(input: {
       version: pinnedOpencodeVersion(),
       cost: input.cost,
       tokens,
-      time: { created: now, updated: now },
+      time: { created: now, updated: now + turns.length },
     },
     messages,
   };
