@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 
+import { z } from "zod";
+
 import { FORBIDDEN_TOKEN_ENVS } from "./auth.js";
 import { resolveTrustedTool, run } from "./exec.js";
 import { errorMessage } from "./util.js";
@@ -25,9 +27,12 @@ const EXPORT_TIMEOUT_MS = 30_000;
 const EXPORT_BUDGET_TIMEOUTS = 4;
 const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
+/** The most one archive entry may unpack to. A recorded export stops at 96 MB. */
+export const SESSION_ENTRY_LIMIT_BYTES = 128 * 1024 * 1024;
+
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
-const ZIP_ENTRY = /^(?:index\.json|opencode\/[^/]+\.json)$/;
+const PASS_FILE = /^opencode\/[^/]+\.json$/;
 
 /**
  * Passes that are not a reviewer. Attach opens the first reviewer pass unless
@@ -437,12 +442,42 @@ export function renderIndexMarkdown(index: SessionIndex): string {
   return lines.join("\n");
 }
 
+const SessionIndexSchema: z.ZodType<SessionIndex> = z.object({
+  repo: z.string(),
+  pullRequest: z.number().int().positive(),
+  headSha: z.string().regex(/^[0-9a-f]{40}$/i),
+  runUrl: z.string().optional(),
+  createdAt: z.string(),
+  cliVersion: z.string(),
+  opencodeVersion: z.string(),
+  passes: z.array(
+    z.object({
+      agent: z.string().min(1),
+      title: z.string(),
+      scope: z.string().optional(),
+      // Attach passes this id to `opencode attach --session`.
+      sessionId: z.string().regex(/^ses_[A-Za-z0-9]+$/),
+      file: z.string().regex(PASS_FILE),
+      source: z.enum(["claude", "opencode", "codex", "grok"]),
+    }),
+  ),
+});
+
+/** The index comes from a download, so every field is checked before attach uses it. */
 export function parseSessionIndex(json: string): SessionIndex {
-  const value = JSON.parse(json) as Partial<SessionIndex>;
-  if (!value || !Array.isArray(value.passes) || typeof value.headSha !== "string") {
-    throw new Error("The session index is missing a head SHA or a pass list.");
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    throw new Error("The session index is not JSON.");
   }
-  return value as SessionIndex;
+  const parsed = SessionIndexSchema.safeParse(value);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const where = issue?.path.join(".") || "index";
+    throw new Error(`The session index is not valid (${where}: ${issue?.message ?? "unknown"}).`);
+  }
+  return parsed.data;
 }
 
 function scrubSecrets(text: string): string {
@@ -598,8 +633,15 @@ export function zipEntries(entries: ZipEntry[]): Buffer {
   return Buffer.concat([...locals, centralBuf, eocd]);
 }
 
-export function unzipEntries(buffer: Buffer): Map<string, Buffer> {
-  const out = new Map<string, Buffer>();
+/**
+ * List the entries of a session archive.
+ * An entry is unpacked when it is read, and never past `entryLimit`.
+ */
+export function unzipEntries(
+  buffer: Buffer,
+  entryLimit = SESSION_ENTRY_LIMIT_BYTES,
+): Map<string, () => Buffer> {
+  const out = new Map<string, () => Buffer>();
   let pos = 0;
   while (pos + 30 <= buffer.length) {
     const signature = buffer.readUInt32LE(pos);
@@ -619,20 +661,33 @@ export function unzipEntries(buffer: Buffer): Map<string, Buffer> {
     if (flags & 0x0008) {
       throw new Error("The session archive uses a zip feature this CLI does not read.");
     }
-    if (!ZIP_ENTRY.test(name)) {
+    if (name !== "index.json" && !PASS_FILE.test(name)) {
       throw new Error(`The session archive has an unexpected file: ${name}`);
     }
-    const dataStart = nameStart + nameLength + extraLength;
-    const compressed = buffer.subarray(dataStart, dataStart + compressedSize);
-    const data =
-      method === 0 ? Buffer.from(compressed) : method === 8 ? inflateRawSync(compressed) : null;
-    if (!data) {
+    if (method !== 0 && method !== 8) {
       throw new Error(`The session archive uses an unsupported compression method (${method}).`);
     }
-    out.set(name, data);
+    const dataStart = nameStart + nameLength + extraLength;
+    const packed = buffer.subarray(dataStart, dataStart + compressedSize);
+    out.set(name, () => unpackEntry(name, method === 0, packed, entryLimit));
     pos = dataStart + compressedSize;
   }
   return out;
+}
+
+function unpackEntry(name: string, stored: boolean, packed: Buffer, limit: number): Buffer {
+  const tooLarge = new Error(`The session archive entry ${name} is too large to unpack.`);
+  if (stored) {
+    if (packed.length > limit) {
+      throw tooLarge;
+    }
+    return Buffer.from(packed);
+  }
+  try {
+    return inflateRawSync(packed, { maxOutputLength: limit });
+  } catch (error) {
+    throw (error as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE" ? tooLarge : error;
+  }
 }
 
 export async function assertArchiveSize(file: string): Promise<void> {

@@ -13,10 +13,13 @@ import {
   createSessionCapture,
   defaultSessionPass,
   opencodeChildEnv,
+  parseSessionIndex,
   pinnedOpencodeVersion,
   recordedShaBlocksAttach,
   sessionIdOf,
   SESSION_ZIP_LIMIT_BYTES,
+  unzipEntries,
+  zipEntries,
   zipTooLarge,
 } from "../core/session-archive.js";
 import type { SessionIndexPass } from "../core/session-archive.js";
@@ -137,6 +140,49 @@ describe("Session archive", () => {
       "ses_sec",
       "ses_coord",
     ]);
+  });
+
+  test("should read back the entries of an archive", () => {
+    const zip = zipEntries([
+      { name: "index.json", data: Buffer.from("{}") },
+      { name: "opencode/correctness.json", data: Buffer.from("x".repeat(4096)) },
+    ]);
+    const entries = unzipEntries(zip);
+    expect([...entries.keys()]).toEqual(["index.json", "opencode/correctness.json"]);
+    expect(entries.get("opencode/correctness.json")?.().toString()).toBe("x".repeat(4096));
+  });
+
+  test("should refuse an entry that unpacks past the limit", () => {
+    const zip = zipEntries([
+      { name: "index.json", data: Buffer.from("{}") },
+      { name: "opencode/correctness.json", data: Buffer.from("x".repeat(4096)) },
+    ]);
+    const entries = unzipEntries(zip, 1024);
+    expect(entries.get("index.json")?.().toString()).toBe("{}");
+    expect(() => entries.get("opencode/correctness.json")?.()).toThrow(/too large to unpack/);
+  });
+
+  test("should refuse an archive entry outside the layout", () => {
+    const zip = zipEntries([{ name: "../outside.json", data: Buffer.from("{}") }]);
+    expect(() => unzipEntries(zip)).toThrow(/unexpected file/);
+  });
+
+  test("should refuse an index with a field attach cannot trust", () => {
+    const index = {
+      repo: "expo/expo",
+      pullRequest: 1,
+      headSha: SHA_A,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      cliVersion: "1.0.0",
+      opencodeVersion: pinnedOpencodeVersion(),
+      passes: [pass("correctness")],
+    };
+    expect(parseSessionIndex(JSON.stringify(index)).passes[0]?.agent).toBe("correctness");
+    const badSession = { ...index, passes: [{ ...pass("correctness"), sessionId: "--help" }] };
+    expect(() => parseSessionIndex(JSON.stringify(badSession))).toThrow(/passes.0.sessionId/);
+    const badFile = { ...index, passes: [{ ...pass("correctness"), file: "../session.json" }] };
+    expect(() => parseSessionIndex(JSON.stringify(badFile))).toThrow(/passes.0.file/);
+    expect(() => parseSessionIndex("not json")).toThrow(/not JSON/);
   });
 
   test("should list the title and the scope of each pass", () => {
