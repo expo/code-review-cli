@@ -32,6 +32,7 @@ export const SESSION_ENTRY_LIMIT_BYTES = 128 * 1024 * 1024;
 
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
+const RELEASE_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 const PASS_FILE = /^opencode\/[^/]+\.json$/;
 
 /**
@@ -288,16 +289,36 @@ export function sessionIdOf(json: string): string | undefined {
 /**
  * Refuse an export the pinned binary cannot read.
  * The check is the export's own version string, which OpenCode stamps at creation.
+ * `archiveCliVersion` is the `cliVersion` of the archive index.
  */
-export function assertReadableExport(json: string): void {
+export function assertReadableExport(json: string, archiveCliVersion?: string): void {
   const version = exportVersion(json);
   const pinned = pinnedOpencodeVersion();
   if (version !== pinned) {
     throw new Error(
-      `This session was exported by OpenCode ${version ?? "unknown"}. ` +
+      [
+        `This session was exported by OpenCode ${version ?? "unknown"}.`,
         `The pinned OpenCode is ${pinned} and cannot read it.`,
+        ...fixForUnreadableExport(archiveCliVersion),
+      ].join(" "),
     );
   }
+}
+
+function fixForUnreadableExport(archiveCliVersion: string | undefined): string[] {
+  if (archiveCliVersion === cliVersion()) {
+    // This ecr made the archive, so another version is not the fix.
+    return [];
+  }
+  // The index is a download, and this text names a command to run.
+  // Only a plain release version goes into it.
+  if (!archiveCliVersion || !RELEASE_VERSION_PATTERN.test(archiveCliVersion)) {
+    return ["Use the ecr version that made the archive."];
+  }
+  return [
+    `Run \`npx @expo/code-review-cli@${archiveCliVersion} attach\` with the same arguments.`,
+    "That version made the archive.",
+  ];
 }
 
 export function defaultSessionPass(passes: SessionIndexPass[]): SessionIndexPass | undefined {

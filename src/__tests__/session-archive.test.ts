@@ -10,6 +10,7 @@ import {
   assertReadableExport,
   buildClaudeSessionExport,
   buildSessionIndex,
+  cliVersion,
   createSessionCapture,
   defaultSessionPass,
   opencodeChildEnv,
@@ -101,6 +102,19 @@ describe("Session archive", () => {
         JSON.stringify({ info: { id: "ses_ok", version: pinnedOpencodeVersion() } }),
       ),
     ).not.toThrow();
+  });
+
+  test("should name the ecr version that can read a refused export", () => {
+    const old = JSON.stringify({ info: { id: "ses_old", version: "9.9.9" } });
+    expect(() => assertReadableExport(old, "0.1.2")).toThrow(
+      "cannot read it. Run `npx @expo/code-review-cli@0.1.2 attach` with the same arguments.",
+    );
+    for (const untrusted of ["0.1.2; rm -rf ~", "0.1.2\u001b[2J", "latest", undefined]) {
+      expect(() => assertReadableExport(old, untrusted)).toThrow(
+        /cannot read it\. Use the ecr version that made the archive\.$/,
+      );
+    }
+    expect(() => assertReadableExport(old, cliVersion())).toThrow(/cannot read it\.$/);
   });
 
   test("should put the newest upload for a head first", () => {
