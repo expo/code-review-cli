@@ -1,6 +1,7 @@
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { expect, test } from "bun:test";
 
@@ -10,6 +11,7 @@ import {
   resolveOnPath,
   resolveTrustedTool,
   run,
+  spawnPiped,
   taskkillPath,
 } from "../core/exec.js";
 
@@ -282,3 +284,46 @@ test("taskkillPath: an absolute System32 path, never a bare `taskkill`", () => {
     }
   }
 });
+
+test("should stop the children of spawnPiped and spawnInherited when the parent gets SIGTERM", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ecr-exec-test-"));
+  const script = join(dir, "parent.ts");
+  const execModule = fileURLToPath(new URL("../core/exec.ts", import.meta.url));
+  await writeFile(
+    script,
+    `import { spawnInherited, spawnPiped } from ${JSON.stringify(execModule)};\n` +
+      `const server = spawnPiped("sleep", ["300"]);\n` +
+      `console.log("server=" + server.pid);\n` +
+      `await spawnInherited("sh", ["-c", "echo tui=$$; exec sleep 300"]);\n`,
+  );
+  const parent = spawnPiped(process.execPath, [script]);
+  const pids: number[] = [];
+  try {
+    let output = "";
+    const children = await new Promise<{ server: number; tui: number }>((resolve, reject) => {
+      parent.once("exit", () => reject(new Error(`the parent exited early: ${output}`)));
+      parent.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+        output += chunk;
+        const server = /^server=(\d+)$/m.exec(output);
+        const tui = /^tui=(\d+)$/m.exec(output);
+        if (server && tui) {
+          resolve({ server: Number(server[1]), tui: Number(tui[1]) });
+        }
+      });
+    });
+    pids.push(children.server, children.tui);
+    parent.kill("SIGTERM");
+    expect(await processGone(children.server)).toBe(true);
+    expect(await processGone(children.tui)).toBe(true);
+  } finally {
+    parent.kill("SIGKILL");
+    for (const pid of pids) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);

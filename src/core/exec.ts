@@ -291,6 +291,24 @@ function runWithInput(
 }
 
 /**
+ * Stop `child` when this process is interrupted or exits.
+ * A signal handler ends the process before the caller's `finally` can stop the child.
+ */
+function stopWithParent(child: ChildProcess): void {
+  // SIGTERM lets the OpenCode TUI put the terminal back.
+  const stop = (): void => {
+    child.kill("SIGTERM");
+  };
+  const forget = (): void => {
+    liveChildKillers.delete(stop);
+  };
+  installChildCleanup();
+  liveChildKillers.add(stop);
+  child.once("exit", forget);
+  child.once("error", forget);
+}
+
+/**
  * Run a command with the terminal attached. For the OpenCode TUI, which has to
  * own stdin and stdout. Same argument-array rule as `run`. No shell.
  */
@@ -305,6 +323,7 @@ export function spawnInherited(
       env: options.env,
       stdio: "inherit",
     });
+    stopWithParent(child);
     child.on("error", reject);
     child.on("close", (code) => resolve(code ?? 1));
   });
@@ -319,11 +338,13 @@ export function spawnPiped(
   args: string[],
   options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
 ): ChildProcess {
-  return spawn(command, args, {
+  const child = spawn(command, args, {
     cwd: options.cwd,
     env: options.env,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  stopWithParent(child);
+  return child;
 }
 
 /**
