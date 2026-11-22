@@ -376,7 +376,7 @@ async function openRelease(
       throw new Error(`The session archive is missing ${pass.file}.`);
     }
     const exportJson = readExport().toString("utf8");
-    assertReadableExport(exportJson);
+    assertReadableExport(exportJson, index.cliVersion);
     // The import creates the session the export names, whatever the index says.
     const sessionId = sessionIdOf(exportJson);
     if (!sessionId) {
