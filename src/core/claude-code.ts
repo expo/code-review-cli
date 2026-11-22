@@ -19,6 +19,7 @@ import {
   withTransientRetry,
 } from "./opencode.js";
 import type { OpencodeHandle, PromptResult, TokenUsage } from "./opencode.js";
+import { buildClaudeSessionExport } from "./session-archive.js";
 import { RateLimitWatch } from "./throttle.js";
 import { CLAUDE_RESEARCH_TOOLS } from "./research.js";
 import type { ResearchMcpRuntime } from "./research.js";
@@ -964,6 +965,26 @@ export async function runClaudePrompt(
     );
   }
 
+  // @ref LLP 0007#session-archive [implements] — the export comes from the stream this run already read
+  if (handle.capture) {
+    try {
+      const built = buildClaudeSessionExport({
+        agent: args.agent,
+        system: args.system,
+        text: args.text,
+        model,
+        cwd: process.cwd(),
+        stdout: result.stdout,
+        cost: parsed.cost,
+        tokens: parsed.tokens,
+      });
+      promptResult.sessionID = built.sessionId;
+      promptResult.sessionExport = built.json;
+    } catch {
+      // A transcript that cannot be stored must not fail the review pass.
+    }
+  }
+
   return promptResult;
 }
 
@@ -995,6 +1016,15 @@ export async function claudeCodePromptAndParse<T>(
     addTokenUsage(tokens, result.tokens);
     model = result.model ?? model;
   };
+  const note = (result: PromptResult): void => {
+    handle.capture?.note({
+      agent: args.agent,
+      title: args.title,
+      source: "claude",
+      sessionId: result.sessionID,
+      exportJson: result.sessionExport,
+    });
+  };
 
   let first: PromptResult | undefined;
   try {
@@ -1003,7 +1033,9 @@ export async function claudeCodePromptAndParse<T>(
     );
     record(first);
     try {
-      return { value: parse(first.text), cost, truncated: false, tokens, model };
+      const value = parse(first.text);
+      note(first);
+      return { value, cost, truncated: false, tokens, model };
     } catch {
       // Provider validation and local Zod validation disagreed. Retry once from a
       // clean process rather than accepting an object the trust boundary rejected.
@@ -1030,7 +1062,9 @@ export async function claudeCodePromptAndParse<T>(
   }
   record(retry);
   try {
-    return { value: parse(retry.text), cost, truncated: false, tokens, model };
+    const value = parse(retry.text);
+    note(retry);
+    return { value, cost, truncated: false, tokens, model };
   } catch (finalError) {
     throw new Error(
       `Agent "${args.agent}" did not return parseable JSON after retries: ${
