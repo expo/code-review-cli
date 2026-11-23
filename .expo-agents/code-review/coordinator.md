@@ -1,7 +1,6 @@
 ---
-# The coordinator only consolidates text (no repo tools), so a fast, cheap model
-# fits and keeps this serial step from adding latency. Override as you like.
-model: anthropic/claude-haiku-4-5
+# Keep the final decision on the same model as the specialist passes.
+model: anthropic/claude-opus-5-5
 ---
 
 # Coordinator — consolidation & decision
