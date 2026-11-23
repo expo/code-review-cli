@@ -444,6 +444,15 @@ while the complete bounded stdout remains available for final-result parsing
 ([observed] `exec.ts` `RunOptions.onStdout` / `runWithInput`; `claude-code.ts`
 `createClaudeActivityStream`).
 
+**Interactive children stop in two steps.** `spawnPiped` and `spawnInherited` start
+the children of `ecr attach`. On `SIGINT` or `SIGTERM` the handler sends them `SIGTERM`,
+waits up to 3 seconds, then sends `SIGKILL`, and only then runs the `runAtExit` cleanups.
+A `spawnPiped` child leads its own process group and is signalled as a group. A
+`spawnInherited` child stays in the foreground group, because only that group may use
+the terminal. `SIGHUP` gets a handler only once a `spawnPiped` child exists: such a child
+does not get the hangup of a closed terminal, and a handler for every command would undo
+`nohup` ([observed] `exec.ts` `onSignal`, `stopChild`, `installHangupCleanup`).
+
 **Stdout to a file.** `run` can send a child's stdout to a file (`stdoutPath`) and not
 to a pipe. It is for a tool that exits before a pipe is drained: under Node, the pinned
 `opencode export` lost the end of an export larger than the pipe buffer. The option

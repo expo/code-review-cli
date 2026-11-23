@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import type { ChildProcess } from "node:child_process";
+
 import { expect, test } from "bun:test";
 
 import {
@@ -360,6 +362,108 @@ test("should run each cleanup that was not cancelled when the process gets SIGTE
     expect(existsSync(kept)).toBe(true);
   } finally {
     parent.kill("SIGKILL");
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+
+/**
+ * Start a parent process that runs `body` with exec.ts imported as `exec`.
+ * Resolves with the pid the parent prints as `<name>=<pid>`.
+ */
+async function startParent(
+  dir: string,
+  body: string,
+  name: string,
+): Promise<{ parent: ChildProcess; pid: number }> {
+  const script = join(dir, "parent.ts");
+  const execModule = fileURLToPath(new URL("../core/exec.ts", import.meta.url));
+  await writeFile(script, `import * as exec from ${JSON.stringify(execModule)};\n${body}\n`);
+  const parent = spawnPiped(process.execPath, [script]);
+  let output = "";
+  const pid = await new Promise<number>((resolve, reject) => {
+    parent.once("exit", () => reject(new Error(`the parent exited early: ${output}`)));
+    parent.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+      output += chunk;
+      const match = new RegExp(`^${name}=(\\d+)$`, "m").exec(output);
+      if (match) {
+        resolve(Number(match[1]));
+      }
+    });
+  });
+  return { parent, pid };
+}
+
+function killQuietly(pid: number): void {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Already gone.
+  }
+}
+
+test("should kill a child that ignores SIGTERM after the grace period", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ecr-exec-test-"));
+  const { parent, pid } = await startParent(
+    dir,
+    `await exec.spawnInherited("sh", ["-c", "trap '' TERM; echo tui=$$; while :; do sleep 1; done"]);`,
+    "tui",
+  );
+  try {
+    parent.kill("SIGTERM");
+    // It is still there during the grace period, and gone after it.
+    expect(await processGone(pid, 1000)).toBe(false);
+    expect(await processGone(pid, 8000)).toBe(true);
+  } finally {
+    parent.kill("SIGKILL");
+    killQuietly(pid);
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("should stop the commands that a spawnPiped child started", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ecr-exec-test-"));
+  const { parent, pid } = await startParent(
+    dir,
+    `const server = exec.spawnPiped("sh", ["-c", "sleep 300 & echo worker=$!; wait"]);\n` +
+      `server.stdout?.pipe(process.stdout);\n` +
+      `setInterval(() => {}, 1000);`,
+    "worker",
+  );
+  try {
+    parent.kill("SIGTERM");
+    expect(await processGone(pid)).toBe(true);
+  } finally {
+    parent.kill("SIGKILL");
+    killQuietly(pid);
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("should run the cleanups after the children have stopped", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ecr-exec-test-"));
+  const seen = join(dir, "seen");
+  const { parent, pid } = await startParent(
+    dir,
+    `import { writeFileSync } from "node:fs";\n` +
+      // This child needs half a second to stop.
+      `const child = exec.spawnPiped("sh", ["-c", "trap 'sleep 0.5; exit 0' TERM; echo child=$$; while :; do sleep 0.1; done"]);\n` +
+      `exec.runAtExit(() => {\n` +
+      `  let state = "gone";\n` +
+      `  try { process.kill(child.pid!, 0); state = "running"; } catch {}\n` +
+      `  writeFileSync(${JSON.stringify(seen)}, state);\n` +
+      `});\n` +
+      `child.stdout?.pipe(process.stdout);\n` +
+      `setInterval(() => {}, 1000);`,
+    "child",
+  );
+  try {
+    const exited = new Promise<number | null>((resolve) => parent.once("exit", resolve));
+    parent.kill("SIGTERM");
+    expect(await exited).toBe(143);
+    expect(await readFile(seen, "utf8")).toBe("gone");
+  } finally {
+    parent.kill("SIGKILL");
+    killQuietly(pid);
     await rm(dir, { recursive: true, force: true });
   }
 }, 20_000);
