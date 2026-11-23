@@ -24,9 +24,13 @@ import {
   buildMentions,
   attachMentions,
   attachVerifierRejected,
+  exportReviewSessions,
   runReview,
 } from "../core/review.js";
 import type { AgentSummaryParts, ReviewRunOptions } from "../core/review.js";
+import { resolveOpencodeCli } from "../core/opencode.js";
+import { createSessionCapture } from "../core/session-archive.js";
+import type { SessionCapture } from "../core/session-archive.js";
 import type { ReviewSource } from "../sources/source.js";
 import {
   AGENT_SUMMARIES_BYTES_LIMIT,
@@ -849,5 +853,79 @@ describe("Collecting the verifier's rejected findings", () => {
   it("should drop a coordinator-written omitted count", () => {
     const result = attachVerifierRejected({ ...output, verifierRejectedOmitted: 99 }, []);
     expect(result.verifierRejectedOmitted).toBeUndefined();
+  });
+});
+
+describe("Exporting OpenCode sessions before the review closes", () => {
+  type ExportInput = Parameters<SessionCapture["exportOpencode"]>[0];
+
+  /** A capture with one recorded pass, whose export step is replaced by `exportOpencode`. */
+  function captureWith(
+    source: "opencode" | "claude",
+    exportOpencode: (input: ExportInput) => Promise<void>,
+  ): SessionCapture {
+    const capture = createSessionCapture();
+    capture.note({
+      agent: "correctness",
+      title: "review-correctness-c0",
+      source,
+      sessionId: "ses_recorded",
+      ...(source === "claude" ? { exportJson: "{}" } : {}),
+    });
+    return { ...capture, count: capture.count, exportOpencode };
+  }
+
+  it("should do nothing when the review has no capture", async () => {
+    const log: string[] = [];
+    let closed = 0;
+    await exportReviewSessions(
+      undefined,
+      () => closed++,
+      (line) => log.push(line),
+    );
+    expect({ closed, log }).toEqual({ closed: 0, log: [] });
+  });
+
+  it("should not start an export when only claude passes were recorded", async () => {
+    let exports = 0;
+    const capture = captureWith("claude", async () => {
+      exports++;
+    });
+    await exportReviewSessions(
+      capture,
+      () => {},
+      () => {},
+    );
+    expect(exports).toBe(0);
+  });
+
+  it("should export a pending pass with the pinned cli and a way to close the server", async () => {
+    const inputs: ExportInput[] = [];
+    let closed = 0;
+    const capture = captureWith("opencode", async (input) => {
+      inputs.push(input);
+    });
+    await exportReviewSessions(
+      capture,
+      () => closed++,
+      () => {},
+    );
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]?.bin).toBe((await resolveOpencodeCli()) ?? "");
+    inputs[0]?.closeServer();
+    expect(closed).toBe(1);
+  });
+
+  it("should log one line when the export throws", async () => {
+    const log: string[] = [];
+    const capture = captureWith("opencode", async () => {
+      throw new Error("the database is locked\nat exportOpencode");
+    });
+    await exportReviewSessions(
+      capture,
+      () => {},
+      (line) => log.push(line),
+    );
+    expect(log).toEqual(["session store: export failed: the database is locked"]);
   });
 });

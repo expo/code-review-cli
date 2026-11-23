@@ -27,6 +27,7 @@ import {
   usageLimitResetMs,
 } from "../core/claude-code.js";
 import type { ClaudeCodeHandle } from "../core/claude-code.js";
+import { createSessionCapture, sessionIdOf } from "../core/session-archive.js";
 import {
   AgentTimeoutError,
   CLAUDE_CODE_ENGINE,
@@ -1648,4 +1649,69 @@ test("runClaudePrompt: should give a server's token only to a pass granted that 
     }
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+describe("Recording a Claude pass for the session archive", () => {
+  const reply = (result: string): string =>
+    JSON.stringify({ type: "result", subtype: "success", is_error: false, result });
+  const args = { agent: "reviewer", system: "SYS", text: "the task", title: "review-reviewer-c0" };
+  const parse = (text: string): { ok: boolean } => JSON.parse(text) as { ok: boolean };
+
+  it("should note the pass and its export when the reply parses", async () => {
+    const { bin, cleanup } = await sequencedFakeClaude([reply('{"ok":true}')]);
+    const capture = createSessionCapture();
+    try {
+      await claudeCodePromptAndParse(testHandle(bin, { capture }), args, parse);
+    } finally {
+      await cleanup();
+    }
+    const passes = capture.orderedPasses();
+    expect(passes).toHaveLength(1);
+    expect(passes[0]).toMatchObject({
+      agent: "reviewer",
+      title: "review-reviewer-c0",
+      source: "claude",
+    });
+    expect(passes[0]?.sessionId).toMatch(/^ses_/);
+    expect(sessionIdOf(passes[0]?.exportJson ?? "")).toBe(passes[0]?.sessionId);
+    expect(passes[0]?.exportJson).toContain("the task");
+  });
+
+  it("should note only the retry when the first reply does not parse", async () => {
+    const { bin, cleanup } = await sequencedFakeClaude([reply("not json"), reply('{"ok":true}')]);
+    const capture = createSessionCapture();
+    try {
+      await claudeCodePromptAndParse(testHandle(bin, { capture }), args, parse);
+    } finally {
+      await cleanup();
+    }
+    const passes = capture.orderedPasses();
+    expect(passes).toHaveLength(1);
+    expect(passes[0]?.exportJson).toContain('{\\"ok\\":true}');
+    expect(passes[0]?.exportJson).not.toContain("not json");
+  });
+
+  it("should note nothing when no reply parses", async () => {
+    const { bin, cleanup } = await sequencedFakeClaude([reply("not json")]);
+    const capture = createSessionCapture();
+    try {
+      await expect(
+        claudeCodePromptAndParse(testHandle(bin, { capture }), args, parse),
+      ).rejects.toThrow(/did not return parseable JSON/);
+    } finally {
+      await cleanup();
+    }
+    expect(capture.count).toBe(0);
+  });
+
+  it("should build no export when capture is off", async () => {
+    const { bin, cleanup } = await sequencedFakeClaude([reply('{"ok":true}')]);
+    try {
+      const result = await runClaudePrompt(testHandle(bin), args);
+      expect(result.sessionID).toBe("");
+      expect(result.sessionExport).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  });
 });

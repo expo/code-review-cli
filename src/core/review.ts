@@ -23,11 +23,14 @@ import {
   CLAUDE_CODE_ENGINE,
   CROSS_CUTTING_AGENT,
   promptAndParse,
+  resolveOpencodeCli,
+  serverStopped,
   STACK_VERIFIER_AGENT,
   startOpencode,
   VERIFIER_AGENT,
 } from "./opencode.js";
 import type { OpencodeHandle, TokenUsage } from "./opencode.js";
+import type { SessionCapture } from "./session-archive.js";
 import {
   buildEngineMap,
   claudeTemperatureNote,
@@ -178,6 +181,12 @@ export interface ReviewRunOptions {
    * scopes spend one `maxCalls` budget instead of one each.
    */
   mcpAuditPath?: string;
+  /**
+   * When set, keep the session behind each parsed pass so `ecr ci` can publish it
+   * after the comment is posted. Local review leaves this unset.
+   */
+  // @ref LLP 0007#session-archive [implements] — capture is opt-in and stays off the posted review
+  sessionCapture?: SessionCapture;
 }
 
 /**
@@ -567,6 +576,13 @@ export async function runReview(
     handle = claudeHandle!; // claude-only: the carrier is the claude handle itself
     handle.engineOf = engineFn;
   }
+  // Dispatch uses the claude handle for anthropic passes, so both handles share the capture.
+  if (options.sessionCapture) {
+    handle.capture = options.sessionCapture;
+    if (claudeHandle) {
+      claudeHandle.capture = options.sessionCapture;
+    }
+  }
 
   // The claude-code engine has no temperature control (the CLI exposes no flag), so
   // surface a tuned-but-ignored temperature once, here, instead of letting the config
@@ -674,6 +690,9 @@ export async function runReview(
 
   try {
     const workspace = await writePatchWorkspace(kept, metadata, runDir);
+
+    // Before routing, so the default attach pass follows the configured reviewer order.
+    options.sessionCapture?.preferReviewerOrder(pathsSelection.agents.map((agent) => agent.id));
 
     // Resolve which agents run: an explicit list wins; otherwise route (LLM picks
     // relevant agents + always-run) when asked, else all. Routing chooses only among
@@ -1679,6 +1698,16 @@ export async function runReview(
       verifierDropped,
     );
     const reviewed = { ...outputWithTrace, setupNotes };
+    await exportReviewSessions(
+      options.sessionCapture,
+      async () => {
+        if (opencodeHandle) {
+          opencodeHandle.close();
+          await serverStopped(opencodeHandle.url);
+        }
+      },
+      progress,
+    );
     return feedbackRecords ? { ...reviewed, feedback: feedbackRecords } : reviewed;
   } catch (error) {
     await safeLog(logPath, {
@@ -1705,6 +1734,45 @@ export async function runReview(
     await researchRuntime?.cleanup();
     await mcpProxy?.cleanup();
     await restoreCwd();
+  }
+}
+
+/**
+ * Read OpenCode sessions out of the server database before `finally` deletes it.
+ * A failure here is a log line. The review itself already succeeded.
+ */
+export async function exportReviewSessions(
+  capture: SessionCapture | undefined,
+  closeServer: () => void | Promise<void>,
+  log: (line: string) => void,
+): Promise<void> {
+  if (!capture || capture.count === 0) {
+    return;
+  }
+  const pending = capture
+    .orderedPasses()
+    .some((pass) => pass.source === "opencode" && !pass.exportJson);
+  if (!pending) {
+    return;
+  }
+  try {
+    const bin = await resolveOpencodeCli();
+    if (!bin) {
+      log(
+        "session store: the pinned opencode CLI is not installed; OpenCode sessions were not exported",
+      );
+      return;
+    }
+    await capture.exportOpencode({
+      cwd: process.cwd(),
+      env: process.env,
+      bin,
+      log,
+      closeServer,
+    });
+  } catch (error) {
+    const line = errorMessage(error).split("\n")[0] ?? "export failed";
+    log(`session store: export failed: ${line}`);
   }
 }
 

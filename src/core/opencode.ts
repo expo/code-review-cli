@@ -10,6 +10,7 @@ import type { LoadedConfig, McpServerConfig } from "../config/schema.js";
 // Claude engine is reached at runtime via dynamic import() in the dispatch
 // branches below; claude-code.ts statically imports the shared helpers here.
 import type { ClaudeCodeHandle, Engine } from "./claude-code.js";
+import type { SessionCapture } from "./session-archive.js";
 import { pathInside, resolveOnPath } from "./exec.js";
 import { RateLimitWatch } from "./throttle.js";
 import { OPENCODE_RESEARCH_TOOLS, toolMap } from "./tools.js";
@@ -165,6 +166,29 @@ export interface OpencodeHandle {
   mcpToolsOff?: Record<string, boolean>;
   /** The configured MCP servers, so progress lines log only granted calls, by name. */
   mcpServers?: Record<string, McpServerConfig>;
+  /** Set on a CI run that publishes sessions. Absent means capture stays off. */
+  capture?: SessionCapture;
+}
+
+/**
+ * Resolve when nothing answers at `url` any more, or after `timeoutMs`.
+ * Closing the server only sends it a signal, and it holds the session database until it is gone.
+ */
+export async function serverStopped(url: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(500) });
+      await response.body?.cancel();
+    } catch (error) {
+      // A slow answer is still an answer.
+      // Any other failure means that nothing listens.
+      if ((error as { name?: string } | null)?.name !== "TimeoutError") {
+        return;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }
 
 /** Token usage as reported on an OpenCode assistant message's `info.tokens`. */
@@ -193,6 +217,11 @@ export interface PromptResult {
    * available.) Undefined when the server didn't report it.
    */
   model?: string;
+  /**
+   * OpenCode 1.19.5 export JSON for a Claude pass.
+   * Set only when this run is capturing sessions.
+   */
+  sessionExport?: string;
 }
 
 /** Sum token usage across attempts (for per-task/run totals). */
@@ -523,7 +552,14 @@ export async function startOpencode(
   return {
     client,
     url: server.url,
-    close: () => server.close(),
+    close: () => {
+      // Export retries once after a locked database, then the review closes again.
+      try {
+        server.close();
+      } catch {
+        // Already closed.
+      }
+    },
     rateLimit: new RateLimitWatch(),
     ...(Object.keys(mcpToolsOff).length > 0 ? { mcpToolsOff, mcpServers } : {}),
   };
@@ -1235,13 +1271,24 @@ export async function promptAndParse<T>(
     // Keep the model from whichever attempt actually answered.
     model = result.model ?? model;
   };
+  // @ref LLP 0007#session-archive [implements] — note only the session whose reply parsed
+  const note = (result: PromptResult): void => {
+    handle.capture?.note({
+      agent: args.agent,
+      title: args.title,
+      source: "opencode",
+      sessionId: result.sessionID,
+    });
+  };
 
   const first = await withTransientRetry(`Agent "${args.agent}"`, args.onActivity, () =>
     promptAgent(handle, args),
   );
   record(first);
   try {
-    return { value: parse(first.text), cost, truncated, tokens, model };
+    const value = parse(first.text);
+    note(first);
+    return { value, cost, truncated, tokens, model };
   } catch {
     // Same-session corrective retry: send the nudge as a follow-up and wait for
     // the NEW assistant message (past the current message count).
@@ -1264,7 +1311,9 @@ export async function promptAndParse<T>(
         stallMs: FINALIZE_STALL_MS,
       });
       record(retry);
-      return { value: parse(retry.text), cost, truncated, tokens, model };
+      const value = parse(retry.text);
+      note(retry);
+      return { value, cost, truncated, tokens, model };
     } catch {
       // Fresh-session last resort: a clean slate for a genuinely confused run.
       const fresh = await promptAgent(handle, {
@@ -1274,7 +1323,9 @@ export async function promptAndParse<T>(
       });
       record(fresh);
       try {
-        return { value: parse(fresh.text), cost, truncated, tokens, model };
+        const value = parse(fresh.text);
+        note(fresh);
+        return { value, cost, truncated, tokens, model };
       } catch (finalError) {
         throw new Error(
           `Agent "${args.agent}" did not return parseable JSON after retries: ${
