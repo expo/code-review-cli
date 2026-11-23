@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -22,6 +22,7 @@ import {
   sessionIdOf,
   sessionTagPrefix,
   SESSION_ZIP_LIMIT_BYTES,
+  takeSessionStoreToken,
   unzipEntries,
   zipEntries,
   zipTooLarge,
@@ -75,6 +76,70 @@ function pass(agent: string): SessionIndexPass {
     file: `opencode/${agent}.json`,
     source: "opencode",
   };
+}
+
+/**
+ * A stand-in `gh` in `dir`.
+ * It logs its token and its first two arguments, and answers `repo view` with `visibility`.
+ */
+async function fakeGh(
+  dir: string,
+  visibility: string,
+  viewExit = 0,
+): Promise<{ bin: string; calls: () => Promise<string[]> }> {
+  const bin = path.join(dir, "gh");
+  const log = path.join(dir, "calls.log");
+  const script = [
+    "#!/bin/sh",
+    `echo "$GH_TOKEN $1 $2" >> "${log}"`,
+    '[ "$1 $2" = "repo view" ] || exit 0',
+    `[ ${viewExit} -eq 0 ] || { echo "no access with $GH_TOKEN" >&2; exit ${viewExit}; }`,
+    `printf '%s' '{"visibility":"${visibility}"}'`,
+    "",
+  ].join("\n");
+  await writeFile(bin, script, { mode: 0o755 });
+  return {
+    bin,
+    calls: async () => (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean),
+  };
+}
+
+/** Publish one stored pass to `expo/store` through `gh`, and return the log lines. */
+async function publishOnePass(
+  gh: string,
+  storeToken?: string,
+  uploadTimeoutMs?: number,
+): Promise<string[]> {
+  const capture = createSessionCapture();
+  capture.note({
+    agent: "correctness",
+    title: "review-correctness-c0",
+    source: "claude",
+    sessionId: "ses_claude",
+    exportJson: "{}",
+  });
+  const log: string[] = [];
+  const store = process.env.SESSION_STORE_REPO;
+  process.env.SESSION_STORE_REPO = "expo/store";
+  try {
+    await publishSessionArchive({
+      capture,
+      repo: "expo/expo",
+      pr: 7,
+      headSha: SHA_A,
+      log: (line) => log.push(line),
+      gh,
+      ...(storeToken ? { storeToken } : {}),
+      ...(uploadTimeoutMs ? { uploadTimeoutMs } : {}),
+    });
+  } finally {
+    if (store === undefined) {
+      delete process.env.SESSION_STORE_REPO;
+    } else {
+      process.env.SESSION_STORE_REPO = store;
+    }
+  }
+  return log;
 }
 
 describe("Session archive", () => {
@@ -176,6 +241,94 @@ describe("Session archive", () => {
     expect(log).toEqual([
       'session store: upload failed: No session can be stored for expo/.github. A git tag cannot contain ".github".',
     ]);
+  });
+
+  test("should take the store token out of the environment", () => {
+    const env: NodeJS.ProcessEnv = { SESSION_STORE_TOKEN: " store-token ", PATH: "/usr/bin" };
+    expect(takeSessionStoreToken(env)).toBe("store-token");
+    expect(env).toEqual({ PATH: "/usr/bin" });
+    expect(takeSessionStoreToken(env)).toBeUndefined();
+  });
+
+  test("should upload to a private store with the store token", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ecr-session-gh-"));
+    try {
+      const gh = await fakeGh(dir, "PRIVATE");
+      const log = await publishOnePass(gh.bin, "store-token-value");
+      expect(log).toHaveLength(1);
+      expect(log[0]).toMatch(
+        /^session store: uploaded session\/expo\/expo\/7\/a{12}\/\S+ to expo\/store$/,
+      );
+      expect(await gh.calls()).toEqual([
+        "store-token-value repo view",
+        "store-token-value release create",
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("should refuse a store that is not private", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ecr-session-gh-"));
+    try {
+      for (const visibility of ["PUBLIC", "INTERNAL"]) {
+        const gh = await fakeGh(dir, visibility);
+        expect(await publishOnePass(gh.bin)).toEqual([
+          "session store: upload failed: expo/store is not a private repository",
+        ]);
+        expect((await gh.calls()).join()).not.toContain("release create");
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("should not upload, and not log the token, when the store cannot be read", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ecr-session-gh-"));
+    try {
+      const gh = await fakeGh(dir, "PRIVATE", 1);
+      expect(await publishOnePass(gh.bin, "store-token-value")).toEqual([
+        "session store: upload failed: could not read the visibility of expo/store: " +
+          "no access with [SESSION_STORE_TOKEN]",
+      ]);
+      expect(await gh.calls()).toEqual(["store-token-value repo view"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("should stop every process of an upload that does not finish", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ecr-session-gh-"));
+    const bin = path.join(dir, "gh");
+    const worker = path.join(dir, "worker.pid");
+    // The upload is a grandchild, as it is behind a version-manager shim.
+    const script = [
+      "#!/bin/sh",
+      `[ "$1 $2" = "repo view" ] && { printf '%s' '{"visibility":"PRIVATE"}'; exit 0; }`,
+      "sleep 30 &",
+      `echo $! > "${worker}"`,
+      "wait",
+      "",
+    ].join("\n");
+    await writeFile(bin, script, { mode: 0o755 });
+    try {
+      expect(await publishOnePass(bin, undefined, 300)).toEqual([
+        "session store: upload failed: gh release create did not finish in 0 minutes",
+      ]);
+      const pid = Number(await readFile(worker, "utf8"));
+      let running = true;
+      for (let tries = 0; running && tries < 50; tries++) {
+        try {
+          process.kill(pid, 0);
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        } catch {
+          running = false;
+        }
+      }
+      expect(running).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   test("should treat an archive over 80 MB as too large", () => {

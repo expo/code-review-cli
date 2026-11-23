@@ -26,12 +26,19 @@ const EXPORT_TIMEOUT_MS = 30_000;
 /** All exports of one `runReview` call share this many timeouts. */
 const EXPORT_BUDGET_TIMEOUTS = 4;
 const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+const STORE_CHECK_TIMEOUT_MS = 30_000;
 
 /** A recorded export stops at this size. */
 const EXPORT_LIMIT_BYTES = 96 * 1024 * 1024;
 
 /** The most one archive entry may unpack to. A recorded export stops at 96 MB. */
 export const SESSION_ENTRY_LIMIT_BYTES = 128 * 1024 * 1024;
+
+/**
+ * A token that can write releases in the store repo.
+ * `ecr ci` takes it out of the environment, so only the upload receives it.
+ */
+export const SESSION_STORE_TOKEN_ENV = "SESSION_STORE_TOKEN";
 
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
@@ -536,7 +543,7 @@ export function parseSessionIndex(json: string): SessionIndex {
   return parsed.data;
 }
 
-function scrubSecrets(text: string): string {
+function scrubSecrets(text: string, storeToken: string | undefined): string {
   let out = text;
   for (const name of FORBIDDEN_TOKEN_ENVS) {
     const value = process.env[name];
@@ -544,7 +551,47 @@ function scrubSecrets(text: string): string {
       out = out.split(value).join(`[${name}]`);
     }
   }
+  if (storeToken && storeToken.length >= 8) {
+    out = out.split(storeToken).join(`[${SESSION_STORE_TOKEN_ENV}]`);
+  }
   return out.replace(/\s+/g, " ").trim().slice(0, 300);
+}
+
+/** Read the store token and remove it from `env`, so no child process inherits it. */
+export function takeSessionStoreToken(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const token = env[SESSION_STORE_TOKEN_ENV]?.trim();
+  delete env[SESSION_STORE_TOKEN_ENV];
+  return token || undefined;
+}
+
+/**
+ * Every reader of the store can download a transcript, and a transcript holds source code.
+ * Only a private store is accepted.
+ */
+async function assertPrivateStore(
+  gh: string,
+  store: string,
+  env: NodeJS.ProcessEnv | undefined,
+): Promise<void> {
+  const viewed = await run(gh, ["repo", "view", store, "--json", "visibility"], {
+    env,
+    check: false,
+    timeout: STORE_CHECK_TIMEOUT_MS,
+    input: "",
+  });
+  if (viewed.timedOut || viewed.code !== 0) {
+    const reason = viewed.timedOut ? "gh repo view did not finish" : viewed.stderr.trim();
+    throw new Error(`could not read the visibility of ${store}: ${reason}`);
+  }
+  let visibility: unknown;
+  try {
+    visibility = (JSON.parse(viewed.stdout) as { visibility?: unknown }).visibility;
+  } catch {
+    visibility = undefined;
+  }
+  if (visibility !== "PRIVATE") {
+    throw new Error(`${store} is not a private repository`);
+  }
 }
 
 export async function publishSessionArchive(input: {
@@ -553,6 +600,18 @@ export async function publishSessionArchive(input: {
   pr: number;
   headSha: string | undefined;
   log: (line: string) => void;
+  /**
+   * From `takeSessionStoreToken`.
+   * Without it, `gh` uses the token already in the environment.
+   */
+  storeToken?: string;
+  /**
+   * The `gh` to run.
+   * Defaults to the trusted `gh` on PATH.
+   */
+  gh?: string;
+  /** Limit for the upload. Defaults to 5 minutes. */
+  uploadTimeoutMs?: number;
 }): Promise<void> {
   const store = process.env.SESSION_STORE_REPO?.trim();
   if (!store) {
@@ -588,7 +647,10 @@ export async function publishSessionArchive(input: {
       }
       await writeFile(zipPath, zip);
       await writeFile(notesPath, renderIndexMarkdown(built.index), "utf8");
-      const gh = await resolveTrustedTool("gh");
+      const gh = input.gh ?? (await resolveTrustedTool("gh"));
+      const uploadTimeoutMs = input.uploadTimeoutMs ?? UPLOAD_TIMEOUT_MS;
+      const env = input.storeToken ? { ...process.env, GH_TOKEN: input.storeToken } : undefined;
+      await assertPrivateStore(gh, store, env);
       const created = await run(
         gh,
         [
@@ -603,18 +665,22 @@ export async function publishSessionArchive(input: {
           "--notes-file",
           notesPath,
         ],
-        { timeout: UPLOAD_TIMEOUT_MS },
+        // An empty stdin selects the spawn path. Its timeout stops the whole process group.
+        { env, timeout: uploadTimeoutMs, input: "" },
       );
       // A timeout resolves instead of throwing, so it must not read as success.
       if (created.timedOut) {
-        throw new Error("gh release create did not finish in 5 minutes");
+        const minutes = Math.round(uploadTimeoutMs / 6000) / 10;
+        throw new Error(`gh release create did not finish in ${minutes} minutes`);
       }
       input.log(`session store: uploaded ${tag} to ${store}`);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   } catch (error) {
-    input.log(`session store: upload failed: ${scrubSecrets(errorMessage(error))}`);
+    input.log(
+      `session store: upload failed: ${scrubSecrets(errorMessage(error), input.storeToken)}`,
+    );
   }
 }
 

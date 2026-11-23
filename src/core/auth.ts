@@ -73,6 +73,7 @@ export const FORBIDDEN_TOKEN_ENVS = new Set([
   "NPM_TOKEN",
   "NODE_AUTH_TOKEN",
   "SSH_PRIVATE_KEY",
+  "SESSION_STORE_TOKEN",
 ]);
 
 const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
