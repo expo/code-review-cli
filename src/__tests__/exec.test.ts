@@ -163,6 +163,37 @@ test("run with input: a custom env is passed to the child", async () => {
   expect(result.stdout).toBe("forwarded");
 });
 
+test("should write stdout to a file when stdoutPath is set", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ecr-exec-stdout-"));
+  const file = join(dir, "out.txt");
+  try {
+    // The child sees a regular file, so it is not a pipe that a fast exit can cut short.
+    const result = await run("/bin/sh", ["-c", "[ -f /dev/stdout ] && printf whole"], {
+      stdoutPath: file,
+    });
+    expect(result).toMatchObject({ code: 0, stdout: "" });
+    expect(await readFile(file, "utf8")).toBe("whole");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("should stop the process group at the timeout when stdoutPath is set", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ecr-exec-stdout-"));
+  const started = Date.now();
+  try {
+    const result = await run("/bin/sh", ["-c", "sleep 30 & wait"], {
+      stdoutPath: join(dir, "out.txt"),
+      timeout: 100,
+      check: false,
+    });
+    expect(result.timedOut).toBe(true);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("resolveOnPath: absolute path for a real command, null for a fake one", async () => {
   const sh = await resolveOnPath("sh");
   expect(sh).not.toBeNull();
