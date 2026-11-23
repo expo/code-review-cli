@@ -502,7 +502,7 @@ export function mergeAggregateFeedback(
 }
 
 /** Options shared by the legacy and routed CI paths (parsed from argv once). */
-interface CiRunOptions {
+export interface CiRunOptions {
   agents: string[] | undefined;
   route: boolean;
   scopesFilter?: string[] | undefined;
@@ -593,7 +593,7 @@ function workspaceRunsDir(cwd: string): string {
  * The pre-routing single-config path. Kept byte-for-byte equivalent so that with no
  * routing.jsonc the CLI behaves exactly as before (backcompat invariant).
  */
-async function runLegacyCi(
+export async function runLegacyCi(
   source: ReviewSource,
   repo: string,
   prNumber: number,
@@ -830,7 +830,7 @@ function failureReview(scopeName: string, reason: string): CoordinatorOutput {
 
 // @ref LLP 0007#routed-ci-fan-out [implements] — root tag wins; sequential per-scope budgets; partial --scopes merges prior state
 /** The routing fan-out: one process, N scopes reviewed sequentially, one render. */
-async function runRoutedCi(
+export async function runRoutedCi(
   source: ReviewSource & { dispose(): Promise<void> },
   manifest: RoutingManifest,
   repo: string,
