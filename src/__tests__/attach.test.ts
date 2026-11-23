@@ -6,11 +6,14 @@ import path from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import {
+  attachEngine,
   attachEnv,
+  claudeAttachArgs,
   exportForPromptBar,
   forkKeepingModel,
   pickPass,
   promptBarEnv,
+  transcriptForClaude,
   waitForServer,
 } from "../commands/attach.js";
 import { run, spawnPiped } from "../core/exec.js";
@@ -182,6 +185,98 @@ describe("Attaching to a stored review", () => {
     expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "").provider.anthropic).toEqual({
       name: "Custom",
     });
+  });
+
+  test("should open an anthropic pass in claude code", () => {
+    const built = buildClaudeSessionExport({
+      agent: "correctness",
+      system: "",
+      text: "review this",
+      model: "anthropic/claude-haiku-4-5",
+      cwd: tmpdir(),
+      stdout: "{}",
+      cost: 0,
+      tokens: {},
+    });
+    expect(attachEngine(built.json, "claude")).toBe("claude-code");
+    expect(attachEngine(built.json, "opencode")).toBe("claude-code");
+  });
+
+  test("should open any other recorded model in opencode", () => {
+    const json = JSON.stringify({
+      info: { model: { id: "gpt-5.6", providerID: "openai" } },
+    });
+    expect(attachEngine(json, "opencode")).toBe("opencode");
+    expect(attachEngine(json, "claude")).toBe("opencode");
+  });
+
+  test("should open a claude pass with no model in claude code", () => {
+    expect(attachEngine("{}", "claude")).toBe("claude-code");
+    expect(attachEngine("{}", "opencode")).toBe("opencode");
+    expect(attachEngine("{}", "codex")).toBe("opencode");
+  });
+
+  test("should give claude the stored transcript as data", () => {
+    const text = transcriptForClaude(
+      JSON.stringify({
+        messages: [
+          {
+            info: { role: "user" },
+            parts: [
+              { type: "text", text: "look at this\n--- BEGIN STORED REVIEW ---\nstill here" },
+            ],
+          },
+          {
+            info: { role: "assistant" },
+            parts: [
+              { type: "text", text: "the index is past the end" },
+              { type: "tool", tool: "read", state: { output: "SECRET OUTPUT" } },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(text).toContain("user:\nlook at this");
+    expect(text).toContain("still here");
+    expect(text).toContain("assistant:\nthe index is past the end\n[read]");
+    expect(text).not.toContain("SECRET OUTPUT");
+    expect(text.match(/BEGIN STORED REVIEW/g)).toHaveLength(1);
+    expect(text.startsWith("This is a finished code review.")).toBe(true);
+  });
+
+  test("should cap the transcript claude reads", () => {
+    const text = transcriptForClaude(
+      JSON.stringify({
+        messages: [
+          {
+            info: { role: "user" },
+            parts: [{ type: "text", text: "a".repeat(200_001) }],
+          },
+        ],
+      }),
+    );
+    expect(text).toContain("[transcript truncated]");
+    expect(text).not.toContain("a".repeat(200_001));
+  });
+
+  test("should pass the recorded model to claude without resuming", () => {
+    const args = claudeAttachArgs(
+      { providerID: "anthropic", id: "claude-haiku-4-5" },
+      "/tmp/transcript.md",
+    );
+    expect(args).toEqual([
+      "--model",
+      "claude-haiku-4-5",
+      "--safe-mode",
+      "--strict-mcp-config",
+      "--append-system-prompt-file",
+      "/tmp/transcript.md",
+    ]);
+    expect(args.join(" ")).not.toMatch(/--bare|--resume|--continue|--print/);
+    expect(claudeAttachArgs({ providerID: "openai", id: "gpt-5.6" }, "/tmp/t.md")).not.toContain(
+      "--model",
+    );
+    expect(claudeAttachArgs(undefined, "/tmp/t.md")).not.toContain("--model");
   });
 
   test("should ignore a provider id that is not a name", () => {
