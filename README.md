@@ -220,6 +220,12 @@ A transcript holds the prompts, the diff, and the file contents the reviewers re
 Everyone who can read the store repository can read them, so give the store the same
 readers as the code.
 
+`ecr attach --pr <n>` reopens one stored pass on your machine, on the commit that
+was reviewed. It downloads with your own `gh` login, which needs read access to the
+store. An anthropic pass opens in Claude Code with the read tools only. Any other
+pass opens in OpenCode, which asks before it runs a command, edits a file, or uses
+the network.
+
 ## Keeping prompts true (`ecr ref-check`)
 
 Good reviewer prompts cite real code ("every webhook router must call
