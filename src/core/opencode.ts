@@ -170,6 +170,27 @@ export interface OpencodeHandle {
   capture?: SessionCapture;
 }
 
+/**
+ * Resolve when nothing answers at `url` any more, or after `timeoutMs`.
+ * Closing the server only sends it a signal, and it holds the session database until it is gone.
+ */
+export async function serverStopped(url: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(500) });
+      await response.body?.cancel();
+    } catch (error) {
+      // A slow answer is still an answer.
+      // Any other failure means that nothing listens.
+      if ((error as { name?: string } | null)?.name !== "TimeoutError") {
+        return;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 /** Token usage as reported on an OpenCode assistant message's `info.tokens`. */
 export interface TokenUsage {
   input?: number;

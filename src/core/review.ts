@@ -24,6 +24,7 @@ import {
   CROSS_CUTTING_AGENT,
   promptAndParse,
   resolveOpencodeCli,
+  serverStopped,
   STACK_VERIFIER_AGENT,
   startOpencode,
   VERIFIER_AGENT,
@@ -1697,7 +1698,16 @@ export async function runReview(
       verifierDropped,
     );
     const reviewed = { ...outputWithTrace, setupNotes };
-    await exportReviewSessions(options.sessionCapture, () => opencodeHandle?.close(), progress);
+    await exportReviewSessions(
+      options.sessionCapture,
+      async () => {
+        if (opencodeHandle) {
+          opencodeHandle.close();
+          await serverStopped(opencodeHandle.url);
+        }
+      },
+      progress,
+    );
     return feedbackRecords ? { ...reviewed, feedback: feedbackRecords } : reviewed;
   } catch (error) {
     await safeLog(logPath, {
@@ -1733,7 +1743,7 @@ export async function runReview(
  */
 async function exportReviewSessions(
   capture: SessionCapture | undefined,
-  closeServer: () => void,
+  closeServer: () => void | Promise<void>,
   log: (line: string) => void,
 ): Promise<void> {
   if (!capture || capture.count === 0) {

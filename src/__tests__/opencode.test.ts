@@ -1,4 +1,6 @@
-import { test, expect } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 
 import {
@@ -12,6 +14,7 @@ import {
   buildOpencodeConfig,
   resolveEngineDispatch,
   resolveOpencodeCli,
+  serverStopped,
   STACK_VERIFIER_AGENT,
   META_MODEL_API_BASE_URL,
 } from "../core/opencode.js";
@@ -554,4 +557,42 @@ test("resolveOpencodeCli: resolves the bundled shim to an absolute path, never a
   // module rather than cwd — so a PR-committed `opencode` at the reviewed cwd can never
   // be what a doctor/setup-auth spawn picks up. Reverting to a bare "opencode" fails here.
   expect(cli).toContain(`${path.sep}.bin${path.sep}`);
+});
+
+describe("Waiting for the OpenCode server to stop", () => {
+  const listen = async (): Promise<{ url: string; close: () => void }> => {
+    const server = createServer((_request, response) => response.end("ok"));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    return {
+      url: `http://127.0.0.1:${port}`,
+      close: () => {
+        server.close();
+        server.closeAllConnections();
+      },
+    };
+  };
+
+  it("should return when nothing answers any more", async () => {
+    const server = await listen();
+    const started = Date.now();
+    setTimeout(server.close, 250);
+    await serverStopped(server.url, 5000);
+    const waited = Date.now() - started;
+    expect(waited).toBeGreaterThanOrEqual(200);
+    expect(waited).toBeLessThan(3000);
+  });
+
+  it("should give up after the time limit when the server keeps answering", async () => {
+    const server = await listen();
+    const started = Date.now();
+    try {
+      await serverStopped(server.url, 300);
+    } finally {
+      server.close();
+    }
+    const waited = Date.now() - started;
+    expect(waited).toBeGreaterThanOrEqual(300);
+    expect(waited).toBeLessThan(3000);
+  });
 });
