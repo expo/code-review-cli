@@ -1,4 +1,4 @@
-// @ref LLP 0007#session-archive [implements] — import with the pinned OpenCode, then attach --fork; never switch branches
+// @ref LLP 0007#session-archive [implements] — import with the pinned OpenCode, fork, restore the recorded model; never switch branches
 import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -25,7 +25,9 @@ import {
   parseSessionIndex,
   recordedShaBlocksAttach,
   releasesForHead,
+  sessionAgentOf,
   sessionIdOf,
+  sessionModelOf,
   sessionTag,
   sessionTagPrefix,
   unzipEntries,
@@ -40,8 +42,10 @@ Usage:
              [--agent <id> | --session <id>] [--list]
 
 Downloads the session archive for a pull request and opens one pass in the
-OpenCode shipped with this CLI. The store is SESSION_STORE_REPO, or
-${DEFAULT_SESSION_STORE_REPO} when that is unset.
+OpenCode shipped with this CLI. The opened session is a fork, so the stored
+transcript stays unchanged. The fork uses the model recorded on that pass.
+The store is SESSION_STORE_REPO, or ${DEFAULT_SESSION_STORE_REPO} when that
+is unset.
 
 --repo defaults from the checkout's git remote. --list prints matches and does
 not download. With --run the tag is fetched directly. Otherwise the newest
@@ -197,6 +201,117 @@ export function attachEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     OPENCODE_DISABLE_PROJECT_CONFIG: "1",
     OPENCODE_SERVER_PASSWORD: randomBytes(24).toString("base64url"),
   };
+}
+
+const SESSION_ID = /^ses_[0-9A-Za-z]+$/;
+
+function serverHeaders(env: NodeJS.ProcessEnv): Record<string, string> {
+  const password = env.OPENCODE_SERVER_PASSWORD;
+  if (!password) {
+    throw new Error("The OpenCode server has no password.");
+  }
+  return {
+    authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
+    "content-type": "application/json",
+  };
+}
+
+/**
+ * A name safe to print.
+ * The export is a download, so it can contain anything.
+ */
+function logName(value: string): string | undefined {
+  const cleaned = value.replace(/[^\w./@+-]/g, "").slice(0, 80);
+  return cleaned || undefined;
+}
+
+async function keepField(
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+  complaint: string,
+): Promise<void> {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15_000),
+    });
+    await response.body?.cancel();
+    if (!response.ok) {
+      process.stderr.write(`${complaint} (${response.status}). The transcript still opens.\n`);
+    }
+  } catch {
+    process.stderr.write(`${complaint}. The transcript still opens.\n`);
+  }
+}
+
+/**
+ * Fork the imported session and put its recorded model back.
+ * OpenCode's fork copies the messages and leaves the model empty, so the
+ * TUI would otherwise use its own default.
+ */
+export async function forkKeepingModel(input: {
+  url: string;
+  sessionId: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  exportJson: string;
+}): Promise<string> {
+  if (!SESSION_ID.test(input.sessionId)) {
+    throw new Error("The session id cannot be opened.");
+  }
+  const headers = serverHeaders(input.env);
+  const directory = encodeURIComponent(input.cwd);
+  const forked = await fetch(
+    `${input.url}/session/${input.sessionId}/fork?directory=${directory}`,
+    {
+      method: "POST",
+      headers,
+      body: "{}",
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  if (!forked.ok) {
+    await forked.body?.cancel();
+    throw new Error(`Could not fork the session (${forked.status}).`);
+  }
+  let forkId: string | undefined;
+  try {
+    const parsed = (await forked.json()) as { id?: unknown };
+    forkId = typeof parsed.id === "string" && SESSION_ID.test(parsed.id) ? parsed.id : undefined;
+  } catch {
+    forkId = undefined;
+  }
+  if (!forkId) {
+    throw new Error("Could not fork the session.");
+  }
+  const model = sessionModelOf(input.exportJson);
+  if (model) {
+    const name = [logName(model.providerID), logName(model.id)].filter(Boolean).join("/");
+    await keepField(
+      `${input.url}/api/session/${forkId}/model?directory=${directory}`,
+      headers,
+      { model },
+      name
+        ? `attach: could not keep ${name} on the fork`
+        : "attach: could not keep the recorded model on the fork",
+    );
+  }
+  const agent = sessionAgentOf(input.exportJson);
+  if (agent) {
+    const name = logName(agent);
+    await keepField(
+      `${input.url}/api/session/${forkId}/agent?directory=${directory}`,
+      headers,
+      { agent },
+      name
+        ? `attach: could not keep the ${name} agent on the fork`
+        : "attach: could not keep the recorded agent on the fork",
+    );
+  }
+  return forkId;
 }
 
 export async function waitForServer(child: ReturnType<typeof spawnPiped>): Promise<string> {
@@ -403,9 +518,10 @@ async function openRelease(
       { cwd, env },
     );
     const url = await waitForServer(server.current);
+    const forkId = await forkKeepingModel({ url, sessionId, cwd, env, exportJson });
     const code = await spawnInherited(
       bin,
-      ["attach", url, "--session", sessionId, "--dir", cwd, "--fork", "--pure"],
+      ["attach", url, "--session", forkId, "--dir", cwd, "--pure"],
       { cwd, env },
     );
     if (code !== 0) {

@@ -19,7 +19,9 @@ import {
   publishSessionArchive,
   recordedShaBlocksAttach,
   releasesForHead,
+  sessionAgentOf,
   sessionIdOf,
+  sessionModelOf,
   sessionTagPrefix,
   SESSION_ZIP_LIMIT_BYTES,
   takeSessionStoreToken,
@@ -156,6 +158,38 @@ describe("Session archive", () => {
   test("should stop when the checkout commit differs from the recorded sha", () => {
     expect(recordedShaBlocksAttach(SHA_A, SHA_B)).toBe(true);
     expect(recordedShaBlocksAttach(SHA_A, SHA_A.toUpperCase())).toBe(false);
+  });
+
+  test("should read the model and agent recorded on an export", () => {
+    const built = buildClaudeSessionExport({
+      agent: "correctness",
+      system: "",
+      text: "prompt",
+      model: "anthropic/claude-haiku-4-5",
+      cwd: tmpdir(),
+      stdout: "",
+      cost: 0,
+      tokens: {},
+    });
+    expect(sessionModelOf(built.json)).toEqual({
+      id: "claude-haiku-4-5",
+      providerID: "anthropic",
+    });
+    expect(sessionAgentOf(built.json)).toBe("correctness");
+  });
+
+  test("should keep a recorded model variant and ignore a model that is incomplete", () => {
+    expect(
+      sessionModelOf(
+        JSON.stringify({
+          info: { model: { id: "gpt-5.6-terra", providerID: "openai", variant: "flex" } },
+        }),
+      ),
+    ).toEqual({ id: "gpt-5.6-terra", providerID: "openai", variant: "flex" });
+    expect(sessionModelOf(JSON.stringify({ info: { model: { id: "only-id" } } }))).toBeUndefined();
+    expect(sessionModelOf("{")).toBeUndefined();
+    expect(sessionAgentOf(JSON.stringify({ info: { agent: "correctness" } }))).toBe("correctness");
+    expect(sessionAgentOf("{")).toBeUndefined();
   });
 
   test("should refuse an export from a different opencode version", () => {

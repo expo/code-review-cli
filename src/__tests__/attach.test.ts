@@ -5,9 +5,10 @@ import path from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
-import { attachEnv, pickPass, waitForServer } from "../commands/attach.js";
-import { spawnPiped } from "../core/exec.js";
+import { attachEnv, forkKeepingModel, pickPass, waitForServer } from "../commands/attach.js";
+import { run, spawnPiped } from "../core/exec.js";
 import { resolveOpencodeCli } from "../core/opencode.js";
+import { buildClaudeSessionExport } from "../core/session-archive.js";
 import type { SessionIndexPass } from "../core/session-archive.js";
 
 function pass(agent: string, title: string, scope?: string): SessionIndexPass {
@@ -161,5 +162,81 @@ describe("Attaching to a stored review", () => {
       }
     },
     { timeout: 120_000 },
+  );
+
+  test(
+    "should put the recorded model back on the fork",
+    async () => {
+      const bin = await resolveOpencodeCli();
+      expect(bin).toBeTruthy();
+      const checkout = await makeCheckout();
+      const env = attachEnv(checkout.env);
+      let server: ReturnType<typeof spawnPiped> | undefined;
+      const built = buildClaudeSessionExport({
+        agent: "correctness",
+        system: "system",
+        text: "review this",
+        model: "anthropic/claude-haiku-4-5",
+        cwd: checkout.cwd,
+        stdout: JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "text", text: "the index is past the end" }] },
+        }),
+        cost: 0,
+        tokens: { input: 1, output: 1 },
+      });
+      const file = path.join(checkout.home, "session.json");
+      await writeFile(file, built.json);
+      try {
+        const imported = await run(bin!, ["import", file, "--pure"], {
+          cwd: checkout.cwd,
+          env,
+          check: false,
+          timeout: 120_000,
+        });
+        if (imported.code !== 0) {
+          throw new Error(imported.stderr.trim() || `opencode import exited ${imported.code}`);
+        }
+        server = spawnPiped(bin!, ["serve", "--port", "0", "--hostname", "127.0.0.1", "--pure"], {
+          cwd: checkout.cwd,
+          env,
+        });
+        const url = await waitForServer(server);
+        const forkId = await forkKeepingModel({
+          url,
+          sessionId: built.sessionId,
+          cwd: checkout.cwd,
+          env,
+          exportJson: built.json,
+        });
+        const read = async (
+          id: string,
+        ): Promise<{ id?: string; agent?: string; model?: unknown }> => {
+          const response = await fetch(
+            `${url}/session/${id}?directory=${encodeURIComponent(checkout.cwd)}`,
+            { headers: basicAuth(env) },
+          );
+          expect(response.status).toBe(200);
+          return (await response.json()) as { id?: string; agent?: string; model?: unknown };
+        };
+        const parent = await read(built.sessionId);
+        const fork = await read(forkId);
+        expect(forkId).not.toBe(built.sessionId);
+        expect(parent).toMatchObject({
+          id: built.sessionId,
+          agent: "correctness",
+          model: { id: "claude-haiku-4-5", providerID: "anthropic" },
+        });
+        expect(fork).toMatchObject({
+          id: forkId,
+          agent: "correctness",
+          model: { id: "claude-haiku-4-5", providerID: "anthropic" },
+        });
+      } finally {
+        server?.kill("SIGKILL");
+        await rm(checkout.home, { recursive: true, force: true });
+      }
+    },
+    { timeout: 180_000 },
   );
 });
