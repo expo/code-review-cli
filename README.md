@@ -189,6 +189,7 @@ is a ready example to adapt.
 | `ecr review --scope <name>` | Review only one routing scope over just that scope's changed files. |
 | `ecr post-review --artifact <path> --repo <owner/repo> --pr <n>` | Post an exact saved PR preview without re-running models; refuses target, head, config, or break-glass drift. |
 | `ecr ci` | Review the current GitHub PR and post/update a comment. For GitHub Actions. |
+| `ecr attach --pr <n>` | Reopen a finished review. An anthropic model opens in Claude Code. Any other model opens in the OpenCode shipped with this CLI. |
 | `ecr doctor [--list-scopes]` | Check environment, config, credentials, and (with a manifest) scopes. |
 | `ecr feedback [--repo <owner/repo>]` | Report which findings PR authors pushed back on, across history. See below. |
 | `ecr ref-check [--json]` | Fail when the review setup cites code that moved or vanished. See below. |
@@ -218,6 +219,12 @@ Storage is off until the `ecr ci` step of the workflow sets two variables:
 A transcript holds the prompts, the diff, and the file contents the reviewers read.
 Everyone who can read the store repository can read them, so give the store the same
 readers as the code.
+
+`ecr attach --pr <n>` reopens one stored pass on your machine, on the commit that
+was reviewed. It downloads with your own `gh` login, which needs read access to the
+store. An anthropic pass opens in Claude Code with the read tools only. Any other
+pass opens in OpenCode, which asks before it runs a command, edits a file, or uses
+the network.
 
 ## Keeping prompts true (`ecr ref-check`)
 

@@ -303,6 +303,48 @@ export function sessionIdOf(json: string): string | undefined {
   }
 }
 
+export interface RecordedSessionModel {
+  id: string;
+  providerID: string;
+  variant?: string;
+}
+
+function recordedLabel(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 && value.length <= 200 ? value : undefined;
+}
+
+function recordedInfo(json: string): Record<string, unknown> | null {
+  return asRecord((JSON.parse(json) as { info?: unknown }).info);
+}
+
+/**
+ * The model stamped on an export.
+ * Attach puts this back on the fork, because the fork does not copy it.
+ */
+export function sessionModelOf(json: string): RecordedSessionModel | undefined {
+  try {
+    const recorded = asRecord(recordedInfo(json)?.model);
+    const id = recordedLabel(recorded?.id);
+    const providerID = recordedLabel(recorded?.providerID);
+    if (!id || !providerID) {
+      return undefined;
+    }
+    const variant = recordedLabel(recorded?.variant);
+    return variant ? { id, providerID, variant } : { id, providerID };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The agent stamped on an export. The fork does not copy this either. */
+export function sessionAgentOf(json: string): string | undefined {
+  try {
+    return recordedLabel(recordedInfo(json)?.agent);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Refuse an export the pinned binary cannot read.
  * The check is the export's own version string, which OpenCode stamps at creation.

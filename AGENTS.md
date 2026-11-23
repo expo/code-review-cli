@@ -8,7 +8,7 @@ verifies their findings, and posts one updating PR comment.
 ## Layout
 
 - `src/cli.ts` — entry point; dispatches to `src/commands/*` (`init`, `review`,
-  `ci`, `doctor`, `dismiss`).
+  `ci`, `attach`, `doctor`, `dismiss`).
 - `src/core/` — engine: diffing/chunking, prompt assembly, OpenCode server,
   finding verification, comment rendering, auth.
 - `src/research-mcp/` + `research/` — bundled read-only documentation MCP,

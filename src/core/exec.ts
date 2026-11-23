@@ -108,27 +108,91 @@ export async function run(
  * an aborted review leaves a credential-bearing `claude` running unbounded.
  */
 const liveChildKillers = new Set<() => void>();
+/**
+ * Children of spawnPiped and spawnInherited, and whether each leads its own process group.
+ * They get SIGTERM first, so a TUI can put the terminal back.
+ */
+const stoppableChildren = new Map<ChildProcess, boolean>();
+/** Cleanups from runAtExit. They run after the children above have stopped. */
+const exitCleanups = new Set<() => void>();
+/** How long a child has to stop after SIGTERM, before SIGKILL. */
+const STOP_GRACE_MS = 3000;
+const EXIT_CODES = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
 let childCleanupInstalled = false;
+let hangupCleanupInstalled = false;
+let stopping = false;
+
+// @ref LLP 0003#subprocess-spawning-rules [implements] — a signal stops the interactive children first, then runs the cleanups
+function onSignal(signal: keyof typeof EXIT_CODES): void {
+  for (const kill of liveChildKillers) {
+    kill();
+  }
+  // Re-raise the conventional exit code; registering a handler suppressed
+  // Node's default termination.
+  process.exitCode = EXIT_CODES[signal];
+  if (stopping) {
+    // A second signal does not wait.
+    for (const [child, ownGroup] of stoppableChildren) {
+      signalChild(child, ownGroup, "SIGKILL");
+    }
+    process.exit();
+  }
+  stopping = true;
+  void Promise.all([...stoppableChildren.keys()].map((child) => stopChild(child))).then(() =>
+    process.exit(),
+  );
+}
 
 function installChildCleanup(): void {
   if (childCleanupInstalled) {
     return;
   }
   childCleanupInstalled = true;
-  const killAll = (): void => {
+  process.on("exit", () => {
     for (const kill of liveChildKillers) {
       kill();
     }
-  };
-  process.on("exit", killAll);
+    // An exit cannot wait, so a child that is still running gets one SIGTERM.
+    for (const [child, ownGroup] of stoppableChildren) {
+      signalChild(child, ownGroup, "SIGTERM");
+    }
+    for (const cleanup of exitCleanups) {
+      cleanup();
+    }
+  });
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.on(signal, () => {
-      killAll();
-      // Re-raise the conventional exit code; registering a handler suppressed
-      // Node's default termination.
-      process.exitCode = signal === "SIGINT" ? 130 : 143;
-      process.exit();
-    });
+    process.on(signal, () => onSignal(signal));
+  }
+}
+
+/**
+ * A closed terminal sends SIGHUP to the foreground group only.
+ * A child in its own group would stay, so the parent has to stop it.
+ * Installed only with such a child, because a handler also undoes `nohup`.
+ */
+function installHangupCleanup(): void {
+  if (hangupCleanupInstalled || process.platform === "win32") {
+    return;
+  }
+  hangupCleanupInstalled = true;
+  process.on("SIGHUP", () => onSignal("SIGHUP"));
+}
+
+/** Signal `child`, and its whole process group when it leads one. */
+function signalChild(child: ChildProcess, ownGroup: boolean, signal: NodeJS.Signals): void {
+  try {
+    if (process.platform === "win32" && child.pid !== undefined) {
+      // A no-op error handler is required: an async spawn failure (ENOENT/EPERM)
+      // has no other listener here and would otherwise throw unhandled and
+      // crash the parent, defeating the point of this cleanup path.
+      spawn(taskkillPath(), ["/pid", String(child.pid), "/T", "/F"]).on("error", () => {});
+    } else if (ownGroup && child.pid !== undefined) {
+      process.kill(-child.pid, signal);
+    } else {
+      child.kill(signal);
+    }
+  } catch {
+    // Already exited, or the group is gone — nothing to kill.
   }
 }
 
@@ -184,22 +248,7 @@ function runWithInput(
     // Signal the whole process group when detached so a shim wrapper's grandchild
     // is killed too. On Windows there are no process groups — kill the tree via
     // taskkill instead, for the same reason.
-    const killChild = (sig: NodeJS.Signals): void => {
-      try {
-        if (process.platform === "win32" && child.pid !== undefined) {
-          // A no-op error handler is required: an async spawn failure (ENOENT/EPERM)
-          // has no other listener here and would otherwise throw unhandled and
-          // crash the parent, defeating the point of this cleanup path.
-          spawn(taskkillPath(), ["/pid", String(child.pid), "/T", "/F"]).on("error", () => {});
-        } else if (detached && child.pid !== undefined) {
-          process.kill(-child.pid, sig);
-        } else {
-          child.kill(sig);
-        }
-      } catch {
-        // Already exited, or the group is gone — nothing to kill.
-      }
-    };
+    const killChild = (sig: NodeJS.Signals): void => signalChild(child, detached, sig);
     const emergencyKill = (): void => killChild("SIGKILL");
     installChildCleanup();
     liveChildKillers.add(emergencyKill);
@@ -288,6 +337,105 @@ function runWithInput(
     });
     child.stdin?.end(input);
   });
+}
+
+/**
+ * Run `cleanup` when this process is interrupted or exits, after its children have stopped.
+ * A signal handler ends the process before a `finally` block runs, so `cleanup` must not be async.
+ * The result cancels it.
+ */
+export function runAtExit(cleanup: () => void): () => void {
+  const safe = (): void => {
+    try {
+      cleanup();
+    } catch {
+      // The process is ending. The other cleanups still have to run.
+    }
+  };
+  installChildCleanup();
+  exitCleanups.add(safe);
+  return () => {
+    exitCleanups.delete(safe);
+  };
+}
+
+/** Stop `child` when this process is interrupted or exits. */
+function stopWithParent(child: ChildProcess, ownGroup: boolean): void {
+  installChildCleanup();
+  if (ownGroup) {
+    installHangupCleanup();
+  }
+  stoppableChildren.set(child, ownGroup);
+  const forget = (): void => {
+    stoppableChildren.delete(child);
+  };
+  child.once("exit", forget);
+  child.once("error", forget);
+}
+
+/**
+ * Stop a child of spawnPiped or spawnInherited, and wait until it is gone.
+ * SIGTERM first, then SIGKILL when it is still running after `graceMs`.
+ */
+export function stopChild(child: ChildProcess, graceMs = STOP_GRACE_MS): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve();
+  }
+  const ownGroup = stoppableChildren.get(child) ?? false;
+  return new Promise((resolve) => {
+    const kill = setTimeout(() => signalChild(child, ownGroup, "SIGKILL"), graceMs);
+    // A process that SIGKILL cannot end must not block the exit.
+    const giveUp = setTimeout(resolve, graceMs + 1000);
+    child.once("exit", () => {
+      clearTimeout(kill);
+      clearTimeout(giveUp);
+      resolve();
+    });
+    signalChild(child, ownGroup, "SIGTERM");
+  });
+}
+
+/**
+ * Run a command with the terminal attached. For the OpenCode TUI, which has to
+ * own stdin and stdout. Same argument-array rule as `run`. No shell.
+ */
+export function spawnInherited(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: "inherit",
+    });
+    // It stays in this process group, because only the foreground group may use the terminal.
+    stopWithParent(child, false);
+    child.on("error", reject);
+    child.on("close", (code) => resolve(code ?? 1));
+  });
+}
+
+/**
+ * Start a long-running command with stdout and stderr piped. The caller stops it with `stopChild`.
+ * Used to start the OpenCode server `ecr attach` connects to.
+ * It leads its own process group, so the commands it started stop with it.
+ */
+export function spawnPiped(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+): ChildProcess {
+  const detached = process.platform !== "win32";
+  const child = spawn(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ["ignore", "pipe", "pipe"],
+    detached,
+  });
+  stopWithParent(child, detached);
+  return child;
 }
 
 /**
