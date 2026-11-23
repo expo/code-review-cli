@@ -1,4 +1,4 @@
-// @ref LLP 0007#session-archive [implements] — import with the pinned OpenCode, fork, restore the recorded model; never switch branches
+// @ref LLP 0007#session-archive [implements] — import with the pinned OpenCode, fork, and point the prompt bar at the recorded model; never switch branches
 import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -205,6 +205,100 @@ export function attachEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 const SESSION_ID = /^ses_[0-9A-Za-z]+$/;
 
+/**
+ * Agents the OpenCode prompt bar will copy off a user message.
+ * A review agent such as correctness is not one of them, so the bar stays on its default model.
+ */
+const TUI_PROMPT_AGENTS = new Set(["build", "plan"]);
+
+/** A provider id safe to place in the attach server's config. */
+const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * Point the prompt bar at the model recorded on the pass.
+ * The bar copies the last user message, and only when its agent is build or plan.
+ */
+export function exportForPromptBar(json: string): string {
+  const model = sessionModelOf(json);
+  if (!model) {
+    return json;
+  }
+  let parsed: { messages?: unknown };
+  try {
+    parsed = JSON.parse(json) as { messages?: unknown };
+  } catch {
+    return json;
+  }
+  if (!Array.isArray(parsed.messages)) {
+    return json;
+  }
+  let last = -1;
+  for (let index = 0; index < parsed.messages.length; index++) {
+    const info = asRecord(asRecord(parsed.messages[index])?.info);
+    if (info?.role === "user") {
+      last = index;
+    }
+  }
+  if (last < 0) {
+    return json;
+  }
+  const message = asRecord(parsed.messages[last]);
+  const info = asRecord(message?.info);
+  if (!message || !info) {
+    return json;
+  }
+  const agent = typeof info.agent === "string" ? info.agent : "";
+  info.agent = TUI_PROMPT_AGENTS.has(agent) ? agent : "build";
+  info.model = {
+    providerID: model.providerID,
+    modelID: model.id,
+    ...(model.variant ? { variant: model.variant } : {}),
+  };
+  message.info = info;
+  parsed.messages[last] = message;
+  return JSON.stringify(parsed);
+}
+
+/**
+ * The prompt bar rejects a model whose provider is not connected.
+ * Naming the recorded provider lists its catalog models.
+ * No credential is added.
+ */
+export function promptBarEnv(base: NodeJS.ProcessEnv, exportJson: string): NodeJS.ProcessEnv {
+  const model = sessionModelOf(exportJson);
+  if (!model || !PROVIDER_ID.test(model.providerID)) {
+    return base;
+  }
+  let parsed: Record<string, unknown> = {};
+  if (base.OPENCODE_CONFIG_CONTENT) {
+    try {
+      const value = JSON.parse(base.OPENCODE_CONFIG_CONTENT) as unknown;
+      if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+        parsed = { ...(value as Record<string, unknown>) };
+      }
+    } catch {
+      // A broken value stops the server. The recorded provider still has to be listed.
+      parsed = {};
+    }
+  }
+  const providerValue = parsed.provider;
+  const provider =
+    providerValue !== null && typeof providerValue === "object" && !Array.isArray(providerValue)
+      ? { ...(providerValue as Record<string, unknown>) }
+      : {};
+  if (provider[model.providerID] == null) {
+    provider[model.providerID] = {};
+  }
+  parsed.provider = provider;
+  return { ...base, OPENCODE_CONFIG_CONTENT: JSON.stringify(parsed) };
+}
+
 function serverHeaders(env: NodeJS.ProcessEnv): Record<string, string> {
   const password = env.OPENCODE_SERVER_PASSWORD;
   if (!password) {
@@ -249,8 +343,8 @@ async function keepField(
 
 /**
  * Fork the imported session and put its recorded model back.
- * OpenCode's fork copies the messages and leaves the model empty, so the
- * TUI would otherwise use its own default.
+ * OpenCode's fork copies the messages and leaves the model empty.
+ * The prompt bar reads the last user message, not this row.
  */
 export async function forkKeepingModel(input: {
   url: string;
@@ -494,7 +588,7 @@ async function openRelease(
     if (!readExport) {
       throw new Error(`The session archive is missing ${pass.file}.`);
     }
-    const exportJson = readExport().toString("utf8");
+    const exportJson = exportForPromptBar(readExport().toString("utf8"));
     assertReadableExport(exportJson, index.cliVersion);
     // The import creates the session the export names, whatever the index says.
     const sessionId = sessionIdOf(exportJson);
@@ -503,7 +597,7 @@ async function openRelease(
     }
     const exportPath = path.join(dir, "session.json");
     await writeFile(exportPath, exportJson);
-    const env = attachEnv(process.env);
+    const env = promptBarEnv(attachEnv(process.env), exportJson);
     const imported = await run(bin, ["import", exportPath, "--pure"], {
       cwd,
       env,

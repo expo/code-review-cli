@@ -5,7 +5,14 @@ import path from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
-import { attachEnv, forkKeepingModel, pickPass, waitForServer } from "../commands/attach.js";
+import {
+  attachEnv,
+  exportForPromptBar,
+  forkKeepingModel,
+  pickPass,
+  promptBarEnv,
+  waitForServer,
+} from "../commands/attach.js";
 import { run, spawnPiped } from "../core/exec.js";
 import { resolveOpencodeCli } from "../core/opencode.js";
 import { buildClaudeSessionExport } from "../core/session-archive.js";
@@ -85,6 +92,110 @@ async function requestServer(
 }
 
 describe("Attaching to a stored review", () => {
+  test("should point the prompt bar at the model recorded on the pass", () => {
+    const built = buildClaudeSessionExport({
+      agent: "correctness",
+      system: "",
+      text: "review this",
+      model: "anthropic/claude-haiku-4-5",
+      cwd: tmpdir(),
+      stdout: JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "the index is past the end" }] },
+      }),
+      cost: 0,
+      tokens: {},
+    });
+    const pinned = JSON.parse(exportForPromptBar(built.json)) as {
+      info: { agent: string; model: { id: string; providerID: string } };
+      messages: {
+        info: { role: string; agent: string; model: { providerID: string; modelID: string } };
+      }[];
+    };
+    const user = pinned.messages.find((message) => message.info.role === "user");
+    expect(user?.info.agent).toBe("build");
+    expect(user?.info.model).toEqual({
+      providerID: "anthropic",
+      modelID: "claude-haiku-4-5",
+    });
+    expect(pinned.info.agent).toBe("correctness");
+    expect(pinned.info.model).toEqual({ id: "claude-haiku-4-5", providerID: "anthropic" });
+    const assistant = pinned.messages.find((message) => message.info.role === "assistant");
+    expect(assistant?.info.agent).toBe("correctness");
+  });
+
+  test("should keep a prompt agent the bar already understands", () => {
+    const json = JSON.stringify({
+      info: {
+        model: { id: "gpt-5.6-terra", providerID: "openai", variant: "flex" },
+        agent: "plan",
+      },
+      messages: [
+        {
+          info: {
+            role: "user",
+            agent: "plan",
+            model: { providerID: "openai", modelID: "gpt-5.6-terra-fast" },
+          },
+        },
+      ],
+    });
+    const pinned = JSON.parse(exportForPromptBar(json)) as {
+      messages: {
+        info: { agent: string; model: { providerID: string; modelID: string; variant?: string } };
+      }[];
+    };
+    expect(pinned.messages[0]?.info.agent).toBe("plan");
+    expect(pinned.messages[0]?.info.model).toEqual({
+      providerID: "openai",
+      modelID: "gpt-5.6-terra",
+      variant: "flex",
+    });
+    expect(exportForPromptBar("{")).toBe("{");
+  });
+
+  test("should name the recorded provider for the prompt bar", () => {
+    const env = promptBarEnv(
+      { OPENCODE_CONFIG_CONTENT: JSON.stringify({ model: "openai/gpt-5.6-terra" }) },
+      JSON.stringify({
+        info: { model: { id: "claude-haiku-4-5", providerID: "anthropic" } },
+      }),
+    );
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "")).toEqual({
+      model: "openai/gpt-5.6-terra",
+      provider: { anthropic: {} },
+    });
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  test("should keep a provider the config already names", () => {
+    const env = promptBarEnv(
+      {
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          provider: { anthropic: { name: "Custom" } },
+        }),
+      },
+      JSON.stringify({
+        info: { model: { id: "claude-haiku-4-5", providerID: "anthropic" } },
+      }),
+    );
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "").provider.anthropic).toEqual({
+      name: "Custom",
+    });
+  });
+
+  test("should ignore a provider id that is not a name", () => {
+    const base = { PATH: "/usr/bin" };
+    expect(
+      promptBarEnv(
+        base,
+        JSON.stringify({ info: { model: { id: "x", providerID: "not a provider" } } }),
+      ),
+    ).toBe(base);
+    expect(promptBarEnv(base, "{}")).toBe(base);
+    expect(promptBarEnv({ OPENCODE_CONFIG_CONTENT: "{" }, "{}").OPENCODE_CONFIG_CONTENT).toBe("{");
+  });
+
   test("should open the first reviewer pass by default", () => {
     expect(pickPass(PASSES, undefined, undefined)).toBe(PASSES[1]!);
   });
@@ -186,7 +297,8 @@ describe("Attaching to a stored review", () => {
         tokens: { input: 1, output: 1 },
       });
       const file = path.join(checkout.home, "session.json");
-      await writeFile(file, built.json);
+      const pinned = exportForPromptBar(built.json);
+      await writeFile(file, pinned);
       try {
         const imported = await run(bin!, ["import", file, "--pure"], {
           cwd: checkout.cwd,
@@ -207,7 +319,7 @@ describe("Attaching to a stored review", () => {
           sessionId: built.sessionId,
           cwd: checkout.cwd,
           env,
-          exportJson: built.json,
+          exportJson: pinned,
         });
         const read = async (
           id: string,
@@ -232,8 +344,78 @@ describe("Attaching to a stored review", () => {
           agent: "correctness",
           model: { id: "claude-haiku-4-5", providerID: "anthropic" },
         });
+        const messages = await fetch(
+          `${url}/session/${built.sessionId}/message?directory=${encodeURIComponent(checkout.cwd)}`,
+          { headers: basicAuth(env) },
+        );
+        expect(messages.status).toBe(200);
+        const transcript = (await messages.json()) as {
+          info: {
+            role?: string;
+            agent?: string;
+            model?: { providerID?: string; modelID?: string };
+          };
+        }[];
+        const user = transcript.findLast((message) => message.info.role === "user");
+        expect(user?.info.agent).toBe("build");
+        expect(user?.info.model).toEqual({
+          providerID: "anthropic",
+          modelID: "claude-haiku-4-5",
+        });
       } finally {
         server?.kill("SIGKILL");
+        await rm(checkout.home, { recursive: true, force: true });
+      }
+    },
+    { timeout: 180_000 },
+  );
+
+  test(
+    "should offer the recorded provider to the prompt bar",
+    async () => {
+      const bin = await resolveOpencodeCli();
+      expect(bin).toBeTruthy();
+      const checkout = await makeCheckout();
+      const exportJson = JSON.stringify({
+        info: { model: { id: "claude-haiku-4-5", providerID: "anthropic" } },
+      });
+      const listed = async (env: NodeJS.ProcessEnv): Promise<{ ids: string[]; haiku: boolean }> => {
+        const server = spawnPiped(
+          bin!,
+          ["serve", "--port", "0", "--hostname", "127.0.0.1", "--pure"],
+          { cwd: checkout.cwd, env },
+        );
+        try {
+          const url = await waitForServer(server);
+          const response = await fetch(
+            `${url}/config/providers?directory=${encodeURIComponent(checkout.cwd)}`,
+            { headers: basicAuth(env) },
+          );
+          expect(response.status).toBe(200);
+          const body = (await response.json()) as {
+            providers?: { id?: string; models?: Record<string, unknown> }[];
+          };
+          const anthropic = body.providers?.find((provider) => provider.id === "anthropic");
+          return {
+            ids: (body.providers ?? []).flatMap((provider) => (provider.id ? [provider.id] : [])),
+            haiku: Boolean(anthropic?.models?.["claude-haiku-4-5"]),
+          };
+        } finally {
+          server.kill("SIGKILL");
+        }
+      };
+      const plain = attachEnv(checkout.env);
+      delete plain.ANTHROPIC_API_KEY;
+      delete plain.ANTHROPIC_AUTH_TOKEN;
+      delete plain.CLAUDE_CODE_OAUTH_TOKEN;
+      try {
+        const closed = await listed(plain);
+        expect(closed.ids).not.toContain("anthropic");
+        expect(closed.haiku).toBe(false);
+        const offered = await listed(promptBarEnv(plain, exportJson));
+        expect(offered.ids).toContain("anthropic");
+        expect(offered.haiku).toBe(true);
+      } finally {
         await rm(checkout.home, { recursive: true, force: true });
       }
     },
