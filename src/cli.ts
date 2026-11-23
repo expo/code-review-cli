@@ -18,7 +18,7 @@ Usage:
   ecr review [options]   Review local changes (default). See \`ecr review --help\`.
   ecr post-review --artifact <path> --repo <owner/repo> --pr <n>   Post an exact saved preview.
   ecr ci                 Review the current PR and post a comment (GitHub Actions).
-  ecr attach --pr <n>    Reopen a finished review session in OpenCode. See \`ecr attach --help\`.
+  ecr attach --pr <n>    Reopen a finished review in Claude Code or OpenCode. See \`ecr attach --help\`.
   ecr dismiss --pr <n> <id...>     Hide a finding on a PR (see \`ecr dismiss --help\`).
   ecr undismiss --pr <n> <id...>   Restore a dismissed finding.
   ecr feedback [--repo <owner/repo>] [--limit <n>]   Report what humans pushed back on (see \`ecr feedback --help\`).
