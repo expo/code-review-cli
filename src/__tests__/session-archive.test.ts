@@ -380,6 +380,41 @@ describe("Session archive", () => {
     expect(capture.orderedPasses()[0]?.exportJson).toBe(exported);
   });
 
+  test("should wait for the server to close before it tries the export again", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ecr-session-close-"));
+    const bin = path.join(dir, "opencode");
+    const released = path.join(dir, "released");
+    const exported = JSON.stringify({ info: { id: "ses_held", version: pinnedOpencodeVersion() } });
+    // The export fails while the server still holds the database.
+    await writeFile(bin, `#!/bin/sh\n[ -f "${released}" ] || exit 1\nprintf '%s' '${exported}'\n`, {
+      mode: 0o755,
+    });
+    const capture = createSessionCapture();
+    capture.note({
+      agent: "correctness",
+      title: "review-correctness-c0",
+      source: "opencode",
+      sessionId: "ses_held",
+    });
+    const log: string[] = [];
+    try {
+      await capture.exportOpencode({
+        cwd: dir,
+        env: process.env,
+        bin,
+        log: (line) => log.push(line),
+        closeServer: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          await writeFile(released, "");
+        },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+    expect(log).toEqual([]);
+    expect(capture.orderedPasses()[0]?.exportJson).toBe(exported);
+  });
+
   test("should not retry a pass that another scope could not export", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "ecr-session-scope-"));
     const bin = path.join(dir, "opencode");

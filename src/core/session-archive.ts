@@ -100,7 +100,8 @@ export interface SessionCapture {
     env: NodeJS.ProcessEnv;
     bin: string;
     log: (line: string) => void;
-    closeServer: () => void;
+    /** Stop the server, and resolve when it has let go of the session database. */
+    closeServer: () => void | Promise<void>;
     /** Limit for one export. Defaults to 30 seconds. */
     timeoutMs?: number;
   }): Promise<void>;
@@ -199,7 +200,7 @@ function scopedCapture(
         return;
       }
       // The server can hold the session database. Close it and read once more.
-      input.closeServer();
+      await input.closeServer();
       await exportPasses(failed, input, limits);
       for (const pass of pending()) {
         input.log(`session store: could not export ${pass.agent} (${pass.sessionId})`);
