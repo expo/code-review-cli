@@ -12,6 +12,7 @@ import {
   findUnknownModels,
   formatUnknownModels,
   buildOpencodeConfig,
+  promptAndParse,
   resolveEngineDispatch,
   resolveOpencodeCli,
   serverStopped,
@@ -21,6 +22,8 @@ import {
 import type { OpencodeHandle } from "../core/opencode.js";
 import type { ClaudeCodeHandle } from "../core/claude-code.js";
 import type { LoadedConfig } from "../config/schema.js";
+import { createSessionCapture } from "../core/session-archive.js";
+import { RateLimitWatch } from "../core/throttle.js";
 
 test("resolveEngineDispatch: per-agent router picks the right engine and claude handle", () => {
   const claudeSentinel = { engine: "claude-code" } as ClaudeCodeHandle;
@@ -595,4 +598,94 @@ describe("Waiting for the OpenCode server to stop", () => {
     expect(waited).toBeGreaterThanOrEqual(300);
     expect(waited).toBeLessThan(3000);
   });
+});
+
+describe("Recording an OpenCode pass for the session archive", () => {
+  /**
+   * A handle whose server answers each prompt with the next text of `replies`.
+   * `created` lists the session ids in the order they were opened.
+   */
+  function scriptedHandle(replies: string[]): { handle: OpencodeHandle; created: string[] } {
+    const sessions = new Map<string, unknown[]>();
+    const created: string[] = [];
+    const client = {
+      session: {
+        create: async () => {
+          const id = `ses_scripted${created.length + 1}`;
+          created.push(id);
+          sessions.set(id, []);
+          return { data: { id } };
+        },
+        promptAsync: async ({ path: { id } }: { path: { id: string } }) => {
+          sessions.get(id)?.push(
+            { info: { role: "user" }, parts: [] },
+            {
+              info: { role: "assistant", time: { completed: Date.now() }, cost: 0 },
+              parts: [{ type: "text", text: replies.shift() ?? "" }],
+            },
+          );
+          return { data: {} };
+        },
+        messages: async ({ path: { id } }: { path: { id: string } }) => ({
+          data: sessions.get(id) ?? [],
+        }),
+        abort: async () => ({ data: true }),
+      },
+    };
+    const handle = {
+      client,
+      url: "",
+      close: () => {},
+      rateLimit: new RateLimitWatch(),
+      capture: createSessionCapture(),
+    } as unknown as OpencodeHandle;
+    return { handle, created };
+  }
+  const args = {
+    agent: "correctness",
+    system: "SYS",
+    text: "the task",
+    title: "review-correctness-c0",
+  };
+  const parse = (text: string): { ok: boolean } => JSON.parse(text) as { ok: boolean };
+
+  it("should note the session whose reply parsed", async () => {
+    const { handle, created } = scriptedHandle(['{"ok":true}']);
+    expect((await promptAndParse(handle, args, parse)).value).toEqual({ ok: true });
+    expect(created).toEqual(["ses_scripted1"]);
+    expect(handle.capture?.orderedPasses()).toMatchObject([
+      {
+        agent: "correctness",
+        title: "review-correctness-c0",
+        source: "opencode",
+        sessionId: "ses_scripted1",
+      },
+    ]);
+  }, 20_000);
+
+  it("should note the same session when its second reply parses", async () => {
+    const { handle, created } = scriptedHandle(["not json", '{"ok":true}']);
+    await promptAndParse(handle, args, parse);
+    expect(created).toEqual(["ses_scripted1"]);
+    expect(handle.capture?.orderedPasses().map((pass) => pass.sessionId)).toEqual([
+      "ses_scripted1",
+    ]);
+  }, 20_000);
+
+  it("should note only the new session when the first session never parses", async () => {
+    const { handle, created } = scriptedHandle(["not json", "still not json", '{"ok":true}']);
+    await promptAndParse(handle, args, parse);
+    expect(created).toEqual(["ses_scripted1", "ses_scripted2"]);
+    expect(handle.capture?.orderedPasses().map((pass) => pass.sessionId)).toEqual([
+      "ses_scripted2",
+    ]);
+  }, 20_000);
+
+  it("should note nothing when no reply parses", async () => {
+    const { handle } = scriptedHandle(["not json", "still not json", "never json"]);
+    await expect(promptAndParse(handle, args, parse)).rejects.toThrow(
+      /did not return parseable JSON/,
+    );
+    expect(handle.capture?.count).toBe(0);
+  }, 20_000);
 });

@@ -1741,7 +1741,7 @@ export async function runReview(
  * Read OpenCode sessions out of the server database before `finally` deletes it.
  * A failure here is a log line. The review itself already succeeded.
  */
-async function exportReviewSessions(
+export async function exportReviewSessions(
   capture: SessionCapture | undefined,
   closeServer: () => void | Promise<void>,
   log: (line: string) => void,
