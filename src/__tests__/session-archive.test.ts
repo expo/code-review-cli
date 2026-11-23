@@ -347,6 +347,39 @@ describe("Session archive", () => {
     expect(log).toEqual(["session store: could not export correctness (ses_stalled)"]);
   });
 
+  test("should give the export a file to write to, not a pipe", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ecr-session-file-"));
+    const bin = path.join(dir, "opencode");
+    const exported = JSON.stringify({
+      info: { id: "ses_whole", version: pinnedOpencodeVersion() },
+    });
+    // Under Node, the pinned CLI loses the end of a large export when stdout is a pipe.
+    await writeFile(bin, `#!/bin/sh\n[ -f /dev/stdout ] || exit 1\nprintf '%s' '${exported}'\n`, {
+      mode: 0o755,
+    });
+    const capture = createSessionCapture();
+    capture.note({
+      agent: "correctness",
+      title: "review-correctness-c0",
+      source: "opencode",
+      sessionId: "ses_whole",
+    });
+    const log: string[] = [];
+    try {
+      await capture.exportOpencode({
+        cwd: dir,
+        env: process.env,
+        bin,
+        log: (line) => log.push(line),
+        closeServer: () => {},
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+    expect(log).toEqual([]);
+    expect(capture.orderedPasses()[0]?.exportJson).toBe(exported);
+  });
+
   test("should not retry a pass that another scope could not export", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "ecr-session-scope-"));
     const bin = path.join(dir, "opencode");

@@ -444,6 +444,13 @@ while the complete bounded stdout remains available for final-result parsing
 ([observed] `exec.ts` `RunOptions.onStdout` / `runWithInput`; `claude-code.ts`
 `createClaudeActivityStream`).
 
+**Stdout to a file.** `run` can send a child's stdout to a file (`stdoutPath`) and not
+to a pipe. It is for a tool that exits before a pipe is drained: under Node, the pinned
+`opencode export` lost the end of an export larger than the pipe buffer. The option
+routes through the same spawn path, so the process-group timeout still applies
+([observed] `exec.ts` `RunOptions.stdoutPath` / `runWithInput`; `session-archive.ts`
+`exportOpencodeSession`).
+
 ## Retry Taxonomy
 
 The runtime tells apart five failure classes and handles each differently. Conflating

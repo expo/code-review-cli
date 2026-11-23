@@ -1,6 +1,6 @@
 // @ref LLP 0007#session-archive [implements] — one OpenCode export per pass, published only when SESSION_STORE_REPO is set
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -26,6 +26,9 @@ const EXPORT_TIMEOUT_MS = 30_000;
 /** All exports of one `runReview` call share this many timeouts. */
 const EXPORT_BUDGET_TIMEOUTS = 4;
 const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** A recorded export stops at this size. */
+const EXPORT_LIMIT_BYTES = 96 * 1024 * 1024;
 
 /** The most one archive entry may unpack to. A recorded export stops at 96 MB. */
 export const SESSION_ENTRY_LIMIT_BYTES = 128 * 1024 * 1024;
@@ -249,23 +252,29 @@ async function exportOpencodeSession(
   env: NodeJS.ProcessEnv,
   timeout: number,
 ): Promise<string> {
-  const result = await run(bin, ["export", sessionId, "--pure"], {
-    cwd,
-    env: opencodeChildEnv(env),
-    check: false,
-    maxBuffer: 96 * 1024 * 1024,
-    timeout,
-    // An empty stdin selects the spawn path. Its timeout stops the whole process group.
-    input: "",
-  });
-  if (result.timedOut || result.overflowed || result.code !== 0) {
-    throw new Error("export failed");
+  const dir = await mkdtemp(path.join(tmpdir(), "ecr-export-"));
+  try {
+    const file = path.join(dir, "export.json");
+    const result = await run(bin, ["export", sessionId, "--pure"], {
+      cwd,
+      env: opencodeChildEnv(env),
+      check: false,
+      timeout,
+      // The pinned CLI can exit before a pipe is drained, which cuts a large export short.
+      // A file also selects the spawn path, whose timeout stops the whole process group.
+      stdoutPath: file,
+    });
+    if (result.timedOut || result.code !== 0 || (await stat(file)).size > EXPORT_LIMIT_BYTES) {
+      throw new Error("export failed");
+    }
+    const json = (await readFile(file, "utf8")).trim();
+    if (!sessionIdOf(json)) {
+      throw new Error("export had no session");
+    }
+    return json;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
-  const json = result.stdout.trim();
-  if (!sessionIdOf(json)) {
-    throw new Error("export had no session");
-  }
-  return json;
 }
 
 export function exportVersion(json: string): string | undefined {

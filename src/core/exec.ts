@@ -1,5 +1,7 @@
 // @ref LLP 0003#subprocess-spawning-rules [implements] — the only sanctioned child-process spawn path in the codebase
 import { execFile, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -32,6 +34,12 @@ export interface RunOptions {
   /** When set, write this to the child's stdin (routes through spawn, not execFile). */
   input?: string;
   /**
+   * When set, the child writes stdout to this file, not to a pipe (routes through spawn).
+   * For a tool that can exit before a pipe is drained.
+   * `stdout` in the result is then empty.
+   */
+  stdoutPath?: string;
+  /**
    * Best-effort observer for captured stdout chunks on the spawn/input path. Only
    * bytes admitted by maxBuffer are observed; callback failures never affect the
    * child process. Intended for structured incremental output, not raw log piping.
@@ -51,8 +59,8 @@ export async function run(
   args: string[],
   options: RunOptions = {},
 ): Promise<RunResult> {
-  if (options.input !== undefined) {
-    return runWithInput(command, args, options, options.input);
+  if (options.input !== undefined || options.stdoutPath !== undefined) {
+    return runWithInput(command, args, options, options.input ?? "");
   }
   const check = options.check ?? true;
   try {
@@ -147,11 +155,22 @@ function runWithInput(
   const maxBuffer = options.maxBuffer ?? 64 * 1024 * 1024;
   return new Promise((resolve, reject) => {
     const detached = process.platform !== "win32";
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: options.env,
-      detached,
-    });
+    const stdoutFd =
+      options.stdoutPath === undefined ? undefined : openSync(options.stdoutPath, "w", 0o600);
+    let child: ChildProcess;
+    try {
+      child = spawn(command, args, {
+        cwd: options.cwd,
+        env: options.env,
+        detached,
+        stdio: ["pipe", stdoutFd ?? "pipe", "pipe"],
+      });
+    } finally {
+      // The child has its own copy of the descriptor.
+      if (stdoutFd !== undefined) {
+        closeSync(stdoutFd);
+      }
+    }
     let stdout = "";
     let stderr = "";
     let overflowed = false;
@@ -208,9 +227,9 @@ function runWithInput(
       }
       return next;
     };
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
       const before = stdout.length;
       stdout = cap(stdout, chunk);
       const admitted = stdout.length - before;
@@ -222,14 +241,14 @@ function runWithInput(
         }
       }
     });
-    child.stderr.on("data", (chunk: string) => {
+    child.stderr?.on("data", (chunk: string) => {
       stderr = cap(stderr, chunk);
     });
     // A late I/O error on either stream (e.g. the process group getting
     // SIGKILLed mid-read) would otherwise throw unhandled and crash the
     // parent; the close handler reports the real outcome regardless.
-    child.stdout.on("error", () => {});
-    child.stderr.on("error", () => {});
+    child.stdout?.on("error", () => {});
+    child.stderr?.on("error", () => {});
     child.on("error", (error) => {
       clearTimers();
       liveChildKillers.delete(emergencyKill);
@@ -263,11 +282,11 @@ function runWithInput(
         overflowed,
       });
     });
-    child.stdin.on("error", () => {
+    child.stdin?.on("error", () => {
       // A child that exits before reading stdin (e.g. bad args) closes the pipe;
       // ignore EPIPE — the close handler reports the real outcome.
     });
-    child.stdin.end(input);
+    child.stdin?.end(input);
   });
 }
 
