@@ -31,7 +31,11 @@ import { summarizePriorReview } from "../core/prior-review.js";
 import { dropStaleVerdict, feedbackApplied, feedbackNeedsRunSeam } from "../core/adjudicate.js";
 import { runReview } from "../core/review.js";
 import type { ReviewRunOptions, ReviewRunResult } from "../core/review.js";
-import { createSessionCapture, publishSessionArchive } from "../core/session-archive.js";
+import {
+  createSessionCapture,
+  publishSessionArchive,
+  takeSessionStoreToken,
+} from "../core/session-archive.js";
 import type { SessionCapture } from "../core/session-archive.js";
 import {
   reviewCacheAllowed,
@@ -146,6 +150,8 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
     process.stdout.write(CI_USAGE);
     return;
   }
+  // Taken before any child process starts, so only the upload receives it.
+  const sessionStoreToken = takeSessionStoreToken();
   const agents = parseAgents(argv);
   const route = argv.includes("--route");
   const scopesFilter = parseListFlag(argv, "--scopes");
@@ -278,6 +284,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
         noStackAware,
         expectHead,
         sessionCapture,
+        sessionStoreToken,
       });
       return;
     }
@@ -294,6 +301,7 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
         noStackAware,
         expectHead,
         sessionCapture,
+        sessionStoreToken,
       });
     } catch (error) {
       // Fan-out failures stay non-blocking (single-writer property is the point).
@@ -508,6 +516,8 @@ interface CiRunOptions {
   expectHead?: string | undefined;
   /** Set only when SESSION_STORE_REPO is set. One capture for the whole CI process. */
   sessionCapture?: SessionCapture;
+  /** The store token, already removed from the environment. */
+  sessionStoreToken?: string | undefined;
 }
 
 // @ref LLP 0007#ecr-ci-the-trusted-root-run [implements] — --expect-head pins the review to the commit the request named
@@ -775,6 +785,7 @@ async function runLegacyCi(
         pr: prNumber,
         headSha,
         log: (line) => process.stderr.write(`${line}\n`),
+        ...(options.sessionStoreToken ? { storeToken: options.sessionStoreToken } : {}),
       });
     }
   } catch (error) {
@@ -1344,6 +1355,7 @@ async function runRoutedCi(
       pr: prNumber,
       headSha,
       log: (line) => process.stderr.write(`${line}\n`),
+      ...(options.sessionStoreToken ? { storeToken: options.sessionStoreToken } : {}),
     });
   }
 }
