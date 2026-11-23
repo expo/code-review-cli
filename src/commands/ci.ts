@@ -32,6 +32,12 @@ import { dropStaleVerdict, feedbackApplied, feedbackNeedsRunSeam } from "../core
 import { runReview } from "../core/review.js";
 import type { ReviewRunOptions, ReviewRunResult } from "../core/review.js";
 import {
+  createSessionCapture,
+  publishSessionArchive,
+  takeSessionStoreToken,
+} from "../core/session-archive.js";
+import type { SessionCapture } from "../core/session-archive.js";
+import {
   reviewCacheAllowed,
   reviewCanBeReused,
   reviewInputHash,
@@ -144,6 +150,8 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
     process.stdout.write(CI_USAGE);
     return;
   }
+  // Taken before any child process starts, so only the upload receives it.
+  const sessionStoreToken = takeSessionStoreToken();
   const agents = parseAgents(argv);
   const route = argv.includes("--route");
   const scopesFilter = parseListFlag(argv, "--scopes");
@@ -251,6 +259,11 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
     }
   }
 
+  // @ref LLP 0007#session-archive [implements] — one capture for every scope; publish only after the comment posts
+  const sessionCapture = process.env.SESSION_STORE_REPO?.trim()
+    ? createSessionCapture()
+    : undefined;
+
   try {
     // A malformed manifest is a loud, non-blocking error (never a silent fallback).
     let manifest: RoutingManifest | null;
@@ -270,6 +283,8 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
         contextText,
         noStackAware,
         expectHead,
+        sessionCapture,
+        sessionStoreToken,
       });
       return;
     }
@@ -285,6 +300,8 @@ export async function ciCommand(argv: string[] = []): Promise<void> {
         contextText,
         noStackAware,
         expectHead,
+        sessionCapture,
+        sessionStoreToken,
       });
     } catch (error) {
       // Fan-out failures stay non-blocking (single-writer property is the point).
@@ -485,7 +502,7 @@ export function mergeAggregateFeedback(
 }
 
 /** Options shared by the legacy and routed CI paths (parsed from argv once). */
-interface CiRunOptions {
+export interface CiRunOptions {
   agents: string[] | undefined;
   route: boolean;
   scopesFilter?: string[] | undefined;
@@ -497,6 +514,10 @@ interface CiRunOptions {
   noStackAware: boolean;
   /** --expect-head: the full head commit hash this run may review, or undefined. */
   expectHead?: string | undefined;
+  /** Set only when SESSION_STORE_REPO is set. One capture for the whole CI process. */
+  sessionCapture?: SessionCapture;
+  /** The store token, already removed from the environment. */
+  sessionStoreToken?: string | undefined;
 }
 
 // @ref LLP 0007#ecr-ci-the-trusted-root-run [implements] — --expect-head pins the review to the commit the request named
@@ -572,7 +593,7 @@ function workspaceRunsDir(cwd: string): string {
  * The pre-routing single-config path. Kept byte-for-byte equivalent so that with no
  * routing.jsonc the CLI behaves exactly as before (backcompat invariant).
  */
-async function runLegacyCi(
+export async function runLegacyCi(
   source: ReviewSource,
   repo: string,
   prNumber: number,
@@ -748,6 +769,7 @@ async function runLegacyCi(
       // time. Either way the feedback path is fail-open (runReview swallows its own
       // errors), so it never fails the PR's checks.
       feedback,
+      sessionCapture: options.sessionCapture,
       onProgress: (message) => process.stderr.write(`${message}\n`),
     });
     await reporter.report(
@@ -756,6 +778,16 @@ async function runLegacyCi(
       inputHash && reviewCanBeReused(review) ? inputHash : undefined,
     );
     process.stderr.write(`CI reviewer: posted review (${review.decision}).\n`);
+    if (options.sessionCapture) {
+      await publishSessionArchive({
+        capture: options.sessionCapture,
+        repo,
+        pr: prNumber,
+        headSha,
+        log: (line) => process.stderr.write(`${line}\n`),
+        ...(options.sessionStoreToken ? { storeToken: options.sessionStoreToken } : {}),
+      });
+    }
   } catch (error) {
     // A reviewer failure must never fail the PR's checks — but it must also not be
     // silent. Post a terminal state to the PR so the maintainer who triggered it
@@ -798,7 +830,7 @@ function failureReview(scopeName: string, reason: string): CoordinatorOutput {
 
 // @ref LLP 0007#routed-ci-fan-out [implements] — root tag wins; sequential per-scope budgets; partial --scopes merges prior state
 /** The routing fan-out: one process, N scopes reviewed sequentially, one render. */
-async function runRoutedCi(
+export async function runRoutedCi(
   source: ReviewSource & { dispose(): Promise<void> },
   manifest: RoutingManifest,
   repo: string,
@@ -1202,6 +1234,7 @@ async function runRoutedCi(
           passesBudgetMs: budget,
           runsDir: workspaceRunsDir(cwd),
           feedback: feedbackSeam,
+          sessionCapture: options.sessionCapture?.withScope(scope.name),
           ...(mcpAudit ? { mcpAuditPath: mcpAudit.auditPath } : {}),
           onProgress: (message) => process.stderr.write(`[${scope.name}] ${message}\n`),
         });
@@ -1212,6 +1245,8 @@ async function runRoutedCi(
       );
       review = failureReview(scope.name, publicFailureReason(error));
       inputHash = undefined;
+      // The comment shows a failure for this scope, so its finished passes are not stored.
+      options.sessionCapture?.withScope(scope.name).discard();
     }
     results.push({
       scope: scope.name,
@@ -1312,6 +1347,16 @@ async function runRoutedCi(
       await reporterFor(rootTag, false, rootConfig.review.readyForHumanLabel).clear();
     }
     process.stderr.write("CI reviewer: posted per-scope reviews.\n");
+  }
+  if (options.sessionCapture && results.length > 0) {
+    await publishSessionArchive({
+      capture: options.sessionCapture,
+      repo,
+      pr: prNumber,
+      headSha,
+      log: (line) => process.stderr.write(`${line}\n`),
+      ...(options.sessionStoreToken ? { storeToken: options.sessionStoreToken } : {}),
+    });
   }
 }
 

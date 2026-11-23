@@ -203,6 +203,22 @@ untrusted external context; see below).
 
 ---
 
+## Storing review sessions
+
+`ecr ci` can store the transcript of each review pass in a private repository.
+Storage is off until the `ecr ci` step of the workflow sets two variables:
+
+- `SESSION_STORE_REPO`: the `owner/name` of a **private** repository. Each run
+  becomes one release there. `ecr ci` does not upload to a repository that is not
+  private.
+- `SESSION_STORE_TOKEN`: a token that can create a release in that repository
+  (`contents: write`). The workflow's own `GITHUB_TOKEN` cannot write to another
+  repository. Only the upload receives this token.
+
+A transcript holds the prompts, the diff, and the file contents the reviewers read.
+Everyone who can read the store repository can read them, so give the store the same
+readers as the code.
+
 ## Keeping prompts true (`ecr ref-check`)
 
 Good reviewer prompts cite real code ("every webhook router must call

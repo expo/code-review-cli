@@ -116,6 +116,11 @@ jobs:
           BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
           # Optional: override the model for every agent.
           REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL }}
+          # Optional: store each review's transcripts for `ecr attach` (see the README).
+          # The store must be a private repository. The token needs `contents: write`
+          # on it, and only the upload receives it.
+          # SESSION_STORE_REPO: ${{ vars.SESSION_STORE_REPO }}
+          # SESSION_STORE_TOKEN: ${{ secrets.SESSION_STORE_TOKEN }}
         run: |
           # Build the flags as a bash array so the path never word-splits.
           ARGS=(--context-file "$PLAN_FILE")
