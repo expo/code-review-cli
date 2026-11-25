@@ -384,11 +384,6 @@ export function defaultSessionPass(passes: SessionIndexPass[]): SessionIndexPass
   return passes.find((pass) => !NON_REVIEWER_AGENTS.has(pass.agent));
 }
 
-/** True when attach must stop instead of importing into a different commit. */
-export function recordedShaBlocksAttach(checkoutSha: string, recordedSha: string): boolean {
-  return checkoutSha.toLowerCase() !== recordedSha.toLowerCase();
-}
-
 export function zipTooLarge(bytes: number): boolean {
   return bytes > SESSION_ZIP_LIMIT_BYTES;
 }
@@ -415,14 +410,19 @@ function assertSha(headSha: string): string {
   return sha;
 }
 
-/** `session/<owner>/<repo>/<pr>/<head12>/<runId>`, with a trailing slash before the run id. */
-export function sessionTagPrefix(repo: string, pr: number, headSha: string): string {
+/** `session/<owner>/<repo>/<pr>/`, the prefix of every archive for one pull request. */
+export function sessionPrTagPrefix(repo: string, pr: number): string {
   if (!Number.isInteger(pr) || pr <= 0) {
     throw new Error("The pull request number must be a positive integer.");
   }
   const [owner, name] = assertRepo(repo);
+  return `session/${owner}/${name}/${pr}/`;
+}
+
+/** `session/<owner>/<repo>/<pr>/<head12>/<runId>`, with a trailing slash before the run id. */
+export function sessionTagPrefix(repo: string, pr: number, headSha: string): string {
   const sha = assertSha(headSha);
-  return `session/${owner}/${name}/${pr}/${sha.slice(0, 12)}/`;
+  return `${sessionPrTagPrefix(repo, pr)}${sha.slice(0, 12)}/`;
 }
 
 export function sessionTag(repo: string, pr: number, headSha: string, runId: string): string {
@@ -461,17 +461,22 @@ export interface ListedRelease {
   publishedAt: string;
 }
 
+function newestUnder(releases: ListedRelease[], prefix: string, rest: RegExp): ListedRelease[] {
+  return releases
+    .filter(
+      (release) => release.tag.startsWith(prefix) && rest.test(release.tag.slice(prefix.length)),
+    )
+    .sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : a.publishedAt > b.publishedAt ? -1 : 0));
+}
+
 /** Newest first. The run id is the only segment after the prefix. */
 export function releasesForHead(releases: ListedRelease[], prefix: string): ListedRelease[] {
-  return releases
-    .filter((release) => {
-      if (!release.tag.startsWith(prefix)) {
-        return false;
-      }
-      const rest = release.tag.slice(prefix.length);
-      return rest.length > 0 && !rest.includes("/");
-    })
-    .sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : a.publishedAt > b.publishedAt ? -1 : 0));
+  return newestUnder(releases, prefix, /^[^/]+$/);
+}
+
+/** Newest first, across every head of the pull request. */
+export function releasesForPr(releases: ListedRelease[], prefix: string): ListedRelease[] {
+  return newestUnder(releases, prefix, /^[0-9a-f]{12}\/[^/]+$/);
 }
 
 function safeAgentFile(agent: string, used: Set<string>): string {

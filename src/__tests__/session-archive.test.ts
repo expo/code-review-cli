@@ -17,11 +17,12 @@ import {
   parseSessionIndex,
   pinnedOpencodeVersion,
   publishSessionArchive,
-  recordedShaBlocksAttach,
   releasesForHead,
+  releasesForPr,
   sessionAgentOf,
   sessionIdOf,
   sessionModelOf,
+  sessionPrTagPrefix,
   sessionTagPrefix,
   SESSION_ZIP_LIMIT_BYTES,
   takeSessionStoreToken,
@@ -155,11 +156,6 @@ describe("Session archive", () => {
     expect(chosen?.agent).toBe("correctness");
   });
 
-  test("should stop when the checkout commit differs from the recorded sha", () => {
-    expect(recordedShaBlocksAttach(SHA_A, SHA_B)).toBe(true);
-    expect(recordedShaBlocksAttach(SHA_A, SHA_A.toUpperCase())).toBe(false);
-  });
-
   test("should read the model and agent recorded on an export", () => {
     const built = buildClaudeSessionExport({
       agent: "correctness",
@@ -233,6 +229,24 @@ describe("Session archive", () => {
       `${prefix}200`,
       `${prefix}100`,
     ]);
+  });
+
+  test("should put the newest upload for a pull request first across heads", () => {
+    const prefix = sessionPrTagPrefix("expo/expo", 7);
+    const headA = sessionTagPrefix("expo/expo", 7, SHA_A);
+    const headB = sessionTagPrefix("expo/expo", 7, SHA_B);
+    const otherPr = `${sessionPrTagPrefix("expo/expo", 70)}${SHA_A.slice(0, 12)}/`;
+    const matches = releasesForPr(
+      [
+        { tag: `${headA}100`, publishedAt: "2026-01-01T10:00:00Z" },
+        { tag: `${headB}200`, publishedAt: "2026-01-01T12:00:00Z" },
+        { tag: `${otherPr}300`, publishedAt: "2026-01-01T13:00:00Z" },
+        { tag: `${prefix}not-a-sha/400`, publishedAt: "2026-01-01T14:00:00Z" },
+        { tag: `${headA}500/extra`, publishedAt: "2026-01-01T15:00:00Z" },
+      ],
+      prefix,
+    );
+    expect(matches.map((release) => release.tag)).toEqual([`${headB}200`, `${headA}100`]);
   });
 
   test("should refuse a repository name that git cannot put in a tag", () => {
