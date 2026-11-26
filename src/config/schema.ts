@@ -623,10 +623,10 @@ export interface LoadedAgent {
   paths?: string[];
   /**
    * Frontmatter `effort`: how much reasoning the model spends on this agent's passes.
-   * The claude-code engine passes it as `--effort`; OpenCode passes it for OpenAI, Google
-   * (Gemini 3 and later) and xAI models (opencodeEffortStyle). Absent leaves the level to
-   * the engine: the CLI default, or on OpenCode the model's default or a variant from the
-   * developer's global OpenCode config.
+   * The claude-code engine passes it as `--effort`; OpenCode passes it for OpenAI, Gemini 3
+   * and later, and xAI models (opencodeEffortStyle). Absent leaves the level to the engine:
+   * the CLI default, or on OpenCode the model's default. On OpenCode, a variant set on a
+   * same-named agent in the developer's own OpenCode config wins over it.
    */
   effort?: AgentEffort;
   /**

@@ -290,10 +290,12 @@ export type OpencodeEffortStyle = "openai" | "google" | "google-budget" | "xai";
 
 /**
  * The effort style for a model id, or null when ecr does not pass a level to that
- * provider. Native `openai` gets the OpenAI style, native `google` and `google-vertex` the
- * Google style, native `xai` (Grok) the xAI style. An alias (an auth entry with `upstream`) follows the adapter
- * `buildOpencodeConfig` creates for it: only `upstream: "openai"` gets `@ai-sdk/openai`,
- * so only that alias takes a level. Meta, OpenAI-compatible and other providers get null.
+ * provider. Native `openai` gets the OpenAI style, Gemini models on native `google` and
+ * `google-vertex` the Google style, native `xai` (Grok) the xAI style. Other
+ * `google-vertex` models (Claude on Vertex) use another adapter, so they get null. An
+ * alias (an auth entry with `upstream`) follows the adapter `buildOpencodeConfig` creates
+ * for it: only `upstream: "openai"` gets `@ai-sdk/openai`, so only that alias takes a
+ * level. Meta, OpenAI-compatible and other providers get null.
  */
 // @ref LLP 0006#agent-effort [implements] — OpenCode-routed effort, per provider adapter
 export function opencodeEffortStyle(
@@ -313,9 +315,13 @@ export function opencodeEffortStyle(
     return "openai";
   }
   if (provider === "google" || provider === "google-vertex") {
-    // Gemini 2.5 and older take a thinking budget, not a level; OpenCode itself uses
-    // thinkingBudget for them (review of PR #118), so ecr sends them no level.
-    return /^gemini-[12](?:[.-]|$)/.test(model.slice(slash + 1)) ? "google-budget" : "google";
+    // Only Gemini takes `thinkingConfig`: Vertex also serves Claude, on the Anthropic
+    // adapter. Gemini 2.5 and older take a thinking budget, not a level, so they get none.
+    const id = model.slice(slash + 1);
+    if (!id.startsWith("gemini-")) {
+      return null;
+    }
+    return /^gemini-[12](?:[.-]|$)/.test(id) ? "google-budget" : "google";
   }
   if (provider === "xai") {
     return "xai";
@@ -394,11 +400,10 @@ export function buildOpencodeConfig(
       model: reviewer.model,
       temperature: reviewer.temperature,
       // Only reviewers: the fixed roles below are written after this loop, so a reviewer
-      // that shares a fixed role's id cannot give that pass its level. `variant: ""`:
-      // OpenCode merges the developer's global config under this one and applies an
-      // agent's model variant last, so a global agent of the same name with a variant
-      // would replace this level (observed with 1.19.5; LLP 0006).
-      ...(effortOptions ? { ...effortOptions, variant: "" } : {}),
+      // that shares a fixed role's id cannot give that pass its level. A model variant
+      // set on a same-named agent in the developer's own OpenCode config still applies
+      // after these options and wins (LLP 0006).
+      ...effortOptions,
       prompt: `You are the ${reviewer.id} code reviewer. Follow the user message exactly and return only the requested JSON.`,
       tools: {
         ...reviewer.tools,

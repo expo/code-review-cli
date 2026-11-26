@@ -219,115 +219,38 @@ is letters, digits and underscores joined by single hyphens. An agent without `m
 
 ## Agent Effort
 
-An agent file may set `effort: low|medium|high|xhigh|max` in its frontmatter. The need came from an
-eval replay on one monorepo: a correctness reviewer on an `anthropic/…` model ended a pass after a
-median of 8 turns [observed], and a model-written miss analysis put 20 of 55 problems that human
-reviewers raised in the class "needs a logic trace" (eval run `full-v2-tune`, 2026-11-25; the data
-is private and not in this repo; no person checked the analysis). Depth is a per-agent need, and it costs time and money, so it is a
-per-agent key and not a run-level flag.
+An agent file may set `effort: low|medium|high|xhigh|max` in its frontmatter. Depth is a per-agent
+need (a correctness reviewer that must trace callers, not a conventions reviewer), and it costs time
+and money, so it is a per-agent key and not a run-level flag. In an eval replay on one monorepo, a
+correctness reviewer ended a pass after a median of 8 turns [observed].
 
-- **The claude-code engine passes it as a flag.** `startClaudeCode` copies the declared levels into
-  `ClaudeCodeHandle.efforts`, and `runClaudePrompt` passes `--effort <level>` for that agent's
-  passes [observed] (`buildClaudeArgs` `effort`; tests in `src/__tests__/claude-code.test.ts`). The
-  fixed roles (cross-cutting, verifier, adjudicator, stack verifier, coordinator) have no entry and
-  get no flag. The flag exists in the pinned `@anthropic-ai/claude-code@2.1.280` [observed]
-  (`claude --help`, 2026-11-25).
-- **The levels are keyed by pass id, so fixed-role ids are excluded.** Passes are looked up by
-  agent id, and a reviewer file can share a fixed role's id (`agents/verifier.md`). With an entry,
-  its level would also reach the built-in pass of that id. `buildAgentEfforts` gives such a
-  reviewer no entry, and the run note tells the author to rename the file. The id set is the
-  session archive's `NON_REVIEWER_AGENTS`, so the two cannot drift. The levels live in a
-  `Map`, so an id such as `constructor` cannot read an inherited `Object.prototype` value
-  (both found in review of the first version, PR #118).
-- **OpenCode passes it for OpenAI, Google and xAI models.** OpenCode hands unknown agent-config keys to
-  the provider as model options. `buildOpencodeConfig` adds one per reviewer with `effort`, chosen
-  by `opencodeEffortStyle` from the adapter ecr gives the model's provider: native `openai` and an
-  alias with `upstream: "openai"` (built on `@ai-sdk/openai`) get `reasoningEffort`; native
-  `google` and `google-vertex` get `thinkingConfig.thinkingLevel`; native `xai` (Grok, on
-  `@ai-sdk/xai`) gets `reasoningEffort`. Any other alias, including
-  `upstream: "google"` (built on `@ai-sdk/openai-compatible`), gets nothing: a Google key on that
-  adapter reached a mock endpoint as a top-level `thinkingConfig` on `/chat/completions` (found in
-  review of PR #119). Observed with the pinned OpenCode 1.19.5 against a local mock
-  endpoint (2026-11-26) [observed]: with no key, an `openai/gpt-6.2-astra` request carried no
-  `reasoning` field; `reasoningEffort: "xhigh"` and `"max"` arrived as `reasoning.effort`; a
-  `google/gemini-4-neon` request carried `thinkingConfig: {includeThoughts: true, thinkingLevel:
-  "high"}` with no key, and `thinkingLevel: "low"` replaced the `high`; an `xai/grok-4.7` request to
-  `/chat/completions` carried no level field with no key, and `reasoningEffort` `"low"`, `"high"` and
-  `"xhigh"` arrived as `reasoning_effort` (asked for in review of PR #118). With `XAI_API_KEY` set
-  in the environment instead of an inline key, the same model went to `/responses` with the level in
-  `reasoning.effort`; `"max"` and a non-reasoning Grok model got the field too (both seen in review
-  of PR #118, not re-run here; a second review saw only `/responses`, so the endpoint depends on
-  the setup). Which levels xAI's API accepts is not verified; per that review,
-  xAI documents `low` to `xhigh` for Grok 4.7, without `max`. Only reviewer entries get
-  the key: the fixed roles are written after the reviewer loop, so a reviewer that shares a fixed
-  role's id cannot give that pass its level. Gemini 2.5 and older take a thinking budget, not a
-  level (OpenCode uses `thinkingBudget` for them; found in review of PR #118), so
-  `opencodeEffortStyle` gives `gemini-1…`/`gemini-2…` ids the `google-budget` style, which sends
-  nothing, and the run note says so. A review of PR #118 saw, with OpenCode 1.19.5, a
-  `google/gemini-2.5-flash` request carry `thinkingLevel: "low"` when it was set (the adapter does
-  not reject it; Google's API does) and no `thinkingLevel` without it; the author's own probe of
-  that model sent no request, so the wire result is the review's. When ecr sends a level it also sets
-  the agent's `variant` to `""`: OpenCode merges the developer's global config under ecr's and applies
-  an agent's model variant after its options, and with a global same-named agent at variant `high`,
-  an inline `reasoningEffort: "low"` went out as `"high"`; with `variant: ""` it went out as `"low"`
-  (OpenAI and Gemini 4 Neon, OpenCode 1.19.5, mock endpoint, 2026-11-26) [observed]. An agent without
-  `effort` keeps OpenCode's variant behavior. The pinned Google adapter takes `thinkingLevel`
-  `minimal`, `low`, `medium` and `high`; with `xhigh` or `max` the pass failed inside OpenCode
-  (an invalid-provider-options error) with no request sent, on `google/…` and `google-vertex/…`
-  [observed]. OpenCode's model catalog lists more variants for some Gemini models; the limit comes
-  from the bundled Google SDK's option schema, so re-check it when the OpenCode pins move. So
-  `GOOGLE_THINKING_LEVELS` is `low`, `medium`, `high`: for the other two ecr sends no
-  key, the model runs at its default in OpenCode (`high` for Gemini 4 Neon; a `google/gemini-2.5-flash`
-  request carried no `thinkingLevel`, per review of PR #119), and the run note names the agent, its level
-  and the levels that work. Not observed: the ChatGPT/Codex sign-in path and a
-  real provider's response to each level. ecr passes the level as written; a provider that does
-  not take it fails that agent's passes with its own error.
-- **No level on OpenCode's own agent ids.** OpenCode 1.19.5 defines `build`, `compaction`,
-  `explore`, `general`, `plan`, `summary` and `title` (`app.agents()`, `native: true`, 2026-11-26) [observed]; a
-  reviewer config with one of these ids replaces that agent, and `compaction`, `summary` and `title`
-  also run for other sessions. A reviewer level there reached another reviewer's session
-  compaction (found in review of PR #119), so `buildOpencodeConfig` gives these ids no level
-  (`OPENCODE_BUILTIN_AGENTS`), and the run note tells the author to rename the file.
-- **Any other OpenCode-routed agent ignores it, with a note.** `agentEffortNote` names agents whose
-  OpenCode provider takes no level (Meta, OpenAI-compatible and others) once per run, the same way
-  `claudeTemperatureNote` reports a temperature the CLI cannot take.
-  `selectReviewers`, which `runReview` calls, builds it from the selected reviewer list, after the
-  `paths` filter and the router, so an agent either of them left out is never named. A later step
-  (a blocking pre-check, the budget) can still skip a named agent, so the note states a fact about
-  the setup ("has no effect for X"), not about a pass that ran.
-- **The model must support effort.** The CLI accepts every level for every model, but a model
-  without effort support gets none: a request from the pinned CLI to `claude-haiku-4-5` with
-  `--effort high` carried no effort field, and one to `claude-opus-5-5` did (seen in review of PR
-  #118 against a local mock endpoint, not re-run here). The engine does not check model support.
-- **Only reviewer files take it.** `effort` in `coordinator.md` or `shared.md` frontmatter has no
-  effect, so the loader adds a setup warning that says to remove it, instead of ignoring it.
-- **The claude-code no-tools fallback runs at `min(level, medium)`; OpenCode keeps the level.** A
-  timed-out pass is retried with no tools under a short cap (`maxToolCalls: 0`). A deep level there
-  would likely time out again (found in a multi-model review of PR #118, not measured in a live
-  run), and sending no level would use the CLI's default, which can be higher than the agent's own
-  `low`. So `fallbackEffort` caps the level at `medium` and never raises it, and `runClaudePrompt`
-  passes that for the fallback. Only the claude-code engine applies this cap. On OpenCode the
-  fallback, and the finalize and corrective prompts, run at the agent's own level: OpenCode reads
-  the level from the agent config, and ecr cannot know which lower levels a model takes (GPT-5 pro
-  takes only `high`, per the provider's docs cited in review of PR #119), so it never sends a level
-  the author did not write. An earlier version of PR #119 gave each such reviewer a
-  `<id>__fallback-effort` copy at `min(level, medium)`; review showed it could send a rejected
-  level, so it was removed.
-- **An invalid level never stops a review.** `parseAgentEffort` returns a setup warning with the
-  fix and no `effort`, so the agent runs at the default. The warning does not repeat the value: a
-  backtick in it would close the code span in the review comment, and setup notes are not
-  length-capped. The value is matched after trim and
-  lower-case, and a trailing `# comment` makes it invalid like any other text.
-- **Absent adds no key.** `LoadedAgent.effort` is set only when declared, so a setup without it
-  keeps its review-cache key, and a setup that adds or changes it gets a fresh review.
-- **Not handled here.** In a routed scope, a root `enforceAgents` entry replaces a same-id scope
-  agent, but the scope keeps its own setup warnings: an invalid root `effort` shows no warning
-  there, and an invalid scope `effort` warns about an agent that runs at the root's level. `mention`
-  warnings behave the same way, so a fix belongs to all per-agent warnings at once. An unmatched
-  quote (`effort: "max`) loads as `max`, because the shared frontmatter reader strips each quote on
-  its own for every key.
-- **`REVIEWER_MODEL` does not clear it.** The override can move an agent to another provider; the
-  level then goes to that provider, or the note reports it as ignored.
+- **Each engine maps the level to what its model takes.** The claude-code engine passes the CLI's
+  `--effort`. OpenCode passes it as a model option for the providers whose adapter takes a level:
+  OpenAI (and an `upstream: "openai"` alias), Gemini 3 and later on `google`/`google-vertex`, and
+  xAI (`opencodeEffortStyle`). Everything else gets no level: other providers and aliases, Claude
+  on Vertex (another adapter), Gemini 2.5 and older (they take a thinking budget, not a level), and
+  Gemini `xhigh`/`max` (the bundled Google adapter rejects them). The pinned OpenCode behavior was
+  checked against a mock endpoint [observed]; re-check it when the pins move.
+- **ecr passes the level as written.** It does not check which levels a model supports; a model can
+  ignore a level, and a provider can reject one, which fails that agent's passes.
+- **Only reviewers get a level.** Levels are looked up by agent id, so a reviewer file that shares
+  the id of a fixed pass (verifier, cross-cutting, adjudicator, stack-verifier, coordinator) or of
+  an OpenCode built-in agent (`compaction`, `title`, …) gets none, because the level would also reach
+  that pass. `effort` in `coordinator.md` or `shared.md` is a setup warning.
+- **A note names every level that has no effect.** `selectReviewers` builds it after the `paths`
+  filter and the router, so it names only selected reviewers, with the fix.
+- **The no-tools fallback does not run deeper.** On the claude-code engine, a timed-out pass retried
+  without tools runs at `min(level, medium)`. On OpenCode it keeps the agent's level, because a
+  model can reject a lower level that the author did not write.
+- **A developer's OpenCode variant wins.** OpenCode applies a variant set on a same-named agent in the
+  developer's own OpenCode config after ecr's options. ecr does not clear it, because a variant can
+  carry other options too (for example a service tier).
+- **It never stops a review.** An invalid value is a setup warning that does not repeat the value,
+  and the agent runs at the default. An absent key adds nothing to the agent, so its review-cache key
+  does not change. `REVIEWER_MODEL` keeps the level.
+- **Not handled here.** In a routed scope with `enforceAgents`, per-agent warnings come from the
+  scope's own files (`mention` has the same gap). The shared frontmatter reader strips an unmatched
+  quote (`effort: "max` loads as `max`).
 
 ## Budgets and Chunking Defaults
 

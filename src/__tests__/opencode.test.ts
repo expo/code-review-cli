@@ -719,6 +719,8 @@ test("opencodeEffortStyle: OpenAI, Google and xAI families take a level; others 
   expect(opencodeEffortStyle("google-vertex/gemini-2.5-pro", [])).toBe("google-budget");
   expect(opencodeEffortStyle("google/gemini-1.5-pro", [])).toBe("google-budget");
   expect(opencodeEffortStyle("google/gemini-3-pro", [])).toBe("google");
+  // Vertex also serves Claude, on the Anthropic adapter, which ignores thinkingConfig.
+  expect(opencodeEffortStyle("google-vertex/claude-opus-5-5@default", [])).toBeNull();
 });
 
 test("buildOpencodeConfig passes a reviewer's effort as its provider's option, and only a reviewer's", () => {
@@ -787,24 +789,22 @@ test("buildOpencodeConfig passes a Grok reviewer's level as reasoningEffort", ()
   expect(opencode.agent.grok!.thinkingConfig).toBeUndefined();
 });
 
-test('buildOpencodeConfig: no level for Gemini 2.5; `variant: ""` guards every level it sends', () => {
+test("buildOpencodeConfig: no level for Gemini 2.5 or Claude on Vertex, and no variant override", () => {
   const opencode = buildOpencodeConfig(
     configWith({
       agents: [
         { id: "flash", model: "google-vertex/gemini-2.5-flash", effort: "high" },
+        { id: "vertex-claude", model: "google-vertex/claude-opus-5-5@default", effort: "high" },
         { id: "neon", model: "google/gemini-4-neon", effort: "low" },
         { id: "astra", model: "openai/gpt-6.2-astra", effort: "xhigh" },
-        { id: "grok", model: "xai/grok-4.7", effort: "high" },
-        { id: "plain", model: "openai/gpt-6.2-astra" },
       ],
     }),
   ) as { agent: Record<string, Record<string, unknown>> };
   expect(opencode.agent.flash!.thinkingConfig).toBeUndefined();
-  expect("variant" in opencode.agent.flash!).toBe(false);
-  // A global OpenCode agent of the same name with a variant would otherwise replace the level.
-  expect(opencode.agent.neon!.variant).toBe("");
-  expect(opencode.agent.astra!.variant).toBe("");
-  expect(opencode.agent.grok!.variant).toBe("");
-  // An agent without effort keeps OpenCode's own variant behavior.
-  expect("variant" in opencode.agent.plain!).toBe(false);
+  expect(opencode.agent["vertex-claude"]!.thinkingConfig).toBeUndefined();
+  expect(opencode.agent.neon!.thinkingConfig).toEqual({ thinkingLevel: "low" });
+  // ecr never clears a variant: one from the developer's OpenCode config keeps all its options.
+  for (const id of ["flash", "vertex-claude", "neon", "astra"]) {
+    expect("variant" in opencode.agent[id]!, id).toBe(false);
+  }
 });
