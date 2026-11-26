@@ -264,8 +264,8 @@ async function loadConfigDir(
     if (md?.data.effort !== undefined) {
       setupWarnings.push(
         `${path.join(label, file)}: \`effort\` is read only in agents/*.md reviewer files, so it ` +
-          "has no effect here; the coordinator and the other built-in passes run at the default " +
-          "effort. Fix: remove `effort` from this file.",
+          "has no effect here; the built-in passes run at the default effort. Fix: remove " +
+          "`effort` from this file.",
       );
     }
   }

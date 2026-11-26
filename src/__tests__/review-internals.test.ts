@@ -931,7 +931,7 @@ describe("Exporting OpenCode sessions before the review closes", () => {
   });
 });
 
-describe("selectReviewers: the effort note names only reviewers that run", () => {
+describe("selectReviewers: the effort note names only selected reviewers", () => {
   const alpha = { id: "alpha", effort: "high" } as unknown as LoadedAgent;
   const ios = { id: "ios", effort: "high" } as unknown as LoadedAgent;
   const engineOf = { alpha: "claude-code", ios: "opencode", verifier: "claude-code" } as const;

@@ -544,6 +544,8 @@ effort support (Claude Haiku 4.5 is one), and ecr does not check this.
 A higher level costs more and takes longer, so set it on the agent that needs depth
 (a correctness reviewer that must trace callers), not on every agent. A value that
 is not a level is listed under **Review setup**, and the agent runs at the default.
+`effort` in `coordinator.md` or `shared.md` is also listed there: only reviewer
+files take it.
 An agent file in `agents/` named after a built-in pass (`verifier.md`,
 `cross-cutting.md`, `adjudicator.md`, `stack-verifier.md` or `coordinator.md`) gets
 no effort; the review note says to rename it.

@@ -332,15 +332,23 @@ test("loadReviewConfig: an invalid `effort` is a warning, and the agent runs at 
   }
 });
 
-test("loadReviewConfig: `effort` in coordinator.md is a warning, not silently ignored", async () => {
+test("loadReviewConfig: `effort` in coordinator.md or shared.md is a warning, not silently ignored", async () => {
   const root = await configDirWithAgent("IOS", "---\neffort: high\n---\nCoordinator prompt.");
   try {
+    await writeFile(
+      path.join(root, CONFIG_DIRNAME, "shared.md"),
+      "---\neffort: max\n---\nShared prompt.",
+      "utf8",
+    );
     const config = await loadReviewConfig(root);
-    expect(config.setupWarnings).toHaveLength(1);
-    const [warning] = config.setupWarnings!;
-    expect(warning).toContain(path.join(CONFIG_DIRNAME, "coordinator.md"));
-    expect(warning).toContain("is read only in agents/*.md reviewer files");
-    expect(warning).toContain("Fix: remove `effort` from this file.");
+    expect(config.setupWarnings).toHaveLength(2);
+    for (const file of ["shared.md", "coordinator.md"]) {
+      const warning = config.setupWarnings!.find((w) =>
+        w.includes(path.join(CONFIG_DIRNAME, file)),
+      );
+      expect(warning, file).toContain("is read only in agents/*.md reviewer files");
+      expect(warning, file).toContain("Fix: remove `effort` from this file.");
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

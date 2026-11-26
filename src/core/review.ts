@@ -2385,9 +2385,8 @@ export async function selectReviewers(args: {
     .filter((agent) => !selectedAgents.includes(agent))
     .map((agent) => agent.id);
 
-  // `effort` reaches only the `claude` CLI, and never a fixed pass. Say so once for an
-  // agent that runs in this review and whose level has no effect, so the setting does
-  // not fail silently.
+  // `effort` reaches only the `claude` CLI, and never a fixed pass. Say so once for a
+  // selected reviewer whose level has no effect, so the setting does not fail silently.
   // @ref LLP 0006#agent-effort [implements] — built from the selected reviewer list, after the paths filter and the router, so an agent either of them left out is never named; a later pre-check or budget limit can still skip a named one
   const effortNote = agentEffortNote(selectedAgents, args.engineOf);
   if (effortNote) {
