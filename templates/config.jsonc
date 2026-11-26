@@ -16,7 +16,8 @@
   // names the people the review mentions when that agent asks for a human review.
   // `effort: high` (low, medium, high, xhigh or max) sets how much an agent reasons on
   // `anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), `google/…`,
-  // `google-vertex/…` or `xai/…` models; Google takes only low, medium or high. Other
+  // `google-vertex/…` (Gemini 3 and later) or `xai/…` models; Google takes only low,
+  // medium or high. Other
   // providers get no level. A model can ignore a level it does not support (Claude Haiku
   // 4.5) or its provider can reject it, which fails that agent's passes. README: "effort".
 

@@ -263,8 +263,10 @@ per-agent key and not a run-level flag.
   role's id cannot give that pass its level. Gemini 2.5 and older take a thinking budget, not a
   level (OpenCode uses `thinkingBudget` for them; found in review of PR #118), so
   `opencodeEffortStyle` gives `gemini-1…`/`gemini-2…` ids the `google-budget` style, which sends
-  nothing, and the run note says so (unit-tested; a `google/gemini-2.5-flash` probe sent no request
-  even without a level, so this was not observed on the wire). When ecr sends a level it also sets
+  nothing, and the run note says so. A review of PR #118 saw, with OpenCode 1.19.5, a
+  `google/gemini-2.5-flash` request carry `thinkingLevel: "low"` when it was set (the adapter does
+  not reject it; Google's API does) and no `thinkingLevel` without it; the author's own probe of
+  that model sent no request, so the wire result is the review's. When ecr sends a level it also sets
   the agent's `variant` to `""`: OpenCode merges the developer's global config under ecr's and applies
   an agent's model variant after its options, and with a global same-named agent at variant `high`,
   an inline `reasoningEffort: "low"` went out as `"high"`; with `variant: ""` it went out as `"low"`

@@ -820,8 +820,9 @@ export function buildAgentEfforts(config: LoadedConfig): Map<string, AgentEffort
  * A one-time run note for an `effort` that has no effect. It states a fact about the
  * setup, not about a pass, so it stays true when a later step (a blocking pre-check, the
  * budget) skips the agent. The cases: the agent's model runs through OpenCode on a
- * provider ecr passes no level to (`opencodeEffortStyle` is null); a Google model with a
- * level its OpenCode adapter does not take (`GOOGLE_THINKING_LEVELS`); an OpenCode-routed
+ * provider ecr passes no level to (`opencodeEffortStyle` is null); a Gemini 2.5 or older
+ * model, which takes a thinking budget (`google-budget`); a Google model with a level its
+ * OpenCode adapter does not take (`GOOGLE_THINKING_LEVELS`); an OpenCode-routed
  * agent whose id is also an OpenCode built-in agent (`OPENCODE_BUILTIN_AGENTS`); an agent
  * whose id is also a fixed role's id. Each agent is named once, with the full fix. `agents` is the run's selected reviewer list, after the `paths`
  * filter and the router, so an agent either of them left out is never named. Returns null
@@ -965,7 +966,7 @@ export function agentEffortNote(
 
 /** The model families ecr passes an effort level to, for the run notes. */
 const EFFORT_PROVIDERS =
-  '`anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), `google/…`, `google-vertex/…` or `xai/…`';
+  '`anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), `google/…` or `google-vertex/…` (Gemini 3 and later), or `xai/…`';
 
 /**
  * Preserve actionable process diagnostics without copying arbitrary stderr into a

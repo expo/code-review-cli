@@ -941,7 +941,7 @@ test("agentEffortNote: OpenAI, Google and xAI models take a level through OpenCo
     "the model of each runs through OpenCode on a provider ecr passes no level to (ecr passes one only for `anthropic/…`",
   );
   expect(note).toContain(
-    '(ecr passes one only for `anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), `google/…`, `google-vertex/…` or `xai/…`)',
+    '(ecr passes one only for `anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), `google/…` or `google-vertex/…` (Gemini 3 and later), or `xai/…`)',
   );
   expect(named(note)).toBe("muse");
   // Without the alias's auth entry, `openai-api` is not known to be OpenAI.

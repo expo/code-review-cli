@@ -283,7 +283,8 @@ export const STACK_VERIFIER_AGENT = "stack-verifier";
 /**
  * How an OpenCode provider's SDK takes a reasoning level from an agent's config:
  * OpenAI's Responses adapter and xAI's adapter read `reasoningEffort`, Google's reads
- * `thinkingConfig.thinkingLevel`.
+ * `thinkingConfig.thinkingLevel` (Gemini 3 and later). `google-budget` marks Gemini 2.5 and
+ * older, which take a thinking budget instead; ecr sends them nothing.
  */
 export type OpencodeEffortStyle = "openai" | "google" | "google-budget" | "xai";
 
