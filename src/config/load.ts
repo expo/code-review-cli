@@ -6,8 +6,13 @@ import { readdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-import { DEFAULT_MIN_SEVERITY, ReviewConfigSchema, ScopeReviewConfigSchema } from "./schema.js";
-import type { AuthConfigEntry } from "./schema.js";
+import {
+  AGENT_EFFORT_LEVELS,
+  DEFAULT_MIN_SEVERITY,
+  ReviewConfigSchema,
+  ScopeReviewConfigSchema,
+} from "./schema.js";
+import type { AgentEffort, AuthConfigEntry } from "./schema.js";
 import type {
   LoadedAgent,
   LoadedConfig,
@@ -242,14 +247,28 @@ async function loadConfigDir(
   };
 
   // shared.md is optional; the coordinator is required.
-  const sharedPromptText = existsSync(path.join(dir, "shared.md"))
-    ? (await readPrompt("shared.md")).body
-    : "";
+  const sharedMd = existsSync(path.join(dir, "shared.md"))
+    ? await readPrompt("shared.md")
+    : undefined;
+  const sharedPromptText = sharedMd?.body ?? "";
 
   if (!existsSync(path.join(dir, "coordinator.md"))) {
     throw new Error(`Missing ${CONFIG_DIRNAME}/coordinator.md`);
   }
   const coordinatorMd = await readPrompt("coordinator.md");
+  // @ref LLP 0006#agent-effort [implements] — only reviewer files take `effort`; say so instead of ignoring it silently
+  for (const [file, md] of [
+    ["shared.md", sharedMd],
+    ["coordinator.md", coordinatorMd],
+  ] as const) {
+    if (md?.data.effort !== undefined) {
+      setupWarnings.push(
+        `${path.join(label, file)}: \`effort\` is read only in agents/*.md reviewer files, so it ` +
+          "has no effect here; the built-in passes run at the default effort. Fix: remove " +
+          "`effort` from this file.",
+      );
+    }
+  }
 
   // Every markdown file in agents/ is a reviewer agent (id = filename).
   const agentsDir = path.join(dir, "agents");
@@ -276,6 +295,13 @@ async function loadConfigDir(
     if (mentionWarning) {
       setupWarnings.push(mentionWarning);
     }
+    const { effort, warning: effortWarning } = parseAgentEffort(
+      md,
+      path.join(label, "agents", file),
+    );
+    if (effortWarning) {
+      setupWarnings.push(effortWarning);
+    }
     agents.push({
       id,
       description: md.data.description ?? "",
@@ -288,6 +314,7 @@ async function loadConfigDir(
       // review-cache key) it had before the key existed.
       ...(paths ? { paths } : {}),
       ...(mention ? { mention } : {}),
+      ...(effort ? { effort } : {}),
     });
   }
 
@@ -641,6 +668,35 @@ function parseAgentPaths(
 }
 
 /**
+ * The agent's `effort` level, or a setup warning that names the fix. A value that is
+ * not a level is ignored and the agent runs at the default effort; it never fails
+ * the load.
+ */
+// @ref LLP 0006#agent-effort [implements] — an invalid level warns and falls back, it never stops a review
+function parseAgentEffort(
+  md: { data: Record<string, string> },
+  file: string,
+): { effort?: AgentEffort; warning?: string } {
+  const raw = md.data.effort;
+  if (raw === undefined) {
+    return {};
+  }
+  const value = raw.trim().toLowerCase();
+  const effort = AGENT_EFFORT_LEVELS.find((level) => level === value);
+  if (effort) {
+    return { effort };
+  }
+  return {
+    warning:
+      // The value is not repeated: a backtick in it would close the code span in the
+      // review comment, and a long one would go into the comment uncapped.
+      `${file}: \`effort\` is not an effort level, so the agent runs at the default ` +
+      `effort. Fix: write one of ${AGENT_EFFORT_LEVELS.join(", ")} with nothing after it ` +
+      "(a `# comment` goes on its own line), or remove `effort`.",
+  };
+}
+
+/**
  * The agent's `mention` list without leading `@`s, or a setup warning that names the
  * fix. An entry that is not a login or team is left out with a warning, and the
  * agent still mentions the valid ones. An invalid list mentions no one; it never
@@ -768,8 +824,8 @@ function frontmatterWarnings(
   if (hidden) {
     return [
       `${file}: its frontmatter does not start on the first line (${hidden.cause}), so ` +
-        "every key in it is ignored, including `description`, `alwaysRun`, `model` and " +
-        `\`paths\`. Fix: ${hidden.fix}.`,
+        "every key in it is ignored, including `description`, `alwaysRun`, `model`, `paths` " +
+        `and \`effort\`. Fix: ${hidden.fix}.`,
     ];
   }
   const warnings: string[] = [];

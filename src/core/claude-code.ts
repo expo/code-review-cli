@@ -3,7 +3,14 @@
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { LoadedConfig, McpServerConfig } from "../config/schema.js";
+import { fallbackEffort } from "../config/schema.js";
+import type {
+  AgentEffort,
+  AuthConfigEntry,
+  LoadedAgent,
+  LoadedConfig,
+  McpServerConfig,
+} from "../config/schema.js";
 import { checkAuthEntry } from "./auth.js";
 import { pathInside, resolveOnPath, run } from "./exec.js";
 import { assertMcpServerTokenEnvs, mcpGrantEnvironment, mcpServerGrants } from "./mcp-servers.js";
@@ -14,12 +21,15 @@ import {
   AgentTimeoutError,
   CLAUDE_CODE_ENGINE,
   CROSS_CUTTING_AGENT,
+  GOOGLE_THINKING_LEVELS,
+  OPENCODE_BUILTIN_AGENTS,
+  opencodeEffortStyle,
   STACK_VERIFIER_AGENT,
   VERIFIER_AGENT,
   withTransientRetry,
 } from "./opencode.js";
 import type { OpencodeHandle, PromptResult, TokenUsage } from "./opencode.js";
-import { buildClaudeSessionExport } from "./session-archive.js";
+import { buildClaudeSessionExport, NON_REVIEWER_AGENTS } from "./session-archive.js";
 import { RateLimitWatch } from "./throttle.js";
 import { CLAUDE_RESEARCH_TOOLS } from "./research.js";
 import type { ResearchMcpRuntime } from "./research.js";
@@ -45,6 +55,12 @@ export interface ClaudeCodeHandle extends OpencodeHandle {
    * the read-capable subset to the tree.
    */
   tools: Record<string, readonly string[]>;
+  /**
+   * agent id → frontmatter `effort`, only for the reviewers that declare one
+   * (buildAgentEfforts). The fixed roles (cross-cutting, verifier, adjudicator, stack
+   * verifier, coordinator) have no entry and run at the CLI default.
+   */
+  efforts?: ReadonlyMap<string, AgentEffort>;
   /** Default model for cross-cutting/verifier (config.agents[0].model). */
   defaultModel: string;
   /** Absolute `claude` binary (PATH lookup). */
@@ -331,6 +347,8 @@ export function buildClaudeArgs(opts: {
   mcpServerTools?: readonly string[];
   maxTurns?: number;
   jsonSchema?: Record<string, unknown>;
+  /** `--effort` level. Absent passes no flag, so the CLI default applies. */
+  effort?: AgentEffort;
 }): string[] {
   // Permission rules are gitignore-style with forward slashes; a Windows cwd
   // (`C:\Users\dev\repo`) must be normalized or every rule silently matches
@@ -363,6 +381,8 @@ export function buildClaudeArgs(opts: {
     "--verbose",
     "--model",
     opts.model,
+    // @ref LLP 0006#agent-effort [implements] — the flag is passed only for an agent that declares a level
+    ...(opts.effort ? ["--effort", opts.effort] : []),
     "--append-system-prompt",
     opts.system,
     ...(opts.jsonSchema ? ["--json-schema", JSON.stringify(opts.jsonSchema)] : []),
@@ -774,6 +794,181 @@ export function claudeTemperatureNote(
 }
 
 /**
+ * Ids the engine dispatches its fixed passes under (the same set the session archive
+ * uses). A reviewer file can share one (agents/verifier.md); its `effort` must not
+ * reach the built-in pass of that id.
+ */
+const FIXED_ROLE_IDS: ReadonlySet<string> = NON_REVIEWER_AGENTS;
+
+/**
+ * agent id → frontmatter `effort`, for the reviewers that declare one. A reviewer whose
+ * id is also a fixed role's id gets no entry: passes are looked up by id, so its level
+ * would otherwise apply to the built-in pass as well.
+ */
+// @ref LLP 0006#agent-effort [implements] — the fixed roles always run at the CLI default
+export function buildAgentEfforts(config: LoadedConfig): Map<string, AgentEffort> {
+  const efforts = new Map<string, AgentEffort>();
+  for (const agent of config.agents) {
+    if (agent.effort && !FIXED_ROLE_IDS.has(agent.id)) {
+      efforts.set(agent.id, agent.effort);
+    }
+  }
+  return efforts;
+}
+
+/**
+ * A one-time run note for an `effort` that has no effect. It states a fact about the
+ * setup, not about a pass, so it stays true when a later step (a blocking pre-check, the
+ * budget) skips the agent. The cases: the agent's model runs through OpenCode on a
+ * provider ecr passes no level to (`opencodeEffortStyle` is null); a Gemini 2.5 or older
+ * model, which takes a thinking budget (`google-budget`); a Google model with a level its
+ * OpenCode adapter does not take (`GOOGLE_THINKING_LEVELS`); an OpenCode-routed
+ * agent whose id is also an OpenCode built-in agent (`OPENCODE_BUILTIN_AGENTS`); an agent
+ * whose id is also a fixed role's id. Each agent is named once, with the full fix. `agents` is the run's selected reviewer list, after the `paths`
+ * filter and the router, so an agent either of them left out is never named. Returns null
+ * when every declared `effort` applies.
+ */
+export function agentEffortNote(
+  agents: readonly LoadedAgent[],
+  engineOf: Record<string, Engine>,
+  auth: readonly AuthConfigEntry[],
+): string | null {
+  const declared = agents.filter((agent) => agent.effort);
+  const takesNoLevel = (model: string): boolean => {
+    if (engineForModel(model) !== "opencode") {
+      return false;
+    }
+    const style = opencodeEffortStyle(model, auth);
+    return style === null || style === "google-budget";
+  };
+  const viaOpencode = declared
+    .filter(
+      (agent) =>
+        !FIXED_ROLE_IDS.has(agent.id) &&
+        !OPENCODE_BUILTIN_AGENTS.has(agent.id) &&
+        engineOf[agent.id] === "opencode" &&
+        opencodeEffortStyle(agent.model ?? "", auth) === null,
+    )
+    .map((agent) => agent.id);
+  // A Google model whose level the pinned adapter rejects gets no level (opencodeEffortOptions).
+  const googleLevelNotTaken = declared
+    .filter(
+      (agent) =>
+        !FIXED_ROLE_IDS.has(agent.id) &&
+        !OPENCODE_BUILTIN_AGENTS.has(agent.id) &&
+        engineOf[agent.id] === "opencode" &&
+        opencodeEffortStyle(agent.model ?? "", auth) === "google" &&
+        agent.effort !== undefined &&
+        !GOOGLE_THINKING_LEVELS.has(agent.effort),
+    )
+    .map((agent) => `${agent.id} (${agent.effort})`);
+  // Gemini 2.5 and older take a thinking budget, not a level (opencodeEffortStyle).
+  const googleBudget = declared
+    .filter(
+      (agent) =>
+        !FIXED_ROLE_IDS.has(agent.id) &&
+        !OPENCODE_BUILTIN_AGENTS.has(agent.id) &&
+        engineOf[agent.id] === "opencode" &&
+        opencodeEffortStyle(agent.model ?? "", auth) === "google-budget",
+    )
+    .map((agent) => agent.id);
+  const fixedRole = declared
+    .filter((agent) => FIXED_ROLE_IDS.has(agent.id))
+    .map((agent) => agent.id);
+  // buildOpencodeConfig gives an OpenCode built-in agent id no level (other sessions use it).
+  const opencodeBuiltin = declared
+    .filter(
+      (agent) =>
+        !FIXED_ROLE_IDS.has(agent.id) &&
+        OPENCODE_BUILTIN_AGENTS.has(agent.id) &&
+        engineOf[agent.id] === "opencode",
+    )
+    .map((agent) => agent.id);
+  // After a rename, the model still has to take a level; say so in the same note.
+  const builtinNoLevel = opencodeBuiltin.filter((id) =>
+    takesNoLevel(declared.find((agent) => agent.id === id)?.model ?? ""),
+  );
+  const builtinGoogleLevel = declared
+    .filter(
+      (agent) =>
+        opencodeBuiltin.includes(agent.id) &&
+        opencodeEffortStyle(agent.model ?? "", auth) === "google" &&
+        agent.effort !== undefined &&
+        !GOOGLE_THINKING_LEVELS.has(agent.effort),
+    )
+    .map((agent) => agent.id);
+  const notes: string[] = [];
+  if (opencodeBuiltin.length > 0) {
+    notes.push(
+      `\`effort\` has no effect for ${opencodeBuiltin.join(", ")}: the id is also an OpenCode ` +
+        "built-in agent, which other sessions use. Fix: rename the agent file" +
+        (builtinNoLevel.length > 0
+          ? `, and run ${builtinNoLevel.join(", ")} on a model that takes a level ` +
+            `(${EFFORT_PROVIDERS}; its \`model:\`, or \`REVIEWER_MODEL\` when that is set)`
+          : "") +
+        (builtinGoogleLevel.length > 0
+          ? `, and give ${builtinGoogleLevel.join(", ")} one of ` +
+            `${[...GOOGLE_THINKING_LEVELS].join(", ")} (OpenCode's Google adapter takes no other)`
+          : ""),
+    );
+  }
+  if (viaOpencode.length > 0) {
+    notes.push(
+      `\`effort\` has no effect for ${viaOpencode.join(", ")}: the model of each runs through ` +
+        `OpenCode on a provider ecr passes no level to (ecr passes one only for ${EFFORT_PROVIDERS})`,
+    );
+  }
+  if (googleBudget.length > 0) {
+    notes.push(
+      `\`effort\` has no effect for ${googleBudget.join(", ")}: Gemini 2.5 and older models take a ` +
+        "thinking budget, not a level, so ecr sends none. Fix: use a Gemini 3 or later model with " +
+        "low, medium or high, or remove `effort`",
+    );
+  }
+  if (googleLevelNotTaken.length > 0) {
+    notes.push(
+      `\`effort\` has no effect for ${googleLevelNotTaken.join(", ")}: OpenCode's Google adapter ` +
+        `takes only ${[...GOOGLE_THINKING_LEVELS].join(", ")}, so ecr sends no level and the model ` +
+        "runs at the model's default in OpenCode. Fix: use one of those levels",
+    );
+  }
+  // The engine map's entry for a fixed-role id describes the built-in pass, so read the
+  // reviewer's own model: after a rename, a model that takes no level still ignores it.
+  const fixedRoleNoLevel = declared
+    .filter((agent) => FIXED_ROLE_IDS.has(agent.id) && takesNoLevel(agent.model ?? ""))
+    .map((agent) => agent.id);
+  // After a rename, a Google model still drops a level its adapter does not take.
+  const fixedRoleGoogleLevel = declared
+    .filter(
+      (agent) =>
+        FIXED_ROLE_IDS.has(agent.id) &&
+        opencodeEffortStyle(agent.model ?? "", auth) === "google" &&
+        agent.effort !== undefined &&
+        !GOOGLE_THINKING_LEVELS.has(agent.effort),
+    )
+    .map((agent) => agent.id);
+  if (fixedRole.length > 0) {
+    notes.push(
+      `\`effort\` has no effect for ${fixedRole.join(", ")}: the id is also a built-in pass, which ` +
+        "runs at the default effort. Fix: rename the agent file" +
+        (fixedRoleNoLevel.length > 0
+          ? `, and run ${fixedRoleNoLevel.join(", ")} on a model that takes a level ` +
+            `(${EFFORT_PROVIDERS}; its \`model:\`, or \`REVIEWER_MODEL\` when that is set)`
+          : "") +
+        (fixedRoleGoogleLevel.length > 0
+          ? `, and give ${fixedRoleGoogleLevel.join(", ")} one of ` +
+            `${[...GOOGLE_THINKING_LEVELS].join(", ")} (OpenCode's Google adapter takes no other)`
+          : ""),
+    );
+  }
+  return notes.length > 0 ? notes.join("; ") : null;
+}
+
+/** The model families ecr passes an effort level to, for the run notes. */
+const EFFORT_PROVIDERS =
+  '`anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), `google/…` or `google-vertex/…` (Gemini 3 and later), or `xai/…`';
+
+/**
  * Preserve actionable process diagnostics without copying arbitrary stderr into a
  * public Actions log. A non-empty stream may already contain model/tool content, so
  * stderr is not even classified in that case. With no stream, recognize only fixed
@@ -858,6 +1053,10 @@ export async function runClaudePrompt(
       }, CLAUDE_HEARTBEAT_MS)
     : undefined;
   heartbeat?.unref?.();
+  // A Map lookup: an agent id such as `constructor` must not read an inherited value.
+  // The no-tools fallback (maxToolCalls 0) runs at the agent's level capped at `medium`.
+  const level = handle.efforts?.get(args.agent);
+  const effort = level && args.maxToolCalls === 0 ? fallbackEffort(level) : level;
   let result;
   try {
     result = await run(
@@ -876,6 +1075,7 @@ export async function runClaudePrompt(
         mcpServerTools: [...mcpServerTools.keys()],
         maxTurns,
         jsonSchema: args.jsonSchema,
+        ...(effort ? { effort } : {}),
       }),
       {
         input: args.text,
@@ -1289,6 +1489,7 @@ export async function startClaudeCode(
   // verifier never reads the disk (mirrors the coordinator's empty list).
   tools[STACK_VERIFIER_AGENT] = [];
   tools["coordinator"] = [];
+  const efforts = buildAgentEfforts(config);
   const defaultModel = config.agents[0]?.model ?? config.coordinator.model;
   const researchAgents = new Set(config.agents.map((agent) => agent.id));
   researchAgents.add(CROSS_CUTTING_AGENT);
@@ -1311,6 +1512,7 @@ export async function startClaudeCode(
     engine: CLAUDE_CODE_ENGINE,
     models,
     tools,
+    ...(efforts.size > 0 ? { efforts } : {}),
     defaultModel,
     cliPath,
     childEnv,

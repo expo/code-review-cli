@@ -519,8 +519,10 @@ description: One line the router uses to decide relevance.
 # Run even when the router would skip this agent.
 alwaysRun: true
 # Override the default model.
-model: anthropic/claude-haiku-4-5
+model: anthropic/claude-opus-5-5
 temperature: 0.1
+# How much reasoning each pass spends: low, medium, high, xhigh or max.
+effort: high
 paths: ["packages/ios/**", "**/*.swift"]
 ---
 
@@ -533,6 +535,19 @@ value. Each review lists problems of this kind under **Review setup** in the PR
 comment (and in the terminal) with the fix, and `ecr doctor` fails on them:
 frontmatter below an HTML comment, a byte-order mark or blank lines (all its keys
 are ignored), and a comment that breaks `alwaysRun`, `model` or `temperature`.
+
+`effort` sets how much reasoning the model spends on that agent's passes. It works
+on `anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), Gemini 3 and later
+on `google/…` or `google-vertex/…` (only `low`, `medium` or `high`), and `xai/…`
+models. For other models the review prints a note and ignores it. Leave it out to
+use the model's default. A higher level costs more and takes longer, so set it on
+the agent that needs depth (a correctness reviewer that must trace callers), not on
+every agent. ecr does not check which levels a model supports: a model can ignore a
+level (Claude Haiku 4.5), and a provider can reject one, which fails that agent's
+passes. A value that is not a level is listed under **Review setup**, and the agent
+runs at the default. Only reviewer files take `effort`, and an agent file named
+after a built-in pass (for example `verifier.md`) gets none; the review note says
+to rename it.
 
 `paths` limits an agent to the changes it covers. It takes a list of repo-relative
 globs in the routing dialect: `*` stays within a directory, `**` crosses

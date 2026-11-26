@@ -26,6 +26,7 @@ import {
   attachVerifierRejected,
   exportReviewSessions,
   runReview,
+  selectReviewers,
 } from "../core/review.js";
 import type { AgentSummaryParts, ReviewRunOptions } from "../core/review.js";
 import { resolveOpencodeCli } from "../core/opencode.js";
@@ -38,7 +39,7 @@ import {
   REVIEW_TRACE_BYTES_LIMIT,
   fingerprintFinding,
 } from "../core/schema.js";
-import type { LoadedConfig } from "../config/schema.js";
+import type { LoadedAgent, LoadedConfig } from "../config/schema.js";
 import type { PatchWorkspaceFile } from "../core/noise.js";
 import type { CoordinatorOutput, Finding, Severity } from "../core/schema.js";
 
@@ -927,5 +928,80 @@ describe("Exporting OpenCode sessions before the review closes", () => {
       (line) => log.push(line),
     );
     expect(log).toEqual(["session store: export failed: the database is locked"]);
+  });
+});
+
+describe("selectReviewers: the effort note names only selected reviewers", () => {
+  const alpha = { id: "alpha", effort: "high" } as unknown as LoadedAgent;
+  const ios = { id: "ios", effort: "high" } as unknown as LoadedAgent;
+  const engineOf = { alpha: "claude-code", ios: "opencode", verifier: "claude-code" } as const;
+
+  it("does not name an OpenCode reviewer the router left out", async () => {
+    const lines: string[] = [];
+    const result = await selectReviewers({
+      candidates: [alpha, ios],
+      route: async () => ({ agents: [alpha], routed: true }),
+      engineOf,
+      auth: [],
+      progress: (line) => lines.push(line),
+    });
+    expect(result.selectedAgents.map((a) => a.id)).toEqual(["alpha"]);
+    expect(result.notRouted).toEqual(["ios"]);
+    expect(lines).toContain("Router selected: alpha");
+    expect(lines.some((line) => line.includes("effort"))).toBe(false);
+  });
+
+  it("names an OpenCode reviewer that runs", async () => {
+    const lines: string[] = [];
+    await selectReviewers({
+      candidates: [alpha, ios],
+      engineOf,
+      auth: [],
+      progress: (line) => lines.push(line),
+    });
+    const note = lines.find((line) => line.startsWith("Note: `effort`"));
+    expect(note).toContain("has no effect for ios:");
+  });
+
+  it("does not tell a routed-out agents/verifier.md to rename, but does when it runs", async () => {
+    const verifier = { id: "verifier", effort: "max" } as unknown as LoadedAgent;
+    const routedOut: string[] = [];
+    await selectReviewers({
+      candidates: [alpha, verifier],
+      route: async () => ({ agents: [alpha], routed: true }),
+      engineOf,
+      auth: [],
+      progress: (line) => routedOut.push(line),
+    });
+    expect(routedOut.some((line) => line.includes("effort"))).toBe(false);
+
+    const selected: string[] = [];
+    await selectReviewers({
+      candidates: [alpha, verifier],
+      route: async () => ({ agents: [alpha, verifier], routed: true }),
+      engineOf,
+      auth: [],
+      progress: (line) => selected.push(line),
+    });
+    expect(selected.find((line) => line.startsWith("Note: `effort`"))).toContain(
+      "has no effect for verifier: the id is also a built-in pass",
+    );
+  });
+
+  it("runs every candidate, and names a running OpenCode reviewer, when the router falls back", async () => {
+    const lines: string[] = [];
+    const result = await selectReviewers({
+      candidates: [alpha, ios],
+      route: async () => ({ agents: [alpha, ios], routed: false }),
+      engineOf,
+      auth: [],
+      progress: (line) => lines.push(line),
+    });
+    expect(result.selectedAgents.map((a) => a.id)).toEqual(["alpha", "ios"]);
+    expect(result.notRouted).toEqual([]);
+    expect(lines).toContain("Router unavailable; running all agents.");
+    expect(lines.find((line) => line.startsWith("Note: `effort`"))).toContain(
+      "has no effect for ios:",
+    );
   });
 });

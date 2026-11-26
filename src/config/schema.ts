@@ -584,6 +584,23 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
 });
 export type RawScopeReviewConfig = z.infer<typeof ScopeReviewConfigSchema>;
 
+/** The effort levels an agent may set. Each engine maps them (LLP 0006, "Agent Effort"). */
+export const AGENT_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type AgentEffort = (typeof AGENT_EFFORT_LEVELS)[number];
+
+/**
+ * The level a no-tools fallback pass runs at: the agent's own level, capped at `medium`.
+ * The fallback retries a timed-out pass under a short cap, so a deep level would likely
+ * time out again; sending no level instead would fall back to a provider default that can
+ * be higher than the agent's own `low`.
+ */
+// @ref LLP 0006#agent-effort [implements] — the no-tools fallback runs at min(level, medium)
+export function fallbackEffort(level: AgentEffort): AgentEffort {
+  return AGENT_EFFORT_LEVELS.indexOf(level) <= AGENT_EFFORT_LEVELS.indexOf("medium")
+    ? level
+    : "medium";
+}
+
 /** A single agent after prompt files are read and models are resolved. */
 export interface LoadedAgent {
   id: string;
@@ -604,6 +621,14 @@ export interface LoadedAgent {
    * or chunk that has at least one matching changed file. Absent means every change.
    */
   paths?: string[];
+  /**
+   * Frontmatter `effort`: how much reasoning the model spends on this agent's passes.
+   * The claude-code engine passes it as `--effort`; OpenCode passes it for OpenAI, Gemini 3
+   * and later, and xAI models (opencodeEffortStyle). Absent leaves the level to the engine:
+   * the CLI default, or on OpenCode the model's default. On OpenCode, a variant set on a
+   * same-named agent in the developer's own OpenCode config wins over it.
+   */
+  effort?: AgentEffort;
   /**
    * Frontmatter `mention`: GitHub logins or `org/team` slugs. When the agent asks for a
    * human review, the review comment mentions them. Absent means the agent mentions

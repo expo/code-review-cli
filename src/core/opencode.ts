@@ -5,12 +5,18 @@ import path from "node:path";
 
 import { createOpencode } from "@opencode-ai/sdk";
 
-import type { LoadedConfig, McpServerConfig } from "../config/schema.js";
+import type {
+  AgentEffort,
+  AuthConfigEntry,
+  LoadedConfig,
+  McpServerConfig,
+} from "../config/schema.js";
 // Type-only: erased at compile time, so it creates NO runtime import cycle. The
 // Claude engine is reached at runtime via dynamic import() in the dispatch
 // branches below; claude-code.ts statically imports the shared helpers here.
 import type { ClaudeCodeHandle, Engine } from "./claude-code.js";
 import type { SessionCapture } from "./session-archive.js";
+import { NON_REVIEWER_AGENTS } from "./session-archive.js";
 import { pathInside, resolveOnPath } from "./exec.js";
 import { RateLimitWatch } from "./throttle.js";
 import { OPENCODE_RESEARCH_TOOLS, toolMap } from "./tools.js";
@@ -274,6 +280,101 @@ export const ADJUDICATOR_AGENT = "adjudicator";
 // that structural, like the coordinator.
 export const STACK_VERIFIER_AGENT = "stack-verifier";
 
+/**
+ * How an OpenCode provider's SDK takes a reasoning level from an agent's config:
+ * OpenAI's Responses adapter and xAI's adapter read `reasoningEffort`, Google's reads
+ * `thinkingConfig.thinkingLevel` (Gemini 3 and later). `google-budget` marks Gemini 2.5 and
+ * older, which take a thinking budget instead; ecr sends them nothing.
+ */
+export type OpencodeEffortStyle = "openai" | "google" | "google-budget" | "xai";
+
+/**
+ * The effort style for a model id, or null when ecr does not pass a level to that
+ * provider. Native `openai` gets the OpenAI style, Gemini models on native `google` and
+ * `google-vertex` the Google style, native `xai` (Grok) the xAI style. Other
+ * `google-vertex` models (Claude on Vertex) use another adapter, so they get null. An
+ * alias (an auth entry with `upstream`) follows the adapter `buildOpencodeConfig` creates
+ * for it: only `upstream: "openai"` gets `@ai-sdk/openai`, so only that alias takes a
+ * level. Meta, OpenAI-compatible and other providers get null.
+ */
+// @ref LLP 0006#agent-effort [implements] — OpenCode-routed effort, per provider adapter
+export function opencodeEffortStyle(
+  model: string,
+  auth: readonly AuthConfigEntry[],
+): OpencodeEffortStyle | null {
+  const slash = model.indexOf("/");
+  if (slash <= 0) {
+    return null;
+  }
+  const provider = model.slice(0, slash);
+  const alias = auth.find((entry) => entry.provider === provider && entry.upstream);
+  if (alias) {
+    return alias.upstream === "openai" ? "openai" : null;
+  }
+  if (provider === "openai") {
+    return "openai";
+  }
+  if (provider === "google" || provider === "google-vertex") {
+    // Only Gemini takes `thinkingConfig`: Vertex also serves Claude, on the Anthropic
+    // adapter. Gemini 2.5 and older take a thinking budget, not a level, so they get none.
+    const id = model.slice(slash + 1);
+    if (!id.startsWith("gemini-")) {
+      return null;
+    }
+    return /^gemini-[12](?:[.-]|$)/.test(id) ? "google-budget" : "google";
+  }
+  if (provider === "xai") {
+    return "xai";
+  }
+  return null;
+}
+
+/**
+ * The levels the pinned OpenCode's Google adapter takes for `thinkingLevel`. With
+ * OpenCode 1.19.5, `xhigh` and `max` fail locally with an invalid-provider-options error
+ * and no request is sent (LLP 0006), so ecr sends no level for them.
+ */
+export const GOOGLE_THINKING_LEVELS: ReadonlySet<AgentEffort> = new Set(["low", "medium", "high"]);
+
+/**
+ * The agent-config keys that carry a reasoning level for an effort style, or null when
+ * the style's adapter does not take that level. OpenCode passes unknown agent keys to
+ * the provider as model options; observed with OpenCode 1.19.5 against a mock endpoint
+ * (LLP 0006): `reasoningEffort` becomes the Responses API's `reasoning.effort` (OpenAI)
+ * and, for xAI, Chat Completions' `reasoning_effort` or the Responses API's `reasoning.effort`
+ * (OpenCode picks the endpoint), and `thinkingConfig.thinkingLevel`
+ * replaces the `high` that OpenCode sends to Gemini 4 Neon.
+ */
+export function opencodeEffortOptions(
+  style: OpencodeEffortStyle,
+  effort: AgentEffort,
+): Record<string, unknown> | null {
+  if (style === "openai" || style === "xai") {
+    return { reasoningEffort: effort };
+  }
+  if (style === "google-budget") {
+    return null;
+  }
+  return GOOGLE_THINKING_LEVELS.has(effort) ? { thinkingConfig: { thinkingLevel: effort } } : null;
+}
+
+/**
+ * The agents OpenCode 1.19.5 defines itself (`app.agents()` with `native: true`,
+ * observed 2026-11-26). `compaction`, `summary` and `title` run for every session, so a
+ * reviewer that shares one of these ids must not give it a level (LLP 0006). Re-check when
+ * the OpenCode pins move.
+ */
+// @ref LLP 0006#agent-effort [implements] — no level on OpenCode's own agent ids, which other sessions use
+export const OPENCODE_BUILTIN_AGENTS: ReadonlySet<string> = new Set([
+  "build",
+  "compaction",
+  "explore",
+  "general",
+  "plan",
+  "summary",
+  "title",
+]);
+
 /** Build the inline OpenCode config (agents + coordinator) from a repo config. */
 export function buildOpencodeConfig(
   config: LoadedConfig,
@@ -282,11 +383,27 @@ export function buildOpencodeConfig(
 ): Record<string, unknown> {
   const agent: Record<string, unknown> = {};
   for (const reviewer of config.agents) {
+    // No level for an id the engine or OpenCode also uses: ecr's fixed roles replace the
+    // entry after this loop, and an OpenCode built-in agent (compaction, title, …) also
+    // runs for other sessions, so a level there would reach them.
+    const effortStyle =
+      reviewer.effort &&
+      !NON_REVIEWER_AGENTS.has(reviewer.id) &&
+      !OPENCODE_BUILTIN_AGENTS.has(reviewer.id)
+        ? opencodeEffortStyle(reviewer.model, config.auth)
+        : null;
+    const effortOptions =
+      reviewer.effort && effortStyle ? opencodeEffortOptions(effortStyle, reviewer.effort) : null;
     agent[reviewer.id] = {
       description: `${reviewer.id} reviewer`,
       mode: "all",
       model: reviewer.model,
       temperature: reviewer.temperature,
+      // Only reviewers: the fixed roles below are written after this loop, so a reviewer
+      // that shares a fixed role's id cannot give that pass its level. A model variant
+      // set on a same-named agent in the developer's own OpenCode config still applies
+      // after these options and wins (LLP 0006).
+      ...effortOptions,
       prompt: `You are the ${reviewer.id} code reviewer. Follow the user message exactly and return only the requested JSON.`,
       tools: {
         ...reviewer.tools,

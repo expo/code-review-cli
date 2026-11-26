@@ -10,6 +10,7 @@ import {
   stripJsonComments,
   stripTrailingCommas,
 } from "../config/load.js";
+import { fallbackEffort } from "../config/schema.js";
 
 test("parseFrontmatter: parses scalar keys + returns body without frontmatter", () => {
   const { data, body } = parseFrontmatter("---\nmodel: x\nalwaysRun: true\n---\n# Body\ntext");
@@ -299,6 +300,64 @@ test("loadReviewConfig: `includeSuggestions` loads as a floor, with a deprecatio
   }
 });
 
+test("loadReviewConfig: front-matter `effort` loads onto the agent; no `effort` adds no key", async () => {
+  const root = await configDirWithAgent("---\neffort: High\n---\nIOS");
+  try {
+    const config = await loadReviewConfig(root);
+    const ios = config.agents.find((agent) => agent.id === "ios")!;
+    const plain = config.agents.find((agent) => agent.id === "plain")!;
+    expect(ios.effort).toBe("high");
+    // Absent, not undefined: an agent without `effort` keeps its review-cache key.
+    expect("effort" in plain).toBe(false);
+    expect("setupWarnings" in config).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("loadReviewConfig: an invalid `effort` is a warning, and the agent runs at the default", async () => {
+  for (const line of ["effort: extreme", "effort:", "effort: high # deep trace"]) {
+    const root = await configDirWithAgent(`---\n${line}\n---\nIOS`);
+    try {
+      const config = await loadReviewConfig(root);
+      const ios = config.agents.find((agent) => agent.id === "ios")!;
+      expect("effort" in ios, line).toBe(false);
+      expect(config.setupWarnings, line).toHaveLength(1);
+      const [warning] = config.setupWarnings!;
+      expect(warning).toContain(path.join(CONFIG_DIRNAME, "agents", "ios.md"));
+      expect(warning).toContain("is not an effort level");
+      // The raw value is never repeated into the review comment.
+      expect(warning, line).not.toContain("extreme");
+      expect(warning, line).not.toContain("deep trace");
+      expect(warning).toContain("low, medium, high, xhigh, max");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("loadReviewConfig: `effort` in coordinator.md or shared.md is a warning, not silently ignored", async () => {
+  const root = await configDirWithAgent("IOS", "---\neffort: high\n---\nCoordinator prompt.");
+  try {
+    await writeFile(
+      path.join(root, CONFIG_DIRNAME, "shared.md"),
+      "---\neffort: max\n---\nShared prompt.",
+      "utf8",
+    );
+    const config = await loadReviewConfig(root);
+    expect(config.setupWarnings).toHaveLength(2);
+    for (const file of ["shared.md", "coordinator.md"]) {
+      const warning = config.setupWarnings!.find((w) =>
+        w.includes(path.join(CONFIG_DIRNAME, file)),
+      );
+      expect(warning, file).toContain("is read only in agents/*.md reviewer files");
+      expect(warning, file).toContain("Fix: remove `effort` from this file.");
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("loadReviewConfig: front-matter `mention` loads GitHub logins and teams onto the agent", async () => {
   const root = await configDirWithAgent(
     '---\nmention:\n  - amandeepmittal\n  - "@expo/docs"\n---\nIOS',
@@ -366,4 +425,12 @@ test("loadReviewConfig: reads the PR template comments from the repository root"
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("fallbackEffort: the agent's level, capped at medium", () => {
+  expect(fallbackEffort("low")).toBe("low");
+  expect(fallbackEffort("medium")).toBe("medium");
+  expect(fallbackEffort("high")).toBe("medium");
+  expect(fallbackEffort("xhigh")).toBe("medium");
+  expect(fallbackEffort("max")).toBe("medium");
 });

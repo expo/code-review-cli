@@ -1,7 +1,7 @@
 // @ref LLP 0002#pipeline-stages [implements] — the mode-agnostic pipeline core owning budgets, coverage, and logging
 import path from "node:path";
 
-import type { LoadedAgent, LoadedConfig } from "../config/schema.js";
+import type { AuthConfigEntry, LoadedAgent, LoadedConfig } from "../config/schema.js";
 import type {
   PreparedReadRoot,
   ReviewSource,
@@ -32,13 +32,15 @@ import {
 import type { OpencodeHandle, TokenUsage } from "./opencode.js";
 import type { SessionCapture } from "./session-archive.js";
 import {
+  agentEffortNote,
   buildEngineMap,
   claudeTemperatureNote,
   claudeTokenCredential,
   startClaudeCode,
 } from "./claude-code.js";
-import type { ClaudeCodeHandle } from "./claude-code.js";
+import type { ClaudeCodeHandle, Engine } from "./claude-code.js";
 import { routeAgents } from "./router.js";
+import type { RouteResult } from "./router.js";
 import {
   changedPaths,
   formatSkippedAgents,
@@ -697,22 +699,20 @@ export async function runReview(
     // Resolve which agents run: an explicit list wins; otherwise route (LLM picks
     // relevant agents + always-run) when asked, else all. Routing chooses only among
     // the agents the `paths` filter kept.
-    let selectedAgents = pathsSelection.agents;
-    if (!explicitAgents && options.route) {
-      progress("Routing: selecting relevant agents…");
-      const routed = await routeAgents(handle, pathsSelection.agents, workspace.files, (line) =>
-        progress(formatAgentActivity("router", "router", line)),
-      );
-      selectedAgents = routed.agents;
-      progress(
-        routed.routed
-          ? `Router selected: ${selectedAgents.map((a) => a.id).join(", ")}`
-          : "Router unavailable; running all agents.",
-      );
-    }
-    const notRouted = pathsSelection.agents
-      .filter((agent) => !selectedAgents.includes(agent))
-      .map((agent) => agent.id);
+    const { selectedAgents, notRouted } = await selectReviewers({
+      candidates: pathsSelection.agents,
+      ...(!explicitAgents && options.route
+        ? {
+            route: () =>
+              routeAgents(handle, pathsSelection.agents, workspace.files, (line) =>
+                progress(formatAgentActivity("router", "router", line)),
+              ),
+          }
+        : {}),
+      engineOf,
+      auth: config.auth,
+      progress,
+    });
 
     // Split the diff into focused chunks so each reviewer call sees a small file
     // set (better recall than one giant blob), and run all agent×chunk calls
@@ -2358,6 +2358,45 @@ export function decisionAfterGrounding(
   return findings.some((finding) => finding.requalifiedBy)
     ? decisionAfterRequalification(previous, findings)
     : previous;
+}
+
+/**
+ * Resolve which reviewers run, then report an `effort` that has no effect on them.
+ * `candidates` are the agents the `paths` filter kept; `route`, when given, picks among
+ * them (the LLM router in a review, a stand-in in tests). Exported for tests.
+ */
+export async function selectReviewers(args: {
+  candidates: LoadedAgent[];
+  route?: () => Promise<RouteResult>;
+  engineOf: Record<string, Engine>;
+  /** The run's credentials: a provider alias takes its upstream's effort support. */
+  auth: readonly AuthConfigEntry[];
+  progress: (line: string) => void;
+}): Promise<{ selectedAgents: LoadedAgent[]; notRouted: string[] }> {
+  let selectedAgents = args.candidates;
+  if (args.route) {
+    args.progress("Routing: selecting relevant agents…");
+    const routed = await args.route();
+    selectedAgents = routed.agents;
+    args.progress(
+      routed.routed
+        ? `Router selected: ${selectedAgents.map((a) => a.id).join(", ")}`
+        : "Router unavailable; running all agents.",
+    );
+  }
+  const notRouted = args.candidates
+    .filter((agent) => !selectedAgents.includes(agent))
+    .map((agent) => agent.id);
+
+  // `effort` reaches the `claude` CLI and OpenCode's OpenAI and Google adapters, and never
+  // a fixed pass. Say so once for a selected reviewer whose level has no effect, so the
+  // setting does not fail silently.
+  // @ref LLP 0006#agent-effort [implements] — built from the selected reviewer list, after the paths filter and the router, so an agent either of them left out is never named; a later pre-check or budget limit can still skip a named one
+  const effortNote = agentEffortNote(selectedAgents, args.engineOf, args.auth);
+  if (effortNote) {
+    args.progress(`Note: ${effortNote}`);
+  }
+  return { selectedAgents, notRouted };
 }
 
 /**

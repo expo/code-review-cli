@@ -18,6 +18,10 @@ import {
   serverStopped,
   STACK_VERIFIER_AGENT,
   META_MODEL_API_BASE_URL,
+  opencodeEffortStyle,
+  OPENCODE_BUILTIN_AGENTS,
+  VERIFIER_AGENT,
+  CROSS_CUTTING_AGENT,
 } from "../core/opencode.js";
 import type { OpencodeHandle } from "../core/opencode.js";
 import type { ClaudeCodeHandle } from "../core/claude-code.js";
@@ -58,7 +62,7 @@ test("resolveEngineDispatch: per-agent router picks the right engine and claude 
 
 /** Minimal LoadedConfig for buildOpencodeConfig tests. */
 function configWith(overrides: {
-  agents?: Array<{ id: string; model: string }>;
+  agents?: Array<{ id: string; model: string; effort?: string }>;
   coordinatorModel?: string;
   auth?: unknown[];
 }): LoadedConfig {
@@ -688,4 +692,119 @@ describe("Recording an OpenCode pass for the session archive", () => {
     );
     expect(handle.capture?.count).toBe(0);
   }, 20_000);
+});
+
+test("opencodeEffortStyle: OpenAI, Google and xAI families take a level; others do not", () => {
+  const alias = [
+    { provider: "openai-api", mode: "api-key", tokenEnv: "OPENAI_API_KEY", upstream: "openai" },
+    { provider: "claude-api", mode: "api-key", tokenEnv: "ANTHROPIC_KEY_2", upstream: "anthropic" },
+    // ecr builds this alias with the OpenAI-compatible adapter, not Google's.
+    { provider: "gemini-api", mode: "api-key", tokenEnv: "GEMINI_KEY_2", upstream: "google" },
+    // Also OpenAI-compatible, not xAI's adapter.
+    { provider: "xai-api", mode: "api-key", tokenEnv: "XAI_KEY_2", upstream: "xai" },
+  ] as unknown as LoadedConfig["auth"];
+  expect(opencodeEffortStyle("openai/gpt-6.2-astra", [])).toBe("openai");
+  expect(opencodeEffortStyle("openai-api/gpt-5.5-pro", alias)).toBe("openai");
+  expect(opencodeEffortStyle("openai-api/gpt-5.5-pro", [])).toBeNull();
+  expect(opencodeEffortStyle("google/gemini-4-neon", [])).toBe("google");
+  expect(opencodeEffortStyle("google-vertex/gemini-4-neon", [])).toBe("google");
+  expect(opencodeEffortStyle("claude-api/claude-opus-5-5", alias)).toBeNull();
+  expect(opencodeEffortStyle("gemini-api/gemini-4-neon", alias)).toBeNull();
+  expect(opencodeEffortStyle("xai-api/grok-4.7", alias)).toBeNull();
+  expect(opencodeEffortStyle("meta/muse-spark-1.3", [])).toBeNull();
+  expect(opencodeEffortStyle("gpt-6.2-astra", [])).toBeNull();
+  expect(opencodeEffortStyle("xai/grok-4.7", [])).toBe("xai");
+  // Gemini 2.5 and older take a thinking budget, not a level.
+  expect(opencodeEffortStyle("google/gemini-2.5-flash", [])).toBe("google-budget");
+  expect(opencodeEffortStyle("google-vertex/gemini-2.5-pro", [])).toBe("google-budget");
+  expect(opencodeEffortStyle("google/gemini-1.5-pro", [])).toBe("google-budget");
+  expect(opencodeEffortStyle("google/gemini-3-pro", [])).toBe("google");
+  // Vertex also serves Claude, on the Anthropic adapter, which ignores thinkingConfig.
+  expect(opencodeEffortStyle("google-vertex/claude-opus-5-5@default", [])).toBeNull();
+});
+
+test("buildOpencodeConfig passes a reviewer's effort as its provider's option, and only a reviewer's", () => {
+  const opencode = buildOpencodeConfig(
+    configWith({
+      agents: [
+        { id: "astra", model: "openai/gpt-6.2-astra", effort: "xhigh" },
+        { id: "neon", model: "google/gemini-4-neon", effort: "low" },
+        { id: "neon-x", model: "google/gemini-4-neon", effort: "xhigh" },
+        { id: "vertex-max", model: "google-vertex/gemini-4-neon", effort: "max" },
+        { id: "muse", model: "meta/muse-spark-1.3", effort: "high" },
+        { id: "plain", model: "openai/gpt-6.2-astra" },
+        { id: "verifier", model: "openai/gpt-6.2-astra", effort: "max" },
+      ],
+    }),
+  ) as { agent: Record<string, Record<string, unknown>> };
+  expect(opencode.agent.astra!.reasoningEffort).toBe("xhigh");
+  expect(opencode.agent.astra!.thinkingConfig).toBeUndefined();
+  expect(opencode.agent.neon!.thinkingConfig).toEqual({ thinkingLevel: "low" });
+  expect(opencode.agent.neon!.reasoningEffort).toBeUndefined();
+  // The pinned Google adapter rejects xhigh and max, so they get no key at all.
+  for (const id of [
+    "neon-x",
+    "vertex-max",
+    "muse",
+    "plain",
+    VERIFIER_AGENT,
+    CROSS_CUTTING_AGENT,
+    "coordinator",
+  ]) {
+    expect(opencode.agent[id]!.reasoningEffort, id).toBeUndefined();
+    expect(opencode.agent[id]!.thinkingConfig, id).toBeUndefined();
+  }
+});
+
+test("buildOpencodeConfig gives no level to a reviewer that shares an OpenCode built-in agent id", () => {
+  const opencode = buildOpencodeConfig(
+    configWith({
+      agents: [
+        { id: "compaction", model: "openai/gpt-6.2-astra", effort: "xhigh" },
+        { id: "title", model: "google/gemini-4-neon", effort: "low" },
+        { id: "astra", model: "openai/gpt-6.2-astra", effort: "xhigh" },
+      ],
+    }),
+  ) as { agent: Record<string, Record<string, unknown>> };
+  // OpenCode also runs these for other sessions (compaction, titles), so no level there.
+  expect(opencode.agent.compaction!.reasoningEffort).toBeUndefined();
+  expect(opencode.agent.title!.thinkingConfig).toBeUndefined();
+  expect(opencode.agent.astra!.reasoningEffort).toBe("xhigh");
+  expect([...OPENCODE_BUILTIN_AGENTS].sort()).toEqual([
+    "build",
+    "compaction",
+    "explore",
+    "general",
+    "plan",
+    "summary",
+    "title",
+  ]);
+});
+
+test("buildOpencodeConfig passes a Grok reviewer's level as reasoningEffort", () => {
+  const opencode = buildOpencodeConfig(
+    configWith({ agents: [{ id: "grok", model: "xai/grok-4.7", effort: "xhigh" }] }),
+  ) as { agent: Record<string, Record<string, unknown>> };
+  expect(opencode.agent.grok!.reasoningEffort).toBe("xhigh");
+  expect(opencode.agent.grok!.thinkingConfig).toBeUndefined();
+});
+
+test("buildOpencodeConfig: no level for Gemini 2.5 or Claude on Vertex, and no variant override", () => {
+  const opencode = buildOpencodeConfig(
+    configWith({
+      agents: [
+        { id: "flash", model: "google-vertex/gemini-2.5-flash", effort: "high" },
+        { id: "vertex-claude", model: "google-vertex/claude-opus-5-5@default", effort: "high" },
+        { id: "neon", model: "google/gemini-4-neon", effort: "low" },
+        { id: "astra", model: "openai/gpt-6.2-astra", effort: "xhigh" },
+      ],
+    }),
+  ) as { agent: Record<string, Record<string, unknown>> };
+  expect(opencode.agent.flash!.thinkingConfig).toBeUndefined();
+  expect(opencode.agent["vertex-claude"]!.thinkingConfig).toBeUndefined();
+  expect(opencode.agent.neon!.thinkingConfig).toEqual({ thinkingLevel: "low" });
+  // ecr never clears a variant: one from the developer's OpenCode config keeps all its options.
+  for (const id of ["flash", "vertex-claude", "neon", "astra"]) {
+    expect("variant" in opencode.agent[id]!, id).toBe(false);
+  }
 });
