@@ -557,7 +557,9 @@ is not a level is listed under **Review setup**, and the agent runs at the defau
 files take it.
 An agent file in `agents/` named after a built-in pass (`verifier.md`,
 `cross-cutting.md`, `adjudicator.md`, `stack-verifier.md` or `coordinator.md`) gets
-no effort; the review note says to rename it.
+no effort; the review note says to rename it. The same holds, on OpenCode-routed
+models, for a file named after one of OpenCode's own agents (`build.md`,
+`compaction.md`, `explore.md`, `general.md`, `plan.md`, `summary.md`, `title.md`).
 
 `paths` limits an agent to the changes it covers. It takes a list of repo-relative
 globs in the routing dialect: `*` stays within a directory, `**` crosses

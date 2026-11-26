@@ -820,8 +820,10 @@ export function buildAgentEfforts(config: LoadedConfig): Map<string, AgentEffort
  * A one-time run note for an `effort` that has no effect. It states a fact about the
  * setup, not about a pass, so it stays true when a later step (a blocking pre-check, the
  * budget) skips the agent. The cases: the agent's model runs through OpenCode on a
- * provider ecr passes no level to (`opencodeEffortStyle` is null), or the agent's id is
- * also a fixed role's id. `agents` is the run's selected reviewer list, after the `paths`
+ * provider ecr passes no level to (`opencodeEffortStyle` is null); a Google model with a
+ * level its OpenCode adapter does not take (`GOOGLE_THINKING_LEVELS`); an OpenCode-routed
+ * agent whose id is also an OpenCode built-in agent (`OPENCODE_BUILTIN_AGENTS`); an agent
+ * whose id is also a fixed role's id. Each agent is named once, with the full fix. `agents` is the run's selected reviewer list, after the `paths`
  * filter and the router, so an agent either of them left out is never named. Returns null
  * when every declared `effort` applies.
  */

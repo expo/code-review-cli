@@ -874,11 +874,16 @@ test("buildAgentEfforts: no entry for a reviewer that shares a fixed role's id",
     agents: [
       { id: "correctness", effort: "high" },
       ...fixedRoles.map((id) => ({ id, effort: "max" })),
+      // An OpenCode built-in id keeps its level on the claude-code engine.
+      { id: "compaction", effort: "high" },
       { id: "constructor" },
     ],
   } as unknown as LoadedConfig;
   const efforts = buildAgentEfforts(config);
-  expect([...efforts]).toEqual([["correctness", "high"]]);
+  expect([...efforts]).toEqual([
+    ["correctness", "high"],
+    ["compaction", "high"],
+  ]);
   expect(efforts.get("constructor")).toBeUndefined();
 });
 
