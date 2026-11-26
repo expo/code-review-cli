@@ -833,15 +833,20 @@ export function agentEffortNote(
   auth: readonly AuthConfigEntry[],
 ): string | null {
   const declared = agents.filter((agent) => agent.effort);
-  const takesNoLevel = (model: string): boolean =>
-    engineForModel(model) === "opencode" && opencodeEffortStyle(model, auth) === null;
+  const takesNoLevel = (model: string): boolean => {
+    if (engineForModel(model) !== "opencode") {
+      return false;
+    }
+    const style = opencodeEffortStyle(model, auth);
+    return style === null || style === "google-budget";
+  };
   const viaOpencode = declared
     .filter(
       (agent) =>
         !FIXED_ROLE_IDS.has(agent.id) &&
         !OPENCODE_BUILTIN_AGENTS.has(agent.id) &&
         engineOf[agent.id] === "opencode" &&
-        takesNoLevel(agent.model ?? ""),
+        opencodeEffortStyle(agent.model ?? "", auth) === null,
     )
     .map((agent) => agent.id);
   // A Google model whose level the pinned adapter rejects gets no level (opencodeEffortOptions).
@@ -856,6 +861,16 @@ export function agentEffortNote(
         !GOOGLE_THINKING_LEVELS.has(agent.effort),
     )
     .map((agent) => `${agent.id} (${agent.effort})`);
+  // Gemini 2.5 and older take a thinking budget, not a level (opencodeEffortStyle).
+  const googleBudget = declared
+    .filter(
+      (agent) =>
+        !FIXED_ROLE_IDS.has(agent.id) &&
+        !OPENCODE_BUILTIN_AGENTS.has(agent.id) &&
+        engineOf[agent.id] === "opencode" &&
+        opencodeEffortStyle(agent.model ?? "", auth) === "google-budget",
+    )
+    .map((agent) => agent.id);
   const fixedRole = declared
     .filter((agent) => FIXED_ROLE_IDS.has(agent.id))
     .map((agent) => agent.id);
@@ -900,6 +915,13 @@ export function agentEffortNote(
     notes.push(
       `\`effort\` has no effect for ${viaOpencode.join(", ")}: the model of each runs through ` +
         `OpenCode on a provider ecr passes no level to (ecr passes one only for ${EFFORT_PROVIDERS})`,
+    );
+  }
+  if (googleBudget.length > 0) {
+    notes.push(
+      `\`effort\` has no effect for ${googleBudget.join(", ")}: Gemini 2.5 and older models take a ` +
+        "thinking budget, not a level, so ecr sends none. Fix: use a Gemini 3 or later model, or " +
+        "remove `effort`",
     );
   }
   if (googleLevelNotTaken.length > 0) {

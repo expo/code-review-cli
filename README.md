@@ -544,10 +544,10 @@ ignores it. Leave it out to use the provider's default.
 | --- | --- |
 | `anthropic/…` (Claude Code CLI) | `--effort <level>` |
 | `openai/…`, or an alias with `upstream: "openai"` (OpenCode) | `reasoningEffort`, sent as the Responses API `reasoning.effort` |
-| `google/…`, `google-vertex/…` (OpenCode) | `thinkingConfig.thinkingLevel`, in place of the model's default (OpenCode sends `high` for Gemini 4 Neon); only `low`, `medium` or `high` (for `xhigh` and `max` ecr sends no level, and the run note says so) |
+| `google/…`, `google-vertex/…` (OpenCode) | `thinkingConfig.thinkingLevel`, in place of the model's default (OpenCode sends `high` for Gemini 4 Neon); only `low`, `medium` or `high` (for `xhigh` and `max` ecr sends no level, and the run note says so). Gemini 2.5 and older take a thinking budget, not a level, so ecr sends them none and the run note says so |
 | `xai/…` (Grok, OpenCode) | `reasoningEffort`, sent as Chat Completions `reasoning_effort` or Responses API `reasoning.effort`, depending on how OpenCode reaches xAI |
 
-ecr passes the level as written and does not check which levels a model takes. A
+ecr passes the level as written and does not check which levels a model takes. When it sends a level through OpenCode it also sets the agent's `variant` to `""`, so a variant on a same-named agent in your global OpenCode config cannot replace it. A
 model without effort support can drop it (the Claude Code CLI sends no level to
 Claude Haiku 4.5), and a provider can reject a level its model does not take, which
 fails that agent's passes with the provider's error.

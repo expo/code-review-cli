@@ -694,12 +694,14 @@ describe("Recording an OpenCode pass for the session archive", () => {
   }, 20_000);
 });
 
-test("opencodeEffortStyle: OpenAI and Google families take a level; others do not", () => {
+test("opencodeEffortStyle: OpenAI, Google and xAI families take a level; others do not", () => {
   const alias = [
     { provider: "openai-api", mode: "api-key", tokenEnv: "OPENAI_API_KEY", upstream: "openai" },
     { provider: "claude-api", mode: "api-key", tokenEnv: "ANTHROPIC_KEY_2", upstream: "anthropic" },
     // ecr builds this alias with the OpenAI-compatible adapter, not Google's.
     { provider: "gemini-api", mode: "api-key", tokenEnv: "GEMINI_KEY_2", upstream: "google" },
+    // Also OpenAI-compatible, not xAI's adapter.
+    { provider: "xai-api", mode: "api-key", tokenEnv: "XAI_KEY_2", upstream: "xai" },
   ] as unknown as LoadedConfig["auth"];
   expect(opencodeEffortStyle("openai/gpt-6.2-astra", [])).toBe("openai");
   expect(opencodeEffortStyle("openai-api/gpt-5.5-pro", alias)).toBe("openai");
@@ -708,9 +710,15 @@ test("opencodeEffortStyle: OpenAI and Google families take a level; others do no
   expect(opencodeEffortStyle("google-vertex/gemini-4-neon", [])).toBe("google");
   expect(opencodeEffortStyle("claude-api/claude-opus-5-5", alias)).toBeNull();
   expect(opencodeEffortStyle("gemini-api/gemini-4-neon", alias)).toBeNull();
+  expect(opencodeEffortStyle("xai-api/grok-4.7", alias)).toBeNull();
   expect(opencodeEffortStyle("meta/muse-spark-1.3", [])).toBeNull();
   expect(opencodeEffortStyle("gpt-6.2-astra", [])).toBeNull();
   expect(opencodeEffortStyle("xai/grok-4.7", [])).toBe("xai");
+  // Gemini 2.5 and older take a thinking budget, not a level.
+  expect(opencodeEffortStyle("google/gemini-2.5-flash", [])).toBe("google-budget");
+  expect(opencodeEffortStyle("google-vertex/gemini-2.5-pro", [])).toBe("google-budget");
+  expect(opencodeEffortStyle("google/gemini-1.5-pro", [])).toBe("google-budget");
+  expect(opencodeEffortStyle("google/gemini-3-pro", [])).toBe("google");
 });
 
 test("buildOpencodeConfig passes a reviewer's effort as its provider's option, and only a reviewer's", () => {
@@ -777,4 +785,24 @@ test("buildOpencodeConfig passes a Grok reviewer's level as reasoningEffort", ()
   ) as { agent: Record<string, Record<string, unknown>> };
   expect(opencode.agent.grok!.reasoningEffort).toBe("xhigh");
   expect(opencode.agent.grok!.thinkingConfig).toBeUndefined();
+});
+
+test('buildOpencodeConfig: no level for Gemini 2.5; `variant: ""` guards every level it sends', () => {
+  const opencode = buildOpencodeConfig(
+    configWith({
+      agents: [
+        { id: "flash", model: "google-vertex/gemini-2.5-flash", effort: "high" },
+        { id: "neon", model: "google/gemini-4-neon", effort: "low" },
+        { id: "astra", model: "openai/gpt-6.2-astra", effort: "xhigh" },
+        { id: "plain", model: "openai/gpt-6.2-astra" },
+      ],
+    }),
+  ) as { agent: Record<string, Record<string, unknown>> };
+  expect(opencode.agent.flash!.thinkingConfig).toBeUndefined();
+  expect("variant" in opencode.agent.flash!).toBe(false);
+  // A global OpenCode agent of the same name with a variant would otherwise replace the level.
+  expect(opencode.agent.neon!.variant).toBe("");
+  expect(opencode.agent.astra!.variant).toBe("");
+  // An agent without effort keeps OpenCode's own variant behavior.
+  expect("variant" in opencode.agent.plain!).toBe(false);
 });

@@ -285,7 +285,7 @@ export const STACK_VERIFIER_AGENT = "stack-verifier";
  * OpenAI's Responses adapter and xAI's adapter read `reasoningEffort`, Google's reads
  * `thinkingConfig.thinkingLevel`.
  */
-export type OpencodeEffortStyle = "openai" | "google" | "xai";
+export type OpencodeEffortStyle = "openai" | "google" | "google-budget" | "xai";
 
 /**
  * The effort style for a model id, or null when ecr does not pass a level to that
@@ -312,7 +312,9 @@ export function opencodeEffortStyle(
     return "openai";
   }
   if (provider === "google" || provider === "google-vertex") {
-    return "google";
+    // Gemini 2.5 and older take a thinking budget, not a level; OpenCode itself uses
+    // thinkingBudget for them (review of PR #118), so ecr sends them no level.
+    return /^gemini-[12](?:[.-]|$)/.test(model.slice(slash + 1)) ? "google-budget" : "google";
   }
   if (provider === "xai") {
     return "xai";
@@ -342,6 +344,9 @@ export function opencodeEffortOptions(
 ): Record<string, unknown> | null {
   if (style === "openai" || style === "xai") {
     return { reasoningEffort: effort };
+  }
+  if (style === "google-budget") {
+    return null;
   }
   return GOOGLE_THINKING_LEVELS.has(effort) ? { thinkingConfig: { thinkingLevel: effort } } : null;
 }
@@ -388,8 +393,11 @@ export function buildOpencodeConfig(
       model: reviewer.model,
       temperature: reviewer.temperature,
       // Only reviewers: the fixed roles below are written after this loop, so a reviewer
-      // that shares a fixed role's id cannot give that pass its level.
-      ...effortOptions,
+      // that shares a fixed role's id cannot give that pass its level. `variant: ""`:
+      // OpenCode merges the developer's global config under this one and applies an
+      // agent's model variant last, so a global agent of the same name with a variant
+      // would replace this level (observed with 1.19.5; LLP 0006).
+      ...(effortOptions ? { ...effortOptions, variant: "" } : {}),
       prompt: `You are the ${reviewer.id} code reviewer. Follow the user message exactly and return only the requested JSON.`,
       tools: {
         ...reviewer.tools,

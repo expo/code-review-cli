@@ -256,10 +256,20 @@ per-agent key and not a run-level flag.
   `"xhigh"` arrived as `reasoning_effort` (asked for in review of PR #118). With `XAI_API_KEY` set
   in the environment instead of an inline key, the same model went to `/responses` with the level in
   `reasoning.effort`; `"max"` and a non-reasoning Grok model got the field too (both seen in review
-  of PR #118, not re-run here). Which levels xAI's API accepts is not verified; per that review,
+  of PR #118, not re-run here; a second review saw only `/responses`, so the endpoint depends on
+  the setup). Which levels xAI's API accepts is not verified; per that review,
   xAI documents `low` to `xhigh` for Grok 4.7, without `max`. Only reviewer entries get
   the key: the fixed roles are written after the reviewer loop, so a reviewer that shares a fixed
-  role's id cannot give that pass its level. The pinned Google adapter takes `thinkingLevel`
+  role's id cannot give that pass its level. Gemini 2.5 and older take a thinking budget, not a
+  level (OpenCode uses `thinkingBudget` for them; found in review of PR #118), so
+  `opencodeEffortStyle` gives `gemini-1…`/`gemini-2…` ids the `google-budget` style, which sends
+  nothing, and the run note says so (unit-tested; a `google/gemini-2.5-flash` probe sent no request
+  even without a level, so this was not observed on the wire). When ecr sends a level it also sets
+  the agent's `variant` to `""`: OpenCode merges the developer's global config under ecr's and applies
+  an agent's model variant after its options, and with a global same-named agent at variant `high`,
+  an inline `reasoningEffort: "low"` went out as `"high"`; with `variant: ""` it went out as `"low"`
+  (OpenAI and Gemini 4 Neon, OpenCode 1.19.5, mock endpoint, 2026-11-26) [observed]. An agent without
+  `effort` keeps OpenCode's variant behavior. The pinned Google adapter takes `thinkingLevel`
   `minimal`, `low`, `medium` and `high`; with `xhigh` or `max` the pass failed inside OpenCode
   (an invalid-provider-options error) with no request sent, on `google/…` and `google-vertex/…`
   [observed]. OpenCode's model catalog lists more variants for some Gemini models; the limit comes

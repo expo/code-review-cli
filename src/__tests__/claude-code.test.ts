@@ -940,9 +940,21 @@ test("agentEffortNote: OpenAI, Google and xAI models take a level through OpenCo
   expect(note).toContain(
     "the model of each runs through OpenCode on a provider ecr passes no level to (ecr passes one only for `anthropic/…`",
   );
+  expect(note).toContain("`google-vertex/…` or `xai/…`)");
   expect(named(note)).toBe("muse");
   // Without the alias's auth entry, `openai-api` is not known to be OpenAI.
   expect(named(agentEffortNote(agents, engineOf, []))).toBe("pro, muse");
+});
+
+test("agentEffortNote: a Gemini 2.5 reviewer is told it takes a budget, once", () => {
+  const agents = [
+    { id: "flash", effort: "high", model: "google-vertex/gemini-2.5-flash" },
+  ] as unknown as LoadedAgent[];
+  const note = agentEffortNote(agents, { flash: "opencode" }, []);
+  expect(note).toContain(
+    "has no effect for flash: Gemini 2.5 and older models take a thinking budget",
+  );
+  expect(note?.split("has no effect").length).toBe(2);
 });
 
 test("agentEffortNote: a Google level the pinned adapter rejects is named with the levels it takes", () => {
