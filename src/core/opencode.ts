@@ -347,6 +347,7 @@ export function opencodeEffortOptions(
  * reviewer that shares one of these ids must not give it a level (LLP 0006). Re-check when
  * the OpenCode pins move.
  */
+// @ref LLP 0006#agent-effort [implements] — no level on OpenCode's own agent ids, which other sessions use
 export const OPENCODE_BUILTIN_AGENTS: ReadonlySet<string> = new Set([
   "build",
   "compaction",

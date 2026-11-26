@@ -282,13 +282,13 @@ per-agent key and not a run-level flag.
   #118 against a local mock endpoint, not re-run here). The engine does not check model support.
 - **Only reviewer files take it.** `effort` in `coordinator.md` or `shared.md` frontmatter has no
   effect, so the loader adds a setup warning that says to remove it, instead of ignoring it.
-- **The Claude Code no-tools fallback runs at `min(level, medium)`; OpenCode keeps the level.** A timed-out pass is retried with no
-  tools under a short cap (`maxToolCalls: 0`). A deep level there would likely time out again
-  (found in a multi-model review of PR #118, not measured in a live run), and sending no level
-  would use the provider's default, which can be higher than the agent's own `low` (OpenCode sends
-  Gemini `high` by default; found in review of PR #119). So `fallbackEffort` caps the level at
-  `medium` and never raises it, and `runClaudePrompt` passes that for the fallback. On OpenCode
-  the fallback, and the finalize and corrective prompts, run at the agent's own level: OpenCode reads
+- **The claude-code no-tools fallback runs at `min(level, medium)`; OpenCode keeps the level.** A
+  timed-out pass is retried with no tools under a short cap (`maxToolCalls: 0`). A deep level there
+  would likely time out again (found in a multi-model review of PR #118, not measured in a live
+  run), and sending no level would use the CLI's default, which can be higher than the agent's own
+  `low`. So `fallbackEffort` caps the level at `medium` and never raises it, and `runClaudePrompt`
+  passes that for the fallback. Only the claude-code engine applies this cap. On OpenCode the
+  fallback, and the finalize and corrective prompts, run at the agent's own level: OpenCode reads
   the level from the agent config, and ecr cannot know which lower levels a model takes (GPT-5 pro
   takes only `high`, per the provider's docs cited in review of PR #119), so it never sends a level
   the author did not write. An earlier version of PR #119 gave each such reviewer a
