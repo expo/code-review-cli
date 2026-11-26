@@ -249,6 +249,8 @@ per-agent key and not a run-level flag.
   without effort support gets none: a request from the pinned CLI to `claude-haiku-4-5` with
   `--effort high` carried no effort field, and one to `claude-opus-5-5` did (seen in review of PR
   #118 against a local mock endpoint, not re-run here). The engine does not check model support.
+- **Only reviewer files take it.** `effort` in `coordinator.md` or `shared.md` frontmatter has no
+  effect, so the loader adds a setup warning that says to remove it, instead of ignoring it.
 - **An invalid level never stops a review.** `parseAgentEffort` returns a setup warning with the
   fix and no `effort`, so the agent runs at the default. The value is matched after trim and
   lower-case, and a trailing `# comment` makes it invalid like any other text.

@@ -332,6 +332,20 @@ test("loadReviewConfig: an invalid `effort` is a warning, and the agent runs at 
   }
 });
 
+test("loadReviewConfig: `effort` in coordinator.md is a warning, not silently ignored", async () => {
+  const root = await configDirWithAgent("IOS", "---\neffort: high\n---\nCoordinator prompt.");
+  try {
+    const config = await loadReviewConfig(root);
+    expect(config.setupWarnings).toHaveLength(1);
+    const [warning] = config.setupWarnings!;
+    expect(warning).toContain(path.join(CONFIG_DIRNAME, "coordinator.md"));
+    expect(warning).toContain("is read only in agents/*.md reviewer files");
+    expect(warning).toContain("Fix: remove `effort` from this file.");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("loadReviewConfig: front-matter `mention` loads GitHub logins and teams onto the agent", async () => {
   const root = await configDirWithAgent(
     '---\nmention:\n  - amandeepmittal\n  - "@expo/docs"\n---\nIOS',

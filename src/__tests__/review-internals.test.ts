@@ -961,15 +961,42 @@ describe("selectReviewers: the effort note names only reviewers that run", () =>
     expect(note).toContain("has no effect for ios:");
   });
 
-  it("does not tell a path-excluded agents/verifier.md to rename", async () => {
-    // The engine map always has the built-in verifier, but the reviewer file did not
-    // pass its `paths` filter, so it is not a candidate.
-    const lines: string[] = [];
+  it("does not tell a routed-out agents/verifier.md to rename, but does when it runs", async () => {
+    const verifier = { id: "verifier", effort: "max" } as unknown as LoadedAgent;
+    const routedOut: string[] = [];
     await selectReviewers({
-      candidates: [alpha],
+      candidates: [alpha, verifier],
+      route: async () => ({ agents: [alpha], routed: true }),
+      engineOf,
+      progress: (line) => routedOut.push(line),
+    });
+    expect(routedOut.some((line) => line.includes("effort"))).toBe(false);
+
+    const selected: string[] = [];
+    await selectReviewers({
+      candidates: [alpha, verifier],
+      route: async () => ({ agents: [alpha, verifier], routed: true }),
+      engineOf,
+      progress: (line) => selected.push(line),
+    });
+    expect(selected.find((line) => line.startsWith("Note: `effort`"))).toContain(
+      "has no effect for verifier: the id is also a built-in pass",
+    );
+  });
+
+  it("runs every candidate, and names a running OpenCode reviewer, when the router falls back", async () => {
+    const lines: string[] = [];
+    const result = await selectReviewers({
+      candidates: [alpha, ios],
+      route: async () => ({ agents: [alpha, ios], routed: false }),
       engineOf,
       progress: (line) => lines.push(line),
     });
-    expect(lines.some((line) => line.includes("effort"))).toBe(false);
+    expect(result.selectedAgents.map((a) => a.id)).toEqual(["alpha", "ios"]);
+    expect(result.notRouted).toEqual([]);
+    expect(lines).toContain("Router unavailable; running all agents.");
+    expect(lines.find((line) => line.startsWith("Note: `effort`"))).toContain(
+      "has no effect for ios:",
+    );
   });
 });

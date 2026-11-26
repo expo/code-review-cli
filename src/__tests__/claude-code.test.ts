@@ -894,6 +894,16 @@ test("agentEffortNote: an agent that does not run in this review is not named", 
   ).toBeNull();
 });
 
+test("agentEffortNote: reports both reasons in one note", () => {
+  const agents = [
+    { id: "ios", effort: "high" },
+    { id: "verifier", effort: "max" },
+  ] as unknown as LoadedAgent[];
+  const note = agentEffortNote(agents, { ios: "opencode", verifier: "claude-code" });
+  expect(note).toContain("has no effect for ios: only the claude-code engine reads it");
+  expect(note).toContain("; `effort` has no effect for verifier: the id is also a built-in pass");
+});
+
 test("agentEffortNote: a reviewer that shares a fixed role's id is told to rename", () => {
   const agents = [{ id: "verifier", effort: "max" }] as unknown as LoadedAgent[];
   const note = agentEffortNote(agents, { verifier: "opencode" });
@@ -1037,6 +1047,16 @@ test("startClaudeCode: childEnv is an allowlist (forbidden ambient secrets exclu
     // sk-ant-oat… classifies as oauth ⇒ CLAUDE_CODE_OAUTH_TOKEN, never ANTHROPIC_API_KEY.
     expect(handle.childEnv.CLAUDE_CODE_OAUTH_TOKEN).toBe(oat);
     expect(handle.childEnv.ANTHROPIC_API_KEY).toBeUndefined();
+    // No agent sets `effort`, so the handle has no efforts map.
+    expect(handle.efforts).toBeUndefined();
+    const withEffort = await startClaudeCode({
+      ...config,
+      agents: [
+        { id: "reviewer", model: "anthropic/claude-opus-5", tools: {}, effort: "high" },
+        { id: "verifier", model: "anthropic/claude-opus-5", tools: {}, effort: "max" },
+      ],
+    } as unknown as LoadedConfig);
+    expect([...(withEffort.efforts ?? [])]).toEqual([["reviewer", "high"]]);
   } finally {
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) {

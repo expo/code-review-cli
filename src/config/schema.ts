@@ -584,11 +584,11 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
 });
 export type RawScopeReviewConfig = z.infer<typeof ScopeReviewConfigSchema>;
 
-/** A single agent after prompt files are read and models are resolved. */
 /** The effort levels the `claude` CLI takes for `--effort`. */
 export const AGENT_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type AgentEffort = (typeof AGENT_EFFORT_LEVELS)[number];
 
+/** A single agent after prompt files are read and models are resolved. */
 export interface LoadedAgent {
   id: string;
   /** One-line summary from frontmatter, used by the router to pick agents. */

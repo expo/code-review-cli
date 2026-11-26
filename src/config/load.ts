@@ -247,14 +247,28 @@ async function loadConfigDir(
   };
 
   // shared.md is optional; the coordinator is required.
-  const sharedPromptText = existsSync(path.join(dir, "shared.md"))
-    ? (await readPrompt("shared.md")).body
-    : "";
+  const sharedMd = existsSync(path.join(dir, "shared.md"))
+    ? await readPrompt("shared.md")
+    : undefined;
+  const sharedPromptText = sharedMd?.body ?? "";
 
   if (!existsSync(path.join(dir, "coordinator.md"))) {
     throw new Error(`Missing ${CONFIG_DIRNAME}/coordinator.md`);
   }
   const coordinatorMd = await readPrompt("coordinator.md");
+  // @ref LLP 0006#agent-effort [implements] — only reviewer files take `effort`; say so instead of ignoring it silently
+  for (const [file, md] of [
+    ["shared.md", sharedMd],
+    ["coordinator.md", coordinatorMd],
+  ] as const) {
+    if (md?.data.effort !== undefined) {
+      setupWarnings.push(
+        `${path.join(label, file)}: \`effort\` is read only in agents/*.md reviewer files, so it ` +
+          "has no effect here; the coordinator and the other built-in passes run at the default " +
+          "effort. Fix: remove `effort` from this file.",
+      );
+    }
+  }
 
   // Every markdown file in agents/ is a reviewer agent (id = filename).
   const agentsDir = path.join(dir, "agents");
