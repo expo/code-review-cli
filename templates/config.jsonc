@@ -14,9 +14,10 @@
   // e.g. `---\nmodel: anthropic/claude-opus-5-5\n---`. `paths: ["packages/ios/**"]`
   // there limits an agent to changes that touch those globs, and `mention: [octocat]`
   // names the people the review mentions when that agent asks for a human review.
-  // `effort: high` (low, medium, high, xhigh or max) sets how much an `anthropic/…`
-  // agent reasons, on a model that supports effort (Haiku 4.5 does not); other models
-  // ignore it.
+  // `effort: high` (low, medium, high, xhigh or max) sets how much an agent reasons on
+  // `anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), `google/…`,
+  // `google-vertex/…` or `xai/…` models; Google takes only low, medium or high. Other models ignore
+  // it, and so does a model without effort support (Claude Haiku 4.5). README: "effort".
 
   // @ref LLP 0009#config-and-prompt-templates [implements] — suggestions off by default, not a schema limit
   "policy": {

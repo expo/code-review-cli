@@ -584,7 +584,7 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
 });
 export type RawScopeReviewConfig = z.infer<typeof ScopeReviewConfigSchema>;
 
-/** The effort levels the `claude` CLI takes for `--effort`. */
+/** The effort levels an agent may set. Each engine maps them (LLP 0006, "Agent Effort"). */
 export const AGENT_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type AgentEffort = (typeof AGENT_EFFORT_LEVELS)[number];
 
@@ -623,7 +623,8 @@ export interface LoadedAgent {
   paths?: string[];
   /**
    * Frontmatter `effort`: how much reasoning the model spends on this agent's passes.
-   * Only the claude-code engine reads it. Absent means the CLI's own default.
+   * The claude-code engine passes it as `--effort`; OpenCode passes it for OpenAI and
+   * Google models (opencodeEffortStyle). Absent means the provider's own default.
    */
   effort?: AgentEffort;
   /**
