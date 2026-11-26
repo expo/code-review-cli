@@ -748,3 +748,123 @@ test("prepareAuth refuses an opaque xAI oauth token before staging", async () =>
     else process.env.XDG_DATA_HOME = prevXdg;
   }
 });
+
+test("a Codex token env belongs to openai", () => {
+  // A ChatGPT access token is a JWT too, so the xAI shape check alone would take it.
+  const stolen = checkProviderAuth(
+    cfg({ mode: "oauth", provider: "xai", tokenEnv: "CODEX_OAUTH_ACCESS_TOKEN" }),
+    { CODEX_OAUTH_ACCESS_TOKEN: xaiJwt(5 * 24 * 3600) },
+  );
+  expect(stolen.ok).toBe(false);
+  expect(stolen.detail).toContain("openai's");
+
+  expect(
+    checkProviderAuth(
+      cfg({ mode: "oauth", provider: "openai", tokenEnv: "CODEX_OAUTH_ACCESS_TOKEN" }),
+      { CODEX_OAUTH_ACCESS_TOKEN: xaiJwt(5 * 24 * 3600) },
+    ).ok,
+  ).toBe(true);
+});
+
+test("an alias cannot borrow an xAI credential", () => {
+  const oauthAlias = checkProviderAuth(
+    cfg({ mode: "oauth", provider: "openai", upstream: "xai", tokenEnv: "XAI_OAUTH_ACCESS_TOKEN" }),
+    { XAI_OAUTH_ACCESS_TOKEN: xaiJwt(5 * 24 * 3600) },
+  );
+  expect(oauthAlias.ok).toBe(false);
+  expect(oauthAlias.detail).toContain("xai's");
+
+  const keyAlias = checkProviderAuth(
+    cfg({ mode: "api-key", provider: "openrouter", upstream: "xai", tokenEnv: "XAI_API_KEY" }),
+    { XAI_API_KEY: "xai-key-" + "k".repeat(40) },
+  );
+  expect(keyAlias.ok).toBe(false);
+  expect(keyAlias.detail).toContain("xai's");
+});
+
+test("an oauth entry cannot borrow a credential through upstream", () => {
+  const r = checkProviderAuth(
+    cfg({
+      mode: "oauth",
+      provider: "openai",
+      upstream: "anthropic",
+      tokenEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+    }),
+    { CLAUDE_CODE_OAUTH_TOKEN: OAUTH },
+  );
+  expect(r.ok).toBe(false);
+  expect(r.detail).toContain("anthropic's");
+});
+
+test("an api-key alias still carries its upstream's key", () => {
+  const r = checkProviderAuth(
+    cfg({
+      mode: "api-key",
+      provider: "openai-api",
+      upstream: "openai",
+      tokenEnv: "OPENAI_API_KEY",
+    }),
+    { OPENAI_API_KEY: "sk-" + "k".repeat(40) },
+  );
+  expect(r.ok).toBe(true);
+});
+
+test("api-key mode refuses the SuperGrok token env and copies nothing", async () => {
+  const entry = { mode: "api-key", provider: "xai", tokenEnv: "XAI_OAUTH_ACCESS_TOKEN" };
+  const r = checkProviderAuth(cfg(entry), { XAI_OAUTH_ACCESS_TOKEN: xaiJwt(5 * 24 * 3600) });
+  expect(r.ok).toBe(false);
+  expect(r.detail).toContain('"mode": "oauth"');
+
+  const prevModel = process.env.REVIEWER_MODEL;
+  const prevKey = process.env.XAI_API_KEY;
+  const prevToken = process.env.XAI_OAUTH_ACCESS_TOKEN;
+  delete process.env.REVIEWER_MODEL;
+  delete process.env.XAI_API_KEY;
+  process.env.XAI_OAUTH_ACCESS_TOKEN = xaiJwt(5 * 24 * 3600);
+  try {
+    await expect(prepareAuth(cfg(entry))).rejects.toThrow(/"mode": "oauth"/);
+    expect(process.env.XAI_API_KEY).toBeUndefined();
+  } finally {
+    if (prevModel === undefined) delete process.env.REVIEWER_MODEL;
+    else process.env.REVIEWER_MODEL = prevModel;
+    if (prevKey === undefined) delete process.env.XAI_API_KEY;
+    else process.env.XAI_API_KEY = prevKey;
+    if (prevToken === undefined) delete process.env.XAI_OAUTH_ACCESS_TOKEN;
+    else process.env.XAI_OAUTH_ACCESS_TOKEN = prevToken;
+  }
+});
+
+test("an xai api-key entry with no tokenEnv still relies on OpenCode's login", () => {
+  const xai = checkProviderAuth(cfg({ mode: "api-key", provider: "xai" }), {});
+  expect(xai.ok).toBe(true);
+  expect(xai.detail).toContain("OpenCode's own login");
+
+  // Other providers with a known key env keep failing fast.
+  expect(checkProviderAuth(cfg({ mode: "api-key", provider: "openai" }), {}).ok).toBe(false);
+});
+
+test("prepareAuth hands the run the expiry warning of a staged token", async () => {
+  const prevModel = process.env.REVIEWER_MODEL;
+  const prevXdg = process.env.XDG_DATA_HOME;
+  delete process.env.REVIEWER_MODEL;
+  const entry = { mode: "oauth", provider: "xai", tokenEnv: "ECR_TEST_XAI" };
+  try {
+    process.env.ECR_TEST_XAI = xaiJwt(90 * 60);
+    const lapsing = await prepareAuth(cfg(entry));
+    expect(lapsing.warnings).toHaveLength(1);
+    expect(lapsing.warnings[0]).toContain("expires in 90 minute(s)");
+    expect(lapsing.warnings[0]).toContain("setup-auth");
+    await lapsing.cleanup();
+
+    process.env.ECR_TEST_XAI = xaiJwt(5 * 24 * 3600);
+    const live = await prepareAuth(cfg(entry));
+    expect(live.warnings).toEqual([]);
+    await live.cleanup();
+  } finally {
+    delete process.env.ECR_TEST_XAI;
+    if (prevModel === undefined) delete process.env.REVIEWER_MODEL;
+    else process.env.REVIEWER_MODEL = prevModel;
+    if (prevXdg === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = prevXdg;
+  }
+});

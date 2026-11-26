@@ -357,6 +357,11 @@ both other checks and forwards the Anthropic subscription token to a foreign pro
 ([observed] `auth.ts` `ANTHROPIC_TOKEN_ENVS`; commit `93aaf30`). The same guard
 covers `XAI_TOKEN_ENVS`: a non-xai entry that names `XAI_OAUTH_ACCESS_TOKEN` is
 refused, and `XAI_API_KEY` is owned through `PROVIDER_KEY_ENV`.
+`CODEX_OAUTH_TOKEN_ENVS` gives both Codex names to `openai`. `upstream` counts as
+the owner only for an api-key alias. An oauth entry is staged under its own
+`provider`, so `upstream` decides nothing there. An xAI credential never passes
+through an alias: an `xai` alias is synthesized with the openai-compatible SDK and
+no host ([observed] `auth.ts` `checkAuthEntry`; `opencode.ts` `buildOpencodeConfig`).
 
 **Scoped to providers in use.** Auth checks (`checkProviderAuth`) and credential
 forwarding are scoped to only the providers a resolved model actually routes to. A dead
@@ -379,16 +384,29 @@ engines' credential plumbing fully separate ([observed] `auth.ts` `prepareAuth`;
 **xAI follows the Codex file, not the Claude child env.** A `xai` oauth review writes
 the SuperGrok access token into that same isolated `auth.json`: `type` `oauth`, `access`
 set, `refresh` empty, `expires` from the JWT `exp` claim. `prepareAuth` does not copy
-that token into `XAI_API_KEY`. An opaque xAI value is refused before any pass, and the
+that token into `XAI_API_KEY`. An api-key entry that names `XAI_OAUTH_ACCESS_TOKEN` is
+refused: `api-key` is the schema default, and it would send the token as a key with no
+expiry check. An opaque xAI value is refused before any pass, and the
 message names `ecr setup-auth`. A JWT that is expired, or that has 120 seconds or less
-left, fails the same way, because the isolated entry has no refresh token. Under about
-two hours left, the run warns and continues. The user's
+left, fails the same way, because the isolated entry has no refresh token. 120 seconds
+is the point where OpenCode would refresh on the first request. Under about
+two hours left, `doctor` and the run both warn and continue: `prepareAuth` returns the
+warnings of the tokens it staged, and `runReview` prints them. The hard failure stays
+at 120 seconds on purpose. A token that lapses later still fails the passes that run
+then, and the warning says so. The token is short-lived: a Grok CLI access token from
+the same OAuth client had `exp − iat` = 21600 seconds ([observed] 2026-11-27; an
+OpenCode-issued token was not measured). The pinned OpenCode sends the staged token as
+a bearer to `https://api.x.ai/v1/responses`, because no `provider.xai` block changes the
+SDK's default host ([observed] 2026-11-27 with a placeholder token, which that host
+refused with 400; a real SuperGrok token was not tried). The user's
 `~/.local/share/opencode/auth.json` is written by OpenCode during
 `opencode auth login` and is only read by setup-auth, which exports the access token.
 API-key mode copies the configured env into `XAI_API_KEY` (`PROVIDER_KEY_ENV`) and
-writes no oauth entry. `XAI_OAUTH_ACCESS_TOKEN` belongs to `xai` the same way
+writes no oauth entry. An `xai` api-key entry with no `tokenEnv` and no `XAI_API_KEY`
+still passes and relies on OpenCode's own login, as it did before `XAI_API_KEY` had an
+owner. `XAI_OAUTH_ACCESS_TOKEN` belongs to `xai` the same way
 `CLAUDE_CODE_OAUTH_TOKEN` belongs to `anthropic` ([observed] `auth.ts`
-`checkOauthTokenShape`, `XAI_TOKEN_ENVS`, `oauthAuthJsonEntry`).
+`checkOauthTokenShape`, `XAI_TOKEN_ENVS`, `oauthAuthJsonEntry`, `prepareAuth`).
 
 **A deliberate re-check at the forwarding site.** The deny-list check (`checkAuthEntry`)
 is re-run at the Claude CLI credential-forwarding site inside `startClaudeCode`, in

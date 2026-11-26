@@ -7,6 +7,8 @@ import type { AuthConfigEntry, LoadedConfig } from "../config/schema.js";
 
 export interface PreparedAuth {
   cleanup: () => Promise<void>;
+  /** Warnings about a staged oauth token, such as one that lapses soon. The run prints them. */
+  warnings: string[];
 }
 
 /** Env var each provider's SDK reads for an API key (x-api-key style). */
@@ -43,14 +45,21 @@ const ANTHROPIC_TOKEN_ENVS: Record<string, string> = {
  * belongs to anthropic: a non-xai entry that names it is refused.
  * XAI_API_KEY is owned through PROVIDER_KEY_ENV, so it is not repeated here.
  * The review stages this value into the isolated auth.json.
- * It is never copied into XAI_API_KEY.
+ * It is never copied into XAI_API_KEY: an api-key entry that names it is refused.
  */
 const XAI_TOKEN_ENVS: Record<string, string> = {
   XAI_OAUTH_ACCESS_TOKEN: "xai",
 };
 
-/** The env vars `ecr setup-auth` exports for a Codex (ChatGPT) subscription login. */
-const CODEX_OAUTH_TOKEN_ENVS = ["CODEX_OAUTH_ACCESS_TOKEN", "CODEX_OAUTH_REFRESH_TOKEN"];
+/**
+ * The env vars `ecr setup-auth` exports for a Codex (ChatGPT) subscription login.
+ * They belong to openai.
+ * Without an owner, an xai oauth entry could name one: a ChatGPT access token is a JWT too.
+ */
+const CODEX_OAUTH_TOKEN_ENVS: Record<string, string> = {
+  CODEX_OAUTH_ACCESS_TOKEN: "openai",
+  CODEX_OAUTH_REFRESH_TOKEN: "openai",
+};
 
 /**
  * Every env var that can hold a model provider credential.
@@ -60,7 +69,7 @@ export const MODEL_CREDENTIAL_ENVS: ReadonlySet<string> = new Set([
   ...Object.values(PROVIDER_KEY_ENV),
   ...Object.keys(ANTHROPIC_TOKEN_ENVS),
   ...Object.keys(XAI_TOKEN_ENVS),
-  ...CODEX_OAUTH_TOKEN_ENVS,
+  ...Object.keys(CODEX_OAUTH_TOKEN_ENVS),
 ]);
 
 /**
@@ -220,6 +229,7 @@ export function checkOauthTokenShape(
           warning:
             `${tokenEnv}'s SuperGrok access token expires in ` +
             `${Math.max(1, Math.round(remainingMs / 60_000))} minute(s). ` +
+            `A pass that is still running then fails, because the review cannot renew the token. ` +
             `Re-mint it soon (\`ecr setup-auth\`).`,
         };
       }
@@ -301,8 +311,12 @@ export function checkAuthEntry(
     const keyOwner =
       Object.entries(PROVIDER_KEY_ENV).find(([, env]) => env === tokenEnv)?.[0] ??
       ANTHROPIC_TOKEN_ENVS[tokenEnv] ??
-      XAI_TOKEN_ENVS[tokenEnv];
-    if (keyOwner && keyOwner !== provider && keyOwner !== upstream) {
+      XAI_TOKEN_ENVS[tokenEnv] ??
+      CODEX_OAUTH_TOKEN_ENVS[tokenEnv];
+    // Only an api-key alias may borrow its upstream's key: an oauth entry is staged under `provider`.
+    // An xai alias gets the openai-compatible SDK and no host, so it cannot reach xAI at all.
+    const viaAlias = mode === "api-key" && keyOwner !== "xai" && keyOwner === upstream;
+    if (keyOwner && keyOwner !== provider && !viaAlias) {
       return {
         ok: false,
         detail:
@@ -310,6 +324,17 @@ export function checkAuthEntry(
           `well-known credential env — refusing to send one provider's credential to another. ` +
           `Use a credential minted for ${provider}${upstream ? ` (upstream ${upstream})` : ""}, ` +
           `or fix the provider/upstream mapping.`,
+      };
+    }
+    // "api-key" is the schema default, so an xai entry that forgot `"mode": "oauth"` lands here.
+    // Refuse it before the access token is sent as an API key with no expiry check.
+    if (mode === "api-key" && XAI_TOKEN_ENVS[tokenEnv]) {
+      return {
+        ok: false,
+        detail:
+          `auth for ${provider} names tokenEnv "${tokenEnv}", the SuperGrok access token env, ` +
+          `but auth.mode is "api-key" (the default). Set "mode": "oauth" for ${provider}, ` +
+          `or point tokenEnv at an xAI API key (XAI_API_KEY).`,
       };
     }
   }
@@ -413,6 +438,14 @@ export function checkAuthEntry(
     return {
       ok: true,
       detail: `api-key for ${provider}; no tokenEnv configured and no known key env — relying on OpenCode's own login`,
+    };
+  }
+  // An xai entry with no tokenEnv meant "OpenCode's own xAI login" before XAI_API_KEY had an owner.
+  // Keep that reading, so those configs still run.
+  if (!tokenEnv && provider === "xai") {
+    return {
+      ok: true,
+      detail: `api-key for xai; no tokenEnv configured and ${providerKeyEnv} is not set — relying on OpenCode's own login`,
     };
   }
   const names = [tokenEnv, providerKeyEnv].filter(Boolean).join(" or ");
@@ -573,7 +606,7 @@ export function oauthAuthJsonEntry(
  */
 // @ref LLP 0003#credential-resolution-and-forwarding [implements] — stages all OAuth credentials into one isolated auth.json under a temp XDG_DATA_HOME; anthropic never passes through this path (its credential goes straight into startClaudeCode's child env)
 export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
-  const noop: PreparedAuth = { cleanup: async () => {} };
+  const noop: PreparedAuth = { cleanup: async () => {}, warnings: [] };
 
   // REVIEWER_MODEL is an explicit "use this model with my own creds" override — a
   // common local case (e.g. the repo config targets a CI credential, but a dev
@@ -598,6 +631,7 @@ export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
   // forwarding it here would reintroduce the exact secret-forwarding it prevents.
   const inUse = providersInUse(config);
   const authJson: Record<string, unknown> = {};
+  const warnings: string[] = [];
   for (const entry of config.auth) {
     const { mode, provider, tokenEnv, upstream } = entry;
     if (inUse && !inUse.has(provider)) {
@@ -622,12 +656,17 @@ export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
     }
     // oauth — checkProviderAuth guarantees tokenEnv is set and present; read
     // defensively so TypeScript narrows and this stays correct if called directly.
-    if (!value) {
+    if (!tokenEnv || !value) {
       throw new Error(
         `auth mode "oauth" for ${provider} requires tokenEnv to name a set OAuth token env.`,
       );
     }
     authJson[provider] = oauthAuthJsonEntry(provider, value);
+    // A staged token cannot be renewed mid-run, so the run itself must say when one lapses soon.
+    const { warning } = checkOauthTokenShape(provider, value, tokenEnv);
+    if (warning) {
+      warnings.push(warning);
+    }
   }
 
   if (Object.keys(authJson).length === 0) {
@@ -643,5 +682,6 @@ export async function prepareAuth(config: LoadedConfig): Promise<PreparedAuth> {
     cleanup: async () => {
       await rm(dir, { recursive: true, force: true });
     },
+    warnings,
   };
 }

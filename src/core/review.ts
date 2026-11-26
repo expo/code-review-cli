@@ -427,6 +427,9 @@ export async function runReview(
     await readRoot?.cleanup();
     throw error;
   }
+  for (const warning of auth.warnings) {
+    progress(`  auth: ${warning}`);
+  }
 
   const restoreCwd = async (): Promise<void> => {
     if (readRoot) {
