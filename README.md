@@ -1023,9 +1023,9 @@ fallback key; `ecr doctor` diagnoses setup.
   <https://console.x.ai> and exported as `XAI_API_KEY`. `mode: "oauth"` caps
   concurrency at 3. An API key stays at 6.
 
-  The access token lasts hours, not days, and a review cannot renew it. A token
-  from the same xAI OAuth client lasted 6 hours. So the SuperGrok mode suits
-  local runs: a CI secret goes stale the same day unless a job re-mints it.
+  The access token lasts 6 hours, and a review cannot renew it. So the SuperGrok
+  mode suits local runs: a CI secret goes stale the same day unless a job
+  re-mints it.
   `ecr doctor` and the review both warn when under two hours are left. The
   review stops before any pass when 120 seconds or less are left. Run
   `ecr setup-auth` again for a new token. It signs in again unless a review

@@ -393,12 +393,14 @@ is the point where OpenCode would refresh on the first request. Under about
 two hours left, `doctor` and the run both warn and continue: `prepareAuth` returns the
 warnings of the tokens it staged, and `runReview` prints them. The hard failure stays
 at 120 seconds on purpose. A token that lapses later still fails the passes that run
-then, and the warning says so. The token is short-lived: a Grok CLI access token from
-the same OAuth client had `exp − iat` = 21600 seconds ([observed] 2026-11-27; an
-OpenCode-issued token was not measured). The pinned OpenCode sends the staged token as
-a bearer to `https://api.x.ai/v1/responses`, because no `provider.xai` block changes the
-SDK's default host ([observed] 2026-11-27 with a placeholder token, which that host
-refused with 400; a real SuperGrok token was not tried). The user's
+then, and the warning says so. The token is short-lived: an access token from the
+pinned OpenCode's SuperGrok login had `exp − iat` = 21600 seconds, and OpenCode stored
+the same deadline in `expires` ([observed] 2026-11-27). The pinned OpenCode sends the
+staged token as a bearer to `https://api.x.ai/v1/responses`, because no `provider.xai`
+block changes the SDK's default host ([observed] 2026-11-27 with a placeholder token,
+which that host refused with 400). With a real token staged the same way, one direct
+request and one local review on `xai/grok-4.7` completed ([observed] 2026-11-27; the
+token's scope held `grok-cli:access` and `api:access`). The user's
 `~/.local/share/opencode/auth.json` is written by OpenCode during
 `opencode auth login` and is only read by setup-auth, which exports the access token.
 API-key mode copies the configured env into `XAI_API_KEY` (`PROVIDER_KEY_ENV`) and
