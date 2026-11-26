@@ -876,7 +876,7 @@ export function agentEffortNote(
   if (viaOpencode.length > 0) {
     notes.push(
       `\`effort\` has no effect for ${viaOpencode.join(", ")}: the model of each runs through ` +
-        `OpenCode on a provider ecr passes no level to (${EFFORT_PROVIDERS})`,
+        `OpenCode on a provider ecr passes no level to (ecr passes one only for ${EFFORT_PROVIDERS})`,
     );
   }
   if (googleLevelNotTaken.length > 0) {

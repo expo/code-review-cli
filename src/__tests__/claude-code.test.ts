@@ -931,7 +931,7 @@ test("agentEffortNote: OpenAI and Google models take a level through OpenCode; o
   const named = (note: string | null) => note?.match(/has no effect for ([^:]+):/)?.[1];
   const note = agentEffortNote(agents, engineOf, auth);
   expect(note).toContain(
-    "the model of each runs through OpenCode on a provider ecr passes no level to",
+    "the model of each runs through OpenCode on a provider ecr passes no level to (ecr passes one only for `anthropic/…`",
   );
   expect(named(note)).toBe("muse");
   // Without the alias's auth entry, `openai-api` is not known to be OpenAI.
