@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { fallbackEffort } from "../config/schema.js";
-import type { AgentEffort, LoadedAgent, LoadedConfig, McpServerConfig } from "../config/schema.js";
+import type {
+  AgentEffort,
+  AuthConfigEntry,
+  LoadedAgent,
+  LoadedConfig,
+  McpServerConfig,
+} from "../config/schema.js";
 import { checkAuthEntry } from "./auth.js";
 import { pathInside, resolveOnPath, run } from "./exec.js";
 import { assertMcpServerTokenEnvs, mcpGrantEnvironment, mcpServerGrants } from "./mcp-servers.js";
@@ -15,6 +21,7 @@ import {
   AgentTimeoutError,
   CLAUDE_CODE_ENGINE,
   CROSS_CUTTING_AGENT,
+  opencodeEffortStyle,
   STACK_VERIFIER_AGENT,
   VERIFIER_AGENT,
   withTransientRetry,
@@ -810,19 +817,27 @@ export function buildAgentEfforts(config: LoadedConfig): Map<string, AgentEffort
 /**
  * A one-time run note for an `effort` that has no effect. It states a fact about the
  * setup, not about a pass, so it stays true when a later step (a blocking pre-check, the
- * budget) skips the agent. The cases: the agent's model runs through OpenCode (only the
- * `claude` CLI takes an effort level), or the agent's id is also a fixed role's id.
- * `agents` is the run's selected reviewer list, after the `paths` filter and the router,
- * so an agent either of them left out is never named. Returns null when every declared
- * `effort` applies.
+ * budget) skips the agent. The cases: the agent's model runs through OpenCode on a
+ * provider ecr passes no level to (`opencodeEffortStyle` is null), or the agent's id is
+ * also a fixed role's id. `agents` is the run's selected reviewer list, after the `paths`
+ * filter and the router, so an agent either of them left out is never named. Returns null
+ * when every declared `effort` applies.
  */
 export function agentEffortNote(
   agents: readonly LoadedAgent[],
   engineOf: Record<string, Engine>,
+  auth: readonly AuthConfigEntry[],
 ): string | null {
   const declared = agents.filter((agent) => agent.effort);
+  const takesNoLevel = (model: string): boolean =>
+    engineForModel(model) === "opencode" && opencodeEffortStyle(model, auth) === null;
   const viaOpencode = declared
-    .filter((agent) => !FIXED_ROLE_IDS.has(agent.id) && engineOf[agent.id] === "opencode")
+    .filter(
+      (agent) =>
+        !FIXED_ROLE_IDS.has(agent.id) &&
+        engineOf[agent.id] === "opencode" &&
+        takesNoLevel(agent.model ?? ""),
+    )
     .map((agent) => agent.id);
   const fixedRole = declared
     .filter((agent) => FIXED_ROLE_IDS.has(agent.id))
@@ -830,30 +845,30 @@ export function agentEffortNote(
   const notes: string[] = [];
   if (viaOpencode.length > 0) {
     notes.push(
-      `\`effort\` has no effect for ${viaOpencode.join(", ")}: only the claude-code engine ` +
-        "reads it, and the model of each runs through OpenCode",
+      `\`effort\` has no effect for ${viaOpencode.join(", ")}: the model of each runs through ` +
+        `OpenCode on a provider ecr passes no level to (${EFFORT_PROVIDERS})`,
     );
   }
   // The engine map's entry for a fixed-role id describes the built-in pass, so read the
-  // reviewer's own model: after a rename, an OpenCode model would still ignore `effort`.
-  const fixedRoleViaOpencode = declared
-    .filter(
-      (agent) => FIXED_ROLE_IDS.has(agent.id) && engineForModel(agent.model ?? "") === "opencode",
-    )
+  // reviewer's own model: after a rename, a model that takes no level still ignores it.
+  const fixedRoleNoLevel = declared
+    .filter((agent) => FIXED_ROLE_IDS.has(agent.id) && takesNoLevel(agent.model ?? ""))
     .map((agent) => agent.id);
   if (fixedRole.length > 0) {
     notes.push(
       `\`effort\` has no effect for ${fixedRole.join(", ")}: the id is also a built-in pass, which ` +
         "runs at the default effort. Fix: rename the agent file" +
-        (fixedRoleViaOpencode.length > 0
-          ? `, and run ${fixedRoleViaOpencode.join(", ")} on an \`anthropic/…\` model (its ` +
-            "`model:`, or `REVIEWER_MODEL` when that is set), because only the claude-code " +
-            "engine reads `effort`"
+        (fixedRoleNoLevel.length > 0
+          ? `, and run ${fixedRoleNoLevel.join(", ")} on a model that takes a level ` +
+            `(${EFFORT_PROVIDERS}; its \`model:\`, or \`REVIEWER_MODEL\` when that is set)`
           : ""),
     );
   }
   return notes.length > 0 ? notes.join("; ") : null;
 }
+
+/** The model families ecr passes an effort level to, for the run notes. */
+const EFFORT_PROVIDERS = "`anthropic/…`, `openai/…`, `google/…` or `google-vertex/…`";
 
 /**
  * Preserve actionable process diagnostics without copying arbitrary stderr into a

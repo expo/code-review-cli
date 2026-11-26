@@ -888,8 +888,10 @@ test("agentEffortNote: names the agents whose effort an OpenCode-routed model ig
     { id: "b", effort: "low" },
     { id: "c" },
   ] as unknown as LoadedAgent[];
-  expect(agentEffortNote(agents, { a: "claude-code", b: "claude-code", c: "opencode" })).toBeNull();
-  const note = agentEffortNote(agents, { a: "claude-code", b: "opencode", c: "opencode" });
+  expect(
+    agentEffortNote(agents, { a: "claude-code", b: "claude-code", c: "opencode" }, []),
+  ).toBeNull();
+  const note = agentEffortNote(agents, { a: "claude-code", b: "opencode", c: "opencode" }, []);
   expect(note).toContain("has no effect for b:");
   expect(note).not.toContain("for a");
 });
@@ -900,8 +902,49 @@ test("agentEffortNote: an agent that does not run in this review is not named", 
   // although the engine map still has entries for both ids.
   const selected = [{ id: "alpha", effort: "high" }] as unknown as LoadedAgent[];
   expect(
-    agentEffortNote(selected, { alpha: "claude-code", ios: "opencode", verifier: "claude-code" }),
+    agentEffortNote(
+      selected,
+      { alpha: "claude-code", ios: "opencode", verifier: "claude-code" },
+      [],
+    ),
   ).toBeNull();
+});
+
+test("agentEffortNote: OpenAI and Google models take a level through OpenCode; others do not", () => {
+  const agents = [
+    { id: "astra", effort: "high", model: "openai/gpt-6.2-astra" },
+    { id: "pro", effort: "high", model: "openai-api/gpt-5.5-pro" },
+    { id: "neon", effort: "high", model: "google/gemini-4-neon" },
+    { id: "vertex", effort: "high", model: "google-vertex/gemini-4-neon" },
+    { id: "muse", effort: "high", model: "meta/muse-spark-1.3" },
+  ] as unknown as LoadedAgent[];
+  const engineOf = {
+    astra: "opencode",
+    pro: "opencode",
+    neon: "opencode",
+    vertex: "opencode",
+    muse: "opencode",
+  } as const;
+  const auth = [
+    { provider: "openai-api", mode: "api-key", tokenEnv: "OPENAI_API_KEY", upstream: "openai" },
+  ] as unknown as AuthConfigEntry[];
+  const named = (note: string | null) => note?.match(/has no effect for ([^:]+):/)?.[1];
+  const note = agentEffortNote(agents, engineOf, auth);
+  expect(note).toContain(
+    "the model of each runs through OpenCode on a provider ecr passes no level to",
+  );
+  expect(named(note)).toBe("muse");
+  // Without the alias's auth entry, `openai-api` is not known to be OpenAI.
+  expect(named(agentEffortNote(agents, engineOf, []))).toBe("pro, muse");
+});
+
+test("agentEffortNote: a fixed-role reviewer on OpenAI is told only to rename", () => {
+  const agents = [
+    { id: "verifier", effort: "max", model: "openai/gpt-6.2-astra" },
+  ] as unknown as LoadedAgent[];
+  const note = agentEffortNote(agents, { verifier: "claude-code" }, []);
+  expect(note).toContain("Fix: rename the agent file");
+  expect(note).not.toContain("give verifier a model");
 });
 
 test("agentEffortNote: reports both reasons in one note", () => {
@@ -909,26 +952,26 @@ test("agentEffortNote: reports both reasons in one note", () => {
     { id: "ios", effort: "high" },
     { id: "verifier", effort: "max" },
   ] as unknown as LoadedAgent[];
-  const note = agentEffortNote(agents, { ios: "opencode", verifier: "claude-code" });
-  expect(note).toContain("has no effect for ios: only the claude-code engine reads it");
+  const note = agentEffortNote(agents, { ios: "opencode", verifier: "claude-code" }, []);
+  expect(note).toContain("has no effect for ios: the model of each runs through OpenCode");
   expect(note).toContain("; `effort` has no effect for verifier: the id is also a built-in pass");
 });
 
-test("agentEffortNote: a fixed-role reviewer on an OpenCode model is told to change the model too", () => {
+test("agentEffortNote: a fixed-role reviewer on a model that takes no level is told to change the model too", () => {
   const agents = [
-    { id: "verifier", effort: "max", model: "openai/gpt-6-astra" },
+    { id: "verifier", effort: "max", model: "meta/muse-spark-1.3" },
     { id: "coordinator", effort: "high", model: "anthropic/claude-opus-5-5" },
   ] as unknown as LoadedAgent[];
   // The engine map describes the built-in passes (claude here), not the reviewer files.
-  const note = agentEffortNote(agents, { verifier: "claude-code", coordinator: "claude-code" });
-  expect(note).toContain("Fix: rename the agent file, and run verifier on an `anthropic/…` model");
+  const note = agentEffortNote(agents, { verifier: "claude-code", coordinator: "claude-code" }, []);
+  expect(note).toContain("Fix: rename the agent file, and run verifier on a model that takes a level");
   expect(note).toContain("`REVIEWER_MODEL` when that is set");
   expect(note).not.toContain("give verifier, coordinator");
 });
 
 test("agentEffortNote: a reviewer that shares a fixed role's id is told to rename", () => {
   const agents = [{ id: "verifier", effort: "max" }] as unknown as LoadedAgent[];
-  const note = agentEffortNote(agents, { verifier: "opencode" });
+  const note = agentEffortNote(agents, { verifier: "opencode" }, []);
   expect(note).toContain("has no effect for verifier: the id is also a built-in pass");
   expect(note).toContain("Fix: rename the agent file");
   expect(note).not.toContain("runs through OpenCode");

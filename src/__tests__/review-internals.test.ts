@@ -942,6 +942,7 @@ describe("selectReviewers: the effort note names only selected reviewers", () =>
       candidates: [alpha, ios],
       route: async () => ({ agents: [alpha], routed: true }),
       engineOf,
+      auth: [],
       progress: (line) => lines.push(line),
     });
     expect(result.selectedAgents.map((a) => a.id)).toEqual(["alpha"]);
@@ -955,6 +956,7 @@ describe("selectReviewers: the effort note names only selected reviewers", () =>
     await selectReviewers({
       candidates: [alpha, ios],
       engineOf,
+      auth: [],
       progress: (line) => lines.push(line),
     });
     const note = lines.find((line) => line.startsWith("Note: `effort`"));
@@ -968,6 +970,7 @@ describe("selectReviewers: the effort note names only selected reviewers", () =>
       candidates: [alpha, verifier],
       route: async () => ({ agents: [alpha], routed: true }),
       engineOf,
+      auth: [],
       progress: (line) => routedOut.push(line),
     });
     expect(routedOut.some((line) => line.includes("effort"))).toBe(false);
@@ -977,6 +980,7 @@ describe("selectReviewers: the effort note names only selected reviewers", () =>
       candidates: [alpha, verifier],
       route: async () => ({ agents: [alpha, verifier], routed: true }),
       engineOf,
+      auth: [],
       progress: (line) => selected.push(line),
     });
     expect(selected.find((line) => line.startsWith("Note: `effort`"))).toContain(
@@ -990,6 +994,7 @@ describe("selectReviewers: the effort note names only selected reviewers", () =>
       candidates: [alpha, ios],
       route: async () => ({ agents: [alpha, ios], routed: false }),
       engineOf,
+      auth: [],
       progress: (line) => lines.push(line),
     });
     expect(result.selectedAgents.map((a) => a.id)).toEqual(["alpha", "ios"]);

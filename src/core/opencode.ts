@@ -5,7 +5,12 @@ import path from "node:path";
 
 import { createOpencode } from "@opencode-ai/sdk";
 
-import type { LoadedConfig, McpServerConfig } from "../config/schema.js";
+import type {
+  AgentEffort,
+  AuthConfigEntry,
+  LoadedConfig,
+  McpServerConfig,
+} from "../config/schema.js";
 // Type-only: erased at compile time, so it creates NO runtime import cycle. The
 // Claude engine is reached at runtime via dynamic import() in the dispatch
 // branches below; claude-code.ts statically imports the shared helpers here.
@@ -274,6 +279,55 @@ export const ADJUDICATOR_AGENT = "adjudicator";
 // that structural, like the coordinator.
 export const STACK_VERIFIER_AGENT = "stack-verifier";
 
+/**
+ * How an OpenCode provider's SDK takes a reasoning level from an agent's config:
+ * OpenAI's Responses adapter reads `reasoningEffort`, Google's reads
+ * `thinkingConfig.thinkingLevel`.
+ */
+export type OpencodeEffortStyle = "openai" | "google";
+
+/**
+ * The effort style for a model id, or null when ecr does not pass a level to that
+ * provider. An upstream alias (auth entry `openai-api` with upstream `openai`) takes its
+ * upstream's style. Meta, OpenAI-compatible and other providers get null.
+ */
+// @ref LLP 0006#agent-effort [implements] — OpenCode-routed effort, per provider family
+export function opencodeEffortStyle(
+  model: string,
+  auth: readonly AuthConfigEntry[],
+): OpencodeEffortStyle | null {
+  const slash = model.indexOf("/");
+  if (slash <= 0) {
+    return null;
+  }
+  const provider = model.slice(0, slash);
+  const family =
+    auth.find((entry) => entry.provider === provider && entry.upstream)?.upstream ?? provider;
+  if (family === "openai") {
+    return "openai";
+  }
+  if (family === "google" || family === "google-vertex") {
+    return "google";
+  }
+  return null;
+}
+
+/**
+ * The agent-config keys that carry a reasoning level for an effort style. OpenCode
+ * passes unknown agent keys to the provider as model options; observed with OpenCode
+ * 1.19.5 against a mock endpoint (LLP 0006): `reasoningEffort` becomes the Responses
+ * API's `reasoning.effort`, and `thinkingConfig.thinkingLevel` replaces the `high` that
+ * OpenCode sends to Gemini by default.
+ */
+export function opencodeEffortOptions(
+  style: OpencodeEffortStyle,
+  effort: AgentEffort,
+): Record<string, unknown> {
+  return style === "openai"
+    ? { reasoningEffort: effort }
+    : { thinkingConfig: { thinkingLevel: effort } };
+}
+
 /** Build the inline OpenCode config (agents + coordinator) from a repo config. */
 export function buildOpencodeConfig(
   config: LoadedConfig,
@@ -282,11 +336,17 @@ export function buildOpencodeConfig(
 ): Record<string, unknown> {
   const agent: Record<string, unknown> = {};
   for (const reviewer of config.agents) {
+    const effortStyle = reviewer.effort ? opencodeEffortStyle(reviewer.model, config.auth) : null;
     agent[reviewer.id] = {
       description: `${reviewer.id} reviewer`,
       mode: "all",
       model: reviewer.model,
       temperature: reviewer.temperature,
+      // Only reviewers: the fixed roles below are written after this loop, so a reviewer
+      // that shares a fixed role's id cannot give that pass its level.
+      ...(reviewer.effort && effortStyle
+        ? opencodeEffortOptions(effortStyle, reviewer.effort)
+        : {}),
       prompt: `You are the ${reviewer.id} code reviewer. Follow the user message exactly and return only the requested JSON.`,
       tools: {
         ...reviewer.tools,

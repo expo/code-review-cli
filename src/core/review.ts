@@ -1,7 +1,7 @@
 // @ref LLP 0002#pipeline-stages [implements] — the mode-agnostic pipeline core owning budgets, coverage, and logging
 import path from "node:path";
 
-import type { LoadedAgent, LoadedConfig } from "../config/schema.js";
+import type { AuthConfigEntry, LoadedAgent, LoadedConfig } from "../config/schema.js";
 import type {
   PreparedReadRoot,
   ReviewSource,
@@ -710,6 +710,7 @@ export async function runReview(
           }
         : {}),
       engineOf,
+      auth: config.auth,
       progress,
     });
 
@@ -2368,6 +2369,8 @@ export async function selectReviewers(args: {
   candidates: LoadedAgent[];
   route?: () => Promise<RouteResult>;
   engineOf: Record<string, Engine>;
+  /** The run's credentials: a provider alias takes its upstream's effort support. */
+  auth: readonly AuthConfigEntry[];
   progress: (line: string) => void;
 }): Promise<{ selectedAgents: LoadedAgent[]; notRouted: string[] }> {
   let selectedAgents = args.candidates;
@@ -2388,7 +2391,7 @@ export async function selectReviewers(args: {
   // `effort` reaches only the `claude` CLI, and never a fixed pass. Say so once for a
   // selected reviewer whose level has no effect, so the setting does not fail silently.
   // @ref LLP 0006#agent-effort [implements] — built from the selected reviewer list, after the paths filter and the router, so an agent either of them left out is never named; a later pre-check or budget limit can still skip a named one
-  const effortNote = agentEffortNote(selectedAgents, args.engineOf);
+  const effortNote = agentEffortNote(selectedAgents, args.engineOf, args.auth);
   if (effortNote) {
     args.progress(`Note: ${effortNote}`);
   }
