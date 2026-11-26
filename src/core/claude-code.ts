@@ -3,7 +3,7 @@
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { AgentEffort, LoadedConfig, McpServerConfig } from "../config/schema.js";
+import type { AgentEffort, LoadedAgent, LoadedConfig, McpServerConfig } from "../config/schema.js";
 import { checkAuthEntry } from "./auth.js";
 import { pathInside, resolveOnPath, run } from "./exec.js";
 import { assertMcpServerTokenEnvs, mcpGrantEnvironment, mcpServerGrants } from "./mcp-servers.js";
@@ -19,7 +19,7 @@ import {
   withTransientRetry,
 } from "./opencode.js";
 import type { OpencodeHandle, PromptResult, TokenUsage } from "./opencode.js";
-import { buildClaudeSessionExport } from "./session-archive.js";
+import { buildClaudeSessionExport, NON_REVIEWER_AGENTS } from "./session-archive.js";
 import { RateLimitWatch } from "./throttle.js";
 import { CLAUDE_RESEARCH_TOOLS } from "./research.js";
 import type { ResearchMcpRuntime } from "./research.js";
@@ -784,16 +784,11 @@ export function claudeTemperatureNote(
 }
 
 /**
- * Ids the engine dispatches its fixed passes under. A reviewer file can share one
- * (agents/verifier.md); its `effort` must not reach the built-in pass of that id.
+ * Ids the engine dispatches its fixed passes under (the same set the session archive
+ * uses). A reviewer file can share one (agents/verifier.md); its `effort` must not
+ * reach the built-in pass of that id.
  */
-const FIXED_ROLE_IDS: ReadonlySet<string> = new Set([
-  CROSS_CUTTING_AGENT,
-  VERIFIER_AGENT,
-  ADJUDICATOR_AGENT,
-  STACK_VERIFIER_AGENT,
-  "coordinator",
-]);
+const FIXED_ROLE_IDS: ReadonlySet<string> = NON_REVIEWER_AGENTS;
 
 /**
  * agent id → frontmatter `effort`, for the reviewers that declare one. A reviewer whose
@@ -814,14 +809,15 @@ export function buildAgentEfforts(config: LoadedConfig): Map<string, AgentEffort
 /**
  * A one-time run note for an `effort` that has no effect: the agent's model runs
  * through OpenCode (only the `claude` CLI takes an effort level), or the agent's id is
- * also a fixed role's id. An agent this run skipped has no `engineOf` entry and is not
- * named. Returns null when every declared `effort` applies.
+ * also a fixed role's id. `agents` is the run's final reviewer list, after the `paths`
+ * filter and the router, so an agent that does not run is never named. Returns null
+ * when every declared `effort` applies.
  */
 export function agentEffortNote(
-  config: LoadedConfig,
+  agents: readonly LoadedAgent[],
   engineOf: Record<string, Engine>,
 ): string | null {
-  const declared = config.agents.filter((agent) => agent.effort);
+  const declared = agents.filter((agent) => agent.effort);
   const viaOpencode = declared
     .filter((agent) => !FIXED_ROLE_IDS.has(agent.id) && engineOf[agent.id] === "opencode")
     .map((agent) => agent.id);

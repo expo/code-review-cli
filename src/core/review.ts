@@ -595,13 +595,6 @@ export async function runReview(
     }
   }
 
-  // `effort` reaches only the `claude` CLI. Say so once when an agent sets it on a model
-  // that runs through OpenCode, so the setting does not fail silently.
-  const effortNote = agentEffortNote(config, engineOf);
-  if (effortNote) {
-    progress(`Note: ${effortNote}`);
-  }
-
   // Preflight: a model id an engine can't resolve would otherwise fail EVERY pass
   // routed to it identically — N indistinguishable coverage gaps, after spending the
   // run's budget rediscovering the same fixable thing. Throw once, up front, naming
@@ -721,6 +714,14 @@ export async function runReview(
     const notRouted = pathsSelection.agents
       .filter((agent) => !selectedAgents.includes(agent))
       .map((agent) => agent.id);
+
+    // `effort` reaches only the `claude` CLI, and never a fixed pass. Say so once for an
+    // agent that runs in this review and whose level has no effect, so the setting does
+    // not fail silently. After routing, so an agent that does not run is not named.
+    const effortNote = agentEffortNote(selectedAgents, engineOf);
+    if (effortNote) {
+      progress(`Note: ${effortNote}`);
+    }
 
     // Split the diff into focused chunks so each reviewer call sees a small file
     // set (better recall than one giant blob), and run all agent×chunk calls

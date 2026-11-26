@@ -235,12 +235,14 @@ per-agent key and not a run-level flag.
 - **The levels are keyed by pass id, so fixed-role ids are excluded.** Passes are looked up by
   agent id, and a reviewer file can share a fixed role's id (`agents/verifier.md`). With an entry,
   its level would also reach the built-in pass of that id. `buildAgentEfforts` gives such a
-  reviewer no entry, and the run note tells the author to rename the file. The levels live in a
+  reviewer no entry, and the run note tells the author to rename the file. The id set is the
+  session archive's `NON_REVIEWER_AGENTS`, so the two cannot drift. The levels live in a
   `Map`, so an id such as `constructor` cannot read an inherited `Object.prototype` value
   (both found in review of the first version, PR #118).
 - **An OpenCode-routed agent ignores it, with a note.** `agentEffortNote` names those agents once
-  per run, the same way `claudeTemperatureNote` reports a temperature the CLI cannot take. It names
-  only agents whose engine in this run is OpenCode; an agent the run skipped is not named.
+  per run, the same way `claudeTemperatureNote` reports a temperature the CLI cannot take.
+  `runReview` builds it from the final reviewer list, after the `paths` filter and the router, so
+  an agent that does not run in the review is never named.
 - **The model must support effort.** The CLI accepts every level for every model, but a model
   without effort support gets none: a request from the pinned CLI to `claude-haiku-4-5` with
   `--effort high` carried no effort field, and one to `claude-opus-5-5` did (seen in review of PR

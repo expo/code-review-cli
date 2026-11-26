@@ -39,7 +39,7 @@ import {
 import type { OpencodeHandle } from "../core/opencode.js";
 import { parseReviewerOutput } from "../core/schema.js";
 import { RateLimitWatch } from "../core/throttle.js";
-import type { AuthConfigEntry, LoadedConfig } from "../config/schema.js";
+import type { AuthConfigEntry, LoadedAgent, LoadedConfig } from "../config/schema.js";
 
 const entry = (over: Partial<AuthConfigEntry>): AuthConfigEntry => ({
   provider: "anthropic",
@@ -859,12 +859,11 @@ test("runClaudePrompt: an agent's effort reaches its own passes and no other age
 });
 
 test("buildAgentEfforts: no entry for a reviewer that shares a fixed role's id", () => {
+  const fixedRoles = ["coordinator", "verifier", "cross-cutting", "adjudicator", "stack-verifier"];
   const config = {
     agents: [
       { id: "correctness", effort: "high" },
-      { id: "verifier", effort: "max" },
-      { id: "cross-cutting", effort: "max" },
-      { id: "coordinator", effort: "max" },
+      ...fixedRoles.map((id) => ({ id, effort: "max" })),
       { id: "constructor" },
     ],
   } as unknown as LoadedConfig;
@@ -874,27 +873,32 @@ test("buildAgentEfforts: no entry for a reviewer that shares a fixed role's id",
 });
 
 test("agentEffortNote: names the agents whose effort an OpenCode-routed model ignores", () => {
-  const config = {
-    agents: [{ id: "a", effort: "high" }, { id: "b", effort: "low" }, { id: "c" }],
-  } as unknown as LoadedConfig;
-  expect(agentEffortNote(config, { a: "claude-code", b: "claude-code", c: "opencode" })).toBeNull();
-  const note = agentEffortNote(config, { a: "claude-code", b: "opencode", c: "opencode" });
+  const agents = [
+    { id: "a", effort: "high" },
+    { id: "b", effort: "low" },
+    { id: "c" },
+  ] as unknown as LoadedAgent[];
+  expect(agentEffortNote(agents, { a: "claude-code", b: "claude-code", c: "opencode" })).toBeNull();
+  const note = agentEffortNote(agents, { a: "claude-code", b: "opencode", c: "opencode" });
   expect(note).toContain("was ignored for b ");
   expect(note).not.toContain("for a");
 });
 
-test("agentEffortNote: an agent this run skipped is not named", () => {
-  const config = {
-    agents: [{ id: "a", effort: "high" }, { id: "ios", effort: "high" }],
-  } as unknown as LoadedConfig;
-  // `ios` was filtered out by its `paths`, so the run's engine map has no entry for it.
-  expect(agentEffortNote(config, { a: "claude-code" })).toBeNull();
+test("agentEffortNote: an agent that does not run in this review is not named", () => {
+  // The caller passes the reviewers left after the `paths` filter and the router. Here
+  // `ios` (OpenCode) was routed out and agents/verifier.md was excluded by its paths,
+  // although the engine map still has entries for both ids.
+  const selected = [{ id: "alpha", effort: "high" }] as unknown as LoadedAgent[];
+  expect(
+    agentEffortNote(selected, { alpha: "claude-code", ios: "opencode", verifier: "claude-code" }),
+  ).toBeNull();
 });
 
 test("agentEffortNote: a reviewer that shares a fixed role's id is told to rename", () => {
-  const config = { agents: [{ id: "verifier", effort: "max" }] } as unknown as LoadedConfig;
-  const note = agentEffortNote(config, { verifier: "opencode" });
+  const agents = [{ id: "verifier", effort: "max" }] as unknown as LoadedAgent[];
+  const note = agentEffortNote(agents, { verifier: "opencode" });
   expect(note).toContain("was ignored for verifier: the id is also a built-in pass");
+  expect(note).toContain("Fix: rename the agent file");
   expect(note).not.toContain("runs through OpenCode");
 });
 
