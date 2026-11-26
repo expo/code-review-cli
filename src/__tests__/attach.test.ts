@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -19,7 +19,9 @@ import {
   promptBarEnv,
   removeCheckout,
   transcriptForClaude,
+  untrustedTreeGitConfig,
   waitForServer,
+  withGitConfig,
 } from "../commands/attach.js";
 import { run, spawnPiped } from "../core/exec.js";
 import { resolveOpencodeCli } from "../core/opencode.js";
@@ -109,7 +111,9 @@ async function gitIn(cwd: string, args: string[]): Promise<string> {
  * A clone whose origin gets one more commit after the clone.
  * The clone has a post-checkout hook in core.hooksPath, as husky sets it up.
  */
-async function makeCloneMissingHead(): Promise<{ home: string; clone: string; sha: string }> {
+async function makeCloneMissingHead(
+  addToPr?: (origin: string, home: string) => Promise<void>,
+): Promise<{ home: string; clone: string; sha: string }> {
   const home = await mkdtemp(path.join(tmpdir(), "ecr-attach-git-"));
   const origin = path.join(home, "origin");
   await mkdir(origin);
@@ -128,6 +132,7 @@ async function makeCloneMissingHead(): Promise<{ home: string; clone: string; sh
 
   await gitIn(origin, ["switch", "-q", "-c", "pr"]);
   await writeFile(path.join(origin, "pr.txt"), "from the pull request\n");
+  await addToPr?.(origin, home);
   await gitIn(origin, ["add", "."]);
   await gitIn(origin, ["commit", "-q", "-m", "pr"]);
   const sha = await gitIn(origin, ["rev-parse", "HEAD"]);
@@ -743,15 +748,17 @@ describe("Attaching to a stored review", () => {
       const dir = path.join(home, "attach");
       await mkdir(dir);
       const before = await gitIn(clone, ["rev-parse", "HEAD"]);
-      const target = await checkoutRecordedCommit({ root: clone, dir, sha });
+      const checkout = await checkoutRecordedCommit({ root: clone, dir, sha });
+      const target = checkout.path;
       expect(await gitIn(target, ["rev-parse", "HEAD"])).toBe(sha);
       expect(existsSync(path.join(target, "pr.txt"))).toBe(true);
       expect(existsSync(path.join(home, "hook-ran"))).toBe(false);
       expect(await gitIn(clone, ["rev-parse", "HEAD"])).toBe(before);
       expect(existsSync(path.join(clone, "pr.txt"))).toBe(false);
 
-      await removeCheckout(clone, target);
+      await removeCheckout(clone, checkout);
       expect(existsSync(target)).toBe(false);
+      expect(existsSync(checkout.adminDir)).toBe(false);
       expect((await gitIn(clone, ["worktree", "list"])).split("\n")).toHaveLength(1);
     } finally {
       await rm(home, { recursive: true, force: true });
@@ -769,6 +776,125 @@ describe("Attaching to a stored review", () => {
       expect(existsSync(path.join(dir, "checkout"))).toBe(false);
     } finally {
       await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("should add git config after the entries already in the environment", () => {
+    const env = withGitConfig(
+      { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "user.name", GIT_CONFIG_VALUE_0: "dev" },
+      [["core.hooksPath", "/dev/null"]],
+    );
+    expect(env.GIT_CONFIG_COUNT).toBe("2");
+    expect(env.GIT_CONFIG_KEY_0).toBe("user.name");
+    expect(env.GIT_CONFIG_KEY_1).toBe("core.hooksPath");
+    expect(env.GIT_CONFIG_VALUE_1).toBe("/dev/null");
+    expect(env.GIT_LFS_SKIP_SMUDGE).toBe("1");
+  });
+
+  test("should turn off every hook and filter the clone defines in config", async () => {
+    const { home, clone } = await makeCloneMissingHead();
+    try {
+      await gitIn(clone, ["config", "hook.probe.event", "post-checkout"]);
+      await gitIn(clone, ["config", "hook.probe.command", "true"]);
+      await gitIn(clone, ["config", "filter.probe.smudge", "cat"]);
+      const entries = await untrustedTreeGitConfig("git", clone);
+      expect(entries).toContainEqual(["core.hooksPath", "/dev/null"]);
+      expect(entries).toContainEqual(["hook.probe.enabled", "false"]);
+      expect(entries).toContainEqual(["filter.probe.smudge", ""]);
+      expect(entries).toContainEqual(["filter.probe.process", ""]);
+      expect(entries).toContainEqual(["filter.probe.required", "false"]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("should not run a hook defined in config or a smudge filter of the clone", async () => {
+    const { home, clone, sha } = await makeCloneMissingHead(async (origin) => {
+      await writeFile(path.join(origin, ".gitattributes"), "*.txt filter=probe\n");
+    });
+    try {
+      const hookRan = path.join(home, "config-hook-ran");
+      const smudgeRan = path.join(home, "smudge-ran");
+      await gitIn(clone, ["config", "hook.probe.event", "post-checkout"]);
+      await gitIn(clone, ["config", "hook.probe.command", `touch ${hookRan}`]);
+      await gitIn(clone, ["config", "filter.probe.smudge", `touch ${smudgeRan}; cat`]);
+      await gitIn(clone, ["config", "filter.probe.required", "true"]);
+      const dir = path.join(home, "attach");
+      await mkdir(dir);
+      const checkout = await checkoutRecordedCommit({ root: clone, dir, sha });
+      expect(existsSync(path.join(checkout.path, "pr.txt"))).toBe(true);
+      expect(existsSync(hookRan)).toBe(false);
+      expect(existsSync(smudgeRan)).toBe(false);
+      await removeCheckout(clone, checkout);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("should keep the hooks of the pull request off in a later git command", async () => {
+    const { home, clone, sha } = await makeCloneMissingHead(async (origin, root) => {
+      // The clone's core.hooksPath is .hooks, so inside the worktree it names the PR's own directory.
+      await mkdir(path.join(origin, ".hooks"));
+      await writeFile(
+        path.join(origin, ".hooks", "post-checkout"),
+        `#!/bin/sh\ntouch ${path.join(root, "pr-hook-ran")}\n`,
+        { mode: 0o755 },
+      );
+    });
+    try {
+      const dir = path.join(home, "attach");
+      await mkdir(dir);
+      const checkout = await checkoutRecordedCommit({ root: clone, dir, sha });
+      await run("git", ["checkout", "-q", "-f", "HEAD"], { cwd: checkout.path, env: checkout.env });
+      expect(existsSync(path.join(home, "pr-hook-ran"))).toBe(false);
+      await removeCheckout(clone, checkout);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("should remove a symlink that points outside the checkout", async () => {
+    const { home, clone, sha } = await makeCloneMissingHead(async (origin, root) => {
+      await writeFile(path.join(root, "secret.txt"), "not part of the pull request\n");
+      await symlink(path.join(root, "secret.txt"), path.join(origin, "escape"));
+      await symlink("pr.txt", path.join(origin, "inside"));
+    });
+    try {
+      const dir = path.join(home, "attach");
+      await mkdir(dir);
+      const checkout = await checkoutRecordedCommit({ root: clone, dir, sha });
+      expect(existsSync(path.join(checkout.path, "escape"))).toBe(false);
+      expect(existsSync(path.join(checkout.path, "inside"))).toBe(true);
+      await removeCheckout(clone, checkout);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("should remove a stale attach worktree and keep the developer's own", async () => {
+    const { home, clone, sha } = await makeCloneMissingHead();
+    const stale = await mkdtemp(path.join(await realpath(tmpdir()), "ecr-attach-"));
+    try {
+      const own = path.join(await realpath(home), "own");
+      await gitIn(clone, ["worktree", "add", "-q", "--detach", own]);
+      await gitIn(clone, ["worktree", "add", "-q", "--detach", path.join(stale, "checkout")]);
+      // A drive that is not mounted, and an attach that was killed.
+      await rm(own, { recursive: true, force: true });
+      await rm(stale, { recursive: true, force: true });
+
+      const dir = path.join(home, "attach");
+      await mkdir(dir);
+      const checkout = await checkoutRecordedCommit({ root: clone, dir, sha });
+      const listed = await gitIn(clone, ["worktree", "list", "--porcelain"]);
+      expect(listed).toContain(`worktree ${own}\n`);
+      expect(listed).not.toContain(stale);
+      await removeCheckout(clone, checkout);
+      expect(await gitIn(clone, ["worktree", "list", "--porcelain"])).toContain(
+        `worktree ${own}\n`,
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(stale, { recursive: true, force: true });
     }
   });
 });

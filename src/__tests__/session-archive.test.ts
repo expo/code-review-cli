@@ -13,6 +13,7 @@ import {
   cliVersion,
   createSessionCapture,
   defaultSessionPass,
+  isSessionTagUnder,
   opencodeChildEnv,
   parseSessionIndex,
   pinnedOpencodeVersion,
@@ -23,6 +24,7 @@ import {
   sessionIdOf,
   sessionModelOf,
   sessionPrTagPrefix,
+  sessionTagHead,
   sessionTagPrefix,
   SESSION_ZIP_LIMIT_BYTES,
   takeSessionStoreToken,
@@ -247,6 +249,23 @@ describe("Session archive", () => {
       prefix,
     );
     expect(matches.map((release) => release.tag)).toEqual([`${headB}200`, `${headA}100`]);
+  });
+
+  test("should read the head commit from a session tag", () => {
+    const head = sessionTagPrefix("expo/expo", 7, SHA_A);
+    expect(sessionTagHead(`${head}100`)).toBe(SHA_A.slice(0, 12));
+    expect(sessionTagHead(`${head}100/extra`)).toBeUndefined();
+    expect(sessionTagHead(`${sessionPrTagPrefix("expo/expo", 7)}not-a-sha/100`)).toBeUndefined();
+  });
+
+  test("should match a tag to one head or to the whole pull request", () => {
+    const pr = sessionPrTagPrefix("expo/expo", 7);
+    const head = sessionTagPrefix("expo/expo", 7, SHA_A);
+    expect(isSessionTagUnder(`${head}100`, head, "head")).toBe(true);
+    expect(isSessionTagUnder(`${head}100`, pr, "pr")).toBe(true);
+    expect(isSessionTagUnder(`${head}100/extra`, head, "head")).toBe(false);
+    expect(isSessionTagUnder(`${pr}not-a-sha/100`, pr, "pr")).toBe(false);
+    expect(isSessionTagUnder(`${sessionPrTagPrefix("expo/expo", 70)}x`, pr, "pr")).toBe(false);
   });
 
   test("should refuse a repository name that git cannot put in a tag", () => {

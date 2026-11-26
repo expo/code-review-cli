@@ -461,22 +461,42 @@ export interface ListedRelease {
   publishedAt: string;
 }
 
-function newestUnder(releases: ListedRelease[], prefix: string, rest: RegExp): ListedRelease[] {
+const AFTER_PREFIX = {
+  head: /^[^/]+$/,
+  pr: /^[0-9a-f]{12}\/[^/]+$/,
+};
+
+/**
+ * True when `tag` is an archive under `prefix`.
+ * `head` is a `sessionTagPrefix`, so only the run id follows. `pr` is a `sessionPrTagPrefix`.
+ */
+export function isSessionTagUnder(tag: string, prefix: string, under: "head" | "pr"): boolean {
+  return tag.startsWith(prefix) && AFTER_PREFIX[under].test(tag.slice(prefix.length));
+}
+
+/** The 12 hex digits of the head commit in a session tag. */
+export function sessionTagHead(tag: string): string | undefined {
+  return /^session\/[^/]+\/[^/]+\/[0-9]+\/([0-9a-f]{12})\/[^/]+$/.exec(tag)?.[1];
+}
+
+function newestUnder(
+  releases: ListedRelease[],
+  prefix: string,
+  under: "head" | "pr",
+): ListedRelease[] {
   return releases
-    .filter(
-      (release) => release.tag.startsWith(prefix) && rest.test(release.tag.slice(prefix.length)),
-    )
+    .filter((release) => isSessionTagUnder(release.tag, prefix, under))
     .sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : a.publishedAt > b.publishedAt ? -1 : 0));
 }
 
 /** Newest first. The run id is the only segment after the prefix. */
 export function releasesForHead(releases: ListedRelease[], prefix: string): ListedRelease[] {
-  return newestUnder(releases, prefix, /^[^/]+$/);
+  return newestUnder(releases, prefix, "head");
 }
 
 /** Newest first, across every head of the pull request. */
 export function releasesForPr(releases: ListedRelease[], prefix: string): ListedRelease[] {
-  return newestUnder(releases, prefix, /^[0-9a-f]{12}\/[^/]+$/);
+  return newestUnder(releases, prefix, "pr");
 }
 
 function safeAgentFile(agent: string, used: Set<string>): string {

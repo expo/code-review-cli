@@ -343,8 +343,9 @@ function runWithInput(
  * Run `cleanup` when this process is interrupted or exits, after its children have stopped.
  * A signal handler ends the process before a `finally` block runs, so `cleanup` must not be async.
  * The result cancels it.
+ * `hangup` also runs it when the terminal closes, for an interactive command only.
  */
-export function runAtExit(cleanup: () => void): () => void {
+export function runAtExit(cleanup: () => void, options: { hangup?: boolean } = {}): () => void {
   const safe = (): void => {
     try {
       cleanup();
@@ -353,6 +354,9 @@ export function runAtExit(cleanup: () => void): () => void {
     }
   };
   installChildCleanup();
+  if (options.hangup) {
+    installHangupCleanup();
+  }
   exitCleanups.add(safe);
   return () => {
     exitCleanups.delete(safe);

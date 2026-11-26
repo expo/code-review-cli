@@ -18,11 +18,13 @@ import {
 import { claudeModelId, engineForModel, resolveClaudeCli } from "../core/claude-code.js";
 import type { Engine } from "../core/claude-code.js";
 import { resolveOpencodeCli } from "../core/opencode.js";
+import { removeEscapingSymlinks } from "../core/scrub.js";
 import {
   assertArchiveSize,
   assertReadableExport,
   DEFAULT_SESSION_STORE_REPO,
   defaultSessionPass,
+  isSessionTagUnder,
   opencodeChildEnv,
   parseSessionIndex,
   releasesForHead,
@@ -32,6 +34,7 @@ import {
   sessionModelOf,
   sessionPrTagPrefix,
   sessionTag,
+  sessionTagHead,
   sessionTagPrefix,
   unzipEntries,
 } from "../core/session-archive.js";
@@ -58,9 +61,10 @@ workflow run. --list prints matches and does not download.
 By default the pass opens in an empty temporary directory. It sees the stored
 transcript, and no code. The pull request can come from a fork, so its code is
 put on disk only when you ask. --checkout fetches the reviewed commit and adds
-it as a temporary detached worktree of this clone, with git hooks turned off.
-The worktree is removed when attach ends. Your own branch and files stay as
-they are.
+it as a temporary detached worktree of this clone. The hooks and filters of the
+clone are turned off in it, also for git commands in the session, and symlinks
+that point outside it are removed. The worktree is removed when attach ends.
+Your own branch and files stay as they are.
 
 --agent picks a pass. The default is the first reviewer pass. --session picks
 one pass by its session id, for a second chunk or the same agent in another
@@ -142,10 +146,16 @@ function fail(message: string): void {
 }
 
 /**
- * The archives stored for one head.
+ * The archives stored under `prefix` whose tag passes `keep`.
  * Tags are found by prefix, so the answer does not depend on how many releases the store holds.
+ * Each kept tag costs one more request, so `keep` runs first.
  */
-async function listReleases(store: string, prefix: string, cwd: string): Promise<ListedRelease[]> {
+async function listReleases(
+  store: string,
+  prefix: string,
+  cwd: string,
+  keep: (tag: string) => boolean,
+): Promise<ListedRelease[]> {
   const gh = await resolveTrustedTool("gh");
   const { stdout } = await run(
     gh,
@@ -155,7 +165,7 @@ async function listReleases(store: string, prefix: string, cwd: string): Promise
   const releases: ListedRelease[] = [];
   for (const ref of stdout.split("\n")) {
     const tag = ref.trim().replace(/^refs\/tags\//, "");
-    if (!tag) {
+    if (!tag || !keep(tag)) {
       continue;
     }
     const viewed = await run(
@@ -625,9 +635,115 @@ export async function waitForServer(child: ReturnType<typeof spawnPiped>): Promi
   });
 }
 
-// A hook of this clone would run inside the new worktree, on PR content.
-// A husky hook, for example, can install the packages the PR names.
-const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
+type GitConfigEntry = [key: string, value: string];
+
+/**
+ * Config that keeps this clone's own tooling off PR content.
+ * A hook or a filter of the clone would run in the worktree, on PR content.
+ * A husky hook can install the packages the PR names, and git-lfs takes its server URL from the PR's .lfsconfig.
+ * core.hooksPath does not turn off a hook defined in config (`hook.<name>.command`).
+ */
+export async function untrustedTreeGitConfig(
+  gitPath: string,
+  root: string,
+): Promise<GitConfigEntry[]> {
+  const listed = await run(
+    gitPath,
+    ["config", "--name-only", "--get-regexp", "^(hook|filter)\\."],
+    {
+      cwd: root,
+      check: false,
+    },
+  );
+  const hooks = new Set<string>();
+  const filters = new Set<string>();
+  for (const key of listed.stdout.split("\n")) {
+    const match = /^(hook|filter)\.(.+)\.[^.]+$/.exec(key.trim());
+    if (match) {
+      (match[1] === "hook" ? hooks : filters).add(match[2]!);
+    }
+  }
+  const entries: GitConfigEntry[] = [
+    ["core.hooksPath", "/dev/null"],
+    ["core.fsmonitor", "false"],
+  ];
+  for (const name of hooks) {
+    entries.push([`hook.${name}.enabled`, "false"]);
+  }
+  for (const name of filters) {
+    entries.push(
+      [`filter.${name}.smudge`, ""],
+      [`filter.${name}.clean`, ""],
+      [`filter.${name}.process`, ""],
+      [`filter.${name}.required`, "false"],
+    );
+  }
+  return entries;
+}
+
+/**
+ * `base` with `entries` added through GIT_CONFIG_*.
+ * The environment reaches git in the follow-up session too, not only the git calls of attach.
+ */
+export function withGitConfig(
+  base: NodeJS.ProcessEnv,
+  entries: GitConfigEntry[],
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, GIT_LFS_SKIP_SMUDGE: "1" };
+  const existing = Number(base.GIT_CONFIG_COUNT ?? "0");
+  let count = Number.isInteger(existing) && existing > 0 ? existing : 0;
+  for (const [key, value] of entries) {
+    env[`GIT_CONFIG_KEY_${count}`] = key;
+    env[`GIT_CONFIG_VALUE_${count}`] = value;
+    count++;
+  }
+  env.GIT_CONFIG_COUNT = String(count);
+  return env;
+}
+
+export interface RecordedCheckout {
+  path: string;
+  /** `.git/worktrees/<id>` of the clone. */
+  adminDir: string;
+  /** The environment for every git call and child process that touches the worktree. */
+  env: NodeJS.ProcessEnv;
+}
+
+const ATTACH_DIR_PREFIX = "ecr-attach-";
+
+/**
+ * Remove worktrees whose temp directory is gone, after an attach that was killed.
+ * Only attach's own, so a worktree of the developer on a drive that is not mounted stays.
+ */
+async function removeStaleCheckouts(
+  gitPath: string,
+  root: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const listed = await run(gitPath, ["worktree", "list", "--porcelain", "-z"], {
+    cwd: root,
+    env,
+    check: false,
+  });
+  const tmpRoot = await realpath(tmpdir());
+  // Exactly the `<tmp>/ecr-attach-XXXXXX/checkout` that openRelease and checkoutRecordedCommit create.
+  const isOurs = (worktree: string): boolean =>
+    path.basename(worktree) === "checkout" &&
+    path.dirname(path.dirname(worktree)) === tmpRoot &&
+    /^ecr-attach-[A-Za-z0-9]{6}$/.test(path.basename(path.dirname(worktree)));
+  let current: string | undefined;
+  for (const field of listed.stdout.split("\0")) {
+    if (field.startsWith("worktree ")) {
+      current = field.slice("worktree ".length);
+    } else if (field.startsWith("prunable") && current && isOurs(current)) {
+      await run(gitPath, ["worktree", "remove", "--force", current], {
+        cwd: root,
+        env,
+        check: false,
+      });
+    }
+  }
+}
 
 /**
  * Add the reviewed commit as a detached worktree in `dir`.
@@ -637,15 +753,18 @@ export async function checkoutRecordedCommit(input: {
   root: string;
   dir: string;
   sha: string;
-}): Promise<string> {
+}): Promise<RecordedCheckout> {
   const gitPath = await resolveTrustedTool("git");
+  const env = withGitConfig(process.env, await untrustedTreeGitConfig(gitPath, input.root));
   const have = await run(gitPath, ["cat-file", "-e", `${input.sha}^{commit}`], {
     cwd: input.root,
+    env,
     check: false,
   });
   if (have.code !== 0) {
-    const fetched = await run(gitPath, [...NO_HOOKS, "fetch", "--no-tags", "origin", input.sha], {
+    const fetched = await run(gitPath, ["fetch", "--no-tags", "origin", input.sha], {
       cwd: input.root,
+      env,
       check: false,
     });
     if (fetched.code !== 0) {
@@ -654,22 +773,54 @@ export async function checkoutRecordedCommit(input: {
       );
     }
   }
-  // A worktree left by an attach that was stopped by a signal.
-  await run(gitPath, ["worktree", "prune"], { cwd: input.root, check: false });
+  await removeStaleCheckouts(gitPath, input.root, env);
   const target = path.join(input.dir, "checkout");
-  await run(gitPath, [...NO_HOOKS, "worktree", "add", "--detach", target, input.sha], {
+  await run(gitPath, ["worktree", "add", "--detach", target, input.sha], {
     cwd: input.root,
+    env,
   });
-  return target;
+  const checkout: RecordedCheckout = { path: target, adminDir: "", env };
+  try {
+    const gitDir = async (flag: string): Promise<string> =>
+      (
+        await run(gitPath, ["rev-parse", "--path-format=absolute", flag], { cwd: target, env })
+      ).stdout.trim();
+    const adminDir = await gitDir("--git-dir");
+    const worktrees = path.join(await gitDir("--git-common-dir"), "worktrees");
+    if (!adminDir.startsWith(worktrees + path.sep)) {
+      throw new Error(`The worktree's git directory ${adminDir} is not under ${worktrees}.`);
+    }
+    checkout.adminDir = adminDir;
+    // A link to a file outside the worktree would hand that file to the follow-up.
+    const removed = await removeEscapingSymlinks(target);
+    if (removed.length > 0) {
+      process.stderr.write(
+        `attach: removed ${removed.length} symlink(s) that point outside the checkout.\n`,
+      );
+    }
+  } catch (error) {
+    await removeCheckout(input.root, checkout);
+    throw error;
+  }
+  return checkout;
 }
 
-export async function removeCheckout(root: string, target: string): Promise<void> {
+export async function removeCheckout(root: string, checkout: RecordedCheckout): Promise<void> {
   const gitPath = await resolveTrustedTool("git");
-  await run(gitPath, [...NO_HOOKS, "worktree", "remove", "--force", target], {
+  await run(gitPath, ["worktree", "remove", "--force", checkout.path], {
     cwd: root,
+    env: checkout.env,
     check: false,
   });
-  await run(gitPath, ["worktree", "prune"], { cwd: root, check: false });
+  dropCheckoutSync(checkout);
+}
+
+/** Delete the worktree and its entry without git, for an exit that cannot wait. */
+function dropCheckoutSync(checkout: RecordedCheckout): void {
+  rmSync(checkout.path, { recursive: true, force: true });
+  if (checkout.adminDir) {
+    rmSync(checkout.adminDir, { recursive: true, force: true });
+  }
 }
 
 async function printReleaseBody(tag: string, store: string, cwd: string): Promise<void> {
@@ -710,7 +861,7 @@ export async function attachCommand(argv: string[]): Promise<void> {
   if (root && root !== process.cwd()) {
     process.chdir(root);
   }
-  if (args.checkout && !root) {
+  if (args.checkout && !args.list && !root) {
     fail("attach: --checkout needs a clone of the repository. Run attach inside one.");
     return;
   }
@@ -729,16 +880,17 @@ export async function attachCommand(argv: string[]): Promise<void> {
     fail(`attach: SESSION_STORE_REPO must look like owner/name, got ${JSON.stringify(store)}.`);
     return;
   }
+  const sha = args.sha?.toLowerCase();
   const open = {
     store,
     cwd,
+    sha,
     checkoutRoot: args.checkout ? root : null,
     agent: args.agent,
     session: args.session,
   };
 
   try {
-    const sha = args.sha?.toLowerCase();
     if (sha && args.run) {
       const tag = sessionTag(repo, args.pr, sha, args.run);
       if (args.list) {
@@ -750,11 +902,14 @@ export async function attachCommand(argv: string[]): Promise<void> {
     }
 
     const prefix = sha ? sessionTagPrefix(repo, args.pr, sha) : sessionPrTagPrefix(repo, args.pr);
-    const listed = await listReleases(store, prefix, cwd);
-    let matches = sha ? releasesForHead(listed, prefix) : releasesForPr(listed, prefix);
-    if (args.run) {
-      matches = matches.filter((release) => release.tag.endsWith(`/${args.run}`));
-    }
+    const under = sha ? "head" : "pr";
+    const listed = await listReleases(
+      store,
+      prefix,
+      cwd,
+      (tag) => isSessionTagUnder(tag, prefix, under) && (!args.run || tag.endsWith(`/${args.run}`)),
+    );
+    const matches = sha ? releasesForHead(listed, prefix) : releasesForPr(listed, prefix);
     const newest = matches[0];
     if (!newest) {
       const at = sha ? ` at ${sha.slice(0, 12)}` : "";
@@ -783,17 +938,22 @@ async function openRelease(
   open: {
     store: string;
     cwd: string;
+    sha: string | undefined;
     checkoutRoot: string | null;
     agent: string | undefined;
     session: string | undefined;
   },
 ): Promise<void> {
   const { store, cwd } = open;
-  const dir = await realpath(await mkdtemp(path.join(tmpdir(), "ecr-attach-")));
+  const dir = await realpath(await mkdtemp(path.join(tmpdir(), ATTACH_DIR_PREFIX)));
   // The directory holds a review transcript, and a signal skips the finally block.
-  const forgetDir = runAtExit(() => rmSync(dir, { recursive: true, force: true }));
+  // A closed terminal ends attach the same way, so the hangup runs it too.
+  const forgetDir = runAtExit(() => rmSync(dir, { recursive: true, force: true }), {
+    hangup: true,
+  });
   const server = { current: null as ReturnType<typeof spawnPiped> | null };
-  let checkout: string | null = null;
+  let checkout: RecordedCheckout | null = null;
+  let forgetCheckout = (): void => {};
   try {
     const gh = await resolveTrustedTool("gh");
     await run(
@@ -809,6 +969,12 @@ async function openRelease(
       throw new Error("The session archive has no index.json.");
     }
     const index = parseSessionIndex(readIndex().toString("utf8"));
+    const recorded = index.headSha.toLowerCase();
+    if (sessionTagHead(tag) !== recorded.slice(0, 12) || (open.sha && open.sha !== recorded)) {
+      throw new Error(
+        `The archive under ${tag} records commit ${recorded}, which is not the head it is filed under.`,
+      );
+    }
     const pass = pickPass(index.passes, open.agent, open.session);
     const readExport = entries.get(pass.file);
     if (!readExport) {
@@ -817,14 +983,19 @@ async function openRelease(
     const rawJson = readExport().toString("utf8");
 
     let workDir: string;
+    let childEnv = process.env;
     if (open.checkoutRoot) {
-      process.stderr.write(`attach: checking out ${index.headSha} in a temporary worktree.\n`);
+      process.stderr.write(`attach: checking out ${recorded} in a temporary worktree.\n`);
       checkout = await checkoutRecordedCommit({
         root: open.checkoutRoot,
         dir,
-        sha: index.headSha,
+        sha: recorded,
       });
-      workDir = checkout;
+      const added = checkout;
+      forgetCheckout = runAtExit(() => dropCheckoutSync(added), { hangup: true });
+      workDir = checkout.path;
+      // A git command in the follow-up must not run the clone's hooks or filters either.
+      childEnv = checkout.env;
     } else {
       workDir = path.join(dir, "empty");
       await mkdir(workDir);
@@ -834,10 +1005,10 @@ async function openRelease(
     }
 
     if (attachEngine(rawJson, pass.source) === "claude-code") {
-      await openClaudePass(dir, workDir, rawJson, checkout != null);
+      await openClaudePass(dir, workDir, rawJson, checkout != null, childEnv);
       return;
     }
-    await openOpencodePass(dir, workDir, rawJson, pass.file, index.cliVersion, server);
+    await openOpencodePass(dir, workDir, rawJson, pass.file, index.cliVersion, server, childEnv);
   } finally {
     // The server holds the database file in `dir`, so it has to be gone first.
     if (server.current) {
@@ -846,6 +1017,7 @@ async function openRelease(
     if (checkout && open.checkoutRoot) {
       await removeCheckout(open.checkoutRoot, checkout);
     }
+    forgetCheckout();
     forgetDir();
     await rm(dir, { recursive: true, force: true });
   }
@@ -861,6 +1033,7 @@ async function openClaudePass(
   cwd: string,
   rawJson: string,
   hasCheckout: boolean,
+  baseEnv: NodeJS.ProcessEnv,
 ): Promise<void> {
   const bin = await resolveClaudeCli();
   if (!bin) {
@@ -886,7 +1059,7 @@ async function openClaudePass(
   // Leave the machine's Claude login, including CLAUDE_CODE_OAUTH_TOKEN, as it is.
   const code = await spawnInherited(bin, claudeAttachArgs(model, transcriptPath, hasCheckout), {
     cwd,
-    env: opencodeChildEnv(process.env),
+    env: opencodeChildEnv(baseEnv),
   });
   if (code !== 0) {
     process.exitCode = code;
@@ -901,6 +1074,7 @@ async function openOpencodePass(
   file: string,
   cliVersion: string,
   server: { current: ReturnType<typeof spawnPiped> | null },
+  baseEnv: NodeJS.ProcessEnv,
 ): Promise<void> {
   const bin = await resolveOpencodeCli();
   if (!bin) {
@@ -915,7 +1089,7 @@ async function openOpencodePass(
   }
   const exportPath = path.join(dir, "session.json");
   await writeFile(exportPath, exportJson);
-  const env = promptBarEnv(askFirstEnv(attachEnv(process.env, dir)), exportJson);
+  const env = promptBarEnv(askFirstEnv(attachEnv(baseEnv, dir)), exportJson);
   const imported = await run(bin, ["import", exportPath, "--pure"], {
     cwd,
     env,
