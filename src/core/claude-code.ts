@@ -46,10 +46,11 @@ export interface ClaudeCodeHandle extends OpencodeHandle {
    */
   tools: Record<string, readonly string[]>;
   /**
-   * agent id → frontmatter `effort`, only for the reviewers that declare one. The fixed
-   * roles (cross-cutting, verifier, coordinator) have no entry and run at the CLI default.
+   * agent id → frontmatter `effort`, only for the reviewers that declare one
+   * (buildAgentEfforts). The fixed roles (cross-cutting, verifier, adjudicator, stack
+   * verifier, coordinator) have no entry and run at the CLI default.
    */
-  efforts?: Record<string, AgentEffort>;
+  efforts?: ReadonlyMap<string, AgentEffort>;
   /** Default model for cross-cutting/verifier (config.agents[0].model). */
   defaultModel: string;
   /** Absolute `claude` binary (PATH lookup). */
@@ -783,21 +784,64 @@ export function claudeTemperatureNote(
 }
 
 /**
- * A one-time run note when an agent sets `effort` but its model runs through OpenCode:
- * only the `claude` CLI takes an effort level, so the setting has no effect there.
- * Returns null when every agent with an `effort` is claude-routed.
+ * Ids the engine dispatches its fixed passes under. A reviewer file can share one
+ * (agents/verifier.md); its `effort` must not reach the built-in pass of that id.
+ */
+const FIXED_ROLE_IDS: ReadonlySet<string> = new Set([
+  CROSS_CUTTING_AGENT,
+  VERIFIER_AGENT,
+  ADJUDICATOR_AGENT,
+  STACK_VERIFIER_AGENT,
+  "coordinator",
+]);
+
+/**
+ * agent id → frontmatter `effort`, for the reviewers that declare one. A reviewer whose
+ * id is also a fixed role's id gets no entry: passes are looked up by id, so its level
+ * would otherwise apply to the built-in pass as well.
+ */
+// @ref LLP 0006#agent-effort [implements] — the fixed roles always run at the CLI default
+export function buildAgentEfforts(config: LoadedConfig): Map<string, AgentEffort> {
+  const efforts = new Map<string, AgentEffort>();
+  for (const agent of config.agents) {
+    if (agent.effort && !FIXED_ROLE_IDS.has(agent.id)) {
+      efforts.set(agent.id, agent.effort);
+    }
+  }
+  return efforts;
+}
+
+/**
+ * A one-time run note for an `effort` that has no effect: the agent's model runs
+ * through OpenCode (only the `claude` CLI takes an effort level), or the agent's id is
+ * also a fixed role's id. An agent this run skipped has no `engineOf` entry and is not
+ * named. Returns null when every declared `effort` applies.
  */
 export function agentEffortNote(
   config: LoadedConfig,
   engineOf: Record<string, Engine>,
 ): string | null {
-  const ignored = config.agents
-    .filter((agent) => agent.effort && engineOf[agent.id] !== CLAUDE_CODE_ENGINE)
+  const declared = config.agents.filter((agent) => agent.effort);
+  const viaOpencode = declared
+    .filter((agent) => !FIXED_ROLE_IDS.has(agent.id) && engineOf[agent.id] === "opencode")
     .map((agent) => agent.id);
-  return ignored.length > 0
-    ? `\`effort\` is read only by the claude-code engine and was ignored for ${ignored.join(", ")} ` +
-        "(the model of each runs through OpenCode)"
-    : null;
+  const fixedRole = declared
+    .filter((agent) => FIXED_ROLE_IDS.has(agent.id))
+    .map((agent) => agent.id);
+  const notes: string[] = [];
+  if (viaOpencode.length > 0) {
+    notes.push(
+      `\`effort\` is read only by the claude-code engine and was ignored for ${viaOpencode.join(", ")} ` +
+        "(the model of each runs through OpenCode)",
+    );
+  }
+  if (fixedRole.length > 0) {
+    notes.push(
+      `\`effort\` was ignored for ${fixedRole.join(", ")}: the id is also a built-in pass, which ` +
+        "runs at the default effort. Fix: rename the agent file",
+    );
+  }
+  return notes.length > 0 ? notes.join("; ") : null;
 }
 
 /**
@@ -885,6 +929,8 @@ export async function runClaudePrompt(
       }, CLAUDE_HEARTBEAT_MS)
     : undefined;
   heartbeat?.unref?.();
+  // A Map lookup: an agent id such as `constructor` must not read an inherited value.
+  const effort = handle.efforts?.get(args.agent);
   let result;
   try {
     result = await run(
@@ -903,7 +949,7 @@ export async function runClaudePrompt(
         mcpServerTools: [...mcpServerTools.keys()],
         maxTurns,
         jsonSchema: args.jsonSchema,
-        ...(handle.efforts?.[args.agent] ? { effort: handle.efforts[args.agent] } : {}),
+        ...(effort ? { effort } : {}),
       }),
       {
         input: args.text,
@@ -1317,12 +1363,7 @@ export async function startClaudeCode(
   // verifier never reads the disk (mirrors the coordinator's empty list).
   tools[STACK_VERIFIER_AGENT] = [];
   tools["coordinator"] = [];
-  const efforts: Record<string, AgentEffort> = {};
-  for (const agent of config.agents) {
-    if (agent.effort) {
-      efforts[agent.id] = agent.effort;
-    }
-  }
+  const efforts = buildAgentEfforts(config);
   const defaultModel = config.agents[0]?.model ?? config.coordinator.model;
   const researchAgents = new Set(config.agents.map((agent) => agent.id));
   researchAgents.add(CROSS_CUTTING_AGENT);
@@ -1345,7 +1386,7 @@ export async function startClaudeCode(
     engine: CLAUDE_CODE_ENGINE,
     models,
     tools,
-    ...(Object.keys(efforts).length > 0 ? { efforts } : {}),
+    ...(efforts.size > 0 ? { efforts } : {}),
     defaultModel,
     cliPath,
     childEnv,

@@ -519,7 +519,7 @@ description: One line the router uses to decide relevance.
 # Run even when the router would skip this agent.
 alwaysRun: true
 # Override the default model.
-model: anthropic/claude-haiku-4-5
+model: anthropic/claude-opus-5-5
 temperature: 0.1
 # How much reasoning each pass spends: low, medium, high, xhigh or max.
 effort: high
@@ -539,9 +539,14 @@ are ignored), and a comment that breaks `alwaysRun`, `model` or `temperature`.
 `effort` sets how much reasoning the model spends on that agent's passes. Only
 models that run through the Claude Code CLI (`anthropic/…`) read it; for any other
 model the review prints a note and ignores it. Leave it out to use the CLI default.
+The model must also support effort: the CLI sends no level to a model without
+effort support (Claude Haiku 4.5 is one), and ecr does not check this.
 A higher level costs more and takes longer, so set it on the agent that needs depth
 (a correctness reviewer that must trace callers), not on every agent. A value that
 is not a level is listed under **Review setup**, and the agent runs at the default.
+An agent file in `agents/` named after a built-in pass (`verifier.md`,
+`cross-cutting.md`, `adjudicator.md`, `stack-verifier.md` or `coordinator.md`) gets
+no effort; the review note says to rename it.
 
 `paths` limits an agent to the changes it covers. It takes a list of repo-relative
 globs in the routing dialect: `*` stays within a directory, `**` crosses

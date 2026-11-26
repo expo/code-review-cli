@@ -8,6 +8,7 @@ import { describe, expect, it, test } from "bun:test";
 import {
   assertClaudeModels,
   agentEffortNote,
+  buildAgentEfforts,
   buildClaudeArgs,
   buildEngineMap,
   claudeActivities,
@@ -837,15 +838,39 @@ test("runClaudePrompt: an agent's effort reaches its own passes and no other age
   });
   const { bin, argsLog, cleanup } = await sequencedFakeClaude([body]);
   try {
-    const handle = testHandle(bin, { efforts: { reviewer: "xhigh" } });
+    // A real run gives every reviewer its own models/tools entry (buildEngineMap);
+    // only `efforts` lacks one for an agent that sets no level.
+    const handle = testHandle(bin, {
+      models: { reviewer: "anthropic/claude-opus-5", constructor: "anthropic/claude-opus-5" },
+      tools: { reviewer: ["read", "grep", "glob"], constructor: ["read", "grep", "glob"] },
+      efforts: new Map([["reviewer", "xhigh"]]),
+    });
     await runClaudePrompt(handle, { agent: "reviewer", system: "SYS", text: "hi", title: "t" });
     await runClaudePrompt(handle, { agent: "verifier", system: "SYS", text: "hi", title: "t" });
+    // An id that names an Object.prototype member must not read an inherited value.
+    await runClaudePrompt(handle, { agent: "constructor", system: "SYS", text: "hi", title: "t" });
     const reviewer = (await argsLog(1)).split("\n");
     expect(reviewer[reviewer.indexOf("--effort") + 1]).toBe("xhigh");
     expect((await argsLog(2)).split("\n")).not.toContain("--effort");
+    expect((await argsLog(3)).split("\n")).not.toContain("--effort");
   } finally {
     await cleanup();
   }
+});
+
+test("buildAgentEfforts: no entry for a reviewer that shares a fixed role's id", () => {
+  const config = {
+    agents: [
+      { id: "correctness", effort: "high" },
+      { id: "verifier", effort: "max" },
+      { id: "cross-cutting", effort: "max" },
+      { id: "coordinator", effort: "max" },
+      { id: "constructor" },
+    ],
+  } as unknown as LoadedConfig;
+  const efforts = buildAgentEfforts(config);
+  expect([...efforts]).toEqual([["correctness", "high"]]);
+  expect(efforts.get("constructor")).toBeUndefined();
 });
 
 test("agentEffortNote: names the agents whose effort an OpenCode-routed model ignores", () => {
@@ -856,6 +881,21 @@ test("agentEffortNote: names the agents whose effort an OpenCode-routed model ig
   const note = agentEffortNote(config, { a: "claude-code", b: "opencode", c: "opencode" });
   expect(note).toContain("was ignored for b ");
   expect(note).not.toContain("for a");
+});
+
+test("agentEffortNote: an agent this run skipped is not named", () => {
+  const config = {
+    agents: [{ id: "a", effort: "high" }, { id: "ios", effort: "high" }],
+  } as unknown as LoadedConfig;
+  // `ios` was filtered out by its `paths`, so the run's engine map has no entry for it.
+  expect(agentEffortNote(config, { a: "claude-code" })).toBeNull();
+});
+
+test("agentEffortNote: a reviewer that shares a fixed role's id is told to rename", () => {
+  const config = { agents: [{ id: "verifier", effort: "max" }] } as unknown as LoadedConfig;
+  const note = agentEffortNote(config, { verifier: "opencode" });
+  expect(note).toContain("was ignored for verifier: the id is also a built-in pass");
+  expect(note).not.toContain("runs through OpenCode");
 });
 
 test("claudeTemperatureNote: flags non-default temperatures on CLAUDE-ROUTED passes only", () => {

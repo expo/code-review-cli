@@ -229,10 +229,22 @@ per-agent key and not a run-level flag.
 - **Only the claude-code engine reads it.** `startClaudeCode` copies the declared levels into
   `ClaudeCodeHandle.efforts`, and `runClaudePrompt` passes `--effort <level>` for that agent's
   passes [observed] (`buildClaudeArgs` `effort`; tests in `src/__tests__/claude-code.test.ts`). The
-  fixed roles (cross-cutting, verifier, coordinator) have no entry and get no flag. The flag exists
-  in the pinned `@anthropic-ai/claude-code@2.1.280` [observed] (`claude --help`, 2026-11-25).
+  fixed roles (cross-cutting, verifier, adjudicator, stack verifier, coordinator) have no entry and
+  get no flag. The flag exists in the pinned `@anthropic-ai/claude-code@2.1.280` [observed]
+  (`claude --help`, 2026-11-25).
+- **The levels are keyed by pass id, so fixed-role ids are excluded.** Passes are looked up by
+  agent id, and a reviewer file can share a fixed role's id (`agents/verifier.md`). With an entry,
+  its level would also reach the built-in pass of that id. `buildAgentEfforts` gives such a
+  reviewer no entry, and the run note tells the author to rename the file. The levels live in a
+  `Map`, so an id such as `constructor` cannot read an inherited `Object.prototype` value
+  (both found in review of the first version, PR #118).
 - **An OpenCode-routed agent ignores it, with a note.** `agentEffortNote` names those agents once
-  per run, the same way `claudeTemperatureNote` reports a temperature the CLI cannot take.
+  per run, the same way `claudeTemperatureNote` reports a temperature the CLI cannot take. It names
+  only agents whose engine in this run is OpenCode; an agent the run skipped is not named.
+- **The model must support effort.** The CLI accepts every level for every model, but a model
+  without effort support gets none: a request from the pinned CLI to `claude-haiku-4-5` with
+  `--effort high` carried no effort field, and one to `claude-opus-5-5` did (seen in review of PR
+  #118 against a local mock endpoint, not re-run here). The engine does not check model support.
 - **An invalid level never stops a review.** `parseAgentEffort` returns a setup warning with the
   fix and no `effort`, so the agent runs at the default. The value is matched after trim and
   lower-case, and a trailing `# comment` makes it invalid like any other text.
