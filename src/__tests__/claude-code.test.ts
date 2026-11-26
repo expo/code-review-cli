@@ -904,6 +904,17 @@ test("agentEffortNote: reports both reasons in one note", () => {
   expect(note).toContain("; `effort` has no effect for verifier: the id is also a built-in pass");
 });
 
+test("agentEffortNote: a fixed-role reviewer on an OpenCode model is told to change the model too", () => {
+  const agents = [
+    { id: "verifier", effort: "max", model: "openai/gpt-6-astra" },
+    { id: "coordinator", effort: "high", model: "anthropic/claude-opus-5-5" },
+  ] as unknown as LoadedAgent[];
+  // The engine map describes the built-in passes (claude here), not the reviewer files.
+  const note = agentEffortNote(agents, { verifier: "claude-code", coordinator: "claude-code" });
+  expect(note).toContain("Fix: rename the agent file, and give verifier an `anthropic/…` model");
+  expect(note).not.toContain("give verifier, coordinator");
+});
+
 test("agentEffortNote: a reviewer that shares a fixed role's id is told to rename", () => {
   const agents = [{ id: "verifier", effort: "max" }] as unknown as LoadedAgent[];
   const note = agentEffortNote(agents, { verifier: "opencode" });

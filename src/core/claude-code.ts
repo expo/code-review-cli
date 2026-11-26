@@ -833,10 +833,21 @@ export function agentEffortNote(
         "reads it, and the model of each runs through OpenCode",
     );
   }
+  // The engine map's entry for a fixed-role id describes the built-in pass, so read the
+  // reviewer's own model: after a rename, an OpenCode model would still ignore `effort`.
+  const fixedRoleViaOpencode = declared
+    .filter(
+      (agent) => FIXED_ROLE_IDS.has(agent.id) && engineForModel(agent.model ?? "") === "opencode",
+    )
+    .map((agent) => agent.id);
   if (fixedRole.length > 0) {
     notes.push(
       `\`effort\` has no effect for ${fixedRole.join(", ")}: the id is also a built-in pass, which ` +
-        "runs at the default effort. Fix: rename the agent file",
+        "runs at the default effort. Fix: rename the agent file" +
+        (fixedRoleViaOpencode.length > 0
+          ? `, and give ${fixedRoleViaOpencode.join(", ")} an \`anthropic/…\` model, because only ` +
+            "the claude-code engine reads `effort`"
+          : ""),
     );
   }
   return notes.length > 0 ? notes.join("; ") : null;
