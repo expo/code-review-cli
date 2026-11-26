@@ -22,6 +22,7 @@ import {
   CLAUDE_CODE_ENGINE,
   CROSS_CUTTING_AGENT,
   GOOGLE_THINKING_LEVELS,
+  OPENCODE_BUILTIN_AGENTS,
   opencodeEffortStyle,
   STACK_VERIFIER_AGENT,
   VERIFIER_AGENT,
@@ -836,6 +837,7 @@ export function agentEffortNote(
     .filter(
       (agent) =>
         !FIXED_ROLE_IDS.has(agent.id) &&
+        !OPENCODE_BUILTIN_AGENTS.has(agent.id) &&
         engineOf[agent.id] === "opencode" &&
         takesNoLevel(agent.model ?? ""),
     )
@@ -845,6 +847,7 @@ export function agentEffortNote(
     .filter(
       (agent) =>
         !FIXED_ROLE_IDS.has(agent.id) &&
+        !OPENCODE_BUILTIN_AGENTS.has(agent.id) &&
         engineOf[agent.id] === "opencode" &&
         opencodeEffortStyle(agent.model ?? "", auth) === "google" &&
         agent.effort !== undefined &&
@@ -854,7 +857,22 @@ export function agentEffortNote(
   const fixedRole = declared
     .filter((agent) => FIXED_ROLE_IDS.has(agent.id))
     .map((agent) => agent.id);
+  // buildOpencodeConfig gives an OpenCode built-in agent id no level (other sessions use it).
+  const opencodeBuiltin = declared
+    .filter(
+      (agent) =>
+        !FIXED_ROLE_IDS.has(agent.id) &&
+        OPENCODE_BUILTIN_AGENTS.has(agent.id) &&
+        engineOf[agent.id] === "opencode",
+    )
+    .map((agent) => agent.id);
   const notes: string[] = [];
+  if (opencodeBuiltin.length > 0) {
+    notes.push(
+      `\`effort\` has no effect for ${opencodeBuiltin.join(", ")}: the id is also an OpenCode ` +
+        "built-in agent, which other sessions use. Fix: rename the agent file",
+    );
+  }
   if (viaOpencode.length > 0) {
     notes.push(
       `\`effort\` has no effect for ${viaOpencode.join(", ")}: the model of each runs through ` +

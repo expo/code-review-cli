@@ -262,6 +262,12 @@ per-agent key and not a run-level flag.
   and the levels that work. Not observed: the ChatGPT/Codex sign-in path and a
   real provider's response to each level. ecr passes the level as written; a provider that does
   not take it fails that agent's passes with its own error.
+- **No level on OpenCode's own agent ids.** OpenCode 1.19.5 defines `build`, `compaction`,
+  `explore`, `general`, `plan`, `summary` and `title` (`app.agents()`, 2026-11-26) [observed]; a
+  reviewer config with one of these ids replaces that agent, and `compaction`, `summary` and `title`
+  also run for other sessions. A reviewer level there reached another reviewer's session
+  compaction (found in review of PR #119), so `buildOpencodeConfig` gives these ids no level
+  (`OPENCODE_BUILTIN_AGENTS`), and the run note tells the author to rename the file.
 - **Any other OpenCode-routed agent ignores it, with a note.** `agentEffortNote` names agents whose
   OpenCode provider takes no level (Meta, OpenAI-compatible and others) once per run, the same way
   `claudeTemperatureNote` reports a temperature the CLI cannot take.
@@ -280,18 +286,13 @@ per-agent key and not a run-level flag.
   (found in a multi-model review of PR #118, not measured in a live run), and sending no level
   would use the provider's default, which can be higher than the agent's own `low` (OpenCode sends
   Gemini `high` by default; found in review of PR #119). So `fallbackEffort` caps the level at
-  `medium` and never raises it, and `runClaudePrompt` passes that for the fallback. OpenCode reads
-  the level from the agent config, so `opencodeFallbackAgents` gives each reviewer whose fallback
-  options differ from its own a copy, `<id>__fallback-effort`, at the fallback level;
-  `opencodePassAgent` sends the fallback's prompts, including the corrective re-emit, as that copy.
-  No copy for a fixed-role id (it would become the built-in pass's fallback) or when the copy id is
-  already an agent id; `runReview` hands the map to `startOpencode` instead of the handle inferring
-  it from agent names (both found in review of PR #119). Observed with OpenCode 1.19.5 against a
-  mock endpoint, using the config `buildOpencodeConfig` produces (2026-11-26) [observed]: an
-  `xhigh` OpenAI reviewer sent `reasoning.effort: "xhigh"` and its copy `"medium"`; a `max` Google
-  reviewer sent OpenCode's default `thinkingLevel: "high"` and its copy `"medium"`. An OpenCode per-prompt `variant` exists,
-  but it maps to catalog variants, which the alias models ecr declares do not have (per that
-  review, not checked here).
+  `medium` and never raises it, and `runClaudePrompt` passes that for the fallback. On OpenCode
+  the fallback, and the finalize and corrective prompts, run at the agent's own level: OpenCode reads
+  the level from the agent config, and ecr cannot know which lower levels a model takes (GPT-5 pro
+  takes only `high`, per the provider's docs cited in review of PR #119), so it never sends a level
+  the author did not write. An earlier version of PR #119 gave each such reviewer a
+  `<id>__fallback-effort` copy at `min(level, medium)`; review showed it could send a rejected
+  level, so it was removed.
 - **An invalid level never stops a review.** `parseAgentEffort` returns a setup warning with the
   fix and no `effort`, so the agent runs at the default. The warning does not repeat the value: a
   backtick in it would close the code span in the review comment, and setup notes are not

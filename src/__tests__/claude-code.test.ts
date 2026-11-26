@@ -975,6 +975,18 @@ test("agentEffortNote: a fixed-role reviewer on Google xhigh is also told the le
   expect(note).toContain("Fix: rename the agent file, and give verifier one of low, medium, high");
 });
 
+test("agentEffortNote: an OpenCode reviewer named after an OpenCode built-in agent is told to rename", () => {
+  const agents = [
+    { id: "compaction", effort: "xhigh", model: "openai/gpt-6.2-astra" },
+  ] as unknown as LoadedAgent[];
+  const note = agentEffortNote(agents, { compaction: "opencode" }, []);
+  expect(note).toContain("has no effect for compaction: the id is also an OpenCode built-in agent");
+  expect(note).toContain("Fix: rename the agent file");
+  expect(note).not.toContain("runs through OpenCode on a provider");
+  // On the claude-code engine the level does apply, so there is no note.
+  expect(agentEffortNote(agents, { compaction: "claude-code" }, [])).toBeNull();
+});
+
 test("agentEffortNote: a fixed-role reviewer on OpenAI is told only to rename", () => {
   const agents = [
     { id: "verifier", effort: "max", model: "openai/gpt-6.2-astra" },

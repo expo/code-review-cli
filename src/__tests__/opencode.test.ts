@@ -19,9 +19,7 @@ import {
   STACK_VERIFIER_AGENT,
   META_MODEL_API_BASE_URL,
   opencodeEffortStyle,
-  opencodePassAgent,
-  opencodeFallbackAgents,
-  FALLBACK_AGENT_SUFFIX,
+  OPENCODE_BUILTIN_AGENTS,
   VERIFIER_AGENT,
   CROSS_CUTTING_AGENT,
 } from "../core/opencode.js";
@@ -747,51 +745,27 @@ test("buildOpencodeConfig passes a reviewer's effort as its provider's option, a
   }
 });
 
-test("a reviewer's no-tools fallback runs as a copy at min(level, medium), only when that differs", () => {
-  const config = configWith({
-    agents: [
-      { id: "astra", model: "openai/gpt-6.2-astra", effort: "xhigh" },
-      { id: "astra-low", model: "openai/gpt-6.2-astra", effort: "low" },
-      { id: "neon-x", model: "google/gemini-4-neon", effort: "xhigh" },
-      { id: "neon-low", model: "google/gemini-4-neon", effort: "low" },
-      { id: "plain", model: "openai/gpt-6.2-astra" },
-      // A reviewer that shares a fixed role's id gets no level and no copy: a copy
-      // would become the built-in pass's fallback.
-      { id: "cross-cutting", model: "openai/gpt-6.2-astra", effort: "high" },
-      // The copy id is taken by a real reviewer, so `dup` gets no copy.
-      { id: "dup", model: "openai/gpt-6.2-astra", effort: "max" },
-      { id: `dup${FALLBACK_AGENT_SUFFIX}`, model: "google/gemini-4-neon" },
-    ],
-  });
-  const copies = opencodeFallbackAgents(config);
-  expect([...copies]).toEqual([
-    ["astra", `astra${FALLBACK_AGENT_SUFFIX}`],
-    ["neon-x", `neon-x${FALLBACK_AGENT_SUFFIX}`],
+test("buildOpencodeConfig gives no level to a reviewer that shares an OpenCode built-in agent id", () => {
+  const opencode = buildOpencodeConfig(
+    configWith({
+      agents: [
+        { id: "compaction", model: "openai/gpt-6.2-astra", effort: "xhigh" },
+        { id: "title", model: "google/gemini-4-neon", effort: "low" },
+        { id: "astra", model: "openai/gpt-6.2-astra", effort: "xhigh" },
+      ],
+    }),
+  ) as { agent: Record<string, Record<string, unknown>> };
+  // OpenCode also runs these for other sessions (compaction, titles), so no level there.
+  expect(opencode.agent.compaction!.reasoningEffort).toBeUndefined();
+  expect(opencode.agent.title!.thinkingConfig).toBeUndefined();
+  expect(opencode.agent.astra!.reasoningEffort).toBe("xhigh");
+  expect([...OPENCODE_BUILTIN_AGENTS].sort()).toEqual([
+    "build",
+    "compaction",
+    "explore",
+    "general",
+    "plan",
+    "summary",
+    "title",
   ]);
-
-  const built = buildOpencodeConfig(config) as { agent: Record<string, Record<string, unknown>> };
-  const { reasoningEffort, ...astraRest } = built.agent.astra!;
-  expect(reasoningEffort).toBe("xhigh");
-  expect(built.agent[`astra${FALLBACK_AGENT_SUFFIX}`]).toEqual({
-    ...astraRest,
-    reasoningEffort: "medium",
-  });
-  // Google xhigh sends no level on the main pass; its fallback sends medium.
-  expect(built.agent["neon-x"]!.thinkingConfig).toBeUndefined();
-  expect(built.agent[`neon-x${FALLBACK_AGENT_SUFFIX}`]!.thinkingConfig).toEqual({
-    thinkingLevel: "medium",
-  });
-  for (const id of ["astra-low", "neon-low", "plain", "cross-cutting"]) {
-    expect(built.agent[`${id}${FALLBACK_AGENT_SUFFIX}`], id).toBeUndefined();
-  }
-  // The real reviewer keeps its own entry.
-  expect(built.agent[`dup${FALLBACK_AGENT_SUFFIX}`]!.model).toBe("google/gemini-4-neon");
-
-  const handle = { fallbackAgents: copies };
-  expect(opencodePassAgent(handle, "astra", 0)).toBe(`astra${FALLBACK_AGENT_SUFFIX}`);
-  expect(opencodePassAgent(handle, "astra", undefined)).toBe("astra");
-  expect(opencodePassAgent(handle, "astra", 12)).toBe("astra");
-  expect(opencodePassAgent(handle, "astra-low", 0)).toBe("astra-low");
-  expect(opencodePassAgent(handle, "cross-cutting", 0)).toBe("cross-cutting");
-  expect(opencodePassAgent({}, "astra", 0)).toBe("astra");
 });

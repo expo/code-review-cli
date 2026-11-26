@@ -5,7 +5,6 @@ import path from "node:path";
 
 import { createOpencode } from "@opencode-ai/sdk";
 
-import { fallbackEffort } from "../config/schema.js";
 import type {
   AgentEffort,
   AuthConfigEntry,
@@ -171,11 +170,6 @@ export interface OpencodeHandle {
   engineOf?: (agent: string) => Engine;
   /** Each configured MCP server tool set to false, merged into every no-tools request. */
   mcpToolsOff?: Record<string, boolean>;
-  /**
-   * Reviewer id → its fallback copy in the OpenCode config (opencodeFallbackAgents); the
-   * reviewer's no-tools fallback runs as that copy (opencodePassAgent).
-   */
-  fallbackAgents?: ReadonlyMap<string, string>;
   /** The configured MCP servers, so progress lines log only granted calls, by name. */
   mcpServers?: Record<string, McpServerConfig>;
   /** Set on a CI run that publishes sessions. Absent means capture stays off. */
@@ -347,53 +341,21 @@ export function opencodeEffortOptions(
   return GOOGLE_THINKING_LEVELS.has(effort) ? { thinkingConfig: { thinkingLevel: effort } } : null;
 }
 
-/** Suffix of a reviewer's fallback copy (see opencodeFallbackAgents). */
-export const FALLBACK_AGENT_SUFFIX = "__fallback-effort";
-
 /**
- * Reviewer id → the id of its fallback copy: the same OpenCode agent with the level of
- * `fallbackEffort` (min(level, medium)), which the reviewer's no-tools fallback pass runs
- * as, because OpenCode takes the level from the agent config. Only reviewers whose
- * fallback options differ from their own get a copy. None for a fixed-role id (the
- * built-in pass replaces that entry, so a copy would hijack the built-in pass's fallback)
- * or when the copy id is already an agent id.
+ * The agents OpenCode 1.19.5 defines itself (`app.agents()` with `builtIn: true`,
+ * observed 2026-11-26). `compaction`, `summary` and `title` run for every session, so a
+ * reviewer that shares one of these ids must not give it a level (LLP 0006). Re-check when
+ * the OpenCode pins move.
  */
-// @ref LLP 0006#agent-effort [implements] — the no-tools fallback runs at min(level, medium); OpenCode needs a copy agent for it
-export function opencodeFallbackAgents(config: LoadedConfig): Map<string, string> {
-  const taken = new Set([...config.agents.map((agent) => agent.id), ...NON_REVIEWER_AGENTS]);
-  const copies = new Map<string, string>();
-  for (const reviewer of config.agents) {
-    if (!reviewer.effort || NON_REVIEWER_AGENTS.has(reviewer.id)) {
-      continue;
-    }
-    const style = opencodeEffortStyle(reviewer.model, config.auth);
-    if (!style) {
-      continue;
-    }
-    const own = opencodeEffortOptions(style, reviewer.effort);
-    const fallback = opencodeEffortOptions(style, fallbackEffort(reviewer.effort));
-    if (JSON.stringify(own) === JSON.stringify(fallback)) {
-      continue;
-    }
-    const copy = `${reviewer.id}${FALLBACK_AGENT_SUFFIX}`;
-    if (!taken.has(copy)) {
-      copies.set(reviewer.id, copy);
-    }
-  }
-  return copies;
-}
-
-/**
- * The OpenCode agent a pass runs as: a no-tools fallback pass (maxToolCalls 0) of a
- * reviewer with a fallback copy runs as that copy; every other pass as the agent itself.
- */
-export function opencodePassAgent(
-  handle: Pick<OpencodeHandle, "fallbackAgents">,
-  agent: string,
-  maxToolCalls: number | undefined,
-): string {
-  return maxToolCalls === 0 ? (handle.fallbackAgents?.get(agent) ?? agent) : agent;
-}
+export const OPENCODE_BUILTIN_AGENTS: ReadonlySet<string> = new Set([
+  "build",
+  "compaction",
+  "explore",
+  "general",
+  "plan",
+  "summary",
+  "title",
+]);
 
 /** Build the inline OpenCode config (agents + coordinator) from a repo config. */
 export function buildOpencodeConfig(
@@ -402,21 +364,26 @@ export function buildOpencodeConfig(
   mcpProxy?: McpProxyRuntime,
 ): Record<string, unknown> {
   const agent: Record<string, unknown> = {};
-  const fallbackAgents = opencodeFallbackAgents(config);
   for (const reviewer of config.agents) {
-    // No level for a reviewer that shares a fixed role's id: the built-in pass written
-    // after this loop replaces its entry.
+    // No level for an id the engine or OpenCode also uses: ecr's fixed roles replace the
+    // entry after this loop, and an OpenCode built-in agent (compaction, title, …) also
+    // runs for other sessions, so a level there would reach them.
     const effortStyle =
-      reviewer.effort && !NON_REVIEWER_AGENTS.has(reviewer.id)
+      reviewer.effort &&
+      !NON_REVIEWER_AGENTS.has(reviewer.id) &&
+      !OPENCODE_BUILTIN_AGENTS.has(reviewer.id)
         ? opencodeEffortStyle(reviewer.model, config.auth)
         : null;
     const effortOptions =
       reviewer.effort && effortStyle ? opencodeEffortOptions(effortStyle, reviewer.effort) : null;
-    const entry = {
+    agent[reviewer.id] = {
       description: `${reviewer.id} reviewer`,
       mode: "all",
       model: reviewer.model,
       temperature: reviewer.temperature,
+      // Only reviewers: the fixed roles below are written after this loop, so a reviewer
+      // that shares a fixed role's id cannot give that pass its level.
+      ...effortOptions,
       prompt: `You are the ${reviewer.id} code reviewer. Follow the user message exactly and return only the requested JSON.`,
       tools: {
         ...reviewer.tools,
@@ -424,14 +391,6 @@ export function buildOpencodeConfig(
         ...opencodeGrantedTools(mcpProxy?.servers, reviewer.id),
       },
     };
-    agent[reviewer.id] = effortOptions ? { ...entry, ...effortOptions } : entry;
-    const copy = fallbackAgents.get(reviewer.id);
-    if (copy && effortStyle && reviewer.effort) {
-      agent[copy] = {
-        ...entry,
-        ...opencodeEffortOptions(effortStyle, fallbackEffort(reviewer.effort)),
-      };
-    }
   }
   agent[CROSS_CUTTING_AGENT] = {
     description: "Cross-file reviewer: issues spanning multiple changed files.",
@@ -656,8 +615,6 @@ export async function resolveOpencodeCli(): Promise<string | null> {
 export async function startOpencode(
   config: unknown,
   mcpServers?: Record<string, McpServerConfig>,
-  /** opencodeFallbackAgents for the config this server runs. */
-  fallbackAgents?: ReadonlyMap<string, string>,
 ): Promise<OpencodeHandle> {
   const mcpToolsOff = opencodeMcpToolsOff(mcpServers);
   // Make our pinned CLI win over any global install (see bundledOpencodeBinDir).
@@ -702,7 +659,6 @@ export async function startOpencode(
     },
     rateLimit: new RateLimitWatch(),
     ...(Object.keys(mcpToolsOff).length > 0 ? { mcpToolsOff, mcpServers } : {}),
-    ...(fallbackAgents && fallbackAgents.size > 0 ? { fallbackAgents } : {}),
   };
 }
 
@@ -1130,7 +1086,6 @@ export async function promptAgent(
     const { runClaudePrompt } = await import("./claude-code.js");
     return runClaudePrompt(dispatch.claudeHandle, args);
   }
-  const passAgent = opencodePassAgent(handle, args.agent, args.maxToolCalls);
   const maxWaitMs = args.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
   // ONE deadline for the whole pass, shared by the first attempt and any stall
   // retry, so retrying a wedged request can never push the pass past its declared
@@ -1174,7 +1129,7 @@ export async function promptAgent(
         : "time budget reached — asking for findings so far",
     );
     await sendSessionPrompt(handle, sessionID, {
-      agent: passAgent,
+      agent: args.agent,
       system: args.system,
       text: FINALIZE_PROMPT,
       tools: { ...NO_TOOLS, ...handle.mcpToolsOff },
@@ -1214,7 +1169,7 @@ export async function promptAgent(
     );
     const reportedTools = new Set<string>();
     await sendSessionPrompt(handle, session.id, {
-      agent: passAgent,
+      agent: args.agent,
       system: args.system,
       text: args.text,
       // A pass with no tool budget must not reach a remote MCP server either.
@@ -1437,8 +1392,7 @@ export async function promptAndParse<T>(
     try {
       const baseline = (await fetchMessages(handle, first.sessionID)).length;
       await sendSessionPrompt(handle, first.sessionID, {
-        // The same agent the pass ran as: a fallback pass re-emits at its fallback level.
-        agent: opencodePassAgent(handle, args.agent, args.maxToolCalls),
+        agent: args.agent,
         system: args.system,
         text: CORRECTIVE,
         // Re-emit only: the investigation is done, so no tools are needed and
