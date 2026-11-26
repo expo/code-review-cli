@@ -251,11 +251,23 @@ per-agent key and not a run-level flag.
   #118 against a local mock endpoint, not re-run here). The engine does not check model support.
 - **Only reviewer files take it.** `effort` in `coordinator.md` or `shared.md` frontmatter has no
   effect, so the loader adds a setup warning that says to remove it, instead of ignoring it.
+- **The no-tools fallback pass runs at the default.** A timed-out pass is retried with no tools under
+  a short cap (`maxToolCalls: 0`); `runClaudePrompt` sends no level for it, because a deep level
+  under that cap would likely time out again (found in a multi-model review of PR #118, not
+  measured in a live run).
 - **An invalid level never stops a review.** `parseAgentEffort` returns a setup warning with the
-  fix and no `effort`, so the agent runs at the default. The value is matched after trim and
+  fix and no `effort`, so the agent runs at the default. The warning does not repeat the value: a
+  backtick in it would close the code span in the review comment, and setup notes are not
+  length-capped. The value is matched after trim and
   lower-case, and a trailing `# comment` makes it invalid like any other text.
 - **Absent adds no key.** `LoadedAgent.effort` is set only when declared, so a setup without it
   keeps its review-cache key, and a setup that adds or changes it gets a fresh review.
+- **Not handled here.** In a routed scope, a root `enforceAgents` entry replaces a same-id scope
+  agent, but the scope keeps its own setup warnings: an invalid root `effort` shows no warning
+  there, and an invalid scope `effort` warns about an agent that runs at the root's level. `mention`
+  warnings behave the same way, so a fix belongs to all per-agent warnings at once. An unmatched
+  quote (`effort: "max`) loads as `max`, because the shared frontmatter reader strips each quote on
+  its own for every key.
 - **`REVIEWER_MODEL` does not clear it.** The override can move an agent to a model that runs
   through OpenCode; the note then reports the ignored level.
 

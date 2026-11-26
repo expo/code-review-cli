@@ -688,7 +688,9 @@ function parseAgentEffort(
   }
   return {
     warning:
-      `${file}: \`effort: ${raw}\` is not an effort level, so the agent runs at the default ` +
+      // The value is not repeated: a backtick in it would close the code span in the
+      // review comment, and a long one would go into the comment uncapped.
+      `${file}: \`effort\` is not an effort level, so the agent runs at the default ` +
       `effort. Fix: write one of ${AGENT_EFFORT_LEVELS.join(", ")} with nothing after it ` +
       "(a `# comment` goes on its own line), or remove `effort`.",
   };
@@ -822,8 +824,8 @@ function frontmatterWarnings(
   if (hidden) {
     return [
       `${file}: its frontmatter does not start on the first line (${hidden.cause}), so ` +
-        "every key in it is ignored, including `description`, `alwaysRun`, `model` and " +
-        `\`paths\`. Fix: ${hidden.fix}.`,
+        "every key in it is ignored, including `description`, `alwaysRun`, `model`, `paths` " +
+        `and \`effort\`. Fix: ${hidden.fix}.`,
     ];
   }
   const warnings: string[] = [];

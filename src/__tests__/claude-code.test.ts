@@ -853,6 +853,15 @@ test("runClaudePrompt: an agent's effort reaches its own passes and no other age
     expect(reviewer[reviewer.indexOf("--effort") + 1]).toBe("xhigh");
     expect((await argsLog(2)).split("\n")).not.toContain("--effort");
     expect((await argsLog(3)).split("\n")).not.toContain("--effort");
+    // The no-tools fallback of a timed-out pass runs at the default effort.
+    await runClaudePrompt(handle, {
+      agent: "reviewer",
+      system: "SYS",
+      text: "hi",
+      title: "t",
+      maxToolCalls: 0,
+    });
+    expect((await argsLog(4)).split("\n")).not.toContain("--effort");
   } finally {
     await cleanup();
   }
@@ -911,7 +920,8 @@ test("agentEffortNote: a fixed-role reviewer on an OpenCode model is told to cha
   ] as unknown as LoadedAgent[];
   // The engine map describes the built-in passes (claude here), not the reviewer files.
   const note = agentEffortNote(agents, { verifier: "claude-code", coordinator: "claude-code" });
-  expect(note).toContain("Fix: rename the agent file, and give verifier an `anthropic/…` model");
+  expect(note).toContain("Fix: rename the agent file, and run verifier on an `anthropic/…` model");
+  expect(note).toContain("`REVIEWER_MODEL` when that is set");
   expect(note).not.toContain("give verifier, coordinator");
 });
 

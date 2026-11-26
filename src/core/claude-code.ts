@@ -845,8 +845,9 @@ export function agentEffortNote(
       `\`effort\` has no effect for ${fixedRole.join(", ")}: the id is also a built-in pass, which ` +
         "runs at the default effort. Fix: rename the agent file" +
         (fixedRoleViaOpencode.length > 0
-          ? `, and give ${fixedRoleViaOpencode.join(", ")} an \`anthropic/…\` model, because only ` +
-            "the claude-code engine reads `effort`"
+          ? `, and run ${fixedRoleViaOpencode.join(", ")} on an \`anthropic/…\` model (its ` +
+            "`model:`, or `REVIEWER_MODEL` when that is set), because only the claude-code " +
+            "engine reads `effort`"
           : ""),
     );
   }
@@ -939,7 +940,10 @@ export async function runClaudePrompt(
     : undefined;
   heartbeat?.unref?.();
   // A Map lookup: an agent id such as `constructor` must not read an inherited value.
-  const effort = handle.efforts?.get(args.agent);
+  // The no-tools fallback (maxToolCalls 0) retries a timed-out pass under a short cap, so
+  // it runs at the default effort: a deep level there would likely time out again.
+  // @ref LLP 0006#agent-effort [implements] — the no-tools fallback pass takes no level
+  const effort = args.maxToolCalls === 0 ? undefined : handle.efforts?.get(args.agent);
   let result;
   try {
     result = await run(

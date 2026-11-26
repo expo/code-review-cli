@@ -325,6 +325,9 @@ test("loadReviewConfig: an invalid `effort` is a warning, and the agent runs at 
       const [warning] = config.setupWarnings!;
       expect(warning).toContain(path.join(CONFIG_DIRNAME, "agents", "ios.md"));
       expect(warning).toContain("is not an effort level");
+      // The raw value is never repeated into the review comment.
+      expect(warning, line).not.toContain("extreme");
+      expect(warning, line).not.toContain("deep trace");
       expect(warning).toContain("low, medium, high, xhigh, max");
     } finally {
       await rm(root, { recursive: true, force: true });

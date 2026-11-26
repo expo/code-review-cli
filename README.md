@@ -540,7 +540,8 @@ are ignored), and a comment that breaks `alwaysRun`, `model` or `temperature`.
 models that run through the Claude Code CLI (`anthropic/…`) read it; for any other
 model the review prints a note and ignores it. Leave it out to use the CLI default.
 The model must also support effort: the CLI sends no level to a model without
-effort support (Claude Haiku 4.5 is one), and ecr does not check this.
+effort support (Claude Haiku 4.5 is one), and ecr does not check this. A model can
+also take only some of the levels.
 A higher level costs more and takes longer, so set it on the agent that needs depth
 (a correctness reviewer that must trace callers), not on every agent. A value that
 is not a level is listed under **Review setup**, and the agent runs at the default.
