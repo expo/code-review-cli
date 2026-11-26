@@ -993,7 +993,9 @@ test("agentEffortNote: a fixed-role reviewer on a model that takes no level is t
   ] as unknown as LoadedAgent[];
   // The engine map describes the built-in passes (claude here), not the reviewer files.
   const note = agentEffortNote(agents, { verifier: "claude-code", coordinator: "claude-code" }, []);
-  expect(note).toContain("Fix: rename the agent file, and run verifier on a model that takes a level");
+  expect(note).toContain(
+    "Fix: rename the agent file, and run verifier on a model that takes a level",
+  );
   expect(note).toContain("`REVIEWER_MODEL` when that is set");
   expect(note).not.toContain("give verifier, coordinator");
 });

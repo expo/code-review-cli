@@ -19,6 +19,9 @@ import {
   STACK_VERIFIER_AGENT,
   META_MODEL_API_BASE_URL,
   opencodeEffortStyle,
+  opencodePassAgent,
+  defaultEffortAgentIds,
+  DEFAULT_EFFORT_AGENT_SUFFIX,
   VERIFIER_AGENT,
   CROSS_CUTTING_AGENT,
 } from "../core/opencode.js";
@@ -742,4 +745,33 @@ test("buildOpencodeConfig passes a reviewer's effort as its provider's option, a
     expect(opencode.agent[id]!.reasoningEffort, id).toBeUndefined();
     expect(opencode.agent[id]!.thinkingConfig, id).toBeUndefined();
   }
+});
+
+test("the no-tools fallback of a reviewer with an OpenCode level runs as its default-effort copy", () => {
+  const built = buildOpencodeConfig(
+    configWith({
+      agents: [
+        { id: "astra", model: "openai/gpt-6.2-astra", effort: "xhigh" },
+        { id: "neon-x", model: "google/gemini-4-neon", effort: "xhigh" },
+        { id: "plain", model: "openai/gpt-6.2-astra" },
+      ],
+    }),
+  ) as { agent: Record<string, Record<string, unknown>> };
+  const copy = built.agent[`astra${DEFAULT_EFFORT_AGENT_SUFFIX}`]!;
+  expect(copy.reasoningEffort).toBeUndefined();
+  // Everything else matches the reviewer's own entry.
+  const { reasoningEffort, ...rest } = built.agent.astra!;
+  expect(reasoningEffort).toBe("xhigh");
+  expect(copy).toEqual(rest);
+  // No copy without an effort option to drop (a level Google rejects sends none).
+  expect(built.agent[`neon-x${DEFAULT_EFFORT_AGENT_SUFFIX}`]).toBeUndefined();
+  expect(built.agent[`plain${DEFAULT_EFFORT_AGENT_SUFFIX}`]).toBeUndefined();
+
+  const handle = { defaultEffortAgents: defaultEffortAgentIds(built) };
+  expect([...handle.defaultEffortAgents]).toEqual(["astra"]);
+  expect(opencodePassAgent(handle, "astra", 0)).toBe(`astra${DEFAULT_EFFORT_AGENT_SUFFIX}`);
+  expect(opencodePassAgent(handle, "astra", undefined)).toBe("astra");
+  expect(opencodePassAgent(handle, "astra", 12)).toBe("astra");
+  expect(opencodePassAgent(handle, "plain", 0)).toBe("plain");
+  expect(opencodePassAgent({}, "astra", 0)).toBe("astra");
 });

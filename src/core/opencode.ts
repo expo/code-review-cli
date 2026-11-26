@@ -169,6 +169,11 @@ export interface OpencodeHandle {
   engineOf?: (agent: string) => Engine;
   /** Each configured MCP server tool set to false, merged into every no-tools request. */
   mcpToolsOff?: Record<string, boolean>;
+  /**
+   * Reviewer ids that have a default-effort copy in the OpenCode config (their
+   * no-tools fallback runs as that copy, opencodePassAgent).
+   */
+  defaultEffortAgents?: ReadonlySet<string>;
   /** The configured MCP servers, so progress lines log only granted calls, by name. */
   mcpServers?: Record<string, McpServerConfig>;
   /** Set on a CI run that publishes sessions. Absent means capture stays off. */
@@ -340,6 +345,38 @@ export function opencodeEffortOptions(
   return GOOGLE_THINKING_LEVELS.has(effort) ? { thinkingConfig: { thinkingLevel: effort } } : null;
 }
 
+/**
+ * Suffix of the copy of a reviewer that runs at the default effort. buildOpencodeConfig
+ * registers one for each reviewer that has an OpenCode effort option.
+ */
+export const DEFAULT_EFFORT_AGENT_SUFFIX = "__default-effort";
+
+/** The reviewer ids that have a default-effort copy in a built OpenCode config. */
+export function defaultEffortAgentIds(config: unknown): Set<string> {
+  const agents = (config as { agent?: Record<string, unknown> } | null)?.agent ?? {};
+  return new Set(
+    Object.keys(agents)
+      .filter((id) => id.endsWith(DEFAULT_EFFORT_AGENT_SUFFIX))
+      .map((id) => id.slice(0, -DEFAULT_EFFORT_AGENT_SUFFIX.length)),
+  );
+}
+
+/**
+ * The OpenCode agent a pass runs as. A no-tools fallback pass (maxToolCalls 0) retries a
+ * timed-out pass under a short cap, so a reviewer with a level runs it as its
+ * default-effort copy: a deep level under that cap would likely time out again.
+ */
+// @ref LLP 0006#agent-effort [implements] — the no-tools fallback pass takes no level
+export function opencodePassAgent(
+  handle: Pick<OpencodeHandle, "defaultEffortAgents">,
+  agent: string,
+  maxToolCalls: number | undefined,
+): string {
+  return maxToolCalls === 0 && handle.defaultEffortAgents?.has(agent)
+    ? `${agent}${DEFAULT_EFFORT_AGENT_SUFFIX}`
+    : agent;
+}
+
 /** Build the inline OpenCode config (agents + coordinator) from a repo config. */
 export function buildOpencodeConfig(
   config: LoadedConfig,
@@ -351,14 +388,11 @@ export function buildOpencodeConfig(
     const effortStyle = reviewer.effort ? opencodeEffortStyle(reviewer.model, config.auth) : null;
     const effortOptions =
       reviewer.effort && effortStyle ? opencodeEffortOptions(effortStyle, reviewer.effort) : null;
-    agent[reviewer.id] = {
+    const entry = {
       description: `${reviewer.id} reviewer`,
       mode: "all",
       model: reviewer.model,
       temperature: reviewer.temperature,
-      // Only reviewers: the fixed roles below are written after this loop, so a reviewer
-      // that shares a fixed role's id cannot give that pass its level.
-      ...effortOptions,
       prompt: `You are the ${reviewer.id} code reviewer. Follow the user message exactly and return only the requested JSON.`,
       tools: {
         ...reviewer.tools,
@@ -366,6 +400,14 @@ export function buildOpencodeConfig(
         ...opencodeGrantedTools(mcpProxy?.servers, reviewer.id),
       },
     };
+    // Only reviewers: the fixed roles below are written after this loop, so a reviewer
+    // that shares a fixed role's id cannot give that pass its level.
+    agent[reviewer.id] = effortOptions ? { ...entry, ...effortOptions } : entry;
+    if (effortOptions) {
+      // The same reviewer at the default effort, for its no-tools fallback pass
+      // (opencodePassAgent), as the claude-code engine does.
+      agent[`${reviewer.id}${DEFAULT_EFFORT_AGENT_SUFFIX}`] = entry;
+    }
   }
   agent[CROSS_CUTTING_AGENT] = {
     description: "Cross-file reviewer: issues spanning multiple changed files.",
@@ -592,6 +634,7 @@ export async function startOpencode(
   mcpServers?: Record<string, McpServerConfig>,
 ): Promise<OpencodeHandle> {
   const mcpToolsOff = opencodeMcpToolsOff(mcpServers);
+  const defaultEffortAgents = defaultEffortAgentIds(config);
   // Make our pinned CLI win over any global install (see bundledOpencodeBinDir).
   // The SDK takes no `env`, so PATH is the only lever; it spreads `process.env` at
   // spawn time, so setting it here reaches the child.
@@ -634,6 +677,7 @@ export async function startOpencode(
     },
     rateLimit: new RateLimitWatch(),
     ...(Object.keys(mcpToolsOff).length > 0 ? { mcpToolsOff, mcpServers } : {}),
+    ...(defaultEffortAgents.size > 0 ? { defaultEffortAgents } : {}),
   };
 }
 
@@ -1061,6 +1105,7 @@ export async function promptAgent(
     const { runClaudePrompt } = await import("./claude-code.js");
     return runClaudePrompt(dispatch.claudeHandle, args);
   }
+  const passAgent = opencodePassAgent(handle, args.agent, args.maxToolCalls);
   const maxWaitMs = args.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
   // ONE deadline for the whole pass, shared by the first attempt and any stall
   // retry, so retrying a wedged request can never push the pass past its declared
@@ -1104,7 +1149,7 @@ export async function promptAgent(
         : "time budget reached — asking for findings so far",
     );
     await sendSessionPrompt(handle, sessionID, {
-      agent: args.agent,
+      agent: passAgent,
       system: args.system,
       text: FINALIZE_PROMPT,
       tools: { ...NO_TOOLS, ...handle.mcpToolsOff },
@@ -1144,7 +1189,7 @@ export async function promptAgent(
     );
     const reportedTools = new Set<string>();
     await sendSessionPrompt(handle, session.id, {
-      agent: args.agent,
+      agent: passAgent,
       system: args.system,
       text: args.text,
       // A pass with no tool budget must not reach a remote MCP server either.
