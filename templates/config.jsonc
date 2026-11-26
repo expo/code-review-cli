@@ -15,11 +15,9 @@
   // there limits an agent to changes that touch those globs, and `mention: [octocat]`
   // names the people the review mentions when that agent asks for a human review.
   // `effort: high` (low, medium, high, xhigh or max) sets how much an agent reasons on
-  // `anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), `google/…`,
-  // `google-vertex/…` (Gemini 3 and later) or `xai/…` models; Google takes only low,
-  // medium or high. Other
-  // providers get no level. A model can ignore a level it does not support (Claude Haiku
-  // 4.5) or its provider can reject it, which fails that agent's passes. README: "effort".
+  // `anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), Gemini 3 and later
+  // (low, medium or high only) and `xai/…` models; other models get no level. A model
+  // can ignore a level, or its provider can reject it. README: "effort".
 
   // @ref LLP 0009#config-and-prompt-templates [implements] — suggestions off by default, not a schema limit
   "policy": {

@@ -536,32 +536,18 @@ comment (and in the terminal) with the fix, and `ecr doctor` fails on them:
 frontmatter below an HTML comment, a byte-order mark or blank lines (all its keys
 are ignored), and a comment that breaks `alwaysRun`, `model` or `temperature`.
 
-`effort` sets how much reasoning the model spends on that agent's passes. ecr
-passes it for these models, and for any other model the review prints a note and
-ignores it. Leave it out to leave the level to the engine: the CLI default, or on
-OpenCode the model's default or a variant set in your global OpenCode config.
-
-| Model | How the level is sent |
-| --- | --- |
-| `anthropic/…` (Claude Code CLI) | `--effort <level>` |
-| `openai/…`, or an alias with `upstream: "openai"` (OpenCode) | `reasoningEffort`, sent as the Responses API `reasoning.effort` |
-| `google/…`, `google-vertex/…` (OpenCode) | `thinkingConfig.thinkingLevel`, in place of the model's default (OpenCode sends `high` for Gemini 4 Neon); only `low`, `medium` or `high` (for `xhigh` and `max` ecr sends no level, and the run note says so). Gemini 2.5 and older take a thinking budget, not a level, so ecr sends them none and the run note says so |
-| `xai/…` (Grok, OpenCode) | `reasoningEffort`, sent as Chat Completions `reasoning_effort` or Responses API `reasoning.effort`, depending on how OpenCode reaches xAI |
-
-ecr passes the level as written and does not check which levels a model takes. When it sends a level through OpenCode it also sets the agent's `variant` to `""`, so a variant on a same-named agent in your global OpenCode config cannot replace it. A
-model without effort support can drop it (the Claude Code CLI sends no level to
-Claude Haiku 4.5), and a provider can reject a level its model does not take, which
-fails that agent's passes with the provider's error.
-A higher level costs more and takes longer, so set it on the agent that needs depth
-(a correctness reviewer that must trace callers), not on every agent. A value that
-is not a level is listed under **Review setup**, and the agent runs at the default.
-`effort` in `coordinator.md` or `shared.md` is also listed there: only reviewer
-files take it.
-An agent file in `agents/` named after a built-in pass (`verifier.md`,
-`cross-cutting.md`, `adjudicator.md`, `stack-verifier.md` or `coordinator.md`) gets
-no effort; the review note says to rename it. The same holds, on OpenCode-routed
-models, for a file named after one of OpenCode's own agents (`build.md`,
-`compaction.md`, `explore.md`, `general.md`, `plan.md`, `summary.md`, `title.md`).
+`effort` sets how much reasoning the model spends on that agent's passes. It works
+on `anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), Gemini 3 and later
+on `google/…` or `google-vertex/…` (only `low`, `medium` or `high`), and `xai/…`
+models. For other models the review prints a note and ignores it. Leave it out to
+use the model's default. A higher level costs more and takes longer, so set it on
+the agent that needs depth (a correctness reviewer that must trace callers), not on
+every agent. ecr does not check which levels a model supports: a model can ignore a
+level (Claude Haiku 4.5), and a provider can reject one, which fails that agent's
+passes. A value that is not a level is listed under **Review setup**, and the agent
+runs at the default. Only reviewer files take `effort`, and an agent file named
+after a built-in pass (for example `verifier.md`) gets none; the review note says
+to rename it.
 
 `paths` limits an agent to the changes it covers. It takes a list of repo-relative
 globs in the routing dialect: `*` stays within a directory, `**` crosses
