@@ -585,6 +585,10 @@ export const ScopeReviewConfigSchema = ReviewConfigSchema.omit({
 export type RawScopeReviewConfig = z.infer<typeof ScopeReviewConfigSchema>;
 
 /** A single agent after prompt files are read and models are resolved. */
+/** The effort levels the `claude` CLI takes for `--effort`. */
+export const AGENT_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type AgentEffort = (typeof AGENT_EFFORT_LEVELS)[number];
+
 export interface LoadedAgent {
   id: string;
   /** One-line summary from frontmatter, used by the router to pick agents. */
@@ -604,6 +608,11 @@ export interface LoadedAgent {
    * or chunk that has at least one matching changed file. Absent means every change.
    */
   paths?: string[];
+  /**
+   * Frontmatter `effort`: how much reasoning the model spends on this agent's passes.
+   * Only the claude-code engine reads it. Absent means the CLI's own default.
+   */
+  effort?: AgentEffort;
   /**
    * Frontmatter `mention`: GitHub logins or `org/team` slugs. When the agent asks for a
    * human review, the review comment mentions them. Absent means the agent mentions

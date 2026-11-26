@@ -7,6 +7,7 @@ import { describe, expect, it, test } from "bun:test";
 
 import {
   assertClaudeModels,
+  agentEffortNote,
   buildClaudeArgs,
   buildEngineMap,
   claudeActivities,
@@ -818,6 +819,43 @@ test("claudeTokenCredential: resolution order + oat/api-key classification", () 
   // Nothing anywhere → undefined (the local `claude` login covers the run).
   expect(claudeTokenCredential({ tokenEnv: "MY_TOK" }, {})).toBeUndefined();
   expect(claudeTokenCredential(undefined, {})).toBeUndefined();
+});
+
+test("buildClaudeArgs: passes --effort only when a level is given", () => {
+  const base = { model: "claude-opus-5", system: "SYS", cwd: "/work/repo" };
+  expect(buildClaudeArgs(base)).not.toContain("--effort");
+  const args = buildClaudeArgs({ ...base, effort: "high" });
+  expect(args[args.indexOf("--effort") + 1]).toBe("high");
+});
+
+test("runClaudePrompt: an agent's effort reaches its own passes and no other agent's", async () => {
+  const body = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "ok",
+  });
+  const { bin, argsLog, cleanup } = await sequencedFakeClaude([body]);
+  try {
+    const handle = testHandle(bin, { efforts: { reviewer: "xhigh" } });
+    await runClaudePrompt(handle, { agent: "reviewer", system: "SYS", text: "hi", title: "t" });
+    await runClaudePrompt(handle, { agent: "verifier", system: "SYS", text: "hi", title: "t" });
+    const reviewer = (await argsLog(1)).split("\n");
+    expect(reviewer[reviewer.indexOf("--effort") + 1]).toBe("xhigh");
+    expect((await argsLog(2)).split("\n")).not.toContain("--effort");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("agentEffortNote: names the agents whose effort an OpenCode-routed model ignores", () => {
+  const config = {
+    agents: [{ id: "a", effort: "high" }, { id: "b", effort: "low" }, { id: "c" }],
+  } as unknown as LoadedConfig;
+  expect(agentEffortNote(config, { a: "claude-code", b: "claude-code", c: "opencode" })).toBeNull();
+  const note = agentEffortNote(config, { a: "claude-code", b: "opencode", c: "opencode" });
+  expect(note).toContain("was ignored for b ");
+  expect(note).not.toContain("for a");
 });
 
 test("claudeTemperatureNote: flags non-default temperatures on CLAUDE-ROUTED passes only", () => {

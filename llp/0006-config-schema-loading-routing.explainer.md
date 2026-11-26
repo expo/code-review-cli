@@ -217,6 +217,30 @@ is letters, digits and underscores joined by single hyphens. An agent without `m
 `mention` key, so its shape and review-cache key are unchanged [observed: `load.ts`
 `parseAgentMention`; `schema.ts` `MENTION_TARGET_RE`].
 
+## Agent Effort
+
+An agent file may set `effort: low|medium|high|xhigh|max` in its frontmatter. The need came from an
+eval replay on one monorepo: a correctness reviewer on an `anthropic/…` model ended a pass after a
+median of 8 turns [observed], and a model-written miss analysis put 20 of 55 problems that human
+reviewers raised in the class "needs a logic trace" (eval run `full-v2-tune`, 2026-11-25; the data
+is private and not in this repo; no person checked the analysis). Depth is a per-agent need, and it costs time and money, so it is a
+per-agent key and not a run-level flag.
+
+- **Only the claude-code engine reads it.** `startClaudeCode` copies the declared levels into
+  `ClaudeCodeHandle.efforts`, and `runClaudePrompt` passes `--effort <level>` for that agent's
+  passes [observed] (`buildClaudeArgs` `effort`; tests in `src/__tests__/claude-code.test.ts`). The
+  fixed roles (cross-cutting, verifier, coordinator) have no entry and get no flag. The flag exists
+  in the pinned `@anthropic-ai/claude-code@2.1.280` [observed] (`claude --help`, 2026-11-25).
+- **An OpenCode-routed agent ignores it, with a note.** `agentEffortNote` names those agents once
+  per run, the same way `claudeTemperatureNote` reports a temperature the CLI cannot take.
+- **An invalid level never stops a review.** `parseAgentEffort` returns a setup warning with the
+  fix and no `effort`, so the agent runs at the default. The value is matched after trim and
+  lower-case, and a trailing `# comment` makes it invalid like any other text.
+- **Absent adds no key.** `LoadedAgent.effort` is set only when declared, so a setup without it
+  keeps its review-cache key, and a setup that adds or changes it gets a fresh review.
+- **`REVIEWER_MODEL` does not clear it.** The override can move an agent to a model that runs
+  through OpenCode; the note then reports the ignored level.
+
 ## Budgets and Chunking Defaults
 
 `budget.totalPassesMinutes` defaults to 55, not the scaffolded workflow's full 90-minute timeout,

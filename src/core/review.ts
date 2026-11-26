@@ -32,6 +32,7 @@ import {
 import type { OpencodeHandle, TokenUsage } from "./opencode.js";
 import type { SessionCapture } from "./session-archive.js";
 import {
+  agentEffortNote,
   buildEngineMap,
   claudeTemperatureNote,
   claudeTokenCredential,
@@ -592,6 +593,13 @@ export async function runReview(
     if (note) {
       progress(`Note: ${note}`);
     }
+  }
+
+  // `effort` reaches only the `claude` CLI. Say so once when an agent sets it on a model
+  // that runs through OpenCode, so the setting does not fail silently.
+  const effortNote = agentEffortNote(config, engineOf);
+  if (effortNote) {
+    progress(`Note: ${effortNote}`);
   }
 
   // Preflight: a model id an engine can't resolve would otherwise fail EVERY pass

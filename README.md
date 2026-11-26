@@ -521,6 +521,8 @@ alwaysRun: true
 # Override the default model.
 model: anthropic/claude-haiku-4-5
 temperature: 0.1
+# How much reasoning each pass spends: low, medium, high, xhigh or max.
+effort: high
 paths: ["packages/ios/**", "**/*.swift"]
 ---
 
@@ -533,6 +535,13 @@ value. Each review lists problems of this kind under **Review setup** in the PR
 comment (and in the terminal) with the fix, and `ecr doctor` fails on them:
 frontmatter below an HTML comment, a byte-order mark or blank lines (all its keys
 are ignored), and a comment that breaks `alwaysRun`, `model` or `temperature`.
+
+`effort` sets how much reasoning the model spends on that agent's passes. Only
+models that run through the Claude Code CLI (`anthropic/…`) read it; for any other
+model the review prints a note and ignores it. Leave it out to use the CLI default.
+A higher level costs more and takes longer, so set it on the agent that needs depth
+(a correctness reviewer that must trace callers), not on every agent. A value that
+is not a level is listed under **Review setup**, and the agent runs at the default.
 
 `paths` limits an agent to the changes it covers. It takes a list of repo-relative
 globs in the routing dialect: `*` stays within a directory, `**` crosses

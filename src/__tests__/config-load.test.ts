@@ -299,6 +299,39 @@ test("loadReviewConfig: `includeSuggestions` loads as a floor, with a deprecatio
   }
 });
 
+test("loadReviewConfig: front-matter `effort` loads onto the agent; no `effort` adds no key", async () => {
+  const root = await configDirWithAgent("---\neffort: High\n---\nIOS");
+  try {
+    const config = await loadReviewConfig(root);
+    const ios = config.agents.find((agent) => agent.id === "ios")!;
+    const plain = config.agents.find((agent) => agent.id === "plain")!;
+    expect(ios.effort).toBe("high");
+    // Absent, not undefined: an agent without `effort` keeps its review-cache key.
+    expect("effort" in plain).toBe(false);
+    expect("setupWarnings" in config).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("loadReviewConfig: an invalid `effort` is a warning, and the agent runs at the default", async () => {
+  for (const line of ["effort: extreme", "effort:", "effort: high # deep trace"]) {
+    const root = await configDirWithAgent(`---\n${line}\n---\nIOS`);
+    try {
+      const config = await loadReviewConfig(root);
+      const ios = config.agents.find((agent) => agent.id === "ios")!;
+      expect("effort" in ios, line).toBe(false);
+      expect(config.setupWarnings, line).toHaveLength(1);
+      const [warning] = config.setupWarnings!;
+      expect(warning).toContain(path.join(CONFIG_DIRNAME, "agents", "ios.md"));
+      expect(warning).toContain("is not an effort level");
+      expect(warning).toContain("low, medium, high, xhigh, max");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("loadReviewConfig: front-matter `mention` loads GitHub logins and teams onto the agent", async () => {
   const root = await configDirWithAgent(
     '---\nmention:\n  - amandeepmittal\n  - "@expo/docs"\n---\nIOS',

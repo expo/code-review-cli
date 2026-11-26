@@ -3,7 +3,7 @@
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { LoadedConfig, McpServerConfig } from "../config/schema.js";
+import type { AgentEffort, LoadedConfig, McpServerConfig } from "../config/schema.js";
 import { checkAuthEntry } from "./auth.js";
 import { pathInside, resolveOnPath, run } from "./exec.js";
 import { assertMcpServerTokenEnvs, mcpGrantEnvironment, mcpServerGrants } from "./mcp-servers.js";
@@ -45,6 +45,11 @@ export interface ClaudeCodeHandle extends OpencodeHandle {
    * the read-capable subset to the tree.
    */
   tools: Record<string, readonly string[]>;
+  /**
+   * agent id → frontmatter `effort`, only for the reviewers that declare one. The fixed
+   * roles (cross-cutting, verifier, coordinator) have no entry and run at the CLI default.
+   */
+  efforts?: Record<string, AgentEffort>;
   /** Default model for cross-cutting/verifier (config.agents[0].model). */
   defaultModel: string;
   /** Absolute `claude` binary (PATH lookup). */
@@ -331,6 +336,8 @@ export function buildClaudeArgs(opts: {
   mcpServerTools?: readonly string[];
   maxTurns?: number;
   jsonSchema?: Record<string, unknown>;
+  /** `--effort` level. Absent passes no flag, so the CLI default applies. */
+  effort?: AgentEffort;
 }): string[] {
   // Permission rules are gitignore-style with forward slashes; a Windows cwd
   // (`C:\Users\dev\repo`) must be normalized or every rule silently matches
@@ -363,6 +370,8 @@ export function buildClaudeArgs(opts: {
     "--verbose",
     "--model",
     opts.model,
+    // @ref LLP 0006#agent-effort [implements] — the flag is passed only for an agent that declares a level
+    ...(opts.effort ? ["--effort", opts.effort] : []),
     "--append-system-prompt",
     opts.system,
     ...(opts.jsonSchema ? ["--json-schema", JSON.stringify(opts.jsonSchema)] : []),
@@ -774,6 +783,24 @@ export function claudeTemperatureNote(
 }
 
 /**
+ * A one-time run note when an agent sets `effort` but its model runs through OpenCode:
+ * only the `claude` CLI takes an effort level, so the setting has no effect there.
+ * Returns null when every agent with an `effort` is claude-routed.
+ */
+export function agentEffortNote(
+  config: LoadedConfig,
+  engineOf: Record<string, Engine>,
+): string | null {
+  const ignored = config.agents
+    .filter((agent) => agent.effort && engineOf[agent.id] !== CLAUDE_CODE_ENGINE)
+    .map((agent) => agent.id);
+  return ignored.length > 0
+    ? `\`effort\` is read only by the claude-code engine and was ignored for ${ignored.join(", ")} ` +
+        "(the model of each runs through OpenCode)"
+    : null;
+}
+
+/**
  * Preserve actionable process diagnostics without copying arbitrary stderr into a
  * public Actions log. A non-empty stream may already contain model/tool content, so
  * stderr is not even classified in that case. With no stream, recognize only fixed
@@ -876,6 +903,7 @@ export async function runClaudePrompt(
         mcpServerTools: [...mcpServerTools.keys()],
         maxTurns,
         jsonSchema: args.jsonSchema,
+        ...(handle.efforts?.[args.agent] ? { effort: handle.efforts[args.agent] } : {}),
       }),
       {
         input: args.text,
@@ -1289,6 +1317,12 @@ export async function startClaudeCode(
   // verifier never reads the disk (mirrors the coordinator's empty list).
   tools[STACK_VERIFIER_AGENT] = [];
   tools["coordinator"] = [];
+  const efforts: Record<string, AgentEffort> = {};
+  for (const agent of config.agents) {
+    if (agent.effort) {
+      efforts[agent.id] = agent.effort;
+    }
+  }
   const defaultModel = config.agents[0]?.model ?? config.coordinator.model;
   const researchAgents = new Set(config.agents.map((agent) => agent.id));
   researchAgents.add(CROSS_CUTTING_AGENT);
@@ -1311,6 +1345,7 @@ export async function startClaudeCode(
     engine: CLAUDE_CODE_ENGINE,
     models,
     tools,
+    ...(Object.keys(efforts).length > 0 ? { efforts } : {}),
     defaultModel,
     cliPath,
     childEnv,

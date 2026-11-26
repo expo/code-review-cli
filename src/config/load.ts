@@ -6,8 +6,13 @@ import { readdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-import { DEFAULT_MIN_SEVERITY, ReviewConfigSchema, ScopeReviewConfigSchema } from "./schema.js";
-import type { AuthConfigEntry } from "./schema.js";
+import {
+  AGENT_EFFORT_LEVELS,
+  DEFAULT_MIN_SEVERITY,
+  ReviewConfigSchema,
+  ScopeReviewConfigSchema,
+} from "./schema.js";
+import type { AgentEffort, AuthConfigEntry } from "./schema.js";
 import type {
   LoadedAgent,
   LoadedConfig,
@@ -276,6 +281,13 @@ async function loadConfigDir(
     if (mentionWarning) {
       setupWarnings.push(mentionWarning);
     }
+    const { effort, warning: effortWarning } = parseAgentEffort(
+      md,
+      path.join(label, "agents", file),
+    );
+    if (effortWarning) {
+      setupWarnings.push(effortWarning);
+    }
     agents.push({
       id,
       description: md.data.description ?? "",
@@ -288,6 +300,7 @@ async function loadConfigDir(
       // review-cache key) it had before the key existed.
       ...(paths ? { paths } : {}),
       ...(mention ? { mention } : {}),
+      ...(effort ? { effort } : {}),
     });
   }
 
@@ -638,6 +651,33 @@ function parseAgentPaths(
     };
   }
   return { paths: md.lists.paths };
+}
+
+/**
+ * The agent's `effort` level, or a setup warning that names the fix. A value that is
+ * not a level is ignored and the agent runs at the default effort; it never fails
+ * the load.
+ */
+// @ref LLP 0006#agent-effort [implements] — an invalid level warns and falls back, it never stops a review
+function parseAgentEffort(
+  md: { data: Record<string, string> },
+  file: string,
+): { effort?: AgentEffort; warning?: string } {
+  const raw = md.data.effort;
+  if (raw === undefined) {
+    return {};
+  }
+  const value = raw.trim().toLowerCase();
+  const effort = AGENT_EFFORT_LEVELS.find((level) => level === value);
+  if (effort) {
+    return { effort };
+  }
+  return {
+    warning:
+      `${file}: \`effort: ${raw}\` is not an effort level, so the agent runs at the default ` +
+      `effort. Fix: write one of ${AGENT_EFFORT_LEVELS.join(", ")} with nothing after it ` +
+      "(a `# comment` goes on its own line), or remove `effort`.",
+  };
 }
 
 /**
