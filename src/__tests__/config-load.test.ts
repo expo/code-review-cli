@@ -367,3 +367,32 @@ test("loadReviewConfig: reads the PR template comments from the repository root"
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("loadReviewConfig: an auth tokenEnv with shell syntax fails at load", async () => {
+  const root = await configDirWithAgent("IOS");
+  const configPath = path.join(root, CONFIG_DIRNAME, "config.jsonc");
+  const hostile = "X=1; touch /tmp/pwned; Y";
+  try {
+    // setup-auth prints the name into an `export NAME='…'` line, so both shapes must refuse it.
+    await writeFile(
+      configPath,
+      JSON.stringify({ auth: { providers: { xai: { mode: "oauth", tokenEnv: hostile } } } }),
+    );
+    await expect(loadReviewConfig(root)).rejects.toThrow(/tokenEnv must be an env var name/);
+    await writeFile(
+      configPath,
+      JSON.stringify({ auth: { mode: "oauth", provider: "xai", tokenEnv: hostile } }),
+    );
+    await expect(loadReviewConfig(root)).rejects.toThrow(/tokenEnv must be an env var name/);
+
+    await writeFile(
+      configPath,
+      JSON.stringify({ auth: { providers: { xai: { mode: "oauth", tokenEnv: "my_Token_2" } } } }),
+    );
+    expect((await loadReviewConfig(root)).auth).toEqual([
+      { provider: "xai", mode: "oauth", tokenEnv: "my_Token_2", upstream: undefined },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

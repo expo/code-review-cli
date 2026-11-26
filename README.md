@@ -1023,6 +1023,17 @@ fallback key; `ecr doctor` diagnoses setup.
   <https://console.x.ai> and exported as `XAI_API_KEY`. `mode: "oauth"` caps
   concurrency at 3. An API key stays at 6.
 
+  The access token lasts hours, not days, and a review cannot renew it. A token
+  from the same xAI OAuth client lasted 6 hours. So the SuperGrok mode suits
+  local runs: a CI secret goes stale the same day unless a job re-mints it.
+  `ecr doctor` and the review both warn when under two hours are left. The
+  review stops before any pass when 120 seconds or less are left. Run
+  `ecr setup-auth` again for a new token. It signs in again unless a review
+  would take the current token without a warning.
+
+  `XAI_OAUTH_ACCESS_TOKEN` needs `"mode": "oauth"`. An entry that names it
+  without that mode is refused.
+
 - **Another provider** — `opencode auth login` once, then run with e.g.
   `REVIEWER_MODEL=google/gemini-3-pro`. No `auth` block needed.
 

@@ -5,6 +5,9 @@ import {
   exportLine,
   opencodeAuthJsonPath,
   accessTokenFromStore,
+  opencodeLoginEnv,
+  remainingLabel,
+  superGrokTokenComplaint,
   SUPERGROK_LOGIN_ARGS,
 } from "../commands/setup-auth.js";
 
@@ -110,10 +113,47 @@ test("the xAI export line is the access token and never the refresh token", () =
   expect(accessTokenFromStore({ xai: { type: "oauth", refresh } }, "xai")).toBeNull();
 });
 
+function superGrokJwt(secondsFromNow: number): string {
+  const exp = Math.floor(Date.now() / 1000) + secondsFromNow;
+  return `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.sig`;
+}
+
+test("a SuperGrok token is reused only when a review takes it without complaint", () => {
+  const env = "XAI_OAUTH_ACCESS_TOKEN";
+  expect(superGrokTokenComplaint(superGrokJwt(5 * 3600), env)).toBeNull();
+  // The review names `ecr setup-auth` as the fix for each of these, so none may skip the sign-in.
+  expect(superGrokTokenComplaint(superGrokJwt(-600), env)).toContain("EXPIRED");
+  expect(superGrokTokenComplaint(superGrokJwt(60), env)).toContain("120 seconds");
+  expect(superGrokTokenComplaint(superGrokJwt(90 * 60), env)).toContain("expires in");
+  expect(superGrokTokenComplaint("x".repeat(80), env)).toContain("opaque");
+});
+
+test("the remaining label uses minutes under an hour", () => {
+  const now = Date.now();
+  expect(remainingLabel(now + 30_000, now)).toBe("1 more minute(s)");
+  expect(remainingLabel(now + 20 * 60_000, now)).toBe("20 more minute(s)");
+  expect(remainingLabel(now + 5 * 3_600_000, now)).toBe("5 more hour(s)");
+  expect(remainingLabel(now + 3 * 86_400_000, now)).toBe("3 more day(s)");
+});
+
 test("export line is single-quoted so shells never expand the value", () => {
   expect(exportLine("CODEX_OAUTH_ACCESS_TOKEN", "abc$HOME!x")).toBe(
     "export CODEX_OAUTH_ACCESS_TOKEN='abc$HOME!x'",
   );
+});
+
+test("export line escapes a single quote in the value", () => {
+  expect(exportLine("XAI_OAUTH_ACCESS_TOKEN", "a'; touch /tmp/pwned; '")).toBe(
+    String.raw`export XAI_OAUTH_ACCESS_TOKEN='a'\''; touch /tmp/pwned; '\'''`,
+  );
+});
+
+test("OpenCode logins keep project config off", () => {
+  // The login cwd is the temp dir, and OpenCode reads config from the cwd and its parents.
+  expect(opencodeLoginEnv({ PATH: "/usr/bin" })).toEqual({
+    PATH: "/usr/bin",
+    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+  });
 });
 
 test("opencode auth.json path honors XDG_DATA_HOME and falls back to ~/.local/share", () => {

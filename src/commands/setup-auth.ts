@@ -7,7 +7,7 @@ import readline from "node:readline/promises";
 
 import { hasConfig, loadReviewConfig } from "../config/load.js";
 import type { AuthConfigEntry } from "../config/schema.js";
-import { jwtExpiryMs } from "../core/auth.js";
+import { checkOauthTokenShape, jwtExpiryMs } from "../core/auth.js";
 import { claudeSubscriptionActive, resolveClaudeCli } from "../core/claude-code.js";
 import { resolveOpencodeCli } from "../core/opencode.js";
 import { errorMessage } from "../core/util.js";
@@ -23,8 +23,9 @@ getting each credential:
   • a SuperGrok subscription (oauth/xai): runs the bundled
     \`opencode auth login -p xai -m "SuperGrok Subscription"\` (device code at
     https://accounts.x.ai/oauth2/device), then prints the access-token export.
-    An existing OpenCode SuperGrok sign-in is reused. The refresh token stays
-    in OpenCode's store.
+    The token lasts hours, not days, and a review cannot renew it. A stored or
+    exported token is reused only while a review takes it without a warning.
+    The refresh token stays in OpenCode's store.
   • a Claude Max/Team subscription (any anthropic/… model): reuses an active
     \`claude\` login when present, or runs \`claude setup-token\` (interactive;
     opens your browser) and prints the \`export <tokenEnv>=…\` line for
@@ -104,6 +105,15 @@ export const SUPERGROK_LOGIN_ARGS = [
   "SuperGrok Subscription",
 ] as const;
 
+/**
+ * Env for the interactive OpenCode logins.
+ * OpenCode loads `opencode.json` and `.opencode/` from the cwd and from every parent directory.
+ * The login cwd is the temp dir, which is the shared `/tmp` on Linux, so project config stays off.
+ */
+export function opencodeLoginEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...env, OPENCODE_DISABLE_PROJECT_CONFIG: "1" };
+}
+
 export interface StoredOauthAccess {
   token: string;
   expiresMs: number;
@@ -143,12 +153,24 @@ async function readStoredAccessToken(provider: string): Promise<StoredOauthAcces
   }
 }
 
-function remainingLabel(expiresMs: number, now = Date.now()): string {
+/**
+ * What a review would say about this SuperGrok access token: an error, an expiry warning, or null.
+ * The review names `ecr setup-auth` as the fix for both, so either one means a new sign-in.
+ */
+export function superGrokTokenComplaint(token: string, tokenEnv: string): string | null {
+  const shape = checkOauthTokenShape("xai", token, tokenEnv);
+  return shape.ok ? (shape.warning ?? null) : shape.detail;
+}
+
+export function remainingLabel(expiresMs: number, now = Date.now()): string {
   const remaining = expiresMs - now;
   if (remaining >= 86_400_000) {
     return `${Math.max(1, Math.round(remaining / 86_400_000))} more day(s)`;
   }
-  return `${Math.max(1, Math.round(remaining / 3_600_000))} more hour(s)`;
+  if (remaining >= 3_600_000) {
+    return `${Math.max(1, Math.round(remaining / 3_600_000))} more hour(s)`;
+  }
+  return `${Math.max(1, Math.round(remaining / 60_000))} more minute(s)`;
 }
 
 async function confirm(question: string, skip: boolean): Promise<boolean> {
@@ -165,9 +187,9 @@ async function confirm(question: string, skip: boolean): Promise<boolean> {
 }
 
 // @ref LLP 0007#doctor-and-setup-auth [constrained-by] — shell metacharacters in tokens never expand
-/** The line to paste into a shell config. Single-quoted: tokens never contain '. */
+/** The line to paste into a shell config. Single-quoted, so the shell expands nothing in the value. */
 export function exportLine(tokenEnv: string, value: string): string {
-  return `export ${tokenEnv}='${value}'`;
+  return `export ${tokenEnv}='${value.replace(/'/g, "'\\''")}'`;
 }
 
 export async function setupAuthCommand(argv: string[] = []): Promise<void> {
@@ -297,6 +319,7 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
             const result = spawnSync(opencodeCli, ["auth", "login"], {
               stdio: "inherit",
               cwd: os.tmpdir(),
+              env: opencodeLoginEnv(),
             });
             if (result.status !== 0) {
               throw new Error(
@@ -327,11 +350,20 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
 
     if (plan.grokLogin) {
       const { tokenEnv } = plan.grokLogin;
-      if (process.env[tokenEnv]) {
+      const current = process.env[tokenEnv];
+      const complaint = current ? superGrokTokenComplaint(current, tokenEnv) : null;
+      if (current && !complaint) {
         err(`✓ ${tokenEnv} is already set in this shell — skipping the SuperGrok sign-in.`);
       } else {
-        // @ref LLP 0007#doctor-and-setup-auth [implements] — SuperGrok login is the pinned OpenCode device flow; only the access token is exported
+        if (complaint) {
+          err(`${tokenEnv} is set in this shell, but it needs a new token:`);
+          err(`  ${complaint}`);
+        }
+        // @ref LLP 0007#doctor-and-setup-auth [implements] — SuperGrok login is the pinned OpenCode device flow; only the access token is exported, and only one a review takes without complaint
         let stored = await readStoredAccessToken("xai");
+        if (stored && superGrokTokenComplaint(stored.token, tokenEnv)) {
+          stored = null;
+        }
         if (stored) {
           err(
             `Found a live SuperGrok sign-in in OpenCode (access token valid ` +
@@ -358,6 +390,7 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
             const result = spawnSync(opencodeCli, [...SUPERGROK_LOGIN_ARGS], {
               stdio: "inherit",
               cwd: os.tmpdir(),
+              env: opencodeLoginEnv(),
             });
             if (result.status !== 0) {
               throw new Error(
@@ -377,8 +410,9 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
           // Access token only. refresh stays in OpenCode's store.
           exports.push(exportLine(tokenEnv, stored.token));
           err(
-            `Note: this access token expires in ${remainingLabel(stored.expiresMs)}; ` +
-              `re-run \`ecr setup-auth\` then to refresh it (your OpenCode sign-in stays valid).`,
+            `Note: this access token is valid for ${remainingLabel(stored.expiresMs)}, ` +
+              `and a review cannot renew it. Re-run \`ecr setup-auth\` for a new one; ` +
+              `it signs in again and replaces this export line.`,
           );
         }
       }
