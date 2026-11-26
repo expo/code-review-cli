@@ -958,7 +958,7 @@ describe("selectReviewers: the effort note names only reviewers that run", () =>
       progress: (line) => lines.push(line),
     });
     const note = lines.find((line) => line.startsWith("Note: `effort`"));
-    expect(note).toContain("was ignored for ios ");
+    expect(note).toContain("has no effect for ios:");
   });
 
   it("does not tell a path-excluded agents/verifier.md to rename", async () => {

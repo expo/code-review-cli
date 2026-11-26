@@ -880,7 +880,7 @@ test("agentEffortNote: names the agents whose effort an OpenCode-routed model ig
   ] as unknown as LoadedAgent[];
   expect(agentEffortNote(agents, { a: "claude-code", b: "claude-code", c: "opencode" })).toBeNull();
   const note = agentEffortNote(agents, { a: "claude-code", b: "opencode", c: "opencode" });
-  expect(note).toContain("was ignored for b ");
+  expect(note).toContain("has no effect for b:");
   expect(note).not.toContain("for a");
 });
 
@@ -897,7 +897,7 @@ test("agentEffortNote: an agent that does not run in this review is not named", 
 test("agentEffortNote: a reviewer that shares a fixed role's id is told to rename", () => {
   const agents = [{ id: "verifier", effort: "max" }] as unknown as LoadedAgent[];
   const note = agentEffortNote(agents, { verifier: "opencode" });
-  expect(note).toContain("was ignored for verifier: the id is also a built-in pass");
+  expect(note).toContain("has no effect for verifier: the id is also a built-in pass");
   expect(note).toContain("Fix: rename the agent file");
   expect(note).not.toContain("runs through OpenCode");
 });

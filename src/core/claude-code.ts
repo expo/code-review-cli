@@ -807,11 +807,13 @@ export function buildAgentEfforts(config: LoadedConfig): Map<string, AgentEffort
 }
 
 /**
- * A one-time run note for an `effort` that has no effect: the agent's model runs
- * through OpenCode (only the `claude` CLI takes an effort level), or the agent's id is
- * also a fixed role's id. `agents` is the run's final reviewer list, after the `paths`
- * filter and the router, so an agent that does not run is never named. Returns null
- * when every declared `effort` applies.
+ * A one-time run note for an `effort` that has no effect. It states a fact about the
+ * setup, not about a pass, so it stays true when a later step (a blocking pre-check, the
+ * budget) skips the agent. The cases: the agent's model runs through OpenCode (only the
+ * `claude` CLI takes an effort level), or the agent's id is also a fixed role's id.
+ * `agents` is the run's selected reviewer list, after the `paths` filter and the router,
+ * so an agent either of them left out is never named. Returns null when every declared
+ * `effort` applies.
  */
 export function agentEffortNote(
   agents: readonly LoadedAgent[],
@@ -827,13 +829,13 @@ export function agentEffortNote(
   const notes: string[] = [];
   if (viaOpencode.length > 0) {
     notes.push(
-      `\`effort\` is read only by the claude-code engine and was ignored for ${viaOpencode.join(", ")} ` +
-        "(the model of each runs through OpenCode)",
+      `\`effort\` has no effect for ${viaOpencode.join(", ")}: only the claude-code engine ` +
+        "reads it, and the model of each runs through OpenCode",
     );
   }
   if (fixedRole.length > 0) {
     notes.push(
-      `\`effort\` was ignored for ${fixedRole.join(", ")}: the id is also a built-in pass, which ` +
+      `\`effort\` has no effect for ${fixedRole.join(", ")}: the id is also a built-in pass, which ` +
         "runs at the default effort. Fix: rename the agent file",
     );
   }
