@@ -588,6 +588,19 @@ export type RawScopeReviewConfig = z.infer<typeof ScopeReviewConfigSchema>;
 export const AGENT_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type AgentEffort = (typeof AGENT_EFFORT_LEVELS)[number];
 
+/**
+ * The level a no-tools fallback pass runs at: the agent's own level, capped at `medium`.
+ * The fallback retries a timed-out pass under a short cap, so a deep level would likely
+ * time out again; sending no level instead would fall back to a provider default that can
+ * be higher than the agent's own `low`.
+ */
+// @ref LLP 0006#agent-effort [implements] — the no-tools fallback runs at min(level, medium)
+export function fallbackEffort(level: AgentEffort): AgentEffort {
+  return AGENT_EFFORT_LEVELS.indexOf(level) <= AGENT_EFFORT_LEVELS.indexOf("medium")
+    ? level
+    : "medium";
+}
+
 /** A single agent after prompt files are read and models are resolved. */
 export interface LoadedAgent {
   id: string;

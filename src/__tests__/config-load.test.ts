@@ -10,6 +10,7 @@ import {
   stripJsonComments,
   stripTrailingCommas,
 } from "../config/load.js";
+import { fallbackEffort } from "../config/schema.js";
 
 test("parseFrontmatter: parses scalar keys + returns body without frontmatter", () => {
   const { data, body } = parseFrontmatter("---\nmodel: x\nalwaysRun: true\n---\n# Body\ntext");
@@ -424,4 +425,12 @@ test("loadReviewConfig: reads the PR template comments from the repository root"
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("fallbackEffort: the agent's level, capped at medium", () => {
+  expect(fallbackEffort("low")).toBe("low");
+  expect(fallbackEffort("medium")).toBe("medium");
+  expect(fallbackEffort("high")).toBe("medium");
+  expect(fallbackEffort("xhigh")).toBe("medium");
+  expect(fallbackEffort("max")).toBe("medium");
 });

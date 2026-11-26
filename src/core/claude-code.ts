@@ -3,6 +3,7 @@
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { fallbackEffort } from "../config/schema.js";
 import type { AgentEffort, LoadedAgent, LoadedConfig, McpServerConfig } from "../config/schema.js";
 import { checkAuthEntry } from "./auth.js";
 import { pathInside, resolveOnPath, run } from "./exec.js";
@@ -940,10 +941,9 @@ export async function runClaudePrompt(
     : undefined;
   heartbeat?.unref?.();
   // A Map lookup: an agent id such as `constructor` must not read an inherited value.
-  // The no-tools fallback (maxToolCalls 0) retries a timed-out pass under a short cap, so
-  // it runs at the default effort: a deep level there would likely time out again.
-  // @ref LLP 0006#agent-effort [implements] — the no-tools fallback pass takes no level
-  const effort = args.maxToolCalls === 0 ? undefined : handle.efforts?.get(args.agent);
+  // The no-tools fallback (maxToolCalls 0) runs at the agent's level capped at `medium`.
+  const level = handle.efforts?.get(args.agent);
+  const effort = level && args.maxToolCalls === 0 ? fallbackEffort(level) : level;
   let result;
   try {
     result = await run(

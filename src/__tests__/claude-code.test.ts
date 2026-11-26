@@ -853,7 +853,7 @@ test("runClaudePrompt: an agent's effort reaches its own passes and no other age
     expect(reviewer[reviewer.indexOf("--effort") + 1]).toBe("xhigh");
     expect((await argsLog(2)).split("\n")).not.toContain("--effort");
     expect((await argsLog(3)).split("\n")).not.toContain("--effort");
-    // The no-tools fallback of a timed-out pass runs at the default effort.
+    // The no-tools fallback of a timed-out pass runs at the level capped at medium.
     await runClaudePrompt(handle, {
       agent: "reviewer",
       system: "SYS",
@@ -861,7 +861,8 @@ test("runClaudePrompt: an agent's effort reaches its own passes and no other age
       title: "t",
       maxToolCalls: 0,
     });
-    expect((await argsLog(4)).split("\n")).not.toContain("--effort");
+    const fallback = (await argsLog(4)).split("\n");
+    expect(fallback[fallback.indexOf("--effort") + 1]).toBe("medium");
   } finally {
     await cleanup();
   }
