@@ -251,12 +251,12 @@ per-agent key and not a run-level flag.
   #118 against a local mock endpoint, not re-run here). The engine does not check model support.
 - **Only reviewer files take it.** `effort` in `coordinator.md` or `shared.md` frontmatter has no
   effect, so the loader adds a setup warning that says to remove it, instead of ignoring it.
-- **The no-tools fallback pass runs at `min(level, medium)`.** A timed-out pass is retried with no
-  tools under a short cap (`maxToolCalls: 0`). A deep level there would likely time out again
-  (found in a multi-model review of PR #118, not measured in a live run), and sending no level
-  would use the provider's default, which can be higher than the agent's own `low` (OpenCode sends
-  Gemini `high` by default; found in review of PR #119). So `fallbackEffort` caps the level at
-  `medium` and never raises it, and `runClaudePrompt` passes that for the fallback.
+- **The claude-code no-tools fallback runs at `min(level, medium)`.** A timed-out pass is retried
+  with no tools under a short cap (`maxToolCalls: 0`). A deep level there would likely time out
+  again (found in a multi-model review of PR #118, not measured in a live run), and sending no
+  level would use the CLI's default, which can be higher than the agent's own `low`. So
+  `fallbackEffort` caps the level at `medium` and never raises it, and `runClaudePrompt` passes
+  that for the fallback. Only the claude-code engine applies this cap.
 - **An invalid level never stops a review.** `parseAgentEffort` returns a setup warning with the
   fix and no `effort`, so the agent runs at the default. The warning does not repeat the value: a
   backtick in it would close the code span in the review comment, and setup notes are not
