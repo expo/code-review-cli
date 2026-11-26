@@ -72,9 +72,8 @@ export function planFromAuth(auth: AuthConfigEntry[], models: string[] = []): Se
       continue; // handled above (claude engine); mode is irrelevant here.
     } else if (entry.mode === "oauth" && entry.provider === "openai" && entry.tokenEnv) {
       plan.chatgptLogin = { tokenEnv: entry.tokenEnv };
-    } else if (entry.mode === "oauth" && entry.provider === "xai") {
-      // tokenEnv may be omitted; the export line still needs a name.
-      plan.grokLogin = { tokenEnv: entry.tokenEnv ?? "XAI_OAUTH_ACCESS_TOKEN" };
+    } else if (entry.mode === "oauth" && entry.provider === "xai" && entry.tokenEnv) {
+      plan.grokLogin = { tokenEnv: entry.tokenEnv };
     } else if (entry.mode === "api-key" && entry.tokenEnv) {
       plan.manualKeys.push({
         provider: entry.provider,

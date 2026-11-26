@@ -73,8 +73,11 @@ test("plan: xAI oauth is a SuperGrok login and an xAI API key stays manual", () 
   expect(oauth.manualKeys).toEqual([]);
   expect(oauth.unsupported).toEqual([]);
 
-  const defaulted = planFromAuth([{ provider: "xai", mode: "oauth" }]);
-  expect(defaulted.grokLogin).toEqual({ tokenEnv: "XAI_OAUTH_ACCESS_TOKEN" });
+  // No tokenEnv: the review rejects this config, so setup-auth must not pretend
+  // the export line is enough. Same rule as the openai oauth branch.
+  const missing = planFromAuth([{ provider: "xai", mode: "oauth" }]);
+  expect(missing.grokLogin).toBeUndefined();
+  expect(missing.unsupported).toEqual([{ provider: "xai", mode: "oauth" }]);
 
   const key = planFromAuth([{ provider: "xai", mode: "api-key", tokenEnv: "XAI_API_KEY" }]);
   expect(key.grokLogin).toBeUndefined();
