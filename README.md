@@ -538,7 +538,8 @@ are ignored), and a comment that breaks `alwaysRun`, `model` or `temperature`.
 
 `effort` sets how much reasoning the model spends on that agent's passes. ecr
 passes it for these models, and for any other model the review prints a note and
-ignores it. Leave it out to use the provider's default.
+ignores it. Leave it out to leave the level to the engine: the CLI default, or on
+OpenCode the model's default or a variant set in your global OpenCode config.
 
 | Model | How the level is sent |
 | --- | --- |

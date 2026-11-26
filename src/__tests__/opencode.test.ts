@@ -794,6 +794,7 @@ test('buildOpencodeConfig: no level for Gemini 2.5; `variant: ""` guards every l
         { id: "flash", model: "google-vertex/gemini-2.5-flash", effort: "high" },
         { id: "neon", model: "google/gemini-4-neon", effort: "low" },
         { id: "astra", model: "openai/gpt-6.2-astra", effort: "xhigh" },
+        { id: "grok", model: "xai/grok-4.7", effort: "high" },
         { id: "plain", model: "openai/gpt-6.2-astra" },
       ],
     }),
@@ -803,6 +804,7 @@ test('buildOpencodeConfig: no level for Gemini 2.5; `variant: ""` guards every l
   // A global OpenCode agent of the same name with a variant would otherwise replace the level.
   expect(opencode.agent.neon!.variant).toBe("");
   expect(opencode.agent.astra!.variant).toBe("");
+  expect(opencode.agent.grok!.variant).toBe("");
   // An agent without effort keeps OpenCode's own variant behavior.
   expect("variant" in opencode.agent.plain!).toBe(false);
 });

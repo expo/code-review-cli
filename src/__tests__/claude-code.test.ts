@@ -940,7 +940,9 @@ test("agentEffortNote: OpenAI, Google and xAI models take a level through OpenCo
   expect(note).toContain(
     "the model of each runs through OpenCode on a provider ecr passes no level to (ecr passes one only for `anthropic/…`",
   );
-  expect(note).toContain("`google-vertex/…` or `xai/…`)");
+  expect(note).toContain(
+    '(ecr passes one only for `anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), `google/…`, `google-vertex/…` or `xai/…`)',
+  );
   expect(named(note)).toBe("muse");
   // Without the alias's auth entry, `openai-api` is not known to be OpenAI.
   expect(named(agentEffortNote(agents, engineOf, []))).toBe("pro, muse");
@@ -954,6 +956,7 @@ test("agentEffortNote: a Gemini 2.5 reviewer is told it takes a budget, once", (
   expect(note).toContain(
     "has no effect for flash: Gemini 2.5 and older models take a thinking budget",
   );
+  expect(note).toContain("Fix: use a Gemini 3 or later model with low, medium or high");
   expect(note?.split("has no effect").length).toBe(2);
 });
 

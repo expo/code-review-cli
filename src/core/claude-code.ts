@@ -920,8 +920,8 @@ export function agentEffortNote(
   if (googleBudget.length > 0) {
     notes.push(
       `\`effort\` has no effect for ${googleBudget.join(", ")}: Gemini 2.5 and older models take a ` +
-        "thinking budget, not a level, so ecr sends none. Fix: use a Gemini 3 or later model, or " +
-        "remove `effort`",
+        "thinking budget, not a level, so ecr sends none. Fix: use a Gemini 3 or later model with " +
+        "low, medium or high, or remove `effort`",
     );
   }
   if (googleLevelNotTaken.length > 0) {
