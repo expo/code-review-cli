@@ -241,8 +241,8 @@ per-agent key and not a run-level flag.
   (both found in review of the first version, PR #118).
 - **An OpenCode-routed agent ignores it, with a note.** `agentEffortNote` names those agents once
   per run, the same way `claudeTemperatureNote` reports a temperature the CLI cannot take.
-  `runReview` builds it from the final reviewer list, after the `paths` filter and the router, so
-  an agent that does not run in the review is never named.
+  `selectReviewers`, which `runReview` calls, builds it from the final reviewer list, after the
+  `paths` filter and the router, so an agent that does not run in the review is never named.
 - **The model must support effort.** The CLI accepts every level for every model, but a model
   without effort support gets none: a request from the pinned CLI to `claude-haiku-4-5` with
   `--effort high` carried no effort field, and one to `claude-opus-5-5` did (seen in review of PR

@@ -26,6 +26,7 @@ import {
   attachVerifierRejected,
   exportReviewSessions,
   runReview,
+  selectReviewers,
 } from "../core/review.js";
 import type { AgentSummaryParts, ReviewRunOptions } from "../core/review.js";
 import { resolveOpencodeCli } from "../core/opencode.js";
@@ -38,7 +39,7 @@ import {
   REVIEW_TRACE_BYTES_LIMIT,
   fingerprintFinding,
 } from "../core/schema.js";
-import type { LoadedConfig } from "../config/schema.js";
+import type { LoadedAgent, LoadedConfig } from "../config/schema.js";
 import type { PatchWorkspaceFile } from "../core/noise.js";
 import type { CoordinatorOutput, Finding, Severity } from "../core/schema.js";
 
@@ -927,5 +928,48 @@ describe("Exporting OpenCode sessions before the review closes", () => {
       (line) => log.push(line),
     );
     expect(log).toEqual(["session store: export failed: the database is locked"]);
+  });
+});
+
+describe("selectReviewers: the effort note names only reviewers that run", () => {
+  const alpha = { id: "alpha", effort: "high" } as unknown as LoadedAgent;
+  const ios = { id: "ios", effort: "high" } as unknown as LoadedAgent;
+  const engineOf = { alpha: "claude-code", ios: "opencode", verifier: "claude-code" } as const;
+
+  it("does not name an OpenCode reviewer the router left out", async () => {
+    const lines: string[] = [];
+    const result = await selectReviewers({
+      candidates: [alpha, ios],
+      route: async () => ({ agents: [alpha], routed: true }),
+      engineOf,
+      progress: (line) => lines.push(line),
+    });
+    expect(result.selectedAgents.map((a) => a.id)).toEqual(["alpha"]);
+    expect(result.notRouted).toEqual(["ios"]);
+    expect(lines).toContain("Router selected: alpha");
+    expect(lines.some((line) => line.includes("effort"))).toBe(false);
+  });
+
+  it("names an OpenCode reviewer that runs", async () => {
+    const lines: string[] = [];
+    await selectReviewers({
+      candidates: [alpha, ios],
+      engineOf,
+      progress: (line) => lines.push(line),
+    });
+    const note = lines.find((line) => line.startsWith("Note: `effort`"));
+    expect(note).toContain("was ignored for ios ");
+  });
+
+  it("does not tell a path-excluded agents/verifier.md to rename", async () => {
+    // The engine map always has the built-in verifier, but the reviewer file did not
+    // pass its `paths` filter, so it is not a candidate.
+    const lines: string[] = [];
+    await selectReviewers({
+      candidates: [alpha],
+      engineOf,
+      progress: (line) => lines.push(line),
+    });
+    expect(lines.some((line) => line.includes("effort"))).toBe(false);
   });
 });
