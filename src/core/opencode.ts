@@ -332,7 +332,8 @@ export const GOOGLE_THINKING_LEVELS: ReadonlySet<AgentEffort> = new Set(["low", 
  * the style's adapter does not take that level. OpenCode passes unknown agent keys to
  * the provider as model options; observed with OpenCode 1.19.5 against a mock endpoint
  * (LLP 0006): `reasoningEffort` becomes the Responses API's `reasoning.effort` (OpenAI)
- * and Chat Completions' `reasoning_effort` (xAI), and `thinkingConfig.thinkingLevel`
+ * and, for xAI, Chat Completions' `reasoning_effort` or the Responses API's `reasoning.effort`
+ * (OpenCode picks the endpoint), and `thinkingConfig.thinkingLevel`
  * replaces the `high` that OpenCode sends to Gemini 4 Neon.
  */
 export function opencodeEffortOptions(

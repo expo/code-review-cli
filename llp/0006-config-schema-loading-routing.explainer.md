@@ -253,8 +253,11 @@ per-agent key and not a run-level flag.
   `google/gemini-4-neon` request carried `thinkingConfig: {includeThoughts: true, thinkingLevel:
   "high"}` with no key, and `thinkingLevel: "low"` replaced the `high`; an `xai/grok-4.7` request to
   `/chat/completions` carried no level field with no key, and `reasoningEffort` `"low"`, `"high"` and
-  `"xhigh"` arrived as `reasoning_effort` (asked for in review of PR #118; which levels xAI's API
-  accepts is not verified). Only reviewer entries get
+  `"xhigh"` arrived as `reasoning_effort` (asked for in review of PR #118). With `XAI_API_KEY` set
+  in the environment instead of an inline key, the same model went to `/responses` with the level in
+  `reasoning.effort`; `"max"` and a non-reasoning Grok model got the field too (both seen in review
+  of PR #118, not re-run here). Which levels xAI's API accepts is not verified; per that review,
+  xAI documents `low` to `xhigh` for Grok 4.7, without `max`. Only reviewer entries get
   the key: the fixed roles are written after the reviewer loop, so a reviewer that shares a fixed
   role's id cannot give that pass its level. The pinned Google adapter takes `thinkingLevel`
   `minimal`, `low`, `medium` and `high`; with `xhigh` or `max` the pass failed inside OpenCode
