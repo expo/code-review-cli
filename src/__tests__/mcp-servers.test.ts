@@ -198,6 +198,8 @@ test("refuses a token env that holds another secret or the model credential", as
     "MODEL_TOKEN",
     "CODEX_OAUTH_ACCESS_TOKEN",
     "CODEX_OAUTH_REFRESH_TOKEN",
+    "XAI_API_KEY",
+    "XAI_OAUTH_ACCESS_TOKEN",
   ]) {
     await writeRootConfig({
       auth: { mode: "api-key", provider: "anthropic", tokenEnv: "MODEL_TOKEN" },

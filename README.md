@@ -123,16 +123,17 @@ npx @expo/code-review-cli doctor
 The scaffolded default is **Anthropic via the Claude Code CLI**: locally your
 `claude` login is enough, and for CI it helps you mint a token with
 `claude setup-token`. It also handles the alternatives (an OpenAI **API key**,
-a **ChatGPT/Codex subscription** sign-in, or a Meta Model API key for **Muse
-Spark**). `doctor` offers to run it whenever a credential is missing.
+a **ChatGPT/Codex subscription** sign-in, a **SuperGrok subscription** sign-in,
+or a Meta Model API key for **Muse Spark**). `doctor` offers to run it whenever a
+credential is missing.
 
 In CI, store the credential as the repo secret the scaffolded workflow forwards
 (`CLAUDE_CODE_REVIEW_SHARED_API_TOKEN` by default — an `sk-ant-oat…` token from
 `claude setup-token`, or an `sk-ant-api…` Console key; the CLI reads either).
 
 Prefer **Muse Spark**, **OpenAI** (API key, or a ChatGPT/Codex subscription, or
-both mixed), or another provider? See [Other providers & auth modes](#other-providers)
-below.
+both mixed), **Grok** (SuperGrok or an xAI API key), or another provider? See
+[Other providers & auth modes](#other-providers) below.
 
 ### Reviewing (already configured)
 
@@ -996,6 +997,31 @@ fallback key; `ecr doctor` diagnoses setup.
   so the subscription/API split is visible per run (alias-model passes report
   `$0` cost — OpenCode can't price config-declared aliases; the OpenAI dashboard
   is the source of truth for spend).
+
+- **xAI / Grok.** Models stay `xai/<id>` (for example `xai/grok-4.7`) on the
+  OpenCode engine. A SuperGrok subscription and a console API key are different
+  credentials.
+
+  ```jsonc
+  "auth": { "providers": {
+    "xai": { "mode": "oauth", "tokenEnv": "XAI_OAUTH_ACCESS_TOKEN" }
+  } }
+  ```
+
+  ```jsonc
+  "auth": { "providers": {
+    "xai": { "mode": "api-key", "tokenEnv": "XAI_API_KEY" }
+  } }
+  ```
+
+  `ecr setup-auth` runs the bundled
+  `opencode auth login -p xai -m "SuperGrok Subscription"`. That prints a device
+  code for <https://accounts.x.ai/oauth2/device>. The command then exports the
+  **access** token from OpenCode's store. The refresh token stays there. Reviews
+  copy that access token into an isolated `auth.json` (empty `refresh`) and do
+  not set `XAI_API_KEY` from it. An API key is created at
+  <https://console.x.ai> and exported as `XAI_API_KEY`. `mode: "oauth"` caps
+  concurrency at 3. An API key stays at 6.
 
 - **Another provider** — `opencode auth login` once, then run with e.g.
   `REVIEWER_MODEL=google/gemini-3-pro`. No `auth` block needed.

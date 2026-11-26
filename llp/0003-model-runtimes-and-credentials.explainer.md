@@ -354,7 +354,9 @@ auto-review path it can be PR-controlled.
 ownership guard: a non-anthropic entry naming an Anthropic token env is refused.
 Without that guard, `{provider:"openai", tokenEnv:"CLAUDE_CODE_OAUTH_TOKEN"}` passes
 both other checks and forwards the Anthropic subscription token to a foreign provider
-([observed] `auth.ts:20-34`; commit `93aaf30`).
+([observed] `auth.ts` `ANTHROPIC_TOKEN_ENVS`; commit `93aaf30`). The same guard
+covers `XAI_TOKEN_ENVS`: a non-xai entry that names `XAI_OAUTH_ACCESS_TOKEN` is
+refused, and `XAI_API_KEY` is owned through `PROVIDER_KEY_ENV`.
 
 **Scoped to providers in use.** Auth checks (`checkProviderAuth`) and credential
 forwarding are scoped to only the providers a resolved model actually routes to. A dead
@@ -366,12 +368,27 @@ secret-forwarding the guard prevents ([observed] `auth.ts:378-392`).
 **Isolated staging, engines kept separate.** `prepareAuth` writes all OAuth credentials
 into one **isolated** OpenCode `auth.json` under a temp dir pointed to by
 `XDG_DATA_HOME`, so a run's injected credentials never touch the developer's real
-`auth.json` ([observed] `auth.ts:557-560`). It must run and complete before the server
+`auth.json` ([observed] `auth.ts` `prepareAuth`). It must run and complete before the server
 starts, because it mutates env the spawned server reads — documented as a precondition,
-not a convenience ([observed] `auth.ts:479-482`). Anthropic credentials **never** pass
+not a convenience ([observed] `auth.ts` `prepareAuth`). Anthropic credentials **never** pass
 through this path at all: anthropic is Claude-engine-only, so its credential is injected
 per-invocation into the Claude CLI child env by `startClaudeCode`, keeping the two
-engines' credential plumbing fully separate ([observed] `auth.ts:527-532`).
+engines' credential plumbing fully separate ([observed] `auth.ts` `prepareAuth`;
+`claude-code.ts` `claudeTokenCredential`).
+
+**xAI follows the Codex file, not the Claude child env.** A `xai` oauth review writes
+the SuperGrok access token into that same isolated `auth.json`: `type` `oauth`, `access`
+set, `refresh` empty, `expires` from the JWT `exp` claim. `prepareAuth` does not copy
+that token into `XAI_API_KEY`. An opaque xAI value is refused before any pass, and the
+message names `ecr setup-auth`. A JWT that is expired, or that has 120 seconds or less
+left, fails the same way, because the isolated entry has no refresh token. Under about
+two hours left, the run warns and continues. The user's
+`~/.local/share/opencode/auth.json` is written by OpenCode during
+`opencode auth login` and is only read by setup-auth, which exports the access token.
+API-key mode copies the configured env into `XAI_API_KEY` (`PROVIDER_KEY_ENV`) and
+writes no oauth entry. `XAI_OAUTH_ACCESS_TOKEN` belongs to `xai` the same way
+`CLAUDE_CODE_OAUTH_TOKEN` belongs to `anthropic` ([observed] `auth.ts`
+`checkOauthTokenShape`, `XAI_TOKEN_ENVS`, `oauthAuthJsonEntry`).
 
 **A deliberate re-check at the forwarding site.** The deny-list check (`checkAuthEntry`)
 is re-run at the Claude CLI credential-forwarding site inside `startClaudeCode`, in
@@ -388,16 +405,20 @@ not a hole, because it requires an explicit env var the CI workflow never sets
 credential by what the token **is**: a JWT access token (three base64url segments) is
 used as-is with its own `exp` claim and never refreshed; an opaque OpenAI value is
 stored with `expires: 0` so OpenCode's codex plugin mints access tokens via its refresh
-flow. Mixing the two breaks because refresh tokens are **single-use** — the
+flow. That opaque-as-refresh branch is **openai-only**. A JWT for any other provider,
+including xAI, is staged as the access token with an empty `refresh`. Mixing the two
+breaks because refresh tokens are **single-use** — the
 refresh-token-as-static-secret strategy died in production (every pass "Token refresh
 failed: 401"; the shared copy was spent by its first use). The opaque strategy is only
 safe when the run is the token's **sole** consumer; a value shared across runs or repos
-dies on first rotation ([observed] `auth.ts:452-477`; commit `188f852`, euxy#8). The
-hard-fail bar for `checkOauthTokenShape` is deliberately narrow — "this cannot be a
+dies on first rotation ([observed] `auth.ts` `oauthAuthJsonEntry`; commit `188f852`, euxy#8). The
+hard-fail bar for `checkOauthTokenShape` is deliberately narrow for providers whose
+format we do not know — "this cannot be a
 valid credential" (whitespace, absurd length, an API key in OAuth mode, a
 provably-mangled `sk-` prefix), not "this looks odd" — because a false rejection blocks a
 working setup, which is judged worse than the failure being prevented ([observed]
-`auth.ts:88-101`).
+`auth.ts` `checkOauthTokenShape`). xAI is judged more strictly: the value must be a
+JWT access token, because the isolated entry cannot refresh.
 
 ## Subprocess Spawning Rules
 

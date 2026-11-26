@@ -1,6 +1,12 @@
 import { test, expect } from "bun:test";
 
-import { planFromAuth, exportLine, opencodeAuthJsonPath } from "../commands/setup-auth.js";
+import {
+  planFromAuth,
+  exportLine,
+  opencodeAuthJsonPath,
+  accessTokenFromStore,
+  SUPERGROK_LOGIN_ARGS,
+} from "../commands/setup-auth.js";
 
 test("plan: the mixed setup needs one ChatGPT login and one manual key", () => {
   const plan = planFromAuth([
@@ -56,6 +62,49 @@ test("plan: an anthropic/… model triggers claudeLogin even with no anthropic a
   );
   expect(plan.claudeLogin).toEqual({ tokenEnv: "CLAUDE_CODE_OAUTH_TOKEN" });
   expect(plan.unsupported).toEqual([]);
+});
+
+test("plan: xAI oauth is a SuperGrok login and an xAI API key stays manual", () => {
+  const oauth = planFromAuth([
+    { provider: "xai", mode: "oauth", tokenEnv: "XAI_OAUTH_ACCESS_TOKEN" },
+  ]);
+  expect(oauth.grokLogin).toEqual({ tokenEnv: "XAI_OAUTH_ACCESS_TOKEN" });
+  expect(oauth.chatgptLogin).toBeUndefined();
+  expect(oauth.manualKeys).toEqual([]);
+  expect(oauth.unsupported).toEqual([]);
+
+  const defaulted = planFromAuth([{ provider: "xai", mode: "oauth" }]);
+  expect(defaulted.grokLogin).toEqual({ tokenEnv: "XAI_OAUTH_ACCESS_TOKEN" });
+
+  const key = planFromAuth([{ provider: "xai", mode: "api-key", tokenEnv: "XAI_API_KEY" }]);
+  expect(key.grokLogin).toBeUndefined();
+  expect(key.manualKeys).toEqual([
+    { provider: "xai", tokenEnv: "XAI_API_KEY", upstream: undefined },
+  ]);
+  expect(key.unsupported).toEqual([]);
+});
+
+test("SuperGrok login args select the device method and skip the menus", () => {
+  expect(SUPERGROK_LOGIN_ARGS).toEqual([
+    "auth",
+    "login",
+    "-p",
+    "xai",
+    "-m",
+    "SuperGrok Subscription",
+  ]);
+});
+
+test("the xAI export line is the access token and never the refresh token", () => {
+  const exp = Math.floor(Date.now() / 1000) + 5 * 3600;
+  const access = `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.sig`;
+  const refresh = "refresh-secret-not-for-export";
+  const stored = accessTokenFromStore({ xai: { type: "oauth", access, refresh } }, "xai");
+  expect(stored?.token).toBe(access);
+  const line = exportLine("XAI_OAUTH_ACCESS_TOKEN", stored!.token);
+  expect(line).toContain(access);
+  expect(line).not.toContain(refresh);
+  expect(accessTokenFromStore({ xai: { type: "oauth", refresh } }, "xai")).toBeNull();
 });
 
 test("export line is single-quoted so shells never expand the value", () => {

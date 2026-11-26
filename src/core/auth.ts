@@ -16,6 +16,7 @@ const PROVIDER_KEY_ENV: Record<string, string> = {
   google: "GOOGLE_GENERATIVE_AI_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
   meta: "META_API_KEY",
+  xai: "XAI_API_KEY",
 };
 
 /**
@@ -37,6 +38,17 @@ const ANTHROPIC_TOKEN_ENVS: Record<string, string> = {
   CLAUDE_CODE_REVIEW_SHARED_API_TOKEN: "anthropic",
 };
 
+/**
+ * SuperGrok access-token env. It belongs to xai the way CLAUDE_CODE_OAUTH_TOKEN
+ * belongs to anthropic: a non-xai entry that names it is refused.
+ * XAI_API_KEY is owned through PROVIDER_KEY_ENV, so it is not repeated here.
+ * The review stages this value into the isolated auth.json.
+ * It is never copied into XAI_API_KEY.
+ */
+const XAI_TOKEN_ENVS: Record<string, string> = {
+  XAI_OAUTH_ACCESS_TOKEN: "xai",
+};
+
 /** The env vars `ecr setup-auth` exports for a Codex (ChatGPT) subscription login. */
 const CODEX_OAUTH_TOKEN_ENVS = ["CODEX_OAUTH_ACCESS_TOKEN", "CODEX_OAUTH_REFRESH_TOKEN"];
 
@@ -47,6 +59,7 @@ const CODEX_OAUTH_TOKEN_ENVS = ["CODEX_OAUTH_ACCESS_TOKEN", "CODEX_OAUTH_REFRESH
 export const MODEL_CREDENTIAL_ENVS: ReadonlySet<string> = new Set([
   ...Object.values(PROVIDER_KEY_ENV),
   ...Object.keys(ANTHROPIC_TOKEN_ENVS),
+  ...Object.keys(XAI_TOKEN_ENVS),
   ...CODEX_OAUTH_TOKEN_ENVS,
 ]);
 
@@ -124,7 +137,10 @@ export function checkOauthTokenShape(
   tokenEnv: string,
 ): AuthReadiness {
   const ok = { ok: true, detail: `oauth for ${provider}; token env ${tokenEnv} is set` };
-  const fix = `Re-generate it with \`claude setup-token\` and set ${tokenEnv} to the full value.`;
+  const fix =
+    provider === "xai"
+      ? `Run \`ecr setup-auth\` and set ${tokenEnv} to the SuperGrok access token.`
+      : `Re-generate it with \`claude setup-token\` and set ${tokenEnv} to the full value.`;
   if (token !== token.trim()) {
     return {
       ok: false,
@@ -165,6 +181,50 @@ export function checkOauthTokenShape(
       }
     }
     return { ...ok, detail: `oauth for ${provider}; token env ${tokenEnv} is set` };
+  }
+
+  // SuperGrok reviews stage a JWT access token with an empty refresh.
+  // An opaque value is the refresh token, and this run must not consume it.
+  // Inside 120s the CLI would try to refresh, and the isolated entry cannot.
+  // @ref LLP 0003#credential-resolution-and-forwarding [implements] — xAI oauth accepts a JWT access token only; opaque values and tokens inside the 120s refresh skew fail before any pass
+  if (provider === "xai") {
+    if (!isJwtAccessToken(token)) {
+      return {
+        ok: false,
+        detail:
+          `${tokenEnv} holds an opaque xAI token. ` +
+          `auth.mode "oauth" for xai needs the SuperGrok access token (a JWT). ` +
+          `Run \`ecr setup-auth\` and export the access token. ` +
+          `The refresh token stays in OpenCode's store.`,
+      };
+    }
+    const expires = jwtExpiryMs(token);
+    if (expires !== null) {
+      const remainingMs = expires - Date.now();
+      if (remainingMs <= 120_000) {
+        const why =
+          remainingMs <= 0
+            ? `EXPIRED ${Math.max(1, Math.ceil(-remainingMs / 60_000))} minute(s) ago`
+            : "expires within 120 seconds";
+        return {
+          ok: false,
+          detail:
+            `${tokenEnv} holds a SuperGrok access token that ${why}. ` +
+            `The review stages it with an empty refresh token, so OpenCode cannot renew it. ` +
+            `Mint a fresh one with \`ecr setup-auth\` and update ${tokenEnv}.`,
+        };
+      }
+      if (remainingMs < 2 * 3_600_000) {
+        return {
+          ...ok,
+          warning:
+            `${tokenEnv}'s SuperGrok access token expires in ` +
+            `${Math.max(1, Math.round(remainingMs / 60_000))} minute(s). ` +
+            `Re-mint it soon (\`ecr setup-auth\`).`,
+        };
+      }
+    }
+    return ok;
   }
 
   // Only anthropic's formats are known well enough to say anything about.
@@ -240,7 +300,8 @@ export function checkAuthEntry(
   if (tokenEnv) {
     const keyOwner =
       Object.entries(PROVIDER_KEY_ENV).find(([, env]) => env === tokenEnv)?.[0] ??
-      ANTHROPIC_TOKEN_ENVS[tokenEnv];
+      ANTHROPIC_TOKEN_ENVS[tokenEnv] ??
+      XAI_TOKEN_ENVS[tokenEnv];
     if (keyOwner && keyOwner !== provider && keyOwner !== upstream) {
       return {
         ok: false,

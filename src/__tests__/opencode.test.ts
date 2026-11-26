@@ -436,6 +436,22 @@ test("Meta provider registers future model families neutrally and only for the m
   });
 });
 
+test("xAI auth does not synthesize a provider block", () => {
+  for (const auth of [
+    [{ mode: "oauth" as const, provider: "xai", tokenEnv: "XAI_OAUTH_ACCESS_TOKEN" }],
+    [{ mode: "api-key" as const, provider: "xai", tokenEnv: "XAI_API_KEY" }],
+  ]) {
+    const opencode = buildOpencodeConfig(
+      configWith({
+        agents: [{ id: "correctness", model: "xai/grok-4.7" }],
+        coordinatorModel: "xai/grok-4.7",
+        auth,
+      }),
+    ) as { provider?: Record<string, unknown> };
+    expect(opencode.provider?.xai).toBeUndefined();
+  }
+});
+
 test("buildOpencodeConfig registers the no-tools stack verifier (empty tool list)", () => {
   const opencode = buildOpencodeConfig(configWith({})) as {
     agent: Record<string, { tools: Record<string, boolean> }>;

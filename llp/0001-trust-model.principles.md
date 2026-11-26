@@ -104,7 +104,10 @@ in the deny-list — an anthropic entry may legitimately name them — but a
 cross-provider guard refuses a non-anthropic entry that names one. Without it,
 `{provider:"openai", tokenEnv:"CLAUDE_CODE_OAUTH_TOKEN"}` would slip past (neither
 a forbidden secret nor a provider key) and forward the Anthropic subscription
-token to a foreign provider [observed] (`src/core/auth.ts:19-33`, commit 93aaf30).
+token to a foreign provider [observed] (`src/core/auth.ts` `ANTHROPIC_TOKEN_ENVS`, commit 93aaf30).
+`XAI_OAUTH_ACCESS_TOKEN` belongs to `xai` the same way (`XAI_TOKEN_ENVS`).
+`XAI_API_KEY` belongs to `xai` through `PROVIDER_KEY_ENV`. A non-xai entry that
+names either is refused.
 
 The credential must never reach logs, error messages, or `.expo-code-review/.runs/`.
 This is a named cross-cutting invariant, not an incidental property [observed]
