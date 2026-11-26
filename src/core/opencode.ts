@@ -288,10 +288,12 @@ export type OpencodeEffortStyle = "openai" | "google";
 
 /**
  * The effort style for a model id, or null when ecr does not pass a level to that
- * provider. An upstream alias (auth entry `openai-api` with upstream `openai`) takes its
- * upstream's style. Meta, OpenAI-compatible and other providers get null.
+ * provider. Native `openai` gets the OpenAI style, native `google` and `google-vertex` the
+ * Google style. An alias (an auth entry with `upstream`) follows the adapter
+ * `buildOpencodeConfig` creates for it: only `upstream: "openai"` gets `@ai-sdk/openai`,
+ * so only that alias takes a level. Meta, OpenAI-compatible and other providers get null.
  */
-// @ref LLP 0006#agent-effort [implements] — OpenCode-routed effort, per provider family
+// @ref LLP 0006#agent-effort [implements] — OpenCode-routed effort, per provider adapter
 export function opencodeEffortStyle(
   model: string,
   auth: readonly AuthConfigEntry[],
@@ -301,31 +303,41 @@ export function opencodeEffortStyle(
     return null;
   }
   const provider = model.slice(0, slash);
-  const family =
-    auth.find((entry) => entry.provider === provider && entry.upstream)?.upstream ?? provider;
-  if (family === "openai") {
+  const alias = auth.find((entry) => entry.provider === provider && entry.upstream);
+  if (alias) {
+    return alias.upstream === "openai" ? "openai" : null;
+  }
+  if (provider === "openai") {
     return "openai";
   }
-  if (family === "google" || family === "google-vertex") {
+  if (provider === "google" || provider === "google-vertex") {
     return "google";
   }
   return null;
 }
 
 /**
- * The agent-config keys that carry a reasoning level for an effort style. OpenCode
- * passes unknown agent keys to the provider as model options; observed with OpenCode
- * 1.19.5 against a mock endpoint (LLP 0006): `reasoningEffort` becomes the Responses
- * API's `reasoning.effort`, and `thinkingConfig.thinkingLevel` replaces the `high` that
- * OpenCode sends to Gemini by default.
+ * The levels the pinned OpenCode's Google adapter takes for `thinkingLevel`. With
+ * OpenCode 1.19.5, `xhigh` and `max` fail locally with "invalid google provider options"
+ * and no request is sent (LLP 0006), so ecr sends no level for them.
+ */
+export const GOOGLE_THINKING_LEVELS: ReadonlySet<AgentEffort> = new Set(["low", "medium", "high"]);
+
+/**
+ * The agent-config keys that carry a reasoning level for an effort style, or null when
+ * the style's adapter does not take that level. OpenCode passes unknown agent keys to
+ * the provider as model options; observed with OpenCode 1.19.5 against a mock endpoint
+ * (LLP 0006): `reasoningEffort` becomes the Responses API's `reasoning.effort`, and
+ * `thinkingConfig.thinkingLevel` replaces the `high` that OpenCode sends to Gemini.
  */
 export function opencodeEffortOptions(
   style: OpencodeEffortStyle,
   effort: AgentEffort,
-): Record<string, unknown> {
-  return style === "openai"
-    ? { reasoningEffort: effort }
-    : { thinkingConfig: { thinkingLevel: effort } };
+): Record<string, unknown> | null {
+  if (style === "openai") {
+    return { reasoningEffort: effort };
+  }
+  return GOOGLE_THINKING_LEVELS.has(effort) ? { thinkingConfig: { thinkingLevel: effort } } : null;
 }
 
 /** Build the inline OpenCode config (agents + coordinator) from a repo config. */
@@ -337,6 +349,8 @@ export function buildOpencodeConfig(
   const agent: Record<string, unknown> = {};
   for (const reviewer of config.agents) {
     const effortStyle = reviewer.effort ? opencodeEffortStyle(reviewer.model, config.auth) : null;
+    const effortOptions =
+      reviewer.effort && effortStyle ? opencodeEffortOptions(effortStyle, reviewer.effort) : null;
     agent[reviewer.id] = {
       description: `${reviewer.id} reviewer`,
       mode: "all",
@@ -344,9 +358,7 @@ export function buildOpencodeConfig(
       temperature: reviewer.temperature,
       // Only reviewers: the fixed roles below are written after this loop, so a reviewer
       // that shares a fixed role's id cannot give that pass its level.
-      ...(reviewer.effort && effortStyle
-        ? opencodeEffortOptions(effortStyle, reviewer.effort)
-        : {}),
+      ...effortOptions,
       prompt: `You are the ${reviewer.id} code reviewer. Follow the user message exactly and return only the requested JSON.`,
       tools: {
         ...reviewer.tools,

@@ -544,7 +544,7 @@ ignores it. Leave it out to use the provider's default.
 | --- | --- |
 | `anthropic/…` (Claude Code CLI) | `--effort <level>` |
 | `openai/…`, or an alias with `upstream: "openai"` (OpenCode) | `reasoningEffort`, sent as the Responses API `reasoning.effort` |
-| `google/…`, `google-vertex/…` (OpenCode) | `thinkingConfig.thinkingLevel`, in place of OpenCode's default `high` |
+| `google/…`, `google-vertex/…` (OpenCode) | `thinkingConfig.thinkingLevel`, in place of OpenCode's default `high`; only `low`, `medium` or `high` (for `xhigh` and `max` ecr sends no level, and the run note says so) |
 
 ecr passes the level as written and does not check which levels a model takes. A
 model without effort support can drop it (the Claude Code CLI sends no level to

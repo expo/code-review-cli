@@ -241,15 +241,23 @@ per-agent key and not a run-level flag.
   (both found in review of the first version, PR #118).
 - **OpenCode passes it for OpenAI and Google models.** OpenCode hands unknown agent-config keys to
   the provider as model options. `buildOpencodeConfig` adds one per reviewer with `effort`, chosen
-  by `opencodeEffortStyle` from the model's provider (an alias takes its auth entry's `upstream`):
-  `openai` gets `reasoningEffort`, `google` and `google-vertex` get
-  `thinkingConfig.thinkingLevel`. Observed with the pinned OpenCode 1.19.5 against a local mock
+  by `opencodeEffortStyle` from the adapter ecr gives the model's provider: native `openai` and an
+  alias with `upstream: "openai"` (built on `@ai-sdk/openai`) get `reasoningEffort`; native
+  `google` and `google-vertex` get `thinkingConfig.thinkingLevel`. Any other alias, including
+  `upstream: "google"` (built on `@ai-sdk/openai-compatible`), gets nothing: a Google key on that
+  adapter reached a mock endpoint as a top-level `thinkingConfig` on `/chat/completions` (found in
+  review of PR #119). Observed with the pinned OpenCode 1.19.5 against a local mock
   endpoint (2026-11-26) [observed]: with no key, an `openai/gpt-6.2-astra` request carried no
   `reasoning` field; `reasoningEffort: "xhigh"` and `"max"` arrived as `reasoning.effort`; a
   `google/gemini-4-neon` request carried `thinkingConfig: {includeThoughts: true, thinkingLevel:
   "high"}` with no key, and `thinkingLevel: "low"` replaced the `high`. Only reviewer entries get
   the key: the fixed roles are written after the reviewer loop, so a reviewer that shares a fixed
-  role's id cannot give that pass its level. Not observed: the ChatGPT/Codex sign-in path and a
+  role's id cannot give that pass its level. The pinned Google adapter takes `thinkingLevel`
+  `minimal`, `low`, `medium` and `high`; with `xhigh` or `max` the pass failed inside OpenCode
+  ("invalid google provider options") with no request sent, on `google/…` and `google-vertex/…`
+  [observed]. So `GOOGLE_THINKING_LEVELS` is `low`, `medium`, `high`: for the other two ecr sends no
+  key, the model runs at OpenCode's default (`high`), and the run note names the agent, its level
+  and the levels that work. Not observed: the ChatGPT/Codex sign-in path and a
   real provider's response to each level. ecr passes the level as written; a provider that does
   not take it fails that agent's passes with its own error.
 - **Any other OpenCode-routed agent ignores it, with a note.** `agentEffortNote` names agents whose

@@ -938,6 +938,35 @@ test("agentEffortNote: OpenAI and Google models take a level through OpenCode; o
   expect(named(agentEffortNote(agents, engineOf, []))).toBe("pro, muse");
 });
 
+test("agentEffortNote: a Google level the pinned adapter rejects is named with the levels it takes", () => {
+  const agents = [
+    { id: "neon", effort: "xhigh", model: "google/gemini-4-neon" },
+    { id: "vertex", effort: "max", model: "google-vertex/gemini-4-neon" },
+    { id: "ok", effort: "medium", model: "google/gemini-4-neon" },
+  ] as unknown as LoadedAgent[];
+  const note = agentEffortNote(
+    agents,
+    { neon: "opencode", vertex: "opencode", ok: "opencode" },
+    [],
+  );
+  expect(note).toContain("has no effect for neon (xhigh), vertex (max): OpenCode's Google adapter");
+  expect(note).toContain("takes only low, medium, high");
+  expect(note).toContain("Fix: use one of those levels");
+  expect(note).not.toContain("ok (");
+});
+
+test("agentEffortNote: a Google-upstream alias takes no level and is named", () => {
+  const agents = [
+    { id: "gem", effort: "high", model: "gemini-api/gemini-4-neon" },
+  ] as unknown as LoadedAgent[];
+  const auth = [
+    { provider: "gemini-api", mode: "api-key", tokenEnv: "GEMINI_KEY_2", upstream: "google" },
+  ] as unknown as AuthConfigEntry[];
+  expect(agentEffortNote(agents, { gem: "opencode" }, auth)).toContain(
+    "has no effect for gem: the model of each runs through OpenCode on a provider ecr passes no level to",
+  );
+});
+
 test("agentEffortNote: a fixed-role reviewer on OpenAI is told only to rename", () => {
   const agents = [
     { id: "verifier", effort: "max", model: "openai/gpt-6.2-astra" },

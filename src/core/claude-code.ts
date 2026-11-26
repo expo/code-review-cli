@@ -21,6 +21,7 @@ import {
   AgentTimeoutError,
   CLAUDE_CODE_ENGINE,
   CROSS_CUTTING_AGENT,
+  GOOGLE_THINKING_LEVELS,
   opencodeEffortStyle,
   STACK_VERIFIER_AGENT,
   VERIFIER_AGENT,
@@ -839,6 +840,17 @@ export function agentEffortNote(
         takesNoLevel(agent.model ?? ""),
     )
     .map((agent) => agent.id);
+  // A Google model whose level the pinned adapter rejects gets no level (opencodeEffortOptions).
+  const googleLevelNotTaken = declared
+    .filter(
+      (agent) =>
+        !FIXED_ROLE_IDS.has(agent.id) &&
+        engineOf[agent.id] === "opencode" &&
+        opencodeEffortStyle(agent.model ?? "", auth) === "google" &&
+        agent.effort !== undefined &&
+        !GOOGLE_THINKING_LEVELS.has(agent.effort),
+    )
+    .map((agent) => `${agent.id} (${agent.effort})`);
   const fixedRole = declared
     .filter((agent) => FIXED_ROLE_IDS.has(agent.id))
     .map((agent) => agent.id);
@@ -847,6 +859,13 @@ export function agentEffortNote(
     notes.push(
       `\`effort\` has no effect for ${viaOpencode.join(", ")}: the model of each runs through ` +
         `OpenCode on a provider ecr passes no level to (${EFFORT_PROVIDERS})`,
+    );
+  }
+  if (googleLevelNotTaken.length > 0) {
+    notes.push(
+      `\`effort\` has no effect for ${googleLevelNotTaken.join(", ")}: OpenCode's Google adapter ` +
+        `takes only ${[...GOOGLE_THINKING_LEVELS].join(", ")}, so ecr sends no level and the model ` +
+        "runs at OpenCode's default. Fix: use one of those levels",
     );
   }
   // The engine map's entry for a fixed-role id describes the built-in pass, so read the
