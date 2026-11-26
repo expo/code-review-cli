@@ -873,6 +873,16 @@ export function agentEffortNote(
   const fixedRoleNoLevel = declared
     .filter((agent) => FIXED_ROLE_IDS.has(agent.id) && takesNoLevel(agent.model ?? ""))
     .map((agent) => agent.id);
+  // After a rename, a Google model still drops a level its adapter does not take.
+  const fixedRoleGoogleLevel = declared
+    .filter(
+      (agent) =>
+        FIXED_ROLE_IDS.has(agent.id) &&
+        opencodeEffortStyle(agent.model ?? "", auth) === "google" &&
+        agent.effort !== undefined &&
+        !GOOGLE_THINKING_LEVELS.has(agent.effort),
+    )
+    .map((agent) => agent.id);
   if (fixedRole.length > 0) {
     notes.push(
       `\`effort\` has no effect for ${fixedRole.join(", ")}: the id is also a built-in pass, which ` +
@@ -880,6 +890,10 @@ export function agentEffortNote(
         (fixedRoleNoLevel.length > 0
           ? `, and run ${fixedRoleNoLevel.join(", ")} on a model that takes a level ` +
             `(${EFFORT_PROVIDERS}; its \`model:\`, or \`REVIEWER_MODEL\` when that is set)`
+          : "") +
+        (fixedRoleGoogleLevel.length > 0
+          ? `, and give ${fixedRoleGoogleLevel.join(", ")} one of ` +
+            `${[...GOOGLE_THINKING_LEVELS].join(", ")} (OpenCode's Google adapter takes no other)`
           : ""),
     );
   }
@@ -887,7 +901,8 @@ export function agentEffortNote(
 }
 
 /** The model families ecr passes an effort level to, for the run notes. */
-const EFFORT_PROVIDERS = "`anthropic/…`, `openai/…`, `google/…` or `google-vertex/…`";
+const EFFORT_PROVIDERS =
+  '`anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), `google/…` or `google-vertex/…`';
 
 /**
  * Preserve actionable process diagnostics without copying arbitrary stderr into a

@@ -20,6 +20,7 @@ import {
   AgentTimeoutError,
   assertModelsResolvable,
   buildOpencodeConfig,
+  opencodeFallbackAgents,
   CLAUDE_CODE_ENGINE,
   CROSS_CUTTING_AGENT,
   promptAndParse,
@@ -531,6 +532,7 @@ export async function runReview(
       opencodeHandle = await startOpencode(
         buildOpencodeConfig(config, researchRuntime, mcpProxy),
         mcpProxy?.servers,
+        opencodeFallbackAgents(config),
       );
     }
   } catch (error) {

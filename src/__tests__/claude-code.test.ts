@@ -967,13 +967,21 @@ test("agentEffortNote: a Google-upstream alias takes no level and is named", () 
   );
 });
 
+test("agentEffortNote: a fixed-role reviewer on Google xhigh is also told the levels Google takes", () => {
+  const agents = [
+    { id: "verifier", effort: "xhigh", model: "google/gemini-4-neon" },
+  ] as unknown as LoadedAgent[];
+  const note = agentEffortNote(agents, { verifier: "claude-code" }, []);
+  expect(note).toContain("Fix: rename the agent file, and give verifier one of low, medium, high");
+});
+
 test("agentEffortNote: a fixed-role reviewer on OpenAI is told only to rename", () => {
   const agents = [
     { id: "verifier", effort: "max", model: "openai/gpt-6.2-astra" },
   ] as unknown as LoadedAgent[];
   const note = agentEffortNote(agents, { verifier: "claude-code" }, []);
   expect(note).toContain("Fix: rename the agent file");
-  expect(note).not.toContain("give verifier a model");
+  expect(note?.endsWith("Fix: rename the agent file")).toBe(true);
 });
 
 test("agentEffortNote: reports both reasons in one note", () => {
@@ -997,7 +1005,7 @@ test("agentEffortNote: a fixed-role reviewer on a model that takes no level is t
     "Fix: rename the agent file, and run verifier on a model that takes a level",
   );
   expect(note).toContain("`REVIEWER_MODEL` when that is set");
-  expect(note).not.toContain("give verifier, coordinator");
+  expect(note).not.toContain("run verifier, coordinator");
 });
 
 test("agentEffortNote: a reviewer that shares a fixed role's id is told to rename", () => {

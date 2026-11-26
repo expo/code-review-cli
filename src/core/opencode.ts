@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { createOpencode } from "@opencode-ai/sdk";
 
+import { fallbackEffort } from "../config/schema.js";
 import type {
   AgentEffort,
   AuthConfigEntry,
@@ -16,6 +17,7 @@ import type {
 // branches below; claude-code.ts statically imports the shared helpers here.
 import type { ClaudeCodeHandle, Engine } from "./claude-code.js";
 import type { SessionCapture } from "./session-archive.js";
+import { NON_REVIEWER_AGENTS } from "./session-archive.js";
 import { pathInside, resolveOnPath } from "./exec.js";
 import { RateLimitWatch } from "./throttle.js";
 import { OPENCODE_RESEARCH_TOOLS, toolMap } from "./tools.js";
@@ -170,10 +172,10 @@ export interface OpencodeHandle {
   /** Each configured MCP server tool set to false, merged into every no-tools request. */
   mcpToolsOff?: Record<string, boolean>;
   /**
-   * Reviewer ids that have a default-effort copy in the OpenCode config (their
-   * no-tools fallback runs as that copy, opencodePassAgent).
+   * Reviewer id → its fallback copy in the OpenCode config (opencodeFallbackAgents); the
+   * reviewer's no-tools fallback runs as that copy (opencodePassAgent).
    */
-  defaultEffortAgents?: ReadonlySet<string>;
+  fallbackAgents?: ReadonlyMap<string, string>;
   /** The configured MCP servers, so progress lines log only granted calls, by name. */
   mcpServers?: Record<string, McpServerConfig>;
   /** Set on a CI run that publishes sessions. Absent means capture stays off. */
@@ -323,7 +325,7 @@ export function opencodeEffortStyle(
 
 /**
  * The levels the pinned OpenCode's Google adapter takes for `thinkingLevel`. With
- * OpenCode 1.19.5, `xhigh` and `max` fail locally with "invalid google provider options"
+ * OpenCode 1.19.5, `xhigh` and `max` fail locally with an invalid-provider-options error
  * and no request is sent (LLP 0006), so ecr sends no level for them.
  */
 export const GOOGLE_THINKING_LEVELS: ReadonlySet<AgentEffort> = new Set(["low", "medium", "high"]);
@@ -345,36 +347,52 @@ export function opencodeEffortOptions(
   return GOOGLE_THINKING_LEVELS.has(effort) ? { thinkingConfig: { thinkingLevel: effort } } : null;
 }
 
-/**
- * Suffix of the copy of a reviewer that runs at the default effort. buildOpencodeConfig
- * registers one for each reviewer that has an OpenCode effort option.
- */
-export const DEFAULT_EFFORT_AGENT_SUFFIX = "__default-effort";
+/** Suffix of a reviewer's fallback copy (see opencodeFallbackAgents). */
+export const FALLBACK_AGENT_SUFFIX = "__fallback-effort";
 
-/** The reviewer ids that have a default-effort copy in a built OpenCode config. */
-export function defaultEffortAgentIds(config: unknown): Set<string> {
-  const agents = (config as { agent?: Record<string, unknown> } | null)?.agent ?? {};
-  return new Set(
-    Object.keys(agents)
-      .filter((id) => id.endsWith(DEFAULT_EFFORT_AGENT_SUFFIX))
-      .map((id) => id.slice(0, -DEFAULT_EFFORT_AGENT_SUFFIX.length)),
-  );
+/**
+ * Reviewer id → the id of its fallback copy: the same OpenCode agent with the level of
+ * `fallbackEffort` (min(level, medium)), which the reviewer's no-tools fallback pass runs
+ * as, because OpenCode takes the level from the agent config. Only reviewers whose
+ * fallback options differ from their own get a copy. None for a fixed-role id (the
+ * built-in pass replaces that entry, so a copy would hijack the built-in pass's fallback)
+ * or when the copy id is already an agent id.
+ */
+// @ref LLP 0006#agent-effort [implements] — the no-tools fallback runs at min(level, medium); OpenCode needs a copy agent for it
+export function opencodeFallbackAgents(config: LoadedConfig): Map<string, string> {
+  const taken = new Set([...config.agents.map((agent) => agent.id), ...NON_REVIEWER_AGENTS]);
+  const copies = new Map<string, string>();
+  for (const reviewer of config.agents) {
+    if (!reviewer.effort || NON_REVIEWER_AGENTS.has(reviewer.id)) {
+      continue;
+    }
+    const style = opencodeEffortStyle(reviewer.model, config.auth);
+    if (!style) {
+      continue;
+    }
+    const own = opencodeEffortOptions(style, reviewer.effort);
+    const fallback = opencodeEffortOptions(style, fallbackEffort(reviewer.effort));
+    if (JSON.stringify(own) === JSON.stringify(fallback)) {
+      continue;
+    }
+    const copy = `${reviewer.id}${FALLBACK_AGENT_SUFFIX}`;
+    if (!taken.has(copy)) {
+      copies.set(reviewer.id, copy);
+    }
+  }
+  return copies;
 }
 
 /**
- * The OpenCode agent a pass runs as. A no-tools fallback pass (maxToolCalls 0) retries a
- * timed-out pass under a short cap, so a reviewer with a level runs it as its
- * default-effort copy: a deep level under that cap would likely time out again.
+ * The OpenCode agent a pass runs as: a no-tools fallback pass (maxToolCalls 0) of a
+ * reviewer with a fallback copy runs as that copy; every other pass as the agent itself.
  */
-// @ref LLP 0006#agent-effort [implements] — the no-tools fallback pass takes no level
 export function opencodePassAgent(
-  handle: Pick<OpencodeHandle, "defaultEffortAgents">,
+  handle: Pick<OpencodeHandle, "fallbackAgents">,
   agent: string,
   maxToolCalls: number | undefined,
 ): string {
-  return maxToolCalls === 0 && handle.defaultEffortAgents?.has(agent)
-    ? `${agent}${DEFAULT_EFFORT_AGENT_SUFFIX}`
-    : agent;
+  return maxToolCalls === 0 ? (handle.fallbackAgents?.get(agent) ?? agent) : agent;
 }
 
 /** Build the inline OpenCode config (agents + coordinator) from a repo config. */
@@ -384,8 +402,14 @@ export function buildOpencodeConfig(
   mcpProxy?: McpProxyRuntime,
 ): Record<string, unknown> {
   const agent: Record<string, unknown> = {};
+  const fallbackAgents = opencodeFallbackAgents(config);
   for (const reviewer of config.agents) {
-    const effortStyle = reviewer.effort ? opencodeEffortStyle(reviewer.model, config.auth) : null;
+    // No level for a reviewer that shares a fixed role's id: the built-in pass written
+    // after this loop replaces its entry.
+    const effortStyle =
+      reviewer.effort && !NON_REVIEWER_AGENTS.has(reviewer.id)
+        ? opencodeEffortStyle(reviewer.model, config.auth)
+        : null;
     const effortOptions =
       reviewer.effort && effortStyle ? opencodeEffortOptions(effortStyle, reviewer.effort) : null;
     const entry = {
@@ -400,13 +424,13 @@ export function buildOpencodeConfig(
         ...opencodeGrantedTools(mcpProxy?.servers, reviewer.id),
       },
     };
-    // Only reviewers: the fixed roles below are written after this loop, so a reviewer
-    // that shares a fixed role's id cannot give that pass its level.
     agent[reviewer.id] = effortOptions ? { ...entry, ...effortOptions } : entry;
-    if (effortOptions) {
-      // The same reviewer at the default effort, for its no-tools fallback pass
-      // (opencodePassAgent), as the claude-code engine does.
-      agent[`${reviewer.id}${DEFAULT_EFFORT_AGENT_SUFFIX}`] = entry;
+    const copy = fallbackAgents.get(reviewer.id);
+    if (copy && effortStyle && reviewer.effort) {
+      agent[copy] = {
+        ...entry,
+        ...opencodeEffortOptions(effortStyle, fallbackEffort(reviewer.effort)),
+      };
     }
   }
   agent[CROSS_CUTTING_AGENT] = {
@@ -632,9 +656,10 @@ export async function resolveOpencodeCli(): Promise<string | null> {
 export async function startOpencode(
   config: unknown,
   mcpServers?: Record<string, McpServerConfig>,
+  /** opencodeFallbackAgents for the config this server runs. */
+  fallbackAgents?: ReadonlyMap<string, string>,
 ): Promise<OpencodeHandle> {
   const mcpToolsOff = opencodeMcpToolsOff(mcpServers);
-  const defaultEffortAgents = defaultEffortAgentIds(config);
   // Make our pinned CLI win over any global install (see bundledOpencodeBinDir).
   // The SDK takes no `env`, so PATH is the only lever; it spreads `process.env` at
   // spawn time, so setting it here reaches the child.
@@ -677,7 +702,7 @@ export async function startOpencode(
     },
     rateLimit: new RateLimitWatch(),
     ...(Object.keys(mcpToolsOff).length > 0 ? { mcpToolsOff, mcpServers } : {}),
-    ...(defaultEffortAgents.size > 0 ? { defaultEffortAgents } : {}),
+    ...(fallbackAgents && fallbackAgents.size > 0 ? { fallbackAgents } : {}),
   };
 }
 
@@ -1412,7 +1437,8 @@ export async function promptAndParse<T>(
     try {
       const baseline = (await fetchMessages(handle, first.sessionID)).length;
       await sendSessionPrompt(handle, first.sessionID, {
-        agent: args.agent,
+        // The same agent the pass ran as: a fallback pass re-emits at its fallback level.
+        agent: opencodePassAgent(handle, args.agent, args.maxToolCalls),
         system: args.system,
         text: CORRECTIVE,
         // Re-emit only: the investigation is done, so no tools are needed and

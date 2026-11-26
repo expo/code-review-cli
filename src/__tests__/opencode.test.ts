@@ -20,8 +20,8 @@ import {
   META_MODEL_API_BASE_URL,
   opencodeEffortStyle,
   opencodePassAgent,
-  defaultEffortAgentIds,
-  DEFAULT_EFFORT_AGENT_SUFFIX,
+  opencodeFallbackAgents,
+  FALLBACK_AGENT_SUFFIX,
   VERIFIER_AGENT,
   CROSS_CUTTING_AGENT,
 } from "../core/opencode.js";
@@ -747,31 +747,51 @@ test("buildOpencodeConfig passes a reviewer's effort as its provider's option, a
   }
 });
 
-test("the no-tools fallback of a reviewer with an OpenCode level runs as its default-effort copy", () => {
-  const built = buildOpencodeConfig(
-    configWith({
-      agents: [
-        { id: "astra", model: "openai/gpt-6.2-astra", effort: "xhigh" },
-        { id: "neon-x", model: "google/gemini-4-neon", effort: "xhigh" },
-        { id: "plain", model: "openai/gpt-6.2-astra" },
-      ],
-    }),
-  ) as { agent: Record<string, Record<string, unknown>> };
-  const copy = built.agent[`astra${DEFAULT_EFFORT_AGENT_SUFFIX}`]!;
-  expect(copy.reasoningEffort).toBeUndefined();
-  // Everything else matches the reviewer's own entry.
-  const { reasoningEffort, ...rest } = built.agent.astra!;
-  expect(reasoningEffort).toBe("xhigh");
-  expect(copy).toEqual(rest);
-  // No copy without an effort option to drop (a level Google rejects sends none).
-  expect(built.agent[`neon-x${DEFAULT_EFFORT_AGENT_SUFFIX}`]).toBeUndefined();
-  expect(built.agent[`plain${DEFAULT_EFFORT_AGENT_SUFFIX}`]).toBeUndefined();
+test("a reviewer's no-tools fallback runs as a copy at min(level, medium), only when that differs", () => {
+  const config = configWith({
+    agents: [
+      { id: "astra", model: "openai/gpt-6.2-astra", effort: "xhigh" },
+      { id: "astra-low", model: "openai/gpt-6.2-astra", effort: "low" },
+      { id: "neon-x", model: "google/gemini-4-neon", effort: "xhigh" },
+      { id: "neon-low", model: "google/gemini-4-neon", effort: "low" },
+      { id: "plain", model: "openai/gpt-6.2-astra" },
+      // A reviewer that shares a fixed role's id gets no level and no copy: a copy
+      // would become the built-in pass's fallback.
+      { id: "cross-cutting", model: "openai/gpt-6.2-astra", effort: "high" },
+      // The copy id is taken by a real reviewer, so `dup` gets no copy.
+      { id: "dup", model: "openai/gpt-6.2-astra", effort: "max" },
+      { id: `dup${FALLBACK_AGENT_SUFFIX}`, model: "google/gemini-4-neon" },
+    ],
+  });
+  const copies = opencodeFallbackAgents(config);
+  expect([...copies]).toEqual([
+    ["astra", `astra${FALLBACK_AGENT_SUFFIX}`],
+    ["neon-x", `neon-x${FALLBACK_AGENT_SUFFIX}`],
+  ]);
 
-  const handle = { defaultEffortAgents: defaultEffortAgentIds(built) };
-  expect([...handle.defaultEffortAgents]).toEqual(["astra"]);
-  expect(opencodePassAgent(handle, "astra", 0)).toBe(`astra${DEFAULT_EFFORT_AGENT_SUFFIX}`);
+  const built = buildOpencodeConfig(config) as { agent: Record<string, Record<string, unknown>> };
+  const { reasoningEffort, ...astraRest } = built.agent.astra!;
+  expect(reasoningEffort).toBe("xhigh");
+  expect(built.agent[`astra${FALLBACK_AGENT_SUFFIX}`]).toEqual({
+    ...astraRest,
+    reasoningEffort: "medium",
+  });
+  // Google xhigh sends no level on the main pass; its fallback sends medium.
+  expect(built.agent["neon-x"]!.thinkingConfig).toBeUndefined();
+  expect(built.agent[`neon-x${FALLBACK_AGENT_SUFFIX}`]!.thinkingConfig).toEqual({
+    thinkingLevel: "medium",
+  });
+  for (const id of ["astra-low", "neon-low", "plain", "cross-cutting"]) {
+    expect(built.agent[`${id}${FALLBACK_AGENT_SUFFIX}`], id).toBeUndefined();
+  }
+  // The real reviewer keeps its own entry.
+  expect(built.agent[`dup${FALLBACK_AGENT_SUFFIX}`]!.model).toBe("google/gemini-4-neon");
+
+  const handle = { fallbackAgents: copies };
+  expect(opencodePassAgent(handle, "astra", 0)).toBe(`astra${FALLBACK_AGENT_SUFFIX}`);
   expect(opencodePassAgent(handle, "astra", undefined)).toBe("astra");
   expect(opencodePassAgent(handle, "astra", 12)).toBe("astra");
-  expect(opencodePassAgent(handle, "plain", 0)).toBe("plain");
+  expect(opencodePassAgent(handle, "astra-low", 0)).toBe("astra-low");
+  expect(opencodePassAgent(handle, "cross-cutting", 0)).toBe("cross-cutting");
   expect(opencodePassAgent({}, "astra", 0)).toBe("astra");
 });

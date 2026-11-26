@@ -254,8 +254,10 @@ per-agent key and not a run-level flag.
   the key: the fixed roles are written after the reviewer loop, so a reviewer that shares a fixed
   role's id cannot give that pass its level. The pinned Google adapter takes `thinkingLevel`
   `minimal`, `low`, `medium` and `high`; with `xhigh` or `max` the pass failed inside OpenCode
-  ("invalid google provider options") with no request sent, on `google/…` and `google-vertex/…`
-  [observed]. So `GOOGLE_THINKING_LEVELS` is `low`, `medium`, `high`: for the other two ecr sends no
+  (an invalid-provider-options error) with no request sent, on `google/…` and `google-vertex/…`
+  [observed]. OpenCode's model catalog lists more variants for some Gemini models; the limit comes
+  from the bundled Google SDK's option schema, so re-check it when the OpenCode pins move. So
+  `GOOGLE_THINKING_LEVELS` is `low`, `medium`, `high`: for the other two ecr sends no
   key, the model runs at OpenCode's default (`high`), and the run note names the agent, its level
   and the levels that work. Not observed: the ChatGPT/Codex sign-in path and a
   real provider's response to each level. ecr passes the level as written; a provider that does
@@ -278,7 +280,18 @@ per-agent key and not a run-level flag.
   (found in a multi-model review of PR #118, not measured in a live run), and sending no level
   would use the provider's default, which can be higher than the agent's own `low` (OpenCode sends
   Gemini `high` by default; found in review of PR #119). So `fallbackEffort` caps the level at
-  `medium` and never raises it, and `runClaudePrompt` passes that for the fallback.
+  `medium` and never raises it, and `runClaudePrompt` passes that for the fallback. OpenCode reads
+  the level from the agent config, so `opencodeFallbackAgents` gives each reviewer whose fallback
+  options differ from its own a copy, `<id>__fallback-effort`, at the fallback level;
+  `opencodePassAgent` sends the fallback's prompts, including the corrective re-emit, as that copy.
+  No copy for a fixed-role id (it would become the built-in pass's fallback) or when the copy id is
+  already an agent id; `runReview` hands the map to `startOpencode` instead of the handle inferring
+  it from agent names (both found in review of PR #119). Observed with OpenCode 1.19.5 against a
+  mock endpoint, using the config `buildOpencodeConfig` produces (2026-11-26) [observed]: an
+  `xhigh` OpenAI reviewer sent `reasoning.effort: "xhigh"` and its copy `"medium"`; a `max` Google
+  reviewer sent OpenCode's default `thinkingLevel: "high"` and its copy `"medium"`. An OpenCode per-prompt `variant` exists,
+  but it maps to catalog variants, which the alias models ecr declares do not have (per that
+  review, not checked here).
 - **An invalid level never stops a review.** `parseAgentEffort` returns a setup warning with the
   fix and no `effort`, so the agent runs at the default. The warning does not repeat the value: a
   backtick in it would close the code span in the review comment, and setup notes are not
