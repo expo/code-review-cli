@@ -987,6 +987,21 @@ test("agentEffortNote: an OpenCode reviewer named after an OpenCode built-in age
   expect(agentEffortNote(agents, { compaction: "claude-code" }, [])).toBeNull();
 });
 
+test("agentEffortNote: an OpenCode built-in id on Google max is also told the levels Google takes", () => {
+  const agents = [
+    { id: "compaction", effort: "max", model: "google/gemini-4-neon" },
+    { id: "title", effort: "high", model: "meta/muse-spark-1.3" },
+  ] as unknown as LoadedAgent[];
+  const note = agentEffortNote(agents, { compaction: "opencode", title: "opencode" }, []);
+  expect(note).toContain(
+    "has no effect for compaction, title: the id is also an OpenCode built-in agent",
+  );
+  expect(note).toContain("and run title on a model that takes a level");
+  expect(note).toContain("and give compaction one of low, medium, high");
+  // One note only: the built-in id is not also listed as a plain OpenCode or Google case.
+  expect(note?.split("has no effect").length).toBe(2);
+});
+
 test("agentEffortNote: a fixed-role reviewer on OpenAI is told only to rename", () => {
   const agents = [
     { id: "verifier", effort: "max", model: "openai/gpt-6.2-astra" },

@@ -342,7 +342,7 @@ export function opencodeEffortOptions(
 }
 
 /**
- * The agents OpenCode 1.19.5 defines itself (`app.agents()` with `builtIn: true`,
+ * The agents OpenCode 1.19.5 defines itself (`app.agents()` with `native: true`,
  * observed 2026-11-26). `compaction`, `summary` and `title` run for every session, so a
  * reviewer that shares one of these ids must not give it a level (LLP 0006). Re-check when
  * the OpenCode pins move.

@@ -866,11 +866,32 @@ export function agentEffortNote(
         engineOf[agent.id] === "opencode",
     )
     .map((agent) => agent.id);
+  // After a rename, the model still has to take a level; say so in the same note.
+  const builtinNoLevel = opencodeBuiltin.filter((id) =>
+    takesNoLevel(declared.find((agent) => agent.id === id)?.model ?? ""),
+  );
+  const builtinGoogleLevel = declared
+    .filter(
+      (agent) =>
+        opencodeBuiltin.includes(agent.id) &&
+        opencodeEffortStyle(agent.model ?? "", auth) === "google" &&
+        agent.effort !== undefined &&
+        !GOOGLE_THINKING_LEVELS.has(agent.effort),
+    )
+    .map((agent) => agent.id);
   const notes: string[] = [];
   if (opencodeBuiltin.length > 0) {
     notes.push(
       `\`effort\` has no effect for ${opencodeBuiltin.join(", ")}: the id is also an OpenCode ` +
-        "built-in agent, which other sessions use. Fix: rename the agent file",
+        "built-in agent, which other sessions use. Fix: rename the agent file" +
+        (builtinNoLevel.length > 0
+          ? `, and run ${builtinNoLevel.join(", ")} on a model that takes a level ` +
+            `(${EFFORT_PROVIDERS}; its \`model:\`, or \`REVIEWER_MODEL\` when that is set)`
+          : "") +
+        (builtinGoogleLevel.length > 0
+          ? `, and give ${builtinGoogleLevel.join(", ")} one of ` +
+            `${[...GOOGLE_THINKING_LEVELS].join(", ")} (OpenCode's Google adapter takes no other)`
+          : ""),
     );
   }
   if (viaOpencode.length > 0) {
@@ -883,7 +904,7 @@ export function agentEffortNote(
     notes.push(
       `\`effort\` has no effect for ${googleLevelNotTaken.join(", ")}: OpenCode's Google adapter ` +
         `takes only ${[...GOOGLE_THINKING_LEVELS].join(", ")}, so ecr sends no level and the model ` +
-        "runs at OpenCode's default. Fix: use one of those levels",
+        "runs at the model's default in OpenCode. Fix: use one of those levels",
     );
   }
   // The engine map's entry for a fixed-role id describes the built-in pass, so read the

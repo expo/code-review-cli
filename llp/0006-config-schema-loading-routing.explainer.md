@@ -258,12 +258,13 @@ per-agent key and not a run-level flag.
   [observed]. OpenCode's model catalog lists more variants for some Gemini models; the limit comes
   from the bundled Google SDK's option schema, so re-check it when the OpenCode pins move. So
   `GOOGLE_THINKING_LEVELS` is `low`, `medium`, `high`: for the other two ecr sends no
-  key, the model runs at OpenCode's default (`high`), and the run note names the agent, its level
+  key, the model runs at its default in OpenCode (`high` for Gemini 4 Neon; a `google/gemini-2.5-flash`
+  request carried no `thinkingLevel`, per review of PR #119), and the run note names the agent, its level
   and the levels that work. Not observed: the ChatGPT/Codex sign-in path and a
   real provider's response to each level. ecr passes the level as written; a provider that does
   not take it fails that agent's passes with its own error.
 - **No level on OpenCode's own agent ids.** OpenCode 1.19.5 defines `build`, `compaction`,
-  `explore`, `general`, `plan`, `summary` and `title` (`app.agents()`, 2026-11-26) [observed]; a
+  `explore`, `general`, `plan`, `summary` and `title` (`app.agents()`, `native: true`, 2026-11-26) [observed]; a
   reviewer config with one of these ids replaces that agent, and `compaction`, `summary` and `title`
   also run for other sessions. A reviewer level there reached another reviewer's session
   compaction (found in review of PR #119), so `buildOpencodeConfig` gives these ids no level
@@ -281,7 +282,7 @@ per-agent key and not a run-level flag.
   #118 against a local mock endpoint, not re-run here). The engine does not check model support.
 - **Only reviewer files take it.** `effort` in `coordinator.md` or `shared.md` frontmatter has no
   effect, so the loader adds a setup warning that says to remove it, instead of ignoring it.
-- **The no-tools fallback pass runs at `min(level, medium)`.** A timed-out pass is retried with no
+- **The Claude Code no-tools fallback runs at `min(level, medium)`; OpenCode keeps the level.** A timed-out pass is retried with no
   tools under a short cap (`maxToolCalls: 0`). A deep level there would likely time out again
   (found in a multi-model review of PR #118, not measured in a live run), and sending no level
   would use the provider's default, which can be higher than the agent's own `low` (OpenCode sends
