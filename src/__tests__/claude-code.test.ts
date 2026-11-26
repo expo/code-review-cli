@@ -915,12 +915,13 @@ test("agentEffortNote: an agent that does not run in this review is not named", 
   ).toBeNull();
 });
 
-test("agentEffortNote: OpenAI and Google models take a level through OpenCode; others do not", () => {
+test("agentEffortNote: OpenAI, Google and xAI models take a level through OpenCode; others do not", () => {
   const agents = [
     { id: "astra", effort: "high", model: "openai/gpt-6.2-astra" },
     { id: "pro", effort: "high", model: "openai-api/gpt-5.5-pro" },
     { id: "neon", effort: "high", model: "google/gemini-4-neon" },
     { id: "vertex", effort: "high", model: "google-vertex/gemini-4-neon" },
+    { id: "grok", effort: "high", model: "xai/grok-4.7" },
     { id: "muse", effort: "high", model: "meta/muse-spark-1.3" },
   ] as unknown as LoadedAgent[];
   const engineOf = {
@@ -928,6 +929,7 @@ test("agentEffortNote: OpenAI and Google models take a level through OpenCode; o
     pro: "opencode",
     neon: "opencode",
     vertex: "opencode",
+    grok: "opencode",
     muse: "opencode",
   } as const;
   const auth = [

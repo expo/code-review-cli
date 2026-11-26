@@ -239,18 +239,22 @@ per-agent key and not a run-level flag.
   session archive's `NON_REVIEWER_AGENTS`, so the two cannot drift. The levels live in a
   `Map`, so an id such as `constructor` cannot read an inherited `Object.prototype` value
   (both found in review of the first version, PR #118).
-- **OpenCode passes it for OpenAI and Google models.** OpenCode hands unknown agent-config keys to
+- **OpenCode passes it for OpenAI, Google and xAI models.** OpenCode hands unknown agent-config keys to
   the provider as model options. `buildOpencodeConfig` adds one per reviewer with `effort`, chosen
   by `opencodeEffortStyle` from the adapter ecr gives the model's provider: native `openai` and an
   alias with `upstream: "openai"` (built on `@ai-sdk/openai`) get `reasoningEffort`; native
-  `google` and `google-vertex` get `thinkingConfig.thinkingLevel`. Any other alias, including
+  `google` and `google-vertex` get `thinkingConfig.thinkingLevel`; native `xai` (Grok, on
+  `@ai-sdk/xai`) gets `reasoningEffort`. Any other alias, including
   `upstream: "google"` (built on `@ai-sdk/openai-compatible`), gets nothing: a Google key on that
   adapter reached a mock endpoint as a top-level `thinkingConfig` on `/chat/completions` (found in
   review of PR #119). Observed with the pinned OpenCode 1.19.5 against a local mock
   endpoint (2026-11-26) [observed]: with no key, an `openai/gpt-6.2-astra` request carried no
   `reasoning` field; `reasoningEffort: "xhigh"` and `"max"` arrived as `reasoning.effort`; a
   `google/gemini-4-neon` request carried `thinkingConfig: {includeThoughts: true, thinkingLevel:
-  "high"}` with no key, and `thinkingLevel: "low"` replaced the `high`. Only reviewer entries get
+  "high"}` with no key, and `thinkingLevel: "low"` replaced the `high`; an `xai/grok-4.7` request to
+  `/chat/completions` carried no level field with no key, and `reasoningEffort` `"low"`, `"high"` and
+  `"xhigh"` arrived as `reasoning_effort` (asked for in review of PR #118; which levels xAI's API
+  accepts is not verified). Only reviewer entries get
   the key: the fixed roles are written after the reviewer loop, so a reviewer that shares a fixed
   role's id cannot give that pass its level. The pinned Google adapter takes `thinkingLevel`
   `minimal`, `low`, `medium` and `high`; with `xhigh` or `max` the pass failed inside OpenCode

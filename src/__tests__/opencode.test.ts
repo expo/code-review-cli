@@ -710,6 +710,7 @@ test("opencodeEffortStyle: OpenAI and Google families take a level; others do no
   expect(opencodeEffortStyle("gemini-api/gemini-4-neon", alias)).toBeNull();
   expect(opencodeEffortStyle("meta/muse-spark-1.3", [])).toBeNull();
   expect(opencodeEffortStyle("gpt-6.2-astra", [])).toBeNull();
+  expect(opencodeEffortStyle("xai/grok-4.7", [])).toBe("xai");
 });
 
 test("buildOpencodeConfig passes a reviewer's effort as its provider's option, and only a reviewer's", () => {
@@ -768,4 +769,12 @@ test("buildOpencodeConfig gives no level to a reviewer that shares an OpenCode b
     "summary",
     "title",
   ]);
+});
+
+test("buildOpencodeConfig passes a Grok reviewer's level as reasoningEffort", () => {
+  const opencode = buildOpencodeConfig(
+    configWith({ agents: [{ id: "grok", model: "xai/grok-4.7", effort: "xhigh" }] }),
+  ) as { agent: Record<string, Record<string, unknown>> };
+  expect(opencode.agent.grok!.reasoningEffort).toBe("xhigh");
+  expect(opencode.agent.grok!.thinkingConfig).toBeUndefined();
 });

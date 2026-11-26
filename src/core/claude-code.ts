@@ -943,7 +943,7 @@ export function agentEffortNote(
 
 /** The model families ecr passes an effort level to, for the run notes. */
 const EFFORT_PROVIDERS =
-  '`anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), `google/…` or `google-vertex/…`';
+  '`anthropic/…`, `openai/…` (or an `upstream: "openai"` alias), `google/…`, `google-vertex/…` or `xai/…`';
 
 /**
  * Preserve actionable process diagnostics without copying arbitrary stderr into a

@@ -282,15 +282,15 @@ export const STACK_VERIFIER_AGENT = "stack-verifier";
 
 /**
  * How an OpenCode provider's SDK takes a reasoning level from an agent's config:
- * OpenAI's Responses adapter reads `reasoningEffort`, Google's reads
+ * OpenAI's Responses adapter and xAI's adapter read `reasoningEffort`, Google's reads
  * `thinkingConfig.thinkingLevel`.
  */
-export type OpencodeEffortStyle = "openai" | "google";
+export type OpencodeEffortStyle = "openai" | "google" | "xai";
 
 /**
  * The effort style for a model id, or null when ecr does not pass a level to that
  * provider. Native `openai` gets the OpenAI style, native `google` and `google-vertex` the
- * Google style. An alias (an auth entry with `upstream`) follows the adapter
+ * Google style, native `xai` (Grok) the xAI style. An alias (an auth entry with `upstream`) follows the adapter
  * `buildOpencodeConfig` creates for it: only `upstream: "openai"` gets `@ai-sdk/openai`,
  * so only that alias takes a level. Meta, OpenAI-compatible and other providers get null.
  */
@@ -314,6 +314,9 @@ export function opencodeEffortStyle(
   if (provider === "google" || provider === "google-vertex") {
     return "google";
   }
+  if (provider === "xai") {
+    return "xai";
+  }
   return null;
 }
 
@@ -328,14 +331,15 @@ export const GOOGLE_THINKING_LEVELS: ReadonlySet<AgentEffort> = new Set(["low", 
  * The agent-config keys that carry a reasoning level for an effort style, or null when
  * the style's adapter does not take that level. OpenCode passes unknown agent keys to
  * the provider as model options; observed with OpenCode 1.19.5 against a mock endpoint
- * (LLP 0006): `reasoningEffort` becomes the Responses API's `reasoning.effort`, and
- * `thinkingConfig.thinkingLevel` replaces the `high` that OpenCode sends to Gemini.
+ * (LLP 0006): `reasoningEffort` becomes the Responses API's `reasoning.effort` (OpenAI)
+ * and Chat Completions' `reasoning_effort` (xAI), and `thinkingConfig.thinkingLevel`
+ * replaces the `high` that OpenCode sends to Gemini 4 Neon.
  */
 export function opencodeEffortOptions(
   style: OpencodeEffortStyle,
   effort: AgentEffort,
 ): Record<string, unknown> | null {
-  if (style === "openai") {
+  if (style === "openai" || style === "xai") {
     return { reasoningEffort: effort };
   }
   return GOOGLE_THINKING_LEVELS.has(effort) ? { thinkingConfig: { thinkingLevel: effort } } : null;
