@@ -104,7 +104,16 @@ in the deny-list — an anthropic entry may legitimately name them — but a
 cross-provider guard refuses a non-anthropic entry that names one. Without it,
 `{provider:"openai", tokenEnv:"CLAUDE_CODE_OAUTH_TOKEN"}` would slip past (neither
 a forbidden secret nor a provider key) and forward the Anthropic subscription
-token to a foreign provider [observed] (`src/core/auth.ts:19-33`, commit 93aaf30).
+token to a foreign provider [observed] (`src/core/auth.ts` `ANTHROPIC_TOKEN_ENVS`, commit 93aaf30).
+`XAI_OAUTH_ACCESS_TOKEN` belongs to `xai` the same way (`XAI_TOKEN_ENVS`).
+`XAI_API_KEY` belongs to `xai` through `PROVIDER_KEY_ENV`. A non-xai entry that
+names either is refused, and `upstream: "xai"` does not make another provider id
+an owner. `CODEX_OAUTH_ACCESS_TOKEN` and `CODEX_OAUTH_REFRESH_TOKEN` belong to
+`openai` (`CODEX_OAUTH_TOKEN_ENVS`): a ChatGPT access token is a JWT, so the xAI
+shape check alone would accept it. Only an api-key alias may borrow its
+upstream's key. An oauth entry never does, because it is staged under its own
+`provider` [observed] (`src/core/auth.ts` `checkAuthEntry`; tests in
+`src/__tests__/auth.test.ts`).
 
 The credential must never reach logs, error messages, or `.expo-code-review/.runs/`.
 This is a named cross-cutting invariant, not an incidental property [observed]

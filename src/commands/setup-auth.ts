@@ -7,7 +7,7 @@ import readline from "node:readline/promises";
 
 import { hasConfig, loadReviewConfig } from "../config/load.js";
 import type { AuthConfigEntry } from "../config/schema.js";
-import { jwtExpiryMs } from "../core/auth.js";
+import { checkOauthTokenShape, jwtExpiryMs } from "../core/auth.js";
 import { claudeSubscriptionActive, resolveClaudeCli } from "../core/claude-code.js";
 import { resolveOpencodeCli } from "../core/opencode.js";
 import { errorMessage } from "../core/util.js";
@@ -20,6 +20,12 @@ getting each credential:
     \`opencode auth login\` (interactive; opens your browser), then prints the
     \`export <tokenEnv>=…\` line to add to your shell config. An existing
     OpenCode ChatGPT sign-in is reused instead of re-authenticating.
+  • a SuperGrok subscription (oauth/xai): runs the bundled
+    \`opencode auth login -p xai -m "SuperGrok Subscription"\` (device code at
+    https://accounts.x.ai/oauth2/device), then prints the access-token export.
+    The token lasts hours, not days, and a review cannot renew it. A stored or
+    exported token is reused only while a review takes it without a warning.
+    The refresh token stays in OpenCode's store.
   • a Claude Max/Team subscription (any anthropic/… model): reuses an active
     \`claude\` login when present, or runs \`claude setup-token\` (interactive;
     opens your browser) and prints the \`export <tokenEnv>=…\` line for
@@ -27,6 +33,7 @@ getting each credential:
   • an API key (api-key entries): prints where to create the key, the exact
     permissions it needs, and the export line to fill in. Meta Model API
     (\`meta/muse-spark-…\`) uses META_API_KEY from the Meta AI developer portal.
+    xAI API keys come from https://console.x.ai (XAI_API_KEY).
 
 Without a repo config, it offers the recommended ChatGPT/Codex subscription flow
 with the default env name.
@@ -39,6 +46,8 @@ Options:
 export interface SetupPlan {
   /** oauth/openai entry — satisfiable by an `opencode auth login` ChatGPT sign-in. */
   chatgptLogin?: { tokenEnv: string };
+  /** oauth/xai entry — satisfiable by OpenCode's SuperGrok device login. */
+  grokLogin?: { tokenEnv: string };
   /** anthropic model/entry — satisfiable by a `claude setup-token` subscription login. */
   claudeLogin?: { tokenEnv: string };
   /** api-key entries — a human must mint these; we print instructions. */
@@ -64,6 +73,8 @@ export function planFromAuth(auth: AuthConfigEntry[], models: string[] = []): Se
       continue; // handled above (claude engine); mode is irrelevant here.
     } else if (entry.mode === "oauth" && entry.provider === "openai" && entry.tokenEnv) {
       plan.chatgptLogin = { tokenEnv: entry.tokenEnv };
+    } else if (entry.mode === "oauth" && entry.provider === "xai" && entry.tokenEnv) {
+      plan.grokLogin = { tokenEnv: entry.tokenEnv };
     } else if (entry.mode === "api-key" && entry.tokenEnv) {
       plan.manualKeys.push({
         provider: entry.provider,
@@ -84,32 +95,82 @@ export function opencodeAuthJsonPath(env: NodeJS.ProcessEnv = process.env): stri
   return path.join(dataHome, "opencode", "auth.json");
 }
 
+/** Bundled OpenCode login for a SuperGrok subscription. Device code, not a menu. */
+export const SUPERGROK_LOGIN_ARGS = [
+  "auth",
+  "login",
+  "-p",
+  "xai",
+  "-m",
+  "SuperGrok Subscription",
+] as const;
+
+/**
+ * Env for the interactive OpenCode logins.
+ * OpenCode loads `opencode.json` and `.opencode/` from the cwd and from every parent directory.
+ * The login cwd is the temp dir, which is the shared `/tmp` on Linux, so project config stays off.
+ */
+export function opencodeLoginEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...env, OPENCODE_DISABLE_PROJECT_CONFIG: "1" };
+}
+
+export interface StoredOauthAccess {
+  token: string;
+  expiresMs: number;
+}
+
 // @ref LLP 0007#doctor-and-setup-auth [constrained-by] — refresh tokens are single-use; they never leave OpenCode's store
 /**
- * The stored ChatGPT sign-in's ACCESS token, if OpenCode has a live one. The
- * refresh token deliberately never leaves OpenCode's store: refresh tokens are
- * SINGLE-USE (rotation) and OpenCode is their sole legitimate consumer — a copy
- * in a shell config or CI secret dies on the next rotation and can take the
- * whole sign-in with it. The access token is a plain bearer that stays valid for
- * days and never touches rotation.
+ * The live ACCESS token for one provider in OpenCode's auth.json.
+ * `refresh` is ignored: refresh tokens are SINGLE-USE, and OpenCode is their
+ * sole consumer.
+ * A copy in a shell config or CI secret dies on the next rotation.
+ * An expired or non-JWT access token is treated as absent.
  */
-async function readStoredAccessToken(): Promise<{ token: string; expiresMs: number } | null> {
+export function accessTokenFromStore(
+  parsed: Record<string, { type?: string; access?: string; refresh?: string } | undefined>,
+  provider: string,
+  now = Date.now(),
+): StoredOauthAccess | null {
+  const entry = parsed[provider];
+  if (entry?.type !== "oauth" || !entry.access) {
+    return null;
+  }
+  const expiresMs = jwtExpiryMs(entry.access) ?? 0;
+  return expiresMs > now ? { token: entry.access, expiresMs } : null;
+}
+
+async function readStoredAccessToken(provider: string): Promise<StoredOauthAccess | null> {
   try {
     const raw = await readFile(opencodeAuthJsonPath(), "utf8");
     const parsed = JSON.parse(raw) as Record<
       string,
-      { type?: string; access?: string } | undefined
+      { type?: string; access?: string; refresh?: string } | undefined
     >;
-    const openai = parsed.openai;
-    if (openai?.type !== "oauth" || !openai.access) {
-      return null;
-    }
-    const expiresMs = jwtExpiryMs(openai.access) ?? 0;
-    // An expired stored token means the sign-in needs redoing anyway.
-    return expiresMs > Date.now() ? { token: openai.access, expiresMs } : null;
+    return accessTokenFromStore(parsed, provider);
   } catch {
     return null;
   }
+}
+
+/**
+ * What a review would say about this SuperGrok access token: an error, an expiry warning, or null.
+ * The review names `ecr setup-auth` as the fix for both, so either one means a new sign-in.
+ */
+export function superGrokTokenComplaint(token: string, tokenEnv: string): string | null {
+  const shape = checkOauthTokenShape("xai", token, tokenEnv);
+  return shape.ok ? (shape.warning ?? null) : shape.detail;
+}
+
+export function remainingLabel(expiresMs: number, now = Date.now()): string {
+  const remaining = expiresMs - now;
+  if (remaining >= 86_400_000) {
+    return `${Math.max(1, Math.round(remaining / 86_400_000))} more day(s)`;
+  }
+  if (remaining >= 3_600_000) {
+    return `${Math.max(1, Math.round(remaining / 3_600_000))} more hour(s)`;
+  }
+  return `${Math.max(1, Math.round(remaining / 60_000))} more minute(s)`;
 }
 
 async function confirm(question: string, skip: boolean): Promise<boolean> {
@@ -126,9 +187,9 @@ async function confirm(question: string, skip: boolean): Promise<boolean> {
 }
 
 // @ref LLP 0007#doctor-and-setup-auth [constrained-by] — shell metacharacters in tokens never expand
-/** The line to paste into a shell config. Single-quoted: tokens never contain '. */
+/** The line to paste into a shell config. Single-quoted, so the shell expands nothing in the value. */
 export function exportLine(tokenEnv: string, value: string): string {
-  return `export ${tokenEnv}='${value}'`;
+  return `export ${tokenEnv}='${value.replace(/'/g, "'\\''")}'`;
 }
 
 export async function setupAuthCommand(argv: string[] = []): Promise<void> {
@@ -160,6 +221,7 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
     if (
       !plan.chatgptLogin &&
       !plan.claudeLogin &&
+      !plan.grokLogin &&
       plan.manualKeys.length === 0 &&
       plan.unsupported.length === 0
     ) {
@@ -223,7 +285,7 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
       if (process.env[tokenEnv]) {
         err(`✓ ${tokenEnv} is already set in this shell — skipping the ChatGPT sign-in.`);
       } else {
-        let stored = await readStoredAccessToken();
+        let stored = await readStoredAccessToken("openai");
         if (stored) {
           err(
             `Found a live ChatGPT sign-in in OpenCode (access token valid ` +
@@ -257,13 +319,14 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
             const result = spawnSync(opencodeCli, ["auth", "login"], {
               stdio: "inherit",
               cwd: os.tmpdir(),
+              env: opencodeLoginEnv(),
             });
             if (result.status !== 0) {
               throw new Error(
                 `\`opencode auth login\` exited with ${result.status ?? "a signal"}; nothing was changed.`,
               );
             }
-            stored = await readStoredAccessToken();
+            stored = await readStoredAccessToken("openai");
             if (!stored) {
               throw new Error(
                 "The login finished but no live ChatGPT sign-in was stored — did you select " +
@@ -280,6 +343,76 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
           err(
             `Note: this access token expires in ~${Math.max(1, Math.round((stored.expiresMs - Date.now()) / 86_400_000))} day(s); ` +
               `re-run \`ecr setup-auth\` then to refresh it (your OpenCode sign-in stays valid).`,
+          );
+        }
+      }
+    }
+
+    if (plan.grokLogin) {
+      const { tokenEnv } = plan.grokLogin;
+      const current = process.env[tokenEnv];
+      const complaint = current ? superGrokTokenComplaint(current, tokenEnv) : null;
+      if (current && !complaint) {
+        err(`✓ ${tokenEnv} is already set in this shell — skipping the SuperGrok sign-in.`);
+      } else {
+        if (complaint) {
+          err(`${tokenEnv} is set in this shell, but it needs a new token:`);
+          err(`  ${complaint}`);
+        }
+        // @ref LLP 0007#doctor-and-setup-auth [implements] — SuperGrok login is the pinned OpenCode device flow; only the access token is exported, and only one a review takes without complaint
+        let stored = await readStoredAccessToken("xai");
+        if (stored && superGrokTokenComplaint(stored.token, tokenEnv)) {
+          stored = null;
+        }
+        if (stored) {
+          err(
+            `Found a live SuperGrok sign-in in OpenCode (access token valid ` +
+              `${remainingLabel(stored.expiresMs)}).`,
+          );
+          if (!(await confirm(`Use it for ${tokenEnv}?`, yes))) {
+            stored = null;
+          }
+        }
+        if (!stored) {
+          err("This will run the bundled `opencode auth login` for SuperGrok (interactive).");
+          err("It prints a device code.");
+          err("Open https://accounts.x.ai/oauth2/device and enter that code.");
+          if (!(await confirm("Run it now?", yes))) {
+            err("Skipped the SuperGrok sign-in.");
+          } else {
+            const opencodeCli = await resolveOpencodeCli();
+            if (!opencodeCli) {
+              throw new Error(
+                "The `opencode` CLI is not available (install `opencode-ai`, or add " +
+                  "node_modules/.bin to PATH); nothing was changed.",
+              );
+            }
+            const result = spawnSync(opencodeCli, [...SUPERGROK_LOGIN_ARGS], {
+              stdio: "inherit",
+              cwd: os.tmpdir(),
+              env: opencodeLoginEnv(),
+            });
+            if (result.status !== 0) {
+              throw new Error(
+                `\`opencode auth login\` exited with ${result.status ?? "a signal"}; nothing was changed.`,
+              );
+            }
+            stored = await readStoredAccessToken("xai");
+            if (!stored) {
+              throw new Error(
+                "The login finished but no live SuperGrok access token was stored. " +
+                  "Re-run `ecr setup-auth` to try again.",
+              );
+            }
+          }
+        }
+        if (stored) {
+          // Access token only. refresh stays in OpenCode's store.
+          exports.push(exportLine(tokenEnv, stored.token));
+          err(
+            `Note: this access token is valid for ${remainingLabel(stored.expiresMs)}, ` +
+              `and a review cannot renew it. Re-run \`ecr setup-auth\` for a new one; ` +
+              `it signs in again and replaces this export line.`,
           );
         }
       }
@@ -305,6 +438,10 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
         // @ref LLP 0007#doctor-and-setup-auth [implements] — Meta uses a manual API key
         err("  https://developer.meta.com/ai/ — create a Model API key with access to");
         err("  Muse Spark, then store it as a dedicated review secret.");
+      } else if (upstream === "xai") {
+        // @ref LLP 0007#doctor-and-setup-auth [implements] — xAI API keys stay manual; the SuperGrok login is oauth only
+        err("  https://console.x.ai — create an API key and store it as XAI_API_KEY.");
+        err('  A SuperGrok subscription uses auth.mode "oauth" instead of this key.');
       } else {
         err(`  mint a key for the "${upstream}" provider.`);
       }

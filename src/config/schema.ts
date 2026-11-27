@@ -47,6 +47,12 @@ function sameOrigin(first: string, second: string): boolean {
   }
 }
 
+/**
+ * `ecr setup-auth` prints an `auth` token env name into an `export NAME='…'` line for the user's shell config.
+ * The config comes from the repo, so a name with shell syntax must fail at load.
+ */
+const ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 /** A remote MCP server that named review passes may call, such as a code sandbox. */
 export const McpServerConfigSchema = z
   .object({
@@ -301,6 +307,15 @@ export const ReviewConfigSchema = z.object({
         tokenEnv: z.string().optional(),
       }),
     ])
+    // Checked on the union, not per field.
+    // A field error in the map shape falls through to the legacy shape, which drops `providers`.
+    .refine(
+      (auth) =>
+        ("providers" in auth ? Object.values(auth.providers) : [auth]).every(
+          (entry) => entry.tokenEnv === undefined || ENV_VAR_NAME.test(entry.tokenEnv),
+        ),
+      { error: "auth tokenEnv must be an env var name (letters, digits and underscores)" },
+    )
     .default({ mode: "api-key", provider: "openai" }),
   review: z
     .object({

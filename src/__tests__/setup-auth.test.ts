@@ -1,6 +1,15 @@
 import { test, expect } from "bun:test";
 
-import { planFromAuth, exportLine, opencodeAuthJsonPath } from "../commands/setup-auth.js";
+import {
+  planFromAuth,
+  exportLine,
+  opencodeAuthJsonPath,
+  accessTokenFromStore,
+  opencodeLoginEnv,
+  remainingLabel,
+  superGrokTokenComplaint,
+  SUPERGROK_LOGIN_ARGS,
+} from "../commands/setup-auth.js";
 
 test("plan: the mixed setup needs one ChatGPT login and one manual key", () => {
   const plan = planFromAuth([
@@ -58,10 +67,93 @@ test("plan: an anthropic/… model triggers claudeLogin even with no anthropic a
   expect(plan.unsupported).toEqual([]);
 });
 
+test("plan: xAI oauth is a SuperGrok login and an xAI API key stays manual", () => {
+  const oauth = planFromAuth([
+    { provider: "xai", mode: "oauth", tokenEnv: "XAI_OAUTH_ACCESS_TOKEN" },
+  ]);
+  expect(oauth.grokLogin).toEqual({ tokenEnv: "XAI_OAUTH_ACCESS_TOKEN" });
+  expect(oauth.chatgptLogin).toBeUndefined();
+  expect(oauth.manualKeys).toEqual([]);
+  expect(oauth.unsupported).toEqual([]);
+
+  // No tokenEnv: the review rejects this config, so setup-auth must not pretend
+  // the export line is enough. Same rule as the openai oauth branch.
+  const missing = planFromAuth([{ provider: "xai", mode: "oauth" }]);
+  expect(missing.grokLogin).toBeUndefined();
+  expect(missing.unsupported).toEqual([{ provider: "xai", mode: "oauth" }]);
+
+  const key = planFromAuth([{ provider: "xai", mode: "api-key", tokenEnv: "XAI_API_KEY" }]);
+  expect(key.grokLogin).toBeUndefined();
+  expect(key.manualKeys).toEqual([
+    { provider: "xai", tokenEnv: "XAI_API_KEY", upstream: undefined },
+  ]);
+  expect(key.unsupported).toEqual([]);
+});
+
+test("SuperGrok login args select the device method and skip the menus", () => {
+  expect(SUPERGROK_LOGIN_ARGS).toEqual([
+    "auth",
+    "login",
+    "-p",
+    "xai",
+    "-m",
+    "SuperGrok Subscription",
+  ]);
+});
+
+test("the xAI export line is the access token and never the refresh token", () => {
+  const exp = Math.floor(Date.now() / 1000) + 5 * 3600;
+  const access = `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.sig`;
+  const refresh = "refresh-secret-not-for-export";
+  const stored = accessTokenFromStore({ xai: { type: "oauth", access, refresh } }, "xai");
+  expect(stored?.token).toBe(access);
+  const line = exportLine("XAI_OAUTH_ACCESS_TOKEN", stored!.token);
+  expect(line).toContain(access);
+  expect(line).not.toContain(refresh);
+  expect(accessTokenFromStore({ xai: { type: "oauth", refresh } }, "xai")).toBeNull();
+});
+
+function superGrokJwt(secondsFromNow: number): string {
+  const exp = Math.floor(Date.now() / 1000) + secondsFromNow;
+  return `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.sig`;
+}
+
+test("a SuperGrok token is reused only when a review takes it without complaint", () => {
+  const env = "XAI_OAUTH_ACCESS_TOKEN";
+  expect(superGrokTokenComplaint(superGrokJwt(5 * 3600), env)).toBeNull();
+  // The review names `ecr setup-auth` as the fix for each of these, so none may skip the sign-in.
+  expect(superGrokTokenComplaint(superGrokJwt(-600), env)).toContain("EXPIRED");
+  expect(superGrokTokenComplaint(superGrokJwt(60), env)).toContain("120 seconds");
+  expect(superGrokTokenComplaint(superGrokJwt(90 * 60), env)).toContain("expires in");
+  expect(superGrokTokenComplaint("x".repeat(80), env)).toContain("opaque");
+});
+
+test("the remaining label uses minutes under an hour", () => {
+  const now = Date.now();
+  expect(remainingLabel(now + 30_000, now)).toBe("1 more minute(s)");
+  expect(remainingLabel(now + 20 * 60_000, now)).toBe("20 more minute(s)");
+  expect(remainingLabel(now + 5 * 3_600_000, now)).toBe("5 more hour(s)");
+  expect(remainingLabel(now + 3 * 86_400_000, now)).toBe("3 more day(s)");
+});
+
 test("export line is single-quoted so shells never expand the value", () => {
   expect(exportLine("CODEX_OAUTH_ACCESS_TOKEN", "abc$HOME!x")).toBe(
     "export CODEX_OAUTH_ACCESS_TOKEN='abc$HOME!x'",
   );
+});
+
+test("export line escapes a single quote in the value", () => {
+  expect(exportLine("XAI_OAUTH_ACCESS_TOKEN", "a'; touch /tmp/pwned; '")).toBe(
+    String.raw`export XAI_OAUTH_ACCESS_TOKEN='a'\''; touch /tmp/pwned; '\'''`,
+  );
+});
+
+test("OpenCode logins keep project config off", () => {
+  // The login cwd is the temp dir, and OpenCode reads config from the cwd and its parents.
+  expect(opencodeLoginEnv({ PATH: "/usr/bin" })).toEqual({
+    PATH: "/usr/bin",
+    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+  });
 });
 
 test("opencode auth.json path honors XDG_DATA_HOME and falls back to ~/.local/share", () => {

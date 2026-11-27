@@ -156,6 +156,21 @@
   //     "openai": { "mode": "oauth", "tokenEnv": "CODEX_OAUTH_ACCESS_TOKEN" }
   //   } }
   //
+  //   SuperGrok subscription ("oauth"): tokenEnv holds the ACCESS token.
+  //   `ecr setup-auth` runs `opencode auth login -p xai -m "SuperGrok Subscription"`
+  //   and exports `xai.access`. The refresh token stays in OpenCode's store.
+  //   Reviews stage that access token into an isolated auth.json.
+  //   The token lasts hours and a review cannot renew it, so this suits local runs.
+  //   Keep "mode": "oauth": an entry that names this env without it is refused.
+  //   "auth": { "providers": {
+  //     "xai": { "mode": "oauth", "tokenEnv": "XAI_OAUTH_ACCESS_TOKEN" }
+  //   } }
+  //
+  //   xAI API key (metered, not a subscription):
+  //   "auth": { "providers": {
+  //     "xai": { "mode": "api-key", "tokenEnv": "XAI_API_KEY" }
+  //   } }
+  //
   // MIXING engines is supported: the engine is inferred per agent from its model,
   // so this anthropic entry may coexist with an openai (or any other) OpenCode
   // provider — an `anthropic/…` agent runs through the Claude Code CLI while an

@@ -611,6 +611,13 @@ test("effectiveConcurrency: explicit config wins; subscription defaults lower", 
   ).toBe(3);
   // Pure API-key runs keep the full default.
   expect(effectiveConcurrency(cfg({}, [{ mode: "api-key", provider: "openai" }]))).toBe(6);
+  // SuperGrok is an oauth entry, so it takes the same subscription cap.
+  expect(effectiveConcurrency(cfg({}, [{ mode: "oauth", provider: "xai" }], "xai/grok-4.7"))).toBe(
+    3,
+  );
+  expect(
+    effectiveConcurrency(cfg({}, [{ mode: "api-key", provider: "xai" }], "xai/grok-4.7")),
+  ).toBe(6);
 });
 
 test("effectiveConcurrency: the claude engine caps on an OAUTH credential, not an api-key one", () => {

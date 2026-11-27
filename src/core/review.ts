@@ -230,8 +230,9 @@ function makeRunId(): string {
  * seen on eas-cli#4084), and several PRs may be reviewing on the same credential at
  * once — so subscription runs trade a little wall-clock for a lot of reliability.
  *
- * A subscription run is any of: an oauth (ChatGPT/Codex) entry; OR the Claude Code
- * engine being in use (an `anthropic/…` model) on an OAUTH credential — a subscription
+ * A subscription run is any oauth entry (ChatGPT/Codex, SuperGrok, or another
+ * oauth provider), or the Claude Code engine being in use (an `anthropic/…` model)
+ * on an OAUTH credential — a subscription
  * token OR the local `claude` login fallback (no forwardable token). An anthropic
  * credential that classifies as an API KEY is metered per-request and does NOT force
  * the cap. Exported for tests.
@@ -425,6 +426,9 @@ export async function runReview(
   } catch (error) {
     await readRoot?.cleanup();
     throw error;
+  }
+  for (const warning of auth.warnings) {
+    progress(`  auth: ${warning}`);
   }
 
   const restoreCwd = async (): Promise<void> => {
