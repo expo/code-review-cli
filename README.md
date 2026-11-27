@@ -224,9 +224,11 @@ readers as the code.
 your own `gh` login, which needs read access to the store. The pass sees the
 transcript and no code. A pull request can come from a fork, so its code goes on
 disk only with `--checkout`. That flag adds the reviewed commit as a temporary
-worktree of your clone, with the clone's git hooks and filters off, and removes it when attach ends. An anthropic pass opens in Claude Code with the read tools only. Any other
-pass opens in OpenCode, which asks before it runs a command, edits a file, or uses
-the network.
+worktree of your clone and removes it when attach ends. The clone's git hooks,
+filters, and diff drivers do not run in that worktree, and its symlinks are plain
+files. The fetched commit stays in the clone's object store. An anthropic pass
+opens in Claude Code with the read tools only. Any other pass opens in OpenCode,
+which asks before it runs a command, edits a file, or uses the network.
 
 ## Keeping prompts true (`ecr ref-check`)
 

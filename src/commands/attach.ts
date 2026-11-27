@@ -1,7 +1,7 @@
 // @ref LLP 0007#session-archive [implements] — an anthropic pass opens in Claude Code, any other pass opens in OpenCode; the PR code is on disk only with --checkout
 import { randomBytes } from "node:crypto";
-import { rmSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -18,7 +18,6 @@ import {
 import { claudeModelId, engineForModel, resolveClaudeCli } from "../core/claude-code.js";
 import type { Engine } from "../core/claude-code.js";
 import { resolveOpencodeCli } from "../core/opencode.js";
-import { removeEscapingSymlinks } from "../core/scrub.js";
 import {
   assertArchiveSize,
   assertReadableExport,
@@ -61,10 +60,11 @@ workflow run. --list prints matches and does not download.
 By default the pass opens in an empty temporary directory. It sees the stored
 transcript, and no code. The pull request can come from a fork, so its code is
 put on disk only when you ask. --checkout fetches the reviewed commit and adds
-it as a temporary detached worktree of this clone. The hooks and filters of the
-clone are turned off in it, also for git commands in the session, and symlinks
-that point outside it are removed. The worktree is removed when attach ends.
-Your own branch and files stay as they are.
+it as a temporary detached worktree of this clone. The hooks, filters, and diff
+drivers of the clone do not run in it, also for git commands in the session,
+and its symlinks are plain files. The worktree is removed when attach ends. The
+fetched commit stays in the object store of the clone. Your own branch and
+files stay as they are.
 
 --agent picks a pass. The default is the first reviewer pass. --session picks
 one pass by its session id, for a second chunk or the same agent in another
@@ -351,6 +351,10 @@ export function askFirstEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     agents[name] = agent;
   }
   config.agent = agents;
+  // A language server starts on a file read and a formatter after an edit, and neither asks first.
+  // Both run on PR files, and the TypeScript server is loaded from the working directory.
+  config.lsp = false;
+  config.formatter = false;
   return { ...base, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) };
 }
 
@@ -431,7 +435,7 @@ export function transcriptForClaude(json: string): string {
   }
   if (body.length > TRANSCRIPT_LIMIT) {
     // The findings are at the end.
-    // The start is the task and the diff, which the checkout still has.
+    // The start is the task and the diff, which only a --checkout session can read again.
     body = `[start of transcript truncated]\n\n${body.slice(-TRANSCRIPT_LIMIT)}`;
   }
   return `${body}\n`;
@@ -638,6 +642,38 @@ export async function waitForServer(child: ReturnType<typeof spawnPiped>): Promi
 type GitConfigEntry = [key: string, value: string];
 
 /**
+ * The variables that point git at a repository or change its config.
+ * `git rev-parse --local-env-vars` lists them, and git sets some for an alias or a hook.
+ * GIT_DIR would make git in the worktree use another repository.
+ * GIT_CONFIG_PARAMETERS is read after GIT_CONFIG_*, so it could turn a hook back on.
+ */
+const LOCAL_GIT_ENV = [
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_CONFIG",
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_DIR",
+  "GIT_GRAFT_FILE",
+  "GIT_IMPLICIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_NO_REPLACE_OBJECTS",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_PREFIX",
+  "GIT_REPLACE_REF_BASE",
+  "GIT_SHALLOW_FILE",
+  "GIT_WORK_TREE",
+];
+
+/** `base` without the variables that point git at another repository or config. */
+export function withoutLocalGitEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = { ...base };
+  for (const name of LOCAL_GIT_ENV) {
+    delete env[name];
+  }
+  return env;
+}
+
+/**
  * Config that keeps this clone's own tooling off PR content.
  * A hook or a filter of the clone would run in the worktree, on PR content.
  * A husky hook can install the packages the PR names, and git-lfs takes its server URL from the PR's .lfsconfig.
@@ -646,12 +682,14 @@ type GitConfigEntry = [key: string, value: string];
 export async function untrustedTreeGitConfig(
   gitPath: string,
   root: string,
+  env: NodeJS.ProcessEnv = withoutLocalGitEnv(process.env),
 ): Promise<GitConfigEntry[]> {
   const listed = await run(
     gitPath,
     ["config", "--name-only", "--get-regexp", "^(hook|filter)\\."],
     {
       cwd: root,
+      env,
       check: false,
     },
   );
@@ -666,6 +704,9 @@ export async function untrustedTreeGitConfig(
   const entries: GitConfigEntry[] = [
     ["core.hooksPath", "/dev/null"],
     ["core.fsmonitor", "false"],
+    // Git then writes a symlink as a plain file, so no link can point outside the worktree.
+    // Removing the links once would not hold: a later `git restore` puts them back.
+    ["core.symlinks", "false"],
   ];
   for (const name of hooks) {
     entries.push([`hook.${name}.enabled`, "false"]);
@@ -682,14 +723,14 @@ export async function untrustedTreeGitConfig(
 }
 
 /**
- * `base` with `entries` added through GIT_CONFIG_*.
+ * `base` with `entries` added through GIT_CONFIG_*, and without the variables in LOCAL_GIT_ENV.
  * The environment reaches git in the follow-up session too, not only the git calls of attach.
  */
 export function withGitConfig(
   base: NodeJS.ProcessEnv,
   entries: GitConfigEntry[],
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...base, GIT_LFS_SKIP_SMUDGE: "1" };
+  const env: NodeJS.ProcessEnv = { ...withoutLocalGitEnv(base), GIT_LFS_SKIP_SMUDGE: "1" };
   const existing = Number(base.GIT_CONFIG_COUNT ?? "0");
   let count = Number.isInteger(existing) && existing > 0 ? existing : 0;
   for (const [key, value] of entries) {
@@ -703,16 +744,62 @@ export function withGitConfig(
 
 export interface RecordedCheckout {
   path: string;
-  /** `.git/worktrees/<id>` of the clone. */
-  adminDir: string;
+  /**
+   * `.git/worktrees` of the clone.
+   * The entry whose `gitdir` file names `path` belongs to this checkout.
+   */
+  worktreesDir: string;
   /** The environment for every git call and child process that touches the worktree. */
   env: NodeJS.ProcessEnv;
+  /** Cancels the exit cleanup. */
+  forget: () => void;
 }
 
 const ATTACH_DIR_PREFIX = "ecr-attach-";
+/** The name `mkdtemp` gives the temp directory of one attach. */
+const ATTACH_DIR_NAME = /^ecr-attach-[A-Za-z0-9]{6}$/;
+/** Holds the PID of the attach that owns the temp directory. */
+const PID_FILE = "pid";
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists and belongs to another user.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Remove the temp directories of an attach that was killed.
+ * A SIGKILL runs no cleanup, so the transcript and a PR checkout stay on disk.
+ * A directory with no PID file, or with the PID of a running process, stays.
+ */
+export async function removeDeadAttachDirs(tmpRoot: string): Promise<string[]> {
+  const removed: string[] = [];
+  const entries = await readdir(tmpRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !ATTACH_DIR_NAME.test(entry.name)) {
+      continue;
+    }
+    const dir = path.join(tmpRoot, entry.name);
+    try {
+      const pid = Number((await readFile(path.join(dir, PID_FILE), "utf8")).trim());
+      if (Number.isInteger(pid) && pid > 0 && !isRunning(pid)) {
+        await rm(dir, { recursive: true, force: true });
+        removed.push(dir);
+      }
+    } catch {
+      // No PID file, or the directory belongs to another user.
+    }
+  }
+  return removed;
+}
 
 /**
  * Remove worktrees whose temp directory is gone, after an attach that was killed.
+ * removeDeadAttachDirs deletes such a directory, and git then reports its worktree as prunable.
  * Only attach's own, so a worktree of the developer on a drive that is not mounted stays.
  */
 async function removeStaleCheckouts(
@@ -730,7 +817,7 @@ async function removeStaleCheckouts(
   const isOurs = (worktree: string): boolean =>
     path.basename(worktree) === "checkout" &&
     path.dirname(path.dirname(worktree)) === tmpRoot &&
-    /^ecr-attach-[A-Za-z0-9]{6}$/.test(path.basename(path.dirname(worktree)));
+    ATTACH_DIR_NAME.test(path.basename(path.dirname(worktree)));
   let current: string | undefined;
   for (const field of listed.stdout.split("\0")) {
     if (field.startsWith("worktree ")) {
@@ -748,25 +835,44 @@ async function removeStaleCheckouts(
 /**
  * Add the reviewed commit as a detached worktree in `dir`.
  * The commit is fetched from origin when this clone does not have it.
+ * `env` is the environment attach was started with.
  */
 export async function checkoutRecordedCommit(input: {
   root: string;
   dir: string;
   sha: string;
+  env?: NodeJS.ProcessEnv;
 }): Promise<RecordedCheckout> {
   const gitPath = await resolveTrustedTool("git");
-  const env = withGitConfig(process.env, await untrustedTreeGitConfig(gitPath, input.root));
+  const base = withoutLocalGitEnv(input.env ?? process.env);
+  const inRoot = async (args: string[]): Promise<string> =>
+    (await run(gitPath, args, { cwd: input.root, env: base })).stdout.trim();
+  // Git reads attributes from this tree and not from the worktree.
+  // It is empty, so the PR's .gitattributes cannot select a filter or a diff driver of the clone.
+  const emptyTree = await inRoot(["hash-object", "-t", "tree", "/dev/null"]);
+  const env = withGitConfig(
+    { ...base, GIT_ATTR_SOURCE: emptyTree },
+    await untrustedTreeGitConfig(gitPath, input.root, base),
+  );
   const have = await run(gitPath, ["cat-file", "-e", `${input.sha}^{commit}`], {
     cwd: input.root,
     env,
     check: false,
   });
   if (have.code !== 0) {
-    const fetched = await run(gitPath, ["fetch", "--no-tags", "origin", input.sha], {
-      cwd: input.root,
-      env,
-      check: false,
-    });
+    // The developer's FETCH_HEAD and submodules stay as they are.
+    const fetched = await run(
+      gitPath,
+      [
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--no-recurse-submodules",
+        "origin",
+        input.sha,
+      ],
+      { cwd: input.root, env, check: false },
+    );
     if (fetched.code !== 0) {
       throw new Error(
         `Could not fetch ${input.sha} from origin. Fetch that commit into this clone, then run attach again.`,
@@ -774,30 +880,22 @@ export async function checkoutRecordedCommit(input: {
     }
   }
   await removeStaleCheckouts(gitPath, input.root, env);
-  const target = path.join(input.dir, "checkout");
-  await run(gitPath, ["worktree", "add", "--detach", target, input.sha], {
-    cwd: input.root,
+  const commonDir = await realpath(
+    await inRoot(["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+  );
+  const checkout: RecordedCheckout = {
+    // Git records the real path of the worktree, and the cleanup compares with it.
+    path: path.join(await realpath(input.dir), "checkout"),
+    worktreesDir: path.join(commonDir, "worktrees"),
     env,
-  });
-  const checkout: RecordedCheckout = { path: target, adminDir: "", env };
+    // Registered before the worktree exists, so a signal during the checkout removes its entry too.
+    forget: runAtExit(() => dropCheckoutSync(checkout), { hangup: true }),
+  };
   try {
-    const gitDir = async (flag: string): Promise<string> =>
-      (
-        await run(gitPath, ["rev-parse", "--path-format=absolute", flag], { cwd: target, env })
-      ).stdout.trim();
-    const adminDir = await gitDir("--git-dir");
-    const worktrees = path.join(await gitDir("--git-common-dir"), "worktrees");
-    if (!adminDir.startsWith(worktrees + path.sep)) {
-      throw new Error(`The worktree's git directory ${adminDir} is not under ${worktrees}.`);
-    }
-    checkout.adminDir = adminDir;
-    // A link to a file outside the worktree would hand that file to the follow-up.
-    const removed = await removeEscapingSymlinks(target);
-    if (removed.length > 0) {
-      process.stderr.write(
-        `attach: removed ${removed.length} symlink(s) that point outside the checkout.\n`,
-      );
-    }
+    await run(gitPath, ["worktree", "add", "--detach", checkout.path, input.sha], {
+      cwd: input.root,
+      env,
+    });
   } catch (error) {
     await removeCheckout(input.root, checkout);
     throw error;
@@ -813,13 +911,34 @@ export async function removeCheckout(root: string, checkout: RecordedCheckout): 
     check: false,
   });
   dropCheckoutSync(checkout);
+  checkout.forget();
 }
 
-/** Delete the worktree and its entry without git, for an exit that cannot wait. */
+/**
+ * Delete the worktree and its entry without git, for an exit that cannot wait.
+ * Only an entry whose `gitdir` file names this worktree is deleted, so every other worktree keeps its own.
+ */
 function dropCheckoutSync(checkout: RecordedCheckout): void {
   rmSync(checkout.path, { recursive: true, force: true });
-  if (checkout.adminDir) {
-    rmSync(checkout.adminDir, { recursive: true, force: true });
+  const link = path.join(checkout.path, ".git");
+  let ids: string[];
+  try {
+    ids = readdirSync(checkout.worktreesDir);
+  } catch {
+    // The clone has no linked worktree.
+    return;
+  }
+  for (const id of ids) {
+    const entry = path.join(checkout.worktreesDir, id);
+    try {
+      // With worktree.useRelativePaths, git writes a path relative to the entry.
+      const names = path.resolve(entry, readFileSync(path.join(entry, "gitdir"), "utf8").trim());
+      if (names === link) {
+        rmSync(entry, { recursive: true, force: true });
+      }
+    } catch {
+      // Not a worktree entry.
+    }
   }
 }
 
@@ -945,7 +1064,14 @@ async function openRelease(
   },
 ): Promise<void> {
   const { store, cwd } = open;
-  const dir = await realpath(await mkdtemp(path.join(tmpdir(), ATTACH_DIR_PREFIX)));
+  const tmpRoot = await realpath(tmpdir());
+  const dead = await removeDeadAttachDirs(tmpRoot);
+  if (dead.length > 0) {
+    process.stderr.write(
+      `attach: removed the files that ${dead.length} killed attach run(s) left behind.\n`,
+    );
+  }
+  const dir = await mkdtemp(path.join(tmpRoot, ATTACH_DIR_PREFIX));
   // The directory holds a review transcript, and a signal skips the finally block.
   // A closed terminal ends attach the same way, so the hangup runs it too.
   const forgetDir = runAtExit(() => rmSync(dir, { recursive: true, force: true }), {
@@ -953,8 +1079,9 @@ async function openRelease(
   });
   const server = { current: null as ReturnType<typeof spawnPiped> | null };
   let checkout: RecordedCheckout | null = null;
-  let forgetCheckout = (): void => {};
   try {
+    // A SIGKILL runs no cleanup, so the next attach removes this directory once the PID is gone.
+    await writeFile(path.join(dir, PID_FILE), String(process.pid));
     const gh = await resolveTrustedTool("gh");
     await run(
       gh,
@@ -981,9 +1108,12 @@ async function openRelease(
       throw new Error(`The session archive is missing ${pass.file}.`);
     }
     const rawJson = readExport().toString("utf8");
+    // The newest archive of the pull request can be for a head the developer does not expect.
+    process.stderr.write(printable(`attach: opening ${tag}, a review of ${recorded}.\n`));
 
     let workDir: string;
-    let childEnv = process.env;
+    // An inherited GIT_DIR would point git in the session at the developer's repository.
+    let childEnv = withoutLocalGitEnv(process.env);
     if (open.checkoutRoot) {
       process.stderr.write(`attach: checking out ${recorded} in a temporary worktree.\n`);
       checkout = await checkoutRecordedCommit({
@@ -991,8 +1121,6 @@ async function openRelease(
         dir,
         sha: recorded,
       });
-      const added = checkout;
-      forgetCheckout = runAtExit(() => dropCheckoutSync(added), { hangup: true });
       workDir = checkout.path;
       // A git command in the follow-up must not run the clone's hooks or filters either.
       childEnv = checkout.env;
@@ -1017,7 +1145,6 @@ async function openRelease(
     if (checkout && open.checkoutRoot) {
       await removeCheckout(open.checkoutRoot, checkout);
     }
-    forgetCheckout();
     forgetDir();
     await rm(dir, { recursive: true, force: true });
   }

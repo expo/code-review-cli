@@ -1,5 +1,14 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -18,6 +27,7 @@ import {
   printable,
   promptBarEnv,
   removeCheckout,
+  removeDeadAttachDirs,
   transcriptForClaude,
   untrustedTreeGitConfig,
   waitForServer,
@@ -137,6 +147,13 @@ async function makeCloneMissingHead(
   await gitIn(origin, ["commit", "-q", "-m", "pr"]);
   const sha = await gitIn(origin, ["rev-parse", "HEAD"]);
   return { home, clone, sha };
+}
+
+/** The PID of a process that has ended. */
+async function endedPid(): Promise<number> {
+  const child = spawnPiped("git", ["--version"]);
+  await new Promise((resolve) => child.once("exit", resolve));
+  return child.pid!;
 }
 
 describe("Attaching to a stored review", () => {
@@ -367,10 +384,22 @@ describe("Attaching to a stored review", () => {
         build: { model: "openai/gpt-5.6", permission: ask },
         plan: { permission: ask },
       },
+      lsp: false,
+      formatter: false,
     });
     expect(
       JSON.parse(askFirstEnv({ OPENCODE_CONFIG_CONTENT: "{" }).OPENCODE_CONFIG_CONTENT ?? ""),
     ).toMatchObject({ permission: ask });
+  });
+
+  test("should turn off the language servers and formatters of the follow-up", () => {
+    const env = askFirstEnv({
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ lsp: true, formatter: { prettier: {} } }),
+    });
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "")).toMatchObject({
+      lsp: false,
+      formatter: false,
+    });
   });
 
   test("should ignore a provider id that is not a name", () => {
@@ -756,9 +785,11 @@ describe("Attaching to a stored review", () => {
       expect(await gitIn(clone, ["rev-parse", "HEAD"])).toBe(before);
       expect(existsSync(path.join(clone, "pr.txt"))).toBe(false);
 
+      expect(existsSync(path.join(clone, ".git", "FETCH_HEAD"))).toBe(false);
+
       await removeCheckout(clone, checkout);
       expect(existsSync(target)).toBe(false);
-      expect(existsSync(checkout.adminDir)).toBe(false);
+      expect(existsSync(path.join(clone, ".git", "worktrees", "checkout"))).toBe(false);
       expect((await gitIn(clone, ["worktree", "list"])).split("\n")).toHaveLength(1);
     } finally {
       await rm(home, { recursive: true, force: true });
@@ -791,6 +822,25 @@ describe("Attaching to a stored review", () => {
     expect(env.GIT_LFS_SKIP_SMUDGE).toBe("1");
   });
 
+  test("should drop the variables that point git at another repository or config", () => {
+    const env = withGitConfig(
+      {
+        PATH: "/usr/bin",
+        GIT_DIR: "/clone/.git/worktrees/own",
+        GIT_WORK_TREE: "/clone",
+        GIT_INDEX_FILE: "/clone/.git/index",
+        GIT_CONFIG_PARAMETERS: "'core.hooksPath=.hooks'",
+      },
+      [["core.hooksPath", "/dev/null"]],
+    );
+    expect(env.PATH).toBe("/usr/bin");
+    expect(env.GIT_DIR).toBeUndefined();
+    expect(env.GIT_WORK_TREE).toBeUndefined();
+    expect(env.GIT_INDEX_FILE).toBeUndefined();
+    expect(env.GIT_CONFIG_PARAMETERS).toBeUndefined();
+    expect(env.GIT_CONFIG_KEY_0).toBe("core.hooksPath");
+  });
+
   test("should turn off every hook and filter the clone defines in config", async () => {
     const { home, clone } = await makeCloneMissingHead();
     try {
@@ -799,6 +849,7 @@ describe("Attaching to a stored review", () => {
       await gitIn(clone, ["config", "filter.probe.smudge", "cat"]);
       const entries = await untrustedTreeGitConfig("git", clone);
       expect(entries).toContainEqual(["core.hooksPath", "/dev/null"]);
+      expect(entries).toContainEqual(["core.symlinks", "false"]);
       expect(entries).toContainEqual(["hook.probe.enabled", "false"]);
       expect(entries).toContainEqual(["filter.probe.smudge", ""]);
       expect(entries).toContainEqual(["filter.probe.process", ""]);
@@ -853,7 +904,53 @@ describe("Attaching to a stored review", () => {
     }
   });
 
-  test("should remove a symlink that points outside the checkout", async () => {
+  test("should keep hooks off when GIT_CONFIG_PARAMETERS turns them on", async () => {
+    const { home, clone, sha } = await makeCloneMissingHead();
+    try {
+      const dir = path.join(home, "attach");
+      await mkdir(dir);
+      // What `git -c core.hooksPath=.hooks <alias>` gives the alias.
+      const checkout = await checkoutRecordedCommit({
+        root: clone,
+        dir,
+        sha,
+        env: { ...process.env, GIT_CONFIG_PARAMETERS: "'core.hooksPath=.hooks'" },
+      });
+      expect(existsSync(path.join(checkout.path, "pr.txt"))).toBe(true);
+      expect(existsSync(path.join(home, "hook-ran"))).toBe(false);
+      await removeCheckout(clone, checkout);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("should not run a diff driver of the clone that the pull request selects", async () => {
+    const { home, clone, sha } = await makeCloneMissingHead(async (origin) => {
+      await writeFile(path.join(origin, ".gitattributes"), "*.txt diff=probe\n");
+    });
+    try {
+      const textconvRan = path.join(home, "textconv-ran");
+      await gitIn(clone, [
+        "config",
+        "diff.probe.textconv",
+        `sh -c 'touch ${textconvRan}; cat "$0"'`,
+      ]);
+      const dir = path.join(home, "attach");
+      await mkdir(dir);
+      const checkout = await checkoutRecordedCommit({ root: clone, dir, sha });
+      const shown = await run("git", ["show", "HEAD", "--", "pr.txt"], {
+        cwd: checkout.path,
+        env: checkout.env,
+      });
+      expect(shown.stdout).toContain("+from the pull request");
+      expect(existsSync(textconvRan)).toBe(false);
+      await removeCheckout(clone, checkout);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("should check out a symlink as a plain file, also after a later git command", async () => {
     const { home, clone, sha } = await makeCloneMissingHead(async (origin, root) => {
       await writeFile(path.join(root, "secret.txt"), "not part of the pull request\n");
       await symlink(path.join(root, "secret.txt"), path.join(origin, "escape"));
@@ -863,11 +960,93 @@ describe("Attaching to a stored review", () => {
       const dir = path.join(home, "attach");
       await mkdir(dir);
       const checkout = await checkoutRecordedCommit({ root: clone, dir, sha });
-      expect(existsSync(path.join(checkout.path, "escape"))).toBe(false);
-      expect(existsSync(path.join(checkout.path, "inside"))).toBe(true);
+      const isLink = async (name: string): Promise<boolean> =>
+        (await lstat(path.join(checkout.path, name))).isSymbolicLink();
+      expect(await isLink("escape")).toBe(false);
+      expect(await isLink("inside")).toBe(false);
+      // The file holds the target of the link, not the file the link points at.
+      expect(await readFile(path.join(checkout.path, "escape"), "utf8")).toBe(
+        path.join(home, "secret.txt"),
+      );
+      await run("git", ["restore", "."], { cwd: checkout.path, env: checkout.env });
+      expect(await isLink("escape")).toBe(false);
       await removeCheckout(clone, checkout);
     } finally {
       await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("should leave another worktree as it is when GIT_DIR is inherited", async () => {
+    const { home, clone, sha } = await makeCloneMissingHead();
+    try {
+      const own = path.join(await realpath(home), "own");
+      await gitIn(clone, ["worktree", "add", "-q", "-b", "feature", own]);
+      const ownGitDir = path.join(clone, ".git", "worktrees", "own");
+      const dir = path.join(home, "attach");
+      await mkdir(dir);
+      // Git sets GIT_DIR for an alias that runs inside a linked worktree.
+      const checkout = await checkoutRecordedCommit({
+        root: own,
+        dir,
+        sha,
+        env: { ...process.env, GIT_DIR: ownGitDir },
+      });
+      expect(await gitIn(checkout.path, ["rev-parse", "HEAD"])).toBe(sha);
+      await removeCheckout(own, checkout);
+      expect(existsSync(ownGitDir)).toBe(true);
+      expect(await gitIn(own, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("feature");
+      expect((await gitIn(clone, ["worktree", "list"])).split("\n")).toHaveLength(2);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("should remove the temp directory of a killed attach and keep a running one", async () => {
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), "ecr-attach-tmp-"));
+    try {
+      const attachDir = async (pid?: number): Promise<string> => {
+        const dir = await mkdtemp(path.join(tmpRoot, "ecr-attach-"));
+        if (pid !== undefined) {
+          await writeFile(path.join(dir, "pid"), String(pid));
+        }
+        return dir;
+      };
+      const ended = await endedPid();
+      const killed = await attachDir(ended);
+      const running = await attachDir(process.pid);
+      const starting = await attachDir();
+      const notAttach = path.join(tmpRoot, "ecr-session-abc123");
+      await mkdir(notAttach);
+      await writeFile(path.join(notAttach, "pid"), String(ended));
+
+      expect(await removeDeadAttachDirs(tmpRoot)).toEqual([killed]);
+      expect(existsSync(killed)).toBe(false);
+      expect(existsSync(running)).toBe(true);
+      expect(existsSync(starting)).toBe(true);
+      expect(existsSync(notAttach)).toBe(true);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("should remove the worktree of a killed attach on the next checkout", async () => {
+    const { home, clone, sha } = await makeCloneMissingHead();
+    const tmpRoot = await realpath(tmpdir());
+    const stale = await mkdtemp(path.join(tmpRoot, "ecr-attach-"));
+    try {
+      await gitIn(clone, ["worktree", "add", "-q", "--detach", path.join(stale, "checkout")]);
+      // A SIGKILL leaves the directory on disk, so git does not report the worktree as prunable.
+      await writeFile(path.join(stale, "pid"), String(await endedPid()));
+      expect(await removeDeadAttachDirs(tmpRoot)).toContain(stale);
+
+      const dir = path.join(home, "attach");
+      await mkdir(dir);
+      const checkout = await checkoutRecordedCommit({ root: clone, dir, sha });
+      expect(await gitIn(clone, ["worktree", "list", "--porcelain"])).not.toContain(stale);
+      await removeCheckout(clone, checkout);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(stale, { recursive: true, force: true });
     }
   });
 
@@ -878,7 +1057,7 @@ describe("Attaching to a stored review", () => {
       const own = path.join(await realpath(home), "own");
       await gitIn(clone, ["worktree", "add", "-q", "--detach", own]);
       await gitIn(clone, ["worktree", "add", "-q", "--detach", path.join(stale, "checkout")]);
-      // A drive that is not mounted, and an attach that was killed.
+      // A drive that is not mounted, and an attach whose temp directory is gone.
       await rm(own, { recursive: true, force: true });
       await rm(stale, { recursive: true, force: true });
 
