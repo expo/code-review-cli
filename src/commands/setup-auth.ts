@@ -1,6 +1,6 @@
 // @ref LLP 0007#doctor-and-setup-auth — derives a plan from auth config, then guides local credential acquisition
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
@@ -8,6 +8,16 @@ import readline from "node:readline/promises";
 import { hasConfig, loadReviewConfig } from "../config/load.js";
 import type { AuthConfigEntry } from "../config/schema.js";
 import { checkOauthTokenShape, jwtExpiryMs } from "../core/auth.js";
+import {
+  assertSecretsReachable,
+  CI_ACCESS_SECRET,
+  CI_REFRESH_SECRET,
+  ciSecretWrites,
+  oauthPairFromStore,
+  parseRepoSlug,
+  writeSecrets,
+} from "../core/ci-secrets.js";
+import type { CiSeedRepos, OauthPair } from "../core/ci-secrets.js";
 import { claudeSubscriptionActive, resolveClaudeCli } from "../core/claude-code.js";
 import { resolveOpencodeCli } from "../core/opencode.js";
 import { errorMessage } from "../core/util.js";
@@ -40,6 +50,21 @@ with the default env name.
 
 Options:
   --yes   Skip confirmation prompts (still interactive during the login itself).
+
+CI seed for a SuperGrok subscription:
+  ecr setup-auth --ci-store <owner/repo> [--ci-target <owner/repo>]… [--yes]
+
+  A SuperGrok access token lasts hours, so CI needs a scheduled workflow that
+  refreshes it. This mode starts that chain. It signs in to SuperGrok in a
+  temporary store, only for CI, and writes the tokens to GitHub Actions secrets
+  with \`gh\`. It prints no token and does nothing else.
+    --ci-store    The repo that runs the refresh workflow. It gets
+                  XAI_OAUTH_REFRESH_TOKEN and XAI_OAUTH_ACCESS_TOKEN.
+    --ci-target   A repo that runs reviews. It gets XAI_OAUTH_ACCESS_TOKEN.
+                  Repeat it for more repos.
+  Do not reuse your own OpenCode sign-in for CI: a refresh token is replaced
+  when it is used. Run this mode again when the workflow reports a lost or
+  refused refresh token.
 `;
 
 /** What setup-auth must do for a given auth config. Pure, so it's testable. */
@@ -112,6 +137,78 @@ export const SUPERGROK_LOGIN_ARGS = [
  */
 export function opencodeLoginEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return { ...env, OPENCODE_DISABLE_PROJECT_CONFIG: "1" };
+}
+
+/**
+ * The CI seed arguments, or null for the normal flow.
+ * `--ci-store` selects the mode, so `--ci-target` without it is a mistake.
+ */
+export function parseCiSeedArgs(argv: string[]): CiSeedRepos | null {
+  let store: string | undefined;
+  const targets: string[] = [];
+  for (let index = 0; index < argv.length; index++) {
+    const flag = argv[index];
+    if (flag !== "--ci-store" && flag !== "--ci-target") {
+      continue;
+    }
+    const value = argv[++index];
+    if (value === undefined || value.startsWith("--")) {
+      throw new Error(`${flag} needs a repository in <owner>/<repo> form.`);
+    }
+    if (flag === "--ci-target") {
+      targets.push(parseRepoSlug(value));
+    } else if (store !== undefined) {
+      throw new Error("--ci-store can be given one time only.");
+    } else {
+      store = parseRepoSlug(value);
+    }
+  }
+  if (store === undefined) {
+    if (targets.length > 0) {
+      throw new Error("--ci-target needs --ci-store, the repo that holds the refresh token.");
+    }
+    return null;
+  }
+  return { store, targets: [...new Set(targets)] };
+}
+
+// @ref LLP 0007#doctor-and-setup-auth [implements] — the CI seed is the one flow where a refresh token leaves an OpenCode store: from a store made for this call, to a GitHub secret
+/**
+ * Run the SuperGrok device login in a store that exists only for this call, and return both tokens.
+ * CI needs a login of its own.
+ * xAI can replace a refresh token when it is used, so one shared with a laptop would break either side.
+ */
+export async function superGrokLoginInTemporaryStore(opencodeCli: string): Promise<OauthPair> {
+  const dataHome = await mkdtemp(path.join(os.tmpdir(), "ecr-ci-seed-"));
+  try {
+    const result = spawnSync(opencodeCli, [...SUPERGROK_LOGIN_ARGS], {
+      stdio: "inherit",
+      cwd: os.tmpdir(),
+      env: { ...opencodeLoginEnv(), XDG_DATA_HOME: dataHome },
+    });
+    if (result.status !== 0) {
+      throw new Error(
+        `\`opencode auth login\` exited with ${result.status ?? "a signal"}; nothing was changed.`,
+      );
+    }
+    let parsed: Parameters<typeof oauthPairFromStore>[0] = {};
+    try {
+      parsed = JSON.parse(
+        await readFile(opencodeAuthJsonPath({ XDG_DATA_HOME: dataHome }), "utf8"),
+      ) as typeof parsed;
+    } catch {
+      // No store file means the login saved nothing. The check below reports it.
+    }
+    const pair = oauthPairFromStore(parsed, "xai");
+    if (!pair) {
+      throw new Error(
+        "The login finished but stored no SuperGrok access and refresh token; nothing was changed.",
+      );
+    }
+    return pair;
+  } finally {
+    await rm(dataHome, { recursive: true, force: true });
+  }
 }
 
 export interface StoredOauthAccess {
@@ -192,6 +289,52 @@ export function exportLine(tokenEnv: string, value: string): string {
   return `export ${tokenEnv}='${value.replace(/'/g, "'\\''")}'`;
 }
 
+async function runCiSeed(
+  repos: CiSeedRepos,
+  yes: boolean,
+  err: (line?: string) => boolean,
+): Promise<void> {
+  const accessRepos = [...new Set([repos.store, ...repos.targets])];
+  err("This signs in to SuperGrok for CI only and overwrites these GitHub Actions secrets:");
+  err(`  ${CI_REFRESH_SECRET} in ${repos.store}`);
+  err(`  ${CI_ACCESS_SECRET} in ${accessRepos.join(", ")}`);
+  err("The login goes into a temporary store, not into your own OpenCode sign-in.");
+  if (!(await confirm("Continue?", yes))) {
+    err("Skipped the CI seed. Nothing was changed.");
+    return;
+  }
+  await assertSecretsReachable(accessRepos);
+  const opencodeCli = await resolveOpencodeCli();
+  if (!opencodeCli) {
+    throw new Error(
+      "The `opencode` CLI is not available (install `opencode-ai`, or add " +
+        "node_modules/.bin to PATH); nothing was changed.",
+    );
+  }
+  err("The login prints a URL and a device code. Open the URL and enter the code.");
+  const pair = await superGrokLoginInTemporaryStore(opencodeCli);
+  // A token that a review would refuse must not reach a secret.
+  // A warning does not block the seed: a shorter lifetime from xAI is still the token CI gets.
+  const shape = checkOauthTokenShape("xai", pair.access, CI_ACCESS_SECRET);
+  if (!shape.ok) {
+    throw new Error(
+      `The login returned an access token that a review would refuse. ${shape.detail}`,
+    );
+  }
+  await writeSecrets(ciSecretWrites(pair, repos));
+  err("");
+  err(`✓ Wrote ${CI_REFRESH_SECRET} to ${repos.store}.`);
+  err(`✓ Wrote ${CI_ACCESS_SECRET} to ${accessRepos.join(", ")}.`);
+  const expiresMs = jwtExpiryMs(pair.access);
+  if (expiresMs !== null) {
+    err(`The access token is valid for ${remainingLabel(expiresMs)}.`);
+  }
+  if (shape.warning) {
+    err(`Warning: ${shape.warning}`);
+  }
+  err(`Next: start the refresh workflow in ${repos.store} one time by hand to prove the chain.`);
+}
+
 export async function setupAuthCommand(argv: string[] = []): Promise<void> {
   if (argv.includes("-h") || argv.includes("--help")) {
     process.stdout.write(USAGE);
@@ -201,7 +344,20 @@ export async function setupAuthCommand(argv: string[] = []): Promise<void> {
   const out = (line = ""): boolean => process.stdout.write(`${line}\n`);
   const err = (line = ""): boolean => process.stderr.write(`${line}\n`);
 
+  let ciSeed: CiSeedRepos | null;
   try {
+    ciSeed = parseCiSeedArgs(argv);
+  } catch (error) {
+    process.stderr.write(`${errorMessage(error)}\n\n${USAGE}`);
+    process.exitCode = 2;
+    return;
+  }
+
+  try {
+    if (ciSeed) {
+      await runCiSeed(ciSeed, yes, err);
+      return;
+    }
     // Plan from the repo config when there is one; otherwise offer the
     // recommended subscription flow with the default env name.
     let plan: SetupPlan;
