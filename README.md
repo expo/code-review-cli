@@ -1031,6 +1031,16 @@ fallback key; `ecr doctor` diagnoses setup.
   `ecr setup-auth` again for a new token. It signs in again unless a review
   would take the current token without a warning.
 
+  For CI, a scheduled workflow must refresh the token. Start that chain with
+  `ecr setup-auth --ci-store <owner/repo> --ci-target <owner/repo>`. It signs in
+  to SuperGrok in a temporary store, only for CI, and writes the tokens to GitHub
+  Actions secrets with `gh`. The store repo gets `XAI_OAUTH_REFRESH_TOKEN` and
+  `XAI_OAUTH_ACCESS_TOKEN`. Each target repo gets `XAI_OAUTH_ACCESS_TOKEN`. The
+  workflow in the store repo then sends the refresh token to xAI before the
+  access token expires, and it writes the new tokens back. Keep the refresh
+  token out of every repo that runs reviews, and do not reuse your own OpenCode
+  sign-in for CI.
+
   `XAI_OAUTH_ACCESS_TOKEN` needs `"mode": "oauth"`. An entry that names it
   without that mode is refused.
 

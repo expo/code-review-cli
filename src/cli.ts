@@ -23,7 +23,7 @@ Usage:
   ecr undismiss --pr <n> <id...>   Restore a dismissed finding.
   ecr feedback [--repo <owner/repo>] [--limit <n>]   Report what humans pushed back on (see \`ecr feedback --help\`).
   ecr init [--monorepo] [--scope <dir>]   Scaffold .expo-code-review/ in this repo.
-  ecr setup-auth [--yes]   Walk through getting model credentials for local runs.
+  ecr setup-auth [--yes]   Walk through getting model credentials for local runs, or seed CI secrets (see \`ecr setup-auth --help\`).
   ecr doctor [--list-scopes]   Check environment, config, credentials, and scopes.
   ecr verify-config [--expected <env>] [--json]   Refuse to run if a config could redirect the credential (CI guard).
   ecr ref-check [--root <dir>] [--json]   Fail if the review setup cites code that moved or vanished.

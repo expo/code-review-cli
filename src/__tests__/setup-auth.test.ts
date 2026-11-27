@@ -1,6 +1,11 @@
 import { test, expect } from "bun:test";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
+  parseCiSeedArgs,
+  superGrokLoginInTemporaryStore,
   planFromAuth,
   exportLine,
   opencodeAuthJsonPath,
@@ -161,4 +166,119 @@ test("opencode auth.json path honors XDG_DATA_HOME and falls back to ~/.local/sh
     "/custom/data/opencode/auth.json",
   );
   expect(opencodeAuthJsonPath({})).toContain("/.local/share/opencode/auth.json");
+});
+
+test("--ci-store selects the CI seed, and --ci-target may repeat", () => {
+  expect(parseCiSeedArgs([])).toBeNull();
+  expect(parseCiSeedArgs(["--yes"])).toBeNull();
+  expect(parseCiSeedArgs(["--ci-store", "expo/code-review-sessions"])).toEqual({
+    store: "expo/code-review-sessions",
+    targets: [],
+  });
+  expect(
+    parseCiSeedArgs([
+      "--yes",
+      "--ci-target",
+      "expo/expo",
+      "--ci-store",
+      "expo/code-review-sessions",
+      "--ci-target",
+      "expo/eas-cli",
+      "--ci-target",
+      "expo/expo",
+    ]),
+  ).toEqual({ store: "expo/code-review-sessions", targets: ["expo/expo", "expo/eas-cli"] });
+});
+
+test("a CI seed flag with a missing or bad repository is a usage error", () => {
+  expect(() => parseCiSeedArgs(["--ci-target", "expo/expo"])).toThrow(/needs --ci-store/);
+  expect(() => parseCiSeedArgs(["--ci-store"])).toThrow(/--ci-store needs a repository/);
+  expect(() => parseCiSeedArgs(["--ci-store", "--yes"])).toThrow(/--ci-store needs a repository/);
+  expect(() => parseCiSeedArgs(["--ci-store", "a/b", "--ci-store", "c/d"])).toThrow(/one time/);
+  expect(() => parseCiSeedArgs(["--ci-store", "not-a-repo"])).toThrow(/<owner>\/<repo>/);
+  expect(() => parseCiSeedArgs(["--ci-store", "a/b", "--ci-target", "x"])).toThrow(
+    /<owner>\/<repo>/,
+  );
+});
+
+// Stands in for `opencode auth login`: records how it was called, then acts on FAKE_OPENCODE_MODE.
+const FAKE_OPENCODE = `#!/bin/sh
+{
+  echo "argv=$*"
+  echo "data=$XDG_DATA_HOME"
+  echo "project_config_off=$OPENCODE_DISABLE_PROJECT_CONFIG"
+} > "$FAKE_OPENCODE_DIR/call.log"
+[ "$FAKE_OPENCODE_MODE" = "fail" ] && exit 3
+[ "$FAKE_OPENCODE_MODE" = "nothing" ] && exit 0
+mkdir -p "$XDG_DATA_HOME/opencode"
+if [ "$FAKE_OPENCODE_MODE" = "norefresh" ]; then
+  printf '{"xai":{"type":"oauth","access":"eyJ.SEED.sig","refresh":"","expires":1}}' > "$XDG_DATA_HOME/opencode/auth.json"
+else
+  printf '{"xai":{"type":"oauth","access":"eyJ.SEED.sig","refresh":"SEED-REFRESH","expires":1}}' > "$XDG_DATA_HOME/opencode/auth.json"
+fi
+`;
+
+async function withFakeOpencode(
+  mode: string,
+  body: (cli: string, callLog: () => Promise<Record<string, string>>) => Promise<void>,
+): Promise<void> {
+  const dir = await mkdtemp(path.join(tmpdir(), "ecr-fake-opencode-"));
+  const cli = path.join(dir, "opencode");
+  await writeFile(cli, FAKE_OPENCODE, "utf8");
+  await chmod(cli, 0o755);
+  const saved = {
+    dir: process.env.FAKE_OPENCODE_DIR,
+    mode: process.env.FAKE_OPENCODE_MODE,
+    xdg: process.env.XDG_DATA_HOME,
+  };
+  process.env.FAKE_OPENCODE_DIR = dir;
+  process.env.FAKE_OPENCODE_MODE = mode;
+  try {
+    await body(cli, async () =>
+      Object.fromEntries(
+        (await readFile(path.join(dir, "call.log"), "utf8"))
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => line.split(/=(.*)/s).slice(0, 2) as [string, string]),
+      ),
+    );
+    // The login must not move this process to the temporary store.
+    expect(process.env.XDG_DATA_HOME).toBe(saved.xdg);
+  } finally {
+    for (const [name, value] of [
+      ["FAKE_OPENCODE_DIR", saved.dir],
+      ["FAKE_OPENCODE_MODE", saved.mode],
+    ] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("the CI login runs in a store of its own and deletes that store", async () => {
+  await withFakeOpencode("ok", async (cli, callLog) => {
+    expect(await superGrokLoginInTemporaryStore(cli)).toEqual({
+      access: "eyJ.SEED.sig",
+      refresh: "SEED-REFRESH",
+    });
+    const call = await callLog();
+    expect(call.argv).toBe("auth login -p xai -m SuperGrok Subscription");
+    expect(call.project_config_off).toBe("1");
+    expect(path.basename(call.data!)).toMatch(/^ecr-ci-seed-/);
+    await expect(stat(call.data!)).rejects.toThrow();
+  });
+});
+
+test("a CI login that fails or stores no token pair changes nothing and leaves no store", async () => {
+  for (const [mode, message] of [
+    ["fail", /exited with 3; nothing was changed/],
+    ["nothing", /stored no SuperGrok access and refresh token/],
+    ["norefresh", /stored no SuperGrok access and refresh token/],
+  ] as const) {
+    await withFakeOpencode(mode, async (cli, callLog) => {
+      await expect(superGrokLoginInTemporaryStore(cli)).rejects.toThrow(message);
+      await expect(stat((await callLog()).data!)).rejects.toThrow();
+    });
+  }
 });

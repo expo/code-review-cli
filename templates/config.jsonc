@@ -161,6 +161,7 @@
   //   and exports `xai.access`. The refresh token stays in OpenCode's store.
   //   Reviews stage that access token into an isolated auth.json.
   //   The token lasts hours and a review cannot renew it, so this suits local runs.
+  //   CI needs a scheduled refresh: see the CI seed in `ecr setup-auth --help`.
   //   Keep "mode": "oauth": an entry that names this env without it is refused.
   //   "auth": { "providers": {
   //     "xai": { "mode": "oauth", "tokenEnv": "XAI_OAUTH_ACCESS_TOKEN" }
